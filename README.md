@@ -279,9 +279,7 @@ in their words.
 
 Memoket captures memories; KITE is the memory itself.
 
-<p align="center">
-  <a href="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/KITE-inside-MemoChat.mp4"><strong>Watch KITE inside MemoChat →</strong></a>
-</p>
+https://github.com/user-attachments/assets/685ac90d-95ab-4114-a7d3-c22ec3db94a0
 
 <p align="center">
   <a href="https://memoket.ai/pages/use-cases"><strong>See more of Memoket in action →</strong></a>
