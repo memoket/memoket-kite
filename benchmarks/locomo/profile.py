@@ -248,7 +248,6 @@ def ANSWERABLE_BY_CONSTRUCTION(question: str) -> bool:
     return True
 
 
-# Deterministic post-processing rules applied to the generated answer; see
-# memoket_kite.pipeline.postproc. The refusal rules self-disable where the
-# binding declares its questions answerable by construction.
-POSTPROC_RULES = "premise,hedge,undercount,zero"
+# Deterministic post-processing applied to the generated answer; see
+# memoket_kite.pipeline.postproc. The published configuration declares none.
+POSTPROC_RULES = ""

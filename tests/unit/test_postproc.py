@@ -1,4 +1,9 @@
-"""Offline unit tests for the deterministic post-processing rules (no LLM)."""
+"""Offline unit tests for the deterministic post-processing stage (no LLM)."""
+
+import dataclasses
+import inspect
+
+import pytest
 
 from memoket_kite.core.algebra import FactRecord, Store, Unit
 from memoket_kite.pipeline import postproc
@@ -28,192 +33,202 @@ def _store_with(texts):
     return store
 
 
-def test_r2a_fires_only_on_premise_risk_confident_answers():
+def _input(question, answer, **kwargs):
+    return postproc.PostprocInput(question=question, answer=answer, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# The capability boundary
+
+
+def test_a_rule_cannot_reach_a_gold_answer_or_a_benchmark_label():
+    """The boundary is the type: a field a rule must not read is absent."""
+    fields = {field.name for field in dataclasses.fields(postproc.PostprocInput)}
+    forbidden = {
+        "gold",
+        "gold_evidence",
+        "question_id",
+        "qa_idx",
+        "question_type",
+        "category",
+        "judge",
+        "judged",
+        "answerable_by_construction",
+    }
+    assert not fields & forbidden
+    # A caller may say whether a refusal is permitted, as a plain boolean; it
+    # may not hand the stage the workload concept that decided it.
+    assert fields == {"question", "answer", "typed_verdicts", "advice", "allow_refusal"}
+
+
+def test_the_stage_reads_no_harness_field_and_imports_no_harness_module():
+    """Checked against the syntax tree rather than the module text."""
+    import ast
+
+    tree = ast.parse(inspect.getsource(postproc))
+    imported = {
+        node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+    } | {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    assert not any(name.startswith("benchmarks") for name in imported)
+
+    forbidden = {"gold", "gold_evidence", "question_id", "qa_idx", "question_type", "judge"}
+    named = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+    named |= {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert not named & forbidden
+
+
+# ---------------------------------------------------------------------------
+# Policy resolution
+
+
+def test_the_default_policy_rewrites_nothing():
+    data = _input("Where did I go?", "Rome. There is no evidence about this in the history.")
+    assert postproc.apply(data, postproc.PostprocPolicy()) == (data.answer, [])
+
+
+def test_the_registry_is_the_only_list_of_rules():
+    """One table names the rules, orders them, and supplies their code."""
+    assert postproc.RULES == {name for name, _ in postproc._REGISTRY}
+    for name, rule in postproc._REGISTRY:
+        assert rule.__name__ == f"{name}_refusal"
+
+
+def test_an_unknown_rule_name_is_rejected_rather_than_ignored():
+    """An unrecognised rule name raises, however the policy was built."""
+    for name in ("premis", "hedeg", "nonesuch"):
+        with pytest.raises(ValueError, match="unknown post-processing rule"):
+            postproc.PostprocPolicy.parse(name)
+    # Parsing is not the only way in: a policy assembled by hand is checked
+    # against the same registry, so it cannot name a rule that never runs.
+    with pytest.raises(ValueError, match="unknown post-processing rule"):
+        postproc.PostprocPolicy(rules=frozenset({"premise", "nonesuch"}))
+    assert postproc.PostprocPolicy(rules=[" Hedge "]).rules == {"hedge"}
+
+
+def test_an_override_replaces_the_declaration_rather_than_extending_it():
+    policy = postproc.PostprocPolicy.resolve("premise,hedge", "hedge")
+    assert policy.rules == {"hedge"}
+    # Declaring nothing is a decision; only an absent override defers.
+    assert postproc.PostprocPolicy.resolve("premise", "").rules == frozenset()
+    assert postproc.PostprocPolicy.resolve("premise", None).rules == {"premise"}
+
+
+# ---------------------------------------------------------------------------
+# The two rules
+
+
+def test_premise_refusal_fires_only_on_an_absent_subject_and_a_confident_answer():
     store = _store_with(["moved into the Harajuku apartment"])
     risky = GateContext.build("How long in Shinjuku's apartment?", store)
+    verdicts = {"premise": risky}
     hit = postproc.premise_refusal(
-        "How long in Shinjuku's apartment?",
-        "You have lived there since March 2023.",
-        risky,
+        _input("How long in Shinjuku's apartment?", "Two years.", typed_verdicts=verdicts)
     )
     assert hit is not None and hit[0] == postproc.CANONICAL_REFUSAL
-    safe = GateContext.build("When did I move to Harajuku's apartment?", store)
+
+    known = GateContext.build("How long in Harajuku's apartment?", store)
     assert (
         postproc.premise_refusal(
-            "When did I move to Harajuku's apartment?",
-            "In March 2023.",
-            safe,
+            _input(
+                "How long in Harajuku's apartment?",
+                "Two years.",
+                typed_verdicts={"premise": known},
+            )
         )
         is None
     )
-    # already-refusal answers are untouched, and advice questions are exempt —
-    # recognised from the question text, never from a dataset label
-    assert postproc.premise_refusal("q", "No information", risky) is None
-    assert postproc.premise_refusal("What should I cook this weekend?", "Answer.", risky) is None
-    # the label alone must NOT exempt anything: a pipeline that reads the
-    # benchmark's own question_type is a fork the system cannot defend
-    assert postproc.premise_refusal("q", "Answer.", risky) is not None
+    # Already a refusal, and a solicited judgement, are both left alone.
+    assert (
+        postproc.premise_refusal(
+            _input("How long in Shinjuku's apartment?", "No information", typed_verdicts=verdicts)
+        )
+        is None
+    )
+    assert (
+        postproc.premise_refusal(
+            _input("What should I cook this weekend?", "Something light.", typed_verdicts=verdicts)
+        )
+        is None
+    )
 
 
-def test_r2b_hedge_yet_asserts():
+def test_a_rule_sees_a_boolean_and_never_the_workload_concept_behind_it():
+    """`allow_refusal` is a decision the caller made, not a benchmark label."""
+    data = postproc.PostprocInput(question="q", answer="a", allow_refusal=False)
+    assert data.allow_refusal is False
+    assert not hasattr(data, "answerable_by_construction")
+    assert not hasattr(data, "question_type")
+
+
+def test_hedge_refusal_fires_where_an_answer_asserts_and_disclaims_at_once():
     hit = postproc.hedge_refusal(
-        "Which project did I start first?",
-        "You started the Ferrari model first; there is no evidence that you "
-        "started the Porsche 991 Turbo S model.",
+        _input(
+            "When did the user start the model?",
+            "The user started the Ferrari model on 2023-03-01, "
+            "but there is no evidence about this in the history.",
+        )
     )
     assert hit is not None and hit[0] == postproc.CANONICAL_REFUSAL
-    pure_refusal = postproc.hedge_refusal("q", "There is no evidence about this.")
-    assert pure_refusal is None  # hedge alone, nothing asserted
-    clean_answer = postproc.hedge_refusal("q", "You started the Ferrari model on 2023-03-01.")
-    assert clean_answer is None
-
-
-def test_apply_rules_first_family_wins_and_logs():
-    store = _store_with(["moved into the Harajuku apartment"])
-    gate = GateContext.build("How long in Shinjuku's apartment?", store)
-    answer, fired = postproc.apply_rules(
-        "How long in Shinjuku's apartment?",
-        "Since 2023-03-01, so 17 days as of 2023-03-13.",
-        gate=gate,
-        enable=frozenset({"premise", "hedge", "undercount", "zero"}),
-    )
-    assert answer == postproc.CANONICAL_REFUSAL
-    assert [f["rule"] for f in fired] == ["premise_refusal"]
-
-
-def test_r8_increments_only_against_a_saturated_basis():
-    audit = {"instance_basis": 12, "answered": 2}
-    hit = postproc.undercount_repair(
-        "How many citrus fruits have I used?",
-        "You have used 2 different types: lemon and lime.",
-        audit,
-    )
-    assert hit is not None and hit[0] == "You have used 3 different types."
+    # A bare disclaimer is already a refusal; a clean answer is untouched.
+    assert postproc.hedge_refusal(_input("q", "There is no evidence about this.")) is None
     assert (
-        postproc.undercount_repair("How many X?", "2 things", {"instance_basis": 7, "answered": 2})
+        postproc.hedge_refusal(_input("q", "The user started the Ferrari model on 2023-03-01."))
         is None
     )
-    assert postproc.undercount_repair("Where did I go?", "2 places", audit) is None
 
 
-def test_r9_appends_and_never_substitutes():
-    hit = postproc.zero_disclosure("0 times")
-    assert hit is not None and hit[0].startswith("0 times.")
-    assert "not enough" in hit[0]
-    assert postproc.zero_disclosure("You went 3 times") is None
-    assert postproc.zero_disclosure("No information") is None
-
-
-def test_a_spelled_count_is_read_from_where_it_appears_not_from_the_word_list():
-    """ "three pieces ... one ring, one pair, one necklace" is three, not one."""
-    from memoket_kite.pipeline.verdicts import _leading_count
-
-    assert (
-        _leading_count(
-            "You acquired three pieces of jewelry: one engagement ring, "
-            "one pair of earrings, and one silver necklace."
-        )
-        == 3
+def test_the_first_rule_to_fire_ends_the_pass_and_is_logged():
+    store = _store_with(["moved into the Harajuku apartment"])
+    risky = GateContext.build("How long in Shinjuku's apartment?", store)
+    answer, fired = postproc.apply(
+        _input(
+            "How long in Shinjuku's apartment?",
+            "Two years, though there is no evidence about this in the stored history.",
+            typed_verdicts={"premise": risky},
+        ),
+        postproc.PostprocPolicy.parse("premise,hedge"),
     )
-    assert _leading_count("Twelve books and one magazine") == 12
-    assert _leading_count("On 2023-05-13 you bought two items") == 2
+    assert answer == postproc.CANONICAL_REFUSAL
+    assert [entry["rule"] for entry in fired] == ["premise_refusal"]
+    assert fired[0]["subjects"], "the verdict's subjects are recorded with the rewrite"
+    # Both rules were eligible here, so the one that ran is the one the
+    # registry lists first: dispatch order is the registry's order.
+    assert [name for name, _ in postproc._REGISTRY][0] == "premise"
 
 
-def test_undercount_repair_rewrites_a_spelled_count_like_a_digit_one():
-    """Surface form is not evidence, so the rule must not branch on it.
-
-    "two" and "2" assert the same count with the same confidence, and the
-    warrant for repairing either is the audit, not the spelling. Abstaining on
-    the spelled form would leave exactly the same wrong answers standing in
-    words. Case is carried across the rewrite so a sentence-initial count does
-    not come back lowercased.
-    """
-    from memoket_kite.pipeline.postproc import undercount_repair
-
-    audit = {"instance_basis": 12, "answered": 2}
-    question = "How many different types of citrus fruits have I used?"
-
-    digits, _ = undercount_repair(question, "You have used 2 different types.", audit)
-    assert digits == "You have used 3 different types."
-    spelled, _ = undercount_repair(question, "You have used two different types.", audit)
-    assert spelled == "You have used three different types."
-    leading, _ = undercount_repair(question, "Two types were used.", audit)
-    assert leading == "Three types were used."
+def test_only_declared_rules_run():
+    store = _store_with(["moved into the Harajuku apartment"])
+    risky = GateContext.build("How long in Shinjuku's apartment?", store)
+    data = _input(
+        "How long in Shinjuku's apartment?", "Two years.", typed_verdicts={"premise": risky}
+    )
+    assert postproc.apply(data, postproc.PostprocPolicy.parse("hedge")) == (data.answer, [])
 
 
-def test_undercount_repair_leaves_a_range_alone():
-    """An endpoint is not a count, so incrementing it destroys the answer.
+def test_a_rewritten_refusal_carries_no_citations(monkeypatch):
+    """The refusal replaced the claim, so the claim's provenance goes with it."""
+    from memoket_kite.pipeline import answer as answer_pipeline
+    from memoket_kite.pipeline import ledger
 
-    "you need 2 to 3 eggs" satisfies every other test for a quantity — a noun
-    follows it, it is not money and not a date — so without a range check the
-    rule rewrites it to "3 to 3 eggs" and turns a correct answer into an
-    incoherent one. The spread is recognised from the joiner that follows the
-    number, in both digits and words.
-    """
-    from memoket_kite.pipeline.postproc import undercount_repair
-
-    audit = {"instance_basis": 12, "answered": 2}
-    question = "How many eggs do I need for the omelette?"
-
-    for spread in (
-        "You need 2 to 3 eggs.",
-        "You need from 2 to 3 eggs.",
-        "You need two or three eggs.",
-        "You need 1 to 2 eggs.",
-        "You need 2-3 eggs.",
-        "You need between 2 and 3 eggs.",
-        "You need between two and three eggs.",
-    ):
-        assert undercount_repair(question, spread, audit) is None, spread
-
-    # A joiner only makes a range in front of another number, and "and" only
-    # under "between" — "2 apples and 3 pears" is two counts, not a spread.
-    for counted, expected in (
-        ("You need 2 or more eggs.", "You need 3 or more eggs."),
-        ("You bought 2 apples and 3 pears.", "You bought 3 apples and 3 pears."),
-    ):
-        repaired, _ = undercount_repair(question, counted, audit)
-        assert repaired == expected
-
-
-def test_both_surface_forms_get_the_same_guards():
-    """A guard only one spelling gets is not a guard.
-
-    Money and dates are the two places a number is not a count, and they occur
-    written out as readily as in digits. A spelled branch that searches for the
-    bare word skips those checks, so `two dollars worth of apples` becomes
-    `three dollars worth` and `March two, 2023` becomes `March three`. Both
-    surface forms run the same guards.
-    """
-    from memoket_kite.pipeline.postproc import undercount_repair
-
-    audit = {"instance_basis": 12, "answered": 2}
-    question = "How many did I buy?"
-
-    for spelled, digits in (
-        ("You bought two dollars worth of apples.", "You bought 2 dollars worth of apples."),
-        ("You bought items on March two, 2023.", "You bought items on March 2, 2023."),
-    ):
-        assert undercount_repair(question, spelled, audit) is None, spelled
-        assert undercount_repair(question, digits, audit) is None, digits
-
-
-def test_undercount_repair_leaves_a_hedged_count_alone():
-    """ "at least 2" already says the true number may be higher.
-
-    Incrementing it does not repair an under-enumeration; it replaces one bound
-    with another and asserts it just as confidently. The rule's warrant is a
-    reader that committed to a count, and a hedged count is not a commitment.
-    """
-    from memoket_kite.pipeline.postproc import undercount_repair
-
-    audit = {"instance_basis": 12, "answered": 2}
-    question = "How many trips did I take?"
-
-    for hedge in ("at least", "about", "around", "approximately", "over", "more than", "up to"):
-        answer = f"You took {hedge} 2 trips."
-        assert undercount_repair(question, answer, audit) is None, answer
-    assert undercount_repair(question, "You took approximately two trips.", audit) is None
-    # …while a bare commitment is still repaired
-    repaired, _ = undercount_repair(question, "You took 2 trips.", audit)
-    assert repaired == "You took 3 trips."
+    ledger.begin()
+    try:
+        record = {
+            "question": "Where did Priya go on holiday?",
+            "answer": "Rome. There is no evidence about this in the history.",
+            "cited": ["F1", "F2"],
+        }
+        finalized = answer_pipeline.finalize(record, policy=postproc.PostprocPolicy.parse("hedge"))
+        assert finalized["answer"] == postproc.CANONICAL_REFUSAL
+        assert finalized["cited"] == []
+        assert finalized["answer_pre_postproc"].startswith("Rome")
+    finally:
+        ledger.end()

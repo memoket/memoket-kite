@@ -35,6 +35,36 @@ HASHED_PROMPTS = (
     "INFER_PROMPT",
 )
 
+#: The library modules whose templates reach a model.
+HASHED_LIBRARY_PROMPTS = (
+    "memoket_kite.prompts.answer",
+    "memoket_kite.prompts.extract",
+    "memoket_kite.prompts.recall",
+)
+
+#: A template long enough to carry instructions, rather than a label or a key.
+_TEMPLATE_FLOOR = 40
+
+
+def _library_prompt_shas() -> dict[str, str]:
+    """Every template the library can send, digested under its own name.
+
+    The modules are named and their contents enumerated: naming each template
+    instead would fingerprint whichever ones someone remembered to list.
+    """
+    import importlib
+
+    shas = {}
+    for module_name in HASHED_LIBRARY_PROMPTS:
+        module = importlib.import_module(module_name)
+        for attribute in dir(module):
+            if attribute.startswith("__"):
+                continue
+            text = getattr(module, attribute, None)
+            if isinstance(text, str) and len(text) >= _TEMPLATE_FLOOR:
+                shas[f"{module_name}:{attribute}"] = _digest(text)
+    return shas
+
 
 def working_diff() -> str:
     """The uncommitted diff, exactly as it is stored and digested.
@@ -47,8 +77,19 @@ def working_diff() -> str:
     return diff + "\n" if diff else ""
 
 
+def untracked_files() -> tuple[str, ...]:
+    """Non-ignored paths git is not tracking."""
+    return tuple(
+        line for line in _git("ls-files", "--others", "--exclude-standard").splitlines() if line
+    )
+
+
 class GitUnavailable(RuntimeError):
     """Raised when the tree's identity cannot be established."""
+
+
+#: The tree every provenance question is asked about.
+_REPO = Path(__file__).resolve().parent
 
 
 def _git(*args: str) -> str:
@@ -65,7 +106,7 @@ def _git(*args: str) -> str:
             ("git", *args),
             capture_output=True,
             text=True,
-            cwd=Path(__file__).parent,
+            cwd=_REPO,
             timeout=10,
             check=True,
         )
@@ -149,6 +190,7 @@ def describe(profile, **extra) -> dict:
         "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
         "dirty": bool(_git("status", "--porcelain")),
         "diff_sha": _digest(diff) if diff else "",
+        "library_prompt_sha": _library_prompt_shas(),
         "binding": profile.__name__,
         # Sequences are normalised to lists: a tuple survives `json.dumps` as a
         # list, so recording one verbatim makes every later resume compare a
@@ -214,6 +256,7 @@ _IDENTITY = (
     "diff_sha",
     "config",
     "prompt_sha",
+    "library_prompt_sha",
     "env_overrides",
     "model",
     "answer_model",
@@ -252,6 +295,18 @@ def write(result_dir: Path, profile, *, resuming: bool = False, **extra) -> dict
     different configuration is refused: the two halves of the JSONL would come
     from different systems and nothing downstream could tell them apart.
     """
+    if untracked := untracked_files():
+        # `working.diff` is `git diff HEAD`, which sees tracked files only. A
+        # tree holding an untracked module would record `dirty: true` with an
+        # empty patch and nothing to rebuild it from, so the run stops here —
+        # before the first question is paid for — rather than producing a
+        # score no one can reproduce.
+        listed = ", ".join(untracked[:5]) + ("..." if len(untracked) > 5 else "")
+        raise SystemExit(
+            f"cannot record provenance: {len(untracked)} untracked file(s) in the tree "
+            f"({listed}). The stored patch covers tracked files only. Commit them, "
+            f"remove them, or ignore them, then start the run."
+        )
     current = describe(profile, **extra)
     path = result_dir / "manifest.json"
     if resuming:

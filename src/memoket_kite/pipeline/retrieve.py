@@ -19,6 +19,7 @@ from memoket_kite.core.algebra import execute_plan, fact_row, line_row
 from memoket_kite.pipeline import ledger
 from memoket_kite.pipeline.compile_plan import compile_plan
 from memoket_kite.pipeline.patterns import advice_predicate as _advice_predicate
+from memoket_kite.pipeline.render import spoken
 
 _MONTHS = {
     month: index
@@ -70,6 +71,7 @@ class RetrievalOptions:
     date_channel: bool
     enum_basis: bool
     token_cap: int
+    speaker_label: bool = False
 
     @classmethod
     def from_profile(cls, profile) -> "RetrievalOptions":
@@ -83,6 +85,7 @@ class RetrievalOptions:
             date_channel=bool(getattr(profile, "DATE_CHANNEL", False)),
             enum_basis=bool(getattr(profile, "ENUM_BASIS", False)),
             token_cap=_checked_token_cap(profile),
+            speaker_label=bool(getattr(profile, "SPEAKER_LABEL", False)),
         )
 
 
@@ -227,6 +230,7 @@ def _run_retrieval(
             cap=options.token_cap,
             unit_cap=unit_cap,
             row_cap=budget,
+            speaker=options.speaker_label,
         )
     else:
         rows = _select_evidence_rows(
@@ -691,17 +695,21 @@ def _checked_token_cap(profile) -> int:
     return cap
 
 
-def _row_tokens(row: dict, store) -> int:
+def _row_tokens(row: dict, store, *, speaker: bool) -> int:
     """Admission price of one row, in the compact index rendering.
 
-    Rows are priced as they appear in the index (text plus up to two short
-    source quotes), not as the answer prompt finally renders them; the two
+    `speaker` has no default: a caller that forgets it would price a labelled
+    row for a binding that renders none, and admit a different pack than it
+    shows. Rows are priced as they appear in the index (text plus up to two
+    short source quotes), not as the answer prompt finally renders them; the two
     differ because hydration and adjacent context are added after selection.
     Falls back to a character estimate when no tokenizer is installed."""
     text = str(row.get("text", ""))
+    if row.get("type") == "line":
+        text = spoken(row.get("who", ""), text, enabled=speaker)
     if row.get("type") == "fact" and row.get("src"):
         quotes = [
-            store.lines[source_id].text[:120]
+            spoken(store.lines[source_id].who, store.lines[source_id].text, enabled=speaker)[:120]
             for source_id in str(row.get("src", "")).split()[:2]
             if source_id in store.lines
         ]
@@ -741,6 +749,7 @@ def _select_evidence_rows_tokencap(
     cap: int,
     unit_cap: int,
     row_cap: int = 0,
+    speaker: bool,
 ) -> list[dict]:
     """Token-cap packing: rows are admitted in the row-budget selector's
     order, but the stop condition is a per-question TOKEN cap over the logged
@@ -759,7 +768,7 @@ def _select_evidence_rows_tokencap(
         unit = row.get("unit", row.get("id"))
         per_unit[unit] = per_unit.get(unit, 0) + 1
         rows.append(row)
-        total += _row_tokens(row, store)
+        total += _row_tokens(row, store, speaker=speaker)
     seen = {(row["type"], row["id"]) for row in rows}
     for row in precise:
         key = (row["type"], row["id"])
@@ -767,7 +776,7 @@ def _select_evidence_rows_tokencap(
             continue
         if row_cap and len(rows) >= row_cap:
             break
-        cost = _row_tokens(row, store)
+        cost = _row_tokens(row, store, speaker=speaker)
         if total + cost > cap:
             # Skip it, do not stop. A row that overruns what is left of the
             # budget says nothing about the shorter rows behind it, and
@@ -789,7 +798,7 @@ def _select_evidence_rows_tokencap(
             continue
         if row_cap and len(rows) >= row_cap:
             break
-        cost = _row_tokens(row, store)
+        cost = _row_tokens(row, store, speaker=speaker)
         if cost > cap:
             # This row would not fit even an empty pack, so its size says
             # nothing about the rows behind it. Stopping here would return an

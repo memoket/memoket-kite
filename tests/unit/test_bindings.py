@@ -100,30 +100,20 @@ def test_lexical_extra_df_guard_only_admits_rare_stems():
     assert rows and rows[0]["id"] == "f_gold"  # 'max'/'old' admitted via guard
 
 
-def test_every_binding_declares_the_mechanisms_its_harness_consults():
-    """A missing declaration disables a shipped stage silently, not loudly.
-
-    Both harnesses read these through `getattr(profile, ..., default)`, so a
-    binding that omits one still runs — with the whole post-processing stage
-    dead and every answer treated as refusable. Assert the contract instead of
-    trusting the default.
-    """
+def test_a_binding_declares_only_what_its_workload_admits():
+    """Refusal rules belong where a question may have no answer."""
     from benchmarks.locomo import profile as locomo
     from benchmarks.longmemeval import profile as longmemeval
     from memoket_kite.pipeline import postproc
 
-    known = set(postproc.RULES)
+    assert postproc.PostprocPolicy.parse(longmemeval.POSTPROC_RULES).rules == {
+        "premise",
+        "hedge",
+    }
+    # Every LoCoMo question has an answer, so a refusal there is a certain miss.
+    assert postproc.PostprocPolicy.parse(locomo.POSTPROC_RULES).rules == frozenset()
     for binding in (locomo, longmemeval):
-        name = binding.__name__
-        declared = getattr(binding, "POSTPROC_RULES", "")
-        assert declared, f"{name} declares no post-processing rules"
-        named = [part.strip() for part in declared.split(",") if part.strip()]
-        unknown = [part for part in named if part not in known]
-        assert not unknown, f"{name} names rules that do not exist: {unknown}"
-        assert postproc.rules_from_env(declared) == set(named)
-        assert callable(getattr(binding, "ANSWERABLE_BY_CONSTRUCTION", None)), (
-            f"{name} declares no answerability predicate"
-        )
+        assert callable(getattr(binding, "ANSWERABLE_BY_CONSTRUCTION", None))
 
 
 def test_longmemeval_answerability_predicate_separates_its_two_classes():
@@ -222,6 +212,7 @@ _PUBLISHED = {
         "LEXICAL_V2": True,
         "NEIGHBOR_RADIUS": 1,
         "PACK_V2": True,
+        "SPEAKER_LABEL": False,
         "PLAN_REPAIR": True,
         "PROFILE_PACK": 0,
         "RECENCY_ANCHOR": 8,
@@ -250,6 +241,7 @@ _PUBLISHED = {
         "LEXICAL_V2": True,
         "NEIGHBOR_RADIUS": 1,
         "PACK_V2": True,
+        "SPEAKER_LABEL": True,
         "PLAN_REPAIR": True,
         "PROFILE_PACK": 15,
         "RECENCY_ANCHOR": 8,
@@ -330,6 +322,7 @@ def test_an_arm_switches_exactly_the_declared_mechanisms(binding):
         "PACK_V2",
         "DATE_CHANNEL",
         "NEIGHBOR_RADIUS",
+        "SPEAKER_LABEL",
         "ENUM_BASIS",
         "ROUND2",
         "INFER_V2",

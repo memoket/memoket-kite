@@ -225,4 +225,5 @@ __marimo__/
 
 # Licensed datasets and all reproducible outputs
 artifacts/*
-!artifacts/README.mdassets
+!artifacts/README.md
+.DS_Store

@@ -56,6 +56,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tag", default="v0.1.0")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--plan-cache", type=Path)
+    parser.add_argument(
+        "--question-id",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="evaluate only these question ids; repeatable",
+    )
+    parser.add_argument(
+        "--question-ids-file",
+        type=Path,
+        help="evaluate only the question ids listed in this file, one per line",
+    )
     args = parser.parse_args(argv)
     if args.workers < 1:
         parser.error("--workers must be a positive integer")
@@ -65,8 +77,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(error))
     # Resolve the rule set first: a typo must cost nothing, not surface after
     # every question has already been paid for.
-    postproc_rules = postproc.rules_from_env(
-        os.environ.get("KITE_POSTPROC") or getattr(profile, "POSTPROC_RULES", "")
+    postproc_policy = postproc.PostprocPolicy.resolve(
+        getattr(profile, "POSTPROC_RULES", ""), os.environ.get("KITE_POSTPROC")
     )
     # The pipeline refuses an estimated tokenizer with a library error; a CLI
     # surfaces that as a clean exit before any question is paid for.
@@ -76,10 +88,30 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(str(error)) from error
     with DATASET.open(encoding="utf-8") as stream:
         data = json.load(stream)
-    try:
-        indices = select_indices(data, args.n)
-    except ValueError as error:
-        parser.error(str(error))
+    wanted = list(args.question_id)
+    selecting = bool(wanted)
+    if args.question_ids_file:
+        selecting = True
+        try:
+            listed = args.question_ids_file.read_text(encoding="utf-8").split()
+        except OSError as error:
+            parser.error(str(error))
+        wanted.extend(listed)
+    if selecting:
+        # Asking for a selection and getting the whole corpus is the one
+        # mistake this flag exists to prevent, so an empty one is an error.
+        if not wanted:
+            parser.error(f"{args.question_ids_file} names no question ids")
+        # A named selection is exactly what was named.
+        by_id = {str(item["question_id"]): index for index, item in enumerate(data)}
+        if missing := [qid for qid in wanted if qid not in by_id]:
+            parser.error(f"unknown question id(s): {', '.join(sorted(set(missing)))}")
+        indices = sorted({by_id[qid] for qid in wanted})
+    else:
+        try:
+            indices = select_indices(data, args.n)
+        except ValueError as error:
+            parser.error(str(error))
     result_dir = RESULTS_ROOT / f"longmemeval-{args.tag}"
     result_dir.mkdir(parents=True, exist_ok=True)
     # The same per-tag lock the scorer takes. Two evaluators on one tag pay
@@ -144,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
                     answer_model=args.answer_model or args.model,
                     reference_date=question_date.strftime("%Y-%m-%d") if question_date else "",
                     plan_cache=str(args.plan_cache.resolve()) if args.plan_cache else None,
+                    postproc_policy=postproc_policy,
                 )
                 record = {
                     "question_id": question_id,
@@ -156,22 +189,14 @@ def main(argv: list[str] | None = None) -> int:
                     "answer_session_ids": item.get("answer_session_ids", []),
                     "pack_units": _pack_units(result.get("pack_rows", [])),
                     "telemetry": result.get("telemetry"),
-                    "answerable_by_construction": bool(
-                        getattr(profile, "ANSWERABLE_BY_CONSTRUCTION", None)
-                        and profile.ANSWERABLE_BY_CONSTRUCTION(item["question"])
-                    ),
                 }
-                if postproc_rules:
-                    rewritten, fired = postproc.apply_to_record(
-                        record,
-                        result.get("telemetry"),
-                        postproc_rules,
-                        advice=getattr(profile, "ADVICE_QUESTION", None),
-                    )
-                    if fired:
-                        record["answer_pre_postproc"] = record["answer"]
-                        record["answer"] = rewritten
-                        record["postproc"] = fired
+                # The answerability verdict and any post-processing are the
+                # answer stage's; it is the only place either is decided, so
+                # the harness copies the record it left rather than asking a
+                # second time.
+                for key in ("answerable_by_construction", "answer_pre_postproc", "postproc"):
+                    if key in result:
+                        record[key] = result[key]
             except Exception as exc:
                 with lock:
                     failures.append(f"{question_id}: {exc}")

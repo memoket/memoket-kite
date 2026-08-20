@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from memoket_kite.core.algebra import execute_plan, fact_row, line_row
-from memoket_kite.pipeline import ledger, verdicts
+from memoket_kite.pipeline import ledger, postproc, verdicts
 from memoket_kite.pipeline.compile_plan import compile_plan
 from memoket_kite.pipeline.patterns import (
     COUNT_QUESTION as _COUNT_QUESTION,
@@ -33,6 +33,7 @@ from memoket_kite.pipeline.patterns import (
 from memoket_kite.pipeline.patterns import (
     advice_predicate as _advice_predicate,
 )
+from memoket_kite.pipeline.render import spoken
 from memoket_kite.pipeline.retrieve import (
     RetrievalResult,
     _plan_scorer_cache_key,
@@ -71,6 +72,7 @@ class AnswerOptions:
     round2: bool
     infer_v2: bool
     dual_date: bool
+    speaker_label: bool = False
 
     @classmethod
     def from_profile(cls, profile) -> "AnswerOptions":
@@ -89,6 +91,7 @@ class AnswerOptions:
             round2=bool(getattr(profile, "ROUND2", False)),
             infer_v2=bool(getattr(profile, "INFER_V2", False)),
             dual_date=bool(getattr(profile, "DUAL_DATE", False)),
+            speaker_label=bool(getattr(profile, "SPEAKER_LABEL", False)),
         )
 
 
@@ -140,6 +143,7 @@ def answer(
     reference_date: str = "",
     budget: int = 0,
     plan_cache: str | None = None,
+    postproc_policy: "postproc.PostprocPolicy | None" = None,
 ) -> dict:
     """Retrieve evidence and generate an answer with citations and trace."""
 
@@ -158,9 +162,50 @@ def answer(
             budget,
             plan_cache,
             options,
+            postproc_policy,
         )
     finally:
         ledger.end()
+
+
+def finalize(
+    record: dict,
+    *,
+    policy: postproc.PostprocPolicy,
+    typed_verdicts: dict | None = None,
+    advice=None,
+    answerable: bool = False,
+) -> dict:
+    """The single exit every answer leaves through.
+
+    Applies the declared policy and then snapshots the ledger, so a recorded
+    cost describes the answer that was returned. Every path uses it, including
+    the ones that return before a reader is called.
+
+    `answerable` is the caller's verdict that this question has an answer. It
+    is recorded on the result and is what stands the refusal rules down, so a
+    consumer reads the same verdict the rules were judged under instead of
+    recomputing one.
+    """
+    record["answerable_by_construction"] = answerable
+    rewritten, fired = postproc.apply(
+        postproc.PostprocInput(
+            question=str(record.get("question", "")),
+            answer=str(record.get("answer", "")),
+            typed_verdicts=typed_verdicts or {},
+            advice=advice,
+            allow_refusal=not answerable,
+        ),
+        policy,
+    )
+    if fired:
+        record["answer_pre_postproc"] = record.get("answer", "")
+        record["answer"] = rewritten
+        record["postproc"] = fired
+        if rewritten == postproc.CANONICAL_REFUSAL:
+            record["cited"] = []  # the refusal rests on nothing
+    record["telemetry"] = ledger.snapshot()
+    return record
 
 
 def _answer(
@@ -174,6 +219,7 @@ def _answer(
     budget: int,
     plan_cache: str | None,
     options: "AnswerOptions",
+    postproc_policy: "postproc.PostprocPolicy | None" = None,
 ) -> dict:
     """Body of :func:`answer`, wrapped so the ledger always closes."""
     retrieval = _run_retrieval(
@@ -187,14 +233,35 @@ def _answer(
         plan_cache=plan_cache,
     )
 
+    policy = (
+        postproc_policy
+        if postproc_policy is not None
+        else postproc.PostprocPolicy.resolve(getattr(profile, "POSTPROC_RULES", ""))
+    )
+    advice = _advice_predicate(profile)
+    # A workload may declare a question answerable: there is an answer in the
+    # store, so a refusal is a certain miss and no rule may produce one. The
+    # verdicts are computed once, before any exit, so every path is judged on
+    # the same inputs rather than on whichever branch happened to fire.
+    answerable = bool(
+        getattr(profile, "ANSWERABLE_BY_CONSTRUCTION", None)
+        and profile.ANSWERABLE_BY_CONSTRUCTION(question)
+    )
+    gate = verdicts.GateContext.build(question, store, intent=retrieval.intent, advice=advice)
+    ledger.note("premise", {"subjects": gate.subjects, "risk": gate.premise_risk})
+    exit_kwargs = {
+        "policy": policy,
+        "advice": advice,
+        "answerable": answerable,
+        "typed_verdicts": {"premise": gate},
+    }
+
     direct = _answer_attribution(retrieval, profile)
     if direct is not None:
-        direct["telemetry"] = ledger.snapshot()
-        return direct
+        return finalize(direct, **exit_kwargs)
     direct = _answer_aggregate(retrieval, profile)
     if direct is not None:
-        direct["telemetry"] = ledger.snapshot()
-        return direct
+        return finalize(direct, **exit_kwargs)
 
     pack = _build_evidence_pack(
         retrieval,
@@ -225,20 +292,12 @@ def _answer(
             # construction is stating that every such question has an answer in
             # the store, so the conversion has no case to apply to and is
             # disabled. The override is recorded rather than silent.
-            if getattr(profile, "ANSWERABLE_BY_CONSTRUCTION", None) and (
-                profile.ANSWERABLE_BY_CONSTRUCTION(question)
-            ):
+            if answerable:
                 ledger.note("support_check_override", True)
             else:
                 data["answer"] = REFUSAL
                 data["evidence"] = []
 
-    # Premise verdict: consumed by the deterministic post-processing stage
-    # (memoket_kite.pipeline.postproc) through the result telemetry.
-    gate = verdicts.GateContext.build(
-        question, store, intent=retrieval.intent, advice=_advice_predicate(profile)
-    )
-    ledger.note("premise", {"subjects": gate.subjects, "risk": gate.premise_risk})
     data = _retry_with_refined_retrieval(
         data,
         pack,
@@ -287,10 +346,8 @@ def _answer(
         answer_model,
         options,
     )
-    _log_answer_verdicts(retrieval, pack, data, question)
     record = _answer_record(retrieval, pack, data)
-    record["telemetry"] = ledger.snapshot()
-    return record
+    return finalize(record, **exit_kwargs)
 
 
 def _resort_pack(rows: list[dict]) -> list[dict]:
@@ -305,26 +362,6 @@ def _resort_pack(rows: list[dict]) -> list[dict]:
     tail = [row for row in rows if row.get("type") != "count"]
     tail.sort(key=lambda row: (row.get("date") or "", row.get("id") or ""))
     return head + tail
-
-
-def _log_answer_verdicts(
-    retrieval: RetrievalResult,
-    pack: EvidencePack,
-    data: dict,
-    question: str,
-) -> None:
-    """Record the deterministic verdicts the post-processing stage consumes."""
-    if ledger.current() is None:
-        return
-    audit = verdicts.aggregation_audit(
-        str(data.get("answer", "")),
-        retrieval.intent,
-        pack.instances,
-        question=question,
-        refusal_like=_REFUSAL_LIKE,
-    )
-    if audit is not None:
-        ledger.note("aggregation_audit", audit)
 
 
 def _answer_attribution(
@@ -462,21 +499,31 @@ def _build_evidence_pack(
     _book("instance_index", mark)
     mark = len(lines)
     lines.extend(
-        _render_evidence_row(row, store, options.hydrate_sources, options.dual_date)
+        _render_evidence_row(
+            row,
+            store,
+            options.hydrate_sources,
+            dual_date=options.dual_date,
+            speaker=options.speaker_label,
+        )
         for row in rows
         if row["type"] != "count"
     )
     if ledger.current() is not None:
         ledger.charge(
             "row_renders",
-            compact=sum(_row_tokens(row, store) for row in rows if row["type"] != "count"),
+            compact=sum(
+                _row_tokens(row, store, speaker=options.speaker_label)
+                for row in rows
+                if row["type"] != "count"
+            ),
             real=ledger.text_tokens("\n".join(lines[mark:])),
             n=sum(1 for row in rows if row["type"] != "count"),
         )
         ledger.charge(
             "bound_rows",
             compact=sum(
-                _row_tokens(row, store)
+                _row_tokens(row, store, speaker=options.speaker_label)
                 for row in rows
                 if row["type"] != "count" and row.get("bound")
             ),
@@ -603,12 +650,19 @@ def _render_evidence_row(
     row: dict,
     store,
     hydrate: bool,
-    dual_date: bool = False,
+    *,
+    dual_date: bool,
+    speaker: bool,
 ) -> str:
+    """Render one evidence row exactly as the reader will see it.
+
+    `dual_date` and `speaker` are the binding's, and neither has a default: a
+    caller that omits one would render a row for some other deployment.
+    """
     source_text = ""
     source_limit, text_limit = (4, 400) if hydrate else (2, 120)
     if row["type"] == "fact" and row.get("src"):
-        quotes = _hydrate_sources(row, store)[:source_limit]
+        quotes = _hydrate_sources(row, store, speaker=speaker)[:source_limit]
         if quotes:
             source_text = " | verbatim: " + " / ".join(quote[:text_limit] for quote in quotes)
     anchored = "[anchored] " if row.get("bound") else ""
@@ -626,15 +680,20 @@ def _render_evidence_row(
         said = store.units[unit].date if unit in store.units else ""
         if said and said != date_value:
             said_note = f" (said {said}; the date tag already resolves the relative phrase)"
+    body = row["text"]
+    if row["type"] == "line":
+        body = spoken(row.get("who", ""), body, enabled=speaker)
     return (
         f"{anchored}[{date_value} {_weekday(date_value)}]{said_note} "
-        f"({row['id']}, src={row.get('src', '')}) {row['text']}{source_text}"
+        f"({row['id']}, src={row.get('src', '')}) {body}{source_text}"
     )
 
 
-def _hydrate_sources(row: dict, store) -> list[str]:
+def _hydrate_sources(row: dict, store, *, speaker: bool) -> list[str]:
+    # Each quote carries the speaker of the line it came from: one fact may be
+    # sourced from turns by different people.
     return [
-        store.lines[source_id].text
+        spoken(store.lines[source_id].who, store.lines[source_id].text, enabled=speaker)
         for source_id in (row.get("src") or "").split()
         if source_id in store.lines
     ]
@@ -680,7 +739,9 @@ def _add_session_context(
     shown_ids: set[str] = set()
     offset = 0
     for index, (line_id, rendered) in enumerate(rendered_lines):
-        offset += 1 if index else 0
+        offset += 1 if index else 0  # the newline that joined this row on
+        # A line counts as shown once the truncation reaches past everything
+        # that precedes its text: the id, and the speaker label if it has one.
         prefix = f"({line_id}) {store.lines[line_id].who}: "
         if offset + len(prefix) < len(body):
             shown_ids.add(str(line_id))
@@ -1014,9 +1075,7 @@ def _retry_with_refined_retrieval(
         # Token-neutral swap: the targeted second-round rows displace an equal
         # token mass of the LOWEST-scoring unbound first-round rows, so the
         # pack budget holds instead of growing (round-2 adds signal, not size).
-        from memoket_kite.pipeline.retrieve import _row_tokens
-
-        to_free = sum(_row_tokens(row, store) for row in appended)
+        to_free = sum(_row_tokens(row, store, speaker=options.speaker_label) for row in appended)
         removable = sorted(
             (row for row in kept_rows if row.get("type") == "fact" and not row.get("bound")),
             key=lambda row: (row.get("score") or 0.0, str(row.get("id"))),
@@ -1027,14 +1086,15 @@ def _retry_with_refined_retrieval(
             if freed >= to_free:
                 break
             dropped_ids.add(str(row.get("id")))
-            freed += _row_tokens(row, store)
+            freed += _row_tokens(row, store, speaker=options.speaker_label)
         if dropped_ids:
             dropped_renders = {
                 _render_evidence_row(
                     row,
                     store,
                     options.hydrate_sources,
-                    options.dual_date,
+                    dual_date=options.dual_date,
+                    speaker=options.speaker_label,
                 )
                 for row in kept_rows
                 if str(row.get("id")) in dropped_ids
@@ -1042,7 +1102,13 @@ def _retry_with_refined_retrieval(
             kept_rows = [row for row in kept_rows if str(row.get("id")) not in dropped_ids]
             kept_lines = [line for line in kept_lines if line not in dropped_renders]
     extra_lines = ["\nSECOND-ROUND RETRIEVAL (targeted at the gap above):"] + [
-        _render_evidence_row(row, store, options.hydrate_sources, options.dual_date)
+        _render_evidence_row(
+            row,
+            store,
+            options.hydrate_sources,
+            dual_date=options.dual_date,
+            speaker=options.speaker_label,
+        )
         for row in appended
     ]
     prompt = profile.ANSWER_PROMPT.format(
@@ -1096,7 +1162,13 @@ def _retry_with_lexical_evidence(
             break
     alternate.sort(key=lambda row: (row.get("date") or "", row.get("id") or ""))
     lines = [
-        _render_evidence_row(row, store, options.hydrate_sources, options.dual_date)
+        _render_evidence_row(
+            row,
+            store,
+            options.hydrate_sources,
+            dual_date=options.dual_date,
+            speaker=options.speaker_label,
+        )
         for row in alternate
     ]
     prompt = profile.ANSWER_PROMPT.format(
@@ -1180,7 +1252,14 @@ def _retry_with_recompiled_plan(
         return data
     rows.sort(key=lambda row: (row.get("date") or "", row.get("id") or ""))
     lines = [
-        _render_evidence_row(row, store, options.hydrate_sources, options.dual_date) for row in rows
+        _render_evidence_row(
+            row,
+            store,
+            options.hydrate_sources,
+            dual_date=options.dual_date,
+            speaker=options.speaker_label,
+        )
+        for row in rows
     ]
     prompt = profile.ANSWER_PROMPT.format(
         policies=policies,

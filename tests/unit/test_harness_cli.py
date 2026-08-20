@@ -30,7 +30,8 @@ def test_longmemeval_main_records_provenance_before_answering(corpus, tmp_path, 
     recorded = json.loads((result_dir / "manifest.json").read_text())
     assert recorded["binding"] == "benchmarks.longmemeval.profile"
     assert recorded["config"]["TOKEN_CAP"]
-    assert recorded["config"]["POSTPROC_RULES"]
+    # Declared, and recorded: a score states which rewrites it ran under.
+    assert recorded["config"]["POSTPROC_RULES"] == "premise,hedge"
     assert recorded["answerable_predicate"]
     assert recorded["prompt_sha"]["ANSWER_PROMPT"]
     assert recorded["answer_model"]
@@ -52,7 +53,7 @@ def test_locomo_main_accepts_its_own_arguments(corpus, tmp_path, monkeypatch):
     assert recorded["samples"] == [0]
     # the value is a configuration choice; what matters is that it is recorded
     assert isinstance(recorded["config"]["DUAL_DATE"], bool)
-    assert recorded["config"]["POSTPROC_RULES"]
+    assert recorded["config"]["POSTPROC_RULES"] == ""
     assert not (result_dir / "failed.txt").exists()
 
 
@@ -148,7 +149,7 @@ def test_resume_refuses_when_the_model_or_environment_changed(tmp_path, monkeypa
         with pytest.raises(SystemExit, match="changed since"):
             manifest.write(result_dir, profile, resuming=True, **kwargs)
 
-    monkeypatch.setenv("KITE_POSTPROC", "zero")
+    monkeypatch.setenv("KITE_POSTPROC", "hedge")
     with pytest.raises(SystemExit, match="env_overrides"):
         manifest.write(
             result_dir,
@@ -1325,62 +1326,6 @@ def test_the_sealed_check_happens_inside_the_lock(corpus, tmp_path, monkeypatch)
         evaluate.main(["--tag", "race", "--n", "1"])
 
 
-def test_a_solicited_judgement_is_never_rewritten_into_a_refusal():
-    """The refusal rules answer "was the premise absent", which a solicited
-    judgement has no premise to fail.
-
-    A question that asks for an opinion is answered with reasoning, and sound
-    reasoning routinely contains a hedge like "there is no evidence of a better
-    time to buy". The hedge rule replaces the whole answer with the canonical
-    refusal, so without this exemption it destroys correct advice. The
-    exemption is recognised from the question's own wording, so it works on any
-    corpus rather than on one dataset's labels.
-    """
-    from benchmarks.common.policies import PROTOCOL_ADVICE_QUESTION as ADVICE_QUESTION
-
-    solicited = (
-        "I'm trying to decide whether to buy a NAS device now or wait. What do you think?",
-        "Do you think it might be time to replace the dresser?",
-        "Do you think it would be a good idea to book it now?",
-        "Could there be a reason my sourdough keeps failing?",
-        "What should I cook this weekend?",
-        "Any ideas for a birthday present?",
-    )
-    factual = (
-        "When did I buy the NAS device?",
-        "How many bikes did I service in March?",
-        "Which restaurant did I go to last week?",
-        "Did I mention my sister's birthday?",
-    )
-    for question in solicited:
-        assert ADVICE_QUESTION.search(question), question
-    for question in factual:
-        assert not ADVICE_QUESTION.search(question), question
-
-
-def test_the_advice_predicate_covers_the_frozen_preference_set():
-    """The exemption is all-or-nothing per class, in both directions.
-
-    Every preference question solicits an opinion, so any one the predicate
-    misses is an answer the hedge rule is free to overwrite. No abstention
-    question solicits one, so any it matches is a refusal the rules can no
-    longer produce. Pinning both totals against the corpus makes a narrowing
-    or a widening edit fail rather than merely shift a proportion.
-    """
-    import json
-
-    from benchmarks.common.policies import PROTOCOL_ADVICE_QUESTION as ADVICE_QUESTION
-    from benchmarks.longmemeval.evaluate import DATASET
-
-    if not DATASET.exists():
-        pytest.skip("frozen corpus not present")
-    data = json.loads(DATASET.read_text())
-    preference = [q for q in data if q["question_type"] == "single-session-preference"]
-    abstention = [q for q in data if str(q["question_id"]).endswith("_abs")]
-    assert sum(bool(ADVICE_QUESTION.search(q["question"])) for q in preference) == len(preference)
-    assert sum(bool(ADVICE_QUESTION.search(q["question"])) for q in abstention) == 0
-
-
 def test_a_release_is_bound_to_the_corpus_the_run_declared(tmp_path, monkeypatch):
     """Counting `*.xml` says nothing about their contents.
 
@@ -1924,9 +1869,74 @@ def test_one_oversized_row_cannot_empty_the_pack():
             return []
 
     rows = retrieve._select_evidence_rows_tokencap(
-        [], [huge, small], _Store(), cap=50, unit_cap=9, row_cap=40
+        [], [huge, small], _Store(), cap=50, unit_cap=9, row_cap=40, speaker=False
     )
     assert [row["id"] for row in rows] == ["L2"]
+
+
+def test_a_named_question_selection_is_exactly_what_was_named(corpus, tmp_path, monkeypatch):
+    """An id the corpus does not hold stops the run."""
+    from benchmarks.longmemeval import evaluate
+
+    monkeypatch.setattr(evaluate, "RESULTS_ROOT", tmp_path)
+    with pytest.raises(SystemExit):
+        evaluate.main(["--tag", "unit", "--question-id", "no-such-question"])
+
+
+def test_a_solicited_judgement_is_never_rewritten_into_a_refusal():
+    """The refusal rules answer "was the premise absent", which a solicited
+    judgement has no premise to fail.
+
+    A question that asks for an opinion is answered with reasoning, and sound
+    reasoning routinely contains a hedge like "there is no evidence of a better
+    time to buy". The hedge rule replaces the whole answer with the canonical
+    refusal, so without this exemption it destroys correct advice. The
+    exemption is recognised from the question's own wording, so it works on any
+    corpus rather than on one dataset's labels.
+    """
+    from benchmarks.common.policies import PROTOCOL_ADVICE_QUESTION as ADVICE_QUESTION
+
+    solicited = (
+        "I'm trying to decide whether to buy a NAS device now or wait. What do you think?",
+        "Do you think it might be time to replace the dresser?",
+        "Do you think it would be a good idea to book it now?",
+        "Could there be a reason my sourdough keeps failing?",
+        "What should I cook this weekend?",
+        "Any ideas for a birthday present?",
+    )
+    factual = (
+        "When did I buy the NAS device?",
+        "How many bikes did I service in March?",
+        "Which restaurant did I go to last week?",
+        "Did I mention my sister's birthday?",
+    )
+    for question in solicited:
+        assert ADVICE_QUESTION.search(question), question
+    for question in factual:
+        assert not ADVICE_QUESTION.search(question), question
+
+
+def test_the_advice_predicate_covers_the_frozen_preference_set():
+    """The exemption is all-or-nothing per class, in both directions.
+
+    Every preference question solicits an opinion, so any one the predicate
+    misses is an answer the hedge rule is free to overwrite. No abstention
+    question solicits one, so any it matches is a refusal the rules can no
+    longer produce. Pinning both totals against the corpus makes a narrowing
+    or a widening edit fail rather than merely shift a proportion.
+    """
+    import json
+
+    from benchmarks.common.policies import PROTOCOL_ADVICE_QUESTION as ADVICE_QUESTION
+    from benchmarks.longmemeval.evaluate import DATASET
+
+    if not DATASET.exists():
+        pytest.skip("frozen corpus not present")
+    data = json.loads(DATASET.read_text())
+    preference = [q for q in data if q["question_type"] == "single-session-preference"]
+    abstention = [q for q in data if str(q["question_id"]).endswith("_abs")]
+    assert sum(bool(ADVICE_QUESTION.search(q["question"])) for q in preference) == len(preference)
+    assert sum(bool(ADVICE_QUESTION.search(q["question"])) for q in abstention) == 0
 
 
 def test_protocol_families_live_in_the_benchmark_tree_not_the_package():
@@ -1958,3 +1968,26 @@ def test_protocol_families_live_in_the_benchmark_tree_not_the_package():
     # composition, not a second copy: the composed pattern embeds the
     # generic one verbatim, so the two cannot drift apart silently
     assert PROTOCOL_ADVICE_QUESTION.pattern.startswith(ADVICE_QUESTION.pattern)
+
+
+def test_every_library_template_is_fingerprinted_not_only_the_listed_ones():
+    """A score names every prompt it ran under, including the ones added since."""
+    import ast
+    import pathlib
+
+    from benchmarks.common import manifest
+
+    shas = manifest._library_prompt_shas()
+    for module_name in manifest.HASHED_LIBRARY_PROMPTS:
+        source = pathlib.Path("src/" + module_name.replace(".", "/") + ".py")
+        for node in ast.parse(source.read_text()).body:
+            if not isinstance(node, ast.Assign) or not isinstance(node.targets[0], ast.Name):
+                continue
+            value = node.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                if len(value.value) >= manifest._TEMPLATE_FLOOR:
+                    assert f"{module_name}:{node.targets[0].id}" in shas
+
+    # The answer template and the pick between drafts both decide what ships.
+    assert "memoket_kite.prompts.answer:DEFAULT_ANSWER_PROMPT" in shas
+    assert "memoket_kite.prompts.answer:SELF_CONSISTENCY_PICK_PROMPT" in shas

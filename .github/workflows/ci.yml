@@ -4,8 +4,9 @@ on:
   push:
   pull_request:
 
-# Tests and builds only read the repository; a compromised dependency in this
-# job must not be able to write to it.
+# Nothing in this job writes to the repository, so its token cannot either.
+# This bounds what a compromised dependency can PUSH; it still runs with full
+# access to the checkout in the runner.
 permissions:
   contents: read
 
@@ -55,6 +56,12 @@ jobs:
         run: |
           python examples/inspect_codebook.py
           python examples/temporal_reasoning.py
+      # No licensed corpus is available here, so this asserts the gate reports
+      # that rather than reporting clean. The audit itself runs at release
+      # time, where `--require-corpus` makes an absent corpus an error.
+      - name: Corpus-leak gate reports an unread corpus
+        run: python -m benchmarks.tools.leak_check | grep -q "nothing was audited"
+
       - name: Benchmark entrypoint smoke tests
         run: |
           python -m benchmarks.locomo.build --help
@@ -63,6 +70,7 @@ jobs:
           python -m benchmarks.longmemeval.build --help
           python -m benchmarks.longmemeval.evaluate --help
           python -m benchmarks.longmemeval.score --help
+          python -m benchmarks.tools.leak_check --help
       - run: python -m compileall -q src benchmarks examples
       - run: python -m build
       - name: Verify wheel contents

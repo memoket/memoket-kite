@@ -14,34 +14,35 @@ has the same readable stage layout:
 
 ## Benchmark policy layer
 
-A benchmark binding may enable deterministic, gold-blind answer policies that
-belong to the evaluation protocol rather than to the library — the premise
-refusal and the saturated-basis count repair in
-`memoket_kite.pipeline.postproc`. Three rules keep the layer honest:
+A benchmark binding may enable deterministic answer policies that belong to the
+evaluation protocol rather than to the library — the premise and hedge refusals
+in `memoket_kite.pipeline.postproc`. LongMemEval declares both, because it
+contains questions with no answer; LoCoMo declares none, because every question
+there has one and a refusal would be a certain miss. Three rules keep the layer
+honest:
 
-1. **Gold-blind by construction.** A policy reads the question, the answer's
-   own text, and the deterministic verdicts the answer stage recorded — never
-   question ids, gold answers, or judge output.
-2. **Declared, not ambient.** Which policies a binding enables is set in its
-   profile (`POSTPROC_RULES`) and recorded in every run manifest, so a
-   published score always names the policy set that produced it.
+1. **Gold-blind by type.** A policy receives a `PostprocInput` carrying the
+   question, the answer's own text, the recorded verdicts, the advice predicate
+   the deployment runs, and whether a refusal is permitted at all.
+2. **Declared, not ambient.** Which policies a run enables is set in its
+   profile (`POSTPROC_RULES`), overridable by `KITE_POSTPROC`, and recorded in
+   every run manifest. The policy is applied once, inside the answer stage.
 3. **Reported as what they are.** These are protocol-specific policies,
    isolated from the library's own defaults and fingerprinted in every run
    manifest — not universal semantic repairs, and not claimed as such.
 
 ### Question predicates
 
-A binding recognises two question shapes the library's own predicates leave
-narrow: one that asks for a judgement without an explicit speech act ("could
-there be a reason…"), and one that points back at an earlier exchange ("our
-previous conversation", "remind me", "you mentioned"). Both read question text
-only, never an id, a gold answer, or judge output, and both live under
-`benchmarks/` rather than inside the installable package. Each run manifest
-records their digests, so a score always names the predicates it ran under.
+A binding recognises questions that point back at an earlier exchange ("our
+previous conversation", "remind me", "you mentioned"). It reads question text
+only and lives under `benchmarks/` rather than inside the installable package,
+and each run manifest records its digest.
 
 `common/paths.py` contains repository artifact paths. `tools/leak_check.py` is
-the only analysis gate retained in the release tree. Dataset, Codebook, cache,
-and result files always belong under the Git-ignored `artifacts/` directory.
+the only analysis gate retained in the release tree; CI runs it on every push,
+and a benchmark or release run should invoke it with `--require-corpus` so a
+missing corpus fails rather than reporting clean. Dataset, Codebook, cache, and
+result files always belong under the Git-ignored `artifacts/` directory.
 
 ## Pinned datasets
 

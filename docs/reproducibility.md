@@ -68,3 +68,15 @@ python -m benchmarks.longmemeval.score --tag my-run --judge-model gpt-4.1-mini -
 ```
 
 Generated benchmark files remain under the Git-ignored `artifacts/` tree.
+
+## The corpus-leak gate
+
+```bash
+python -m benchmarks.tools.leak_check --require-corpus
+```
+
+The gate reports terms that appear in shipped text and in a small fraction of a
+corpus's documents. It scans every string a binding exports and the library
+modules whose text reaches a reader. A missing corpus is reported as SKIPPED;
+`--require-corpus` makes it an error. Run it with the flag before publishing a
+number.

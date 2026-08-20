@@ -78,6 +78,11 @@ ANSWERING = {
     "HYDRATE": Knob("expand packed rows with their source text"),
     "INFER_PASS": Knob("let a bounded inference pass reconsider a refusal"),
     "INFER_V2": Knob("the revised inference prompt", ARM),
+    "SPEAKER_LABEL": Knob(
+        "name the speaker on a dialogue row and on a quoted source, so a suggestion the "
+        "assistant made is not read as something the user did",
+        ARM,
+    ),
     "DUAL_DATE": Knob(
         "annotate a relative-phrase fact with the session date it was said on, so the "
         "reader does not resolve the phrase a second time",
@@ -187,6 +192,7 @@ BASELINE: dict[str, Any] = {
     "HYDRATE": True,
     "INFER_PASS": False,
     "INFER_V2": False,
+    "SPEAKER_LABEL": False,
     "DUAL_DATE": False,
     "SUPPORT_CHECK": False,
     "SELF_CONSIST": 0,

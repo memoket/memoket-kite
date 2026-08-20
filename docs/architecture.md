@@ -40,10 +40,12 @@ conversation episode
   checking, and bounded recovery.
 - `memoket_kite.pipeline.patterns`: question and answer predicates shared by
   retrieval, answering, and post-processing.
-- `memoket_kite.pipeline.verdicts`: deterministic judgements about a question
-  and its answer (premise gate, under-enumeration audit).
-- `memoket_kite.pipeline.postproc`: deterministic answer rewrites, applied
-  after generation and using no model calls.
+- `memoket_kite.pipeline.verdicts`: the premise gate, a deterministic judgement
+  about whether a question names anything memory has seen.
+- `memoket_kite.pipeline.render`: how a stored line becomes a line of evidence
+  a reader can attribute to a speaker.
+- `memoket_kite.pipeline.postproc`: deterministic answer rewrites, declared by
+  the caller and applied with no model calls. None are enabled by default.
 - `memoket_kite.pipeline.ledger`: per-question accounting of every contributor
   to the answer prompt; observation-only.
 - `memoket_kite.providers.llm`: OpenAI-compatible HTTP model boundary.

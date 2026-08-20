@@ -375,8 +375,8 @@ def test_dual_date_render_annotates_relative_phrases():
         "src": "",
         "text": "Melanie visited Bali last year",
     }
-    plain = _render_evidence_row(row, store, False)
-    dual = _render_evidence_row(row, store, False, dual_date=True)
+    plain = _render_evidence_row(row, store, False, dual_date=False, speaker=False)
+    dual = _render_evidence_row(row, store, False, dual_date=True, speaker=False)
     assert "said 2023-01-10" not in plain
     assert "said 2023-01-10" in dual
 

@@ -96,7 +96,7 @@ def evaluate_sample(
     output: Path,
     resume: bool,
     plan_cache: Path | None,
-    rules: frozenset[str],
+    policy: postproc.PostprocPolicy,
 ) -> list[str]:
     """Evaluate one LoCoMo sample and return failed question identifiers."""
     if output.exists() and not resume:
@@ -128,6 +128,7 @@ def evaluate_sample(
                 model=model,
                 answer_model=answer_model,
                 plan_cache=str(plan_cache) if plan_cache else None,
+                postproc_policy=policy,
             )
             record = {
                 "qa_idx": index,
@@ -139,22 +140,13 @@ def evaluate_sample(
                 "memories_text": _render_memories(_result_rows(result, store), store),
                 "pack_src": result.get("pack_src", []),
                 "telemetry": result.get("telemetry"),
-                "answerable_by_construction": bool(
-                    getattr(profile, "ANSWERABLE_BY_CONSTRUCTION", None)
-                    and profile.ANSWERABLE_BY_CONSTRUCTION(question["question"])
-                ),
             }
-            if rules:
-                rewritten, fired = postproc.apply_to_record(
-                    record,
-                    result.get("telemetry"),
-                    rules,
-                    advice=getattr(profile, "ADVICE_QUESTION", None),
-                )
-                if fired:
-                    record["answer_pre_postproc"] = record["answer"]
-                    record["answer"] = rewritten
-                    record["postproc"] = fired
+            # The answerability verdict and any post-processing are the answer
+            # stage's; it is the only place either is decided, so the harness
+            # copies the record it left rather than asking a second time.
+            for key in ("answerable_by_construction", "answer_pre_postproc", "postproc"):
+                if key in result:
+                    record[key] = result[key]
         except Exception as exc:
             with lock:
                 failures.append(f"{sample_id}:{index}: {exc}")
@@ -186,8 +178,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(error))
     # Resolve the rule set first: a typo must cost nothing, not surface after
     # every question has already been answered.
-    rules = postproc.rules_from_env(
-        os.environ.get("KITE_POSTPROC") or getattr(profile, "POSTPROC_RULES", "")
+    policy = postproc.PostprocPolicy.resolve(
+        getattr(profile, "POSTPROC_RULES", ""), os.environ.get("KITE_POSTPROC")
     )
     # The pipeline refuses an estimated tokenizer with a library error; a CLI
     # surfaces that as a clean exit before any question is paid for.
@@ -254,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
                     output=result_dir / f"results_{sample['sample_id']}.jsonl",
                     resume=args.resume,
                     plan_cache=args.plan_cache.resolve() if args.plan_cache else None,
-                    rules=rules,
+                    policy=policy,
                 )
             )
         # The run has stopped compiling; the cache on disk is now what the

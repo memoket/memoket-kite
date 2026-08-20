@@ -268,8 +268,12 @@ def test_tokencap_packs_short_rows_deeper_and_stops_at_cap():
         }
         for i in range(30)
     ]
-    packed_short = _select_evidence_rows_tokencap([], short, store, cap=400, unit_cap=5)
-    packed_long = _select_evidence_rows_tokencap([], long_rows, store, cap=400, unit_cap=5)
+    packed_short = _select_evidence_rows_tokencap(
+        [], short, store, cap=400, unit_cap=5, speaker=False
+    )
+    packed_long = _select_evidence_rows_tokencap(
+        [], long_rows, store, cap=400, unit_cap=5, speaker=False
+    )
     assert len(packed_short) > len(packed_long)  # short rows: more evidence per token
     assert len(packed_long) >= 1
 
@@ -290,5 +294,5 @@ def test_tokencap_bound_rows_exempt_but_seed_truncated():
         }
         for i in range(50)
     ]
-    packed = _select_evidence_rows_tokencap(bound, [], store, cap=100, unit_cap=5)
+    packed = _select_evidence_rows_tokencap(bound, [], store, cap=100, unit_cap=5, speaker=False)
     assert len(packed) == 40  # exempt from cap, truncated at seed cap 40

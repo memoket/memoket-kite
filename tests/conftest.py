@@ -178,3 +178,19 @@ def _no_provider(request, monkeypatch):
         raise _Reached(f"this test opened a socket to {host}")
 
     monkeypatch.setattr(socket.socket, "connect", guarded)
+
+
+@pytest.fixture(autouse=True)
+def _untracked_files_are_the_runs_problem(monkeypatch):
+    """A stray scratch file in the developer's checkout is not a test failure.
+
+    `manifest.write` refuses to start a run in a tree holding untracked files,
+    because the patch it stores next to a score covers tracked files only. That
+    is a statement about the tree a RUN is measured on, not about the tree a
+    unit test happens to execute in, so tests get an empty answer by default.
+    `tests/unit/test_manifest_provenance.py` builds a repository of its own and
+    restores the real reader to exercise it.
+    """
+    from benchmarks.common import manifest
+
+    monkeypatch.setattr(manifest, "untracked_files", lambda: ())

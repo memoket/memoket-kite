@@ -29,6 +29,9 @@ _SETTINGS = settings.resolve(
     TOPIC_REFINEMENT=True,
     # Sessions carry a question date and state times relatively, so a fact keeps
     # the date it was said on beside its resolved event date.
+    # A user reports what they did; an assistant proposes what they might. The
+    # two are the same sentence shape, so the rows say who spoke.
+    SPEAKER_LABEL=True,
     DUAL_DATE=True,
     # 500 haystacks of ~115k tokens: counting questions need a wider slice, and
     # the pack is admitted up to a larger size.
@@ -314,10 +317,12 @@ _BACKREFERENCE = re.compile(
 
 
 def ANSWERABLE_BY_CONSTRUCTION(question: str) -> bool:
+    """Whether the question's own wording points at stored history."""
     return bool(_BACKREFERENCE.search(question) or _ADVICE_QUESTION.search(question))
 
 
-# Deterministic post-processing rules applied to the generated answer; see
-# memoket_kite.pipeline.postproc. The refusal rules self-disable where the
-# binding declares its questions answerable by construction.
-POSTPROC_RULES = "premise,hedge,undercount,zero"
+# Deterministic post-processing applied to the generated answer; see
+# memoket_kite.pipeline.postproc. Both rules replace an answer with the
+# canonical refusal, and both stand down where a question is answerable by
+# construction. Recorded in every run manifest.
+POSTPROC_RULES = "premise,hedge"
