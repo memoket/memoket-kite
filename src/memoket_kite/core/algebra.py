@@ -889,10 +889,12 @@ def execute(
                 pooled[f"U::{u.id}"] = max(pooled.get(f"U::{u.id}", 0), 1.0)
             continue
         if sq.select == "lines":
-            ids = set(store.lines)
             w = sq.where
             if w.units:
-                ids = {i for i in ids if store.lines[i].unit in w.units}
+                # Bound stages only need lines from their selected sessions.
+                ids = {i for unit in w.units for i in store.lines_by_unit.get(unit, ())}
+            else:
+                ids = set(store.lines)
             if w.who:
                 ids = {i for i in ids if store.lines[i].who in w.who}
             lo, hi = w.time
