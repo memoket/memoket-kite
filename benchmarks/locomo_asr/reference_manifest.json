@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "dataset": "LoCoMo-ASR",
+  "dataset_version": "1.0.0",
+  "release": "reference-v1",
+  "migration_provenance": {
+    "staging_commit": "afe164d0c5e9c5379a9877991ab34ee8af11f872",
+    "note": "The frozen snapshot was copied into memoket-kite without importing the staging repository history."
+  },
+  "upstream": {
+    "repository": "https://github.com/snap-research/locomo",
+    "commit": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376",
+    "source_file": "data/locomo10.json",
+    "source_sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4",
+    "license": "CC BY-NC 4.0"
+  },
+  "pipeline": {
+    "tts": "Piper en_US-lessac-medium / en_US-ryan-medium",
+    "room_simulation": "pyroomacoustics, RT60 0.4 seconds, 6 random rooms",
+    "noise": "MUSAN speech, 60 clips, 6 talkers per clip, 8 seconds",
+    "asr": "Whisper base.en",
+    "sample_rate_hz": 16000,
+    "seed": 42,
+    "snr_db": [8, 7, 6, 5, 4, 3, 2]
+  },
+  "verified_equivalent_voice_source": {
+    "repository": "https://huggingface.co/rhasspy/piper-voices",
+    "tag": "v1.0.0",
+    "commit": "375a0fe641dea077c2a47b4e9a056d6da521eed3",
+    "verification": "All four reference voice asset hashes match this immutable revision; the original download revision was not recorded.",
+    "model_cards": {
+      "en_US-lessac-medium": {
+        "path": "en/en_US/lessac/medium/MODEL_CARD",
+        "sha256": "ce49eb457742208166d399a40cdec2c7fa9db77960930031564ab56f12882645"
+      },
+      "en_US-ryan-medium": {
+        "path": "en/en_US/ryan/medium/MODEL_CARD",
+        "sha256": "3a24ae5f7aa856199f338ad9af784cda796734f397f7e1b4a1bd3c07d06945b1"
+      }
+    }
+  },
+  "reference_assets": {
+    "en_US-lessac-medium.onnx": "5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f",
+    "en_US-lessac-medium.onnx.json": "efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0",
+    "en_US-ryan-medium.onnx": "abf4c274862564ed647ba0d2c47f8ee7c9b717d27bdad9219100eb310db4047a",
+    "en_US-ryan-medium.onnx.json": "44034c056cb15681b2ad494307c7f3f2e4499d1253c700c711fa0a4607ffe78d",
+    "whisper_base_en_checkpoint": "25a8566e1d0c1e2231d1c762132cd20e0f96a85d16145c3a00adf5d1ac670ead"
+  },
+  "counts": {
+    "conversations": 10,
+    "turns": 5882,
+    "questions": 1986
+  },
+  "outputs": {
+    "locomo10-clean-asr-view.json": {
+      "sha256": "b7ebf8cf34dc4891ee7f9bcef01f1e3b3c5df273028b4bb951eaa9fb493ce6a5",
+      "mean_wer": 0.0
+    },
+    "locomo10-asr-musan-full-snr8.json": {
+      "sha256": "3ee2de16d24be938dbf2b6171168e30a71335d45b97b56bda64f94ab266b5b59",
+      "mean_wer": 0.12407992179530767
+    },
+    "locomo10-asr-musan-full-snr7.json": {
+      "sha256": "c3aa72de02a03bda7e26d0408ec9c61f6c1c257278d1545a5b425c012519c503",
+      "mean_wer": 0.15124155049302805
+    },
+    "locomo10-asr-musan-full-snr6.json": {
+      "sha256": "199220c1b07224415fe17301a7a1686a43eab740958ef757fa5a26c96566212d",
+      "mean_wer": 0.1887759775586539
+    },
+    "locomo10-asr-musan-full-snr5.json": {
+      "sha256": "b779203b52d9d8ccd609b52b35999522a838eedddff11d8e056cb4314a8521c2",
+      "mean_wer": 0.23919564773886422
+    },
+    "locomo10-asr-musan-full-snr4.json": {
+      "sha256": "2c33d3d0a2acd85a12c460a9092a2a56cd62ba2186fd24eef1d8297209cc8ba3",
+      "mean_wer": 0.3049569874192387
+    },
+    "locomo10-asr-musan-full-snr3.json": {
+      "sha256": "9233f76691580069c7fec79b2a78caf8c892bef89dae0e7cf6c4c6e5d1292d81",
+      "mean_wer": 0.38838007480448994
+    },
+    "locomo10-asr-musan-full-snr2.json": {
+      "sha256": "9e9d5e31c7bf4634ecac0efa7b1bf167dd9dbce003247bddf5a56459c841c3a8",
+      "mean_wer": 0.48939299557973887
+    }
+  }
+}

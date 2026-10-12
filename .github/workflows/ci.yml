@@ -71,19 +71,34 @@ jobs:
           python -m benchmarks.longmemeval.evaluate --help
           python -m benchmarks.longmemeval.score --help
           python -m benchmarks.tools.leak_check --help
+      - name: Validate the frozen LoCoMo-ASR release
+        if: matrix.python-version == '3.12'
+        run: python -m benchmarks.locomo_asr.validate --require-reference-hashes
       - run: python -m compileall -q src benchmarks examples
       - run: python -m build
-      - name: Verify wheel contents
+      - name: Verify distribution contents
         run: |
           python - <<'PY'
           import glob
+          import tarfile
           import zipfile
 
-          wheel = glob.glob("dist/*.whl")[0]
+          wheels = glob.glob("dist/*.whl")
+          sdists = glob.glob("dist/*.tar.gz")
+          assert len(wheels) == 1, wheels
+          assert len(sdists) == 1, sdists
+          wheel = wheels[0]
           names = zipfile.ZipFile(wheel).namelist()
           assert any(name.startswith("memoket_kite/") for name in names)
           forbidden = ("benchmarks/", "research/", "artifacts/", "examples/")
           assert not any(name.startswith(forbidden) for name in names)
+          with tarfile.open(sdists[0]) as archive:
+              sdist_names = [
+                  name.partition("/")[2]
+                  for name in archive.getnames()
+                  if "/" in name
+              ]
+          assert not any(name.startswith(forbidden) for name in sdist_names)
           PY
       - name: Install the wheel where the source tree cannot shadow it
         run: |
