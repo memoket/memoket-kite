@@ -566,17 +566,21 @@ def _lexical_scores_v2(
     )
     if not stems:
         return []
-    candidates: dict[tuple, set[str]] = {}
+    # Postings are document indices; decode a key only for the rows we score.
+    candidates: dict[int, list[str]] = {}
     for stem in stems:
-        for key in store.by_token.get(stem, ()):
-            candidates.setdefault(key, set()).add(stem)
+        posting = store.by_token.get(stem, None)
+        if posting is None:
+            continue
+        for doc in posting.indices():
+            candidates.setdefault(doc, []).append(stem)
     if not candidates:
         return []
     average_tokens = store.avg_doc_tokens() or 1.0
     scored = []
-    for key, matched in candidates.items():
-        doc_tokens = store._doc_tokens.get(key, 0)
-        length_norm = 0.75 + 0.25 * (doc_tokens / average_tokens)
+    for doc, matched in candidates.items():
+        key = store.doc_key(doc)
+        length_norm = 0.75 + 0.25 * (store.doc_tokens_at(doc) / average_tokens)
         score = sum(store.idf(stem) for stem in matched) / length_norm
         row_type = "fact" if key[0] == "F" else "line"
         scored.append((score, row_type, key[1]))

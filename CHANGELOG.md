@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### A smaller lexical index
+
+- Token postings hold document indices (`array('I')`) instead of a Python set
+  of `("F", id)` tuples per token, and tokens are interned once per store. A
+  20k-fact / 2.4k-line codebook loads into ~75 MB instead of ~206 MB
+  (tracemalloc), with the lexical channel returning byte-identical rankings.
+- `Store.by_token` keeps its reading contract (`get(stem, ())`, `len`,
+  iteration yields the same keys) as a lazy view; `_doc_tokens` stays as a
+  back-compat view. New: `Store.doc_key(i)`, `Store.doc_tokens_at(i)`, and
+  `posting.indices()` for callers that want to skip decoding.
+- Per-fact term sets are no longer materialized at load; `fact_specificity`
+  computes them on demand for the facts that reach a ranking pass.
+
 ### A single answer exit, and two declared refusal rules
 
 - The post-processing stage provides two rules, `premise` and `hedge`; the

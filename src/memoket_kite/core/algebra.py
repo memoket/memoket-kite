@@ -15,8 +15,10 @@ import math
 import re
 import time as _time
 import xml.etree.ElementTree as ET
+from array import array
 from dataclasses import dataclass, field, replace
 from datetime import date as _date
+from sys import intern
 
 from memoket_kite.core.vocab import Vocab, norm_code
 
@@ -29,6 +31,89 @@ def _tokens(text: str) -> list[str]:
     for run in re.findall(r"[一-鿿]{2,}", text):
         out += [run[i : i + 2] for i in range(len(run) - 1)]
     return out
+
+
+class _Posting:
+    """One token's posting list, decoded on demand into ``("F", fact_id)`` /
+    ``("L", line_id)`` keys. Holds a document-index array, not a set of tuples."""
+
+    __slots__ = ("_keys", "_docs")
+
+    def __init__(self, keys: list, docs: array):
+        self._keys = keys
+        self._docs = docs
+
+    def __len__(self) -> int:
+        return len(self._docs)
+
+    def __iter__(self):
+        keys = self._keys
+        return (keys[i] for i in self._docs)
+
+    def __contains__(self, key) -> bool:
+        return any(self._keys[i] == key for i in self._docs)
+
+    def __bool__(self) -> bool:
+        return len(self._docs) > 0
+
+    def indices(self) -> array:
+        """Document indices (``Store.doc_key`` / ``Store.doc_tokens_at`` decode them)."""
+        return self._docs
+
+
+class _Postings:
+    """Read-only mapping view over the token index: ``store.by_token.get(stem, ())``
+    keeps working, but the values are decoded lazily instead of being 145k sets."""
+
+    __slots__ = ("_store",)
+
+    def __init__(self, store: "Store"):
+        self._store = store
+
+    def get(self, token: str, default=()):
+        docs = self._store._postings.get(token)
+        return default if docs is None else _Posting(self._store._doc_keys, docs)
+
+    def __getitem__(self, token: str) -> _Posting:
+        return _Posting(self._store._doc_keys, self._store._postings[token])
+
+    def __contains__(self, token) -> bool:
+        return token in self._store._postings
+
+    def __len__(self) -> int:
+        return len(self._store._postings)
+
+    def __iter__(self):
+        return iter(self._store._postings)
+
+    def keys(self):
+        return self._store._postings.keys()
+
+    def items(self):
+        keys = self._store._doc_keys
+        return ((tok, _Posting(keys, docs)) for tok, docs in self._store._postings.items())
+
+
+class _DocTokens:
+    """Back-compat view of the old ``_doc_tokens`` dict: key -> token count."""
+
+    __slots__ = ("_store",)
+
+    def __init__(self, store: "Store"):
+        self._store = store
+
+    def get(self, key, default=0):
+        i = self._store._doc_index_of(key)
+        return default if i is None else self._store._doc_len[i]
+
+    def __getitem__(self, key):
+        i = self._store._doc_index_of(key)
+        if i is None:
+            raise KeyError(key)
+        return self._store._doc_len[i]
+
+    def __len__(self) -> int:
+        return len(self._store._doc_len)
 
 
 @dataclass
@@ -119,9 +204,17 @@ class Store:
         self._fact_terms: dict[str, frozenset[str]] = {}
         self._fact_specificity: dict[str, float] = {}
         # Token postings power the deterministic lexical channel without a
-        # corpus scan. Keys are ("F", fact_id) / ("L", line_id).
-        self.by_token: dict[str, set] = {}
-        self._doc_tokens: dict[tuple, int] = {}
+        # corpus scan. A document is a fact or a line; it gets a small integer
+        # index at load time and ``_doc_keys[i]`` is its ("F", fact_id) /
+        # ("L", line_id) key. Postings are ``array('I')`` of those indices —
+        # a 20k-fact codebook used to hold 145k Python sets of tuples here
+        # (~90 MB, half the loaded index); arrays of ints are ~10x smaller.
+        self._postings: dict[str, array] = {}
+        self._doc_keys: list[tuple] = []
+        self._doc_len: array = array("I")
+        self._doc_index: dict[tuple, int] | None = None  # built lazily, back-compat only
+        self.by_token = _Postings(self)
+        self._doc_tokens = _DocTokens(self)
         self._total_tokens: int = 0
         self._scoring_fp_memo: tuple | None = None  # compile_plan memoization
 
@@ -129,19 +222,45 @@ class Store:
     def _index_text(self, text: str, key: tuple | None = None):
         self._ndocs += 1
         toks = _tokens(text)
-        for tok in set(toks):
-            self._df[tok] = self._df.get(tok, 0) + 1
-            if key is not None:
-                self.by_token.setdefault(tok, set()).add(key)
+        doc = -1
         if key is not None:
-            self._doc_tokens[key] = len(toks)
+            doc = len(self._doc_keys)
+            self._doc_keys.append(key)
+            self._doc_len.append(len(toks))
+            self._doc_index = None
             self._total_tokens += len(toks)
+        postings = self._postings
+        df = self._df
+        for tok in set(toks):
+            # Tokens are sliced out of the text, so every document held its own
+            # copy of the same bigram; interning keeps one string per token.
+            tok = intern(tok)
+            df[tok] = df.get(tok, 0) + 1
+            if doc >= 0:
+                lst = postings.get(tok)
+                if lst is None:
+                    postings[tok] = array("I", (doc,))
+                else:
+                    lst.append(doc)
         # Every added document changes IDF. Specificity is evaluated lazily, so
         # loading remains linear and only facts that reach a ranking pass pay it.
         self._fact_specificity.clear()
 
     def avg_doc_tokens(self) -> float:
-        return self._total_tokens / max(1, len(self._doc_tokens))
+        return self._total_tokens / max(1, len(self._doc_len))
+
+    def doc_key(self, index: int) -> tuple:
+        """The ("F", fact_id) / ("L", line_id) key of document ``index``."""
+        return self._doc_keys[index]
+
+    def doc_tokens_at(self, index: int) -> int:
+        """Token count of document ``index`` (BM25 length norm)."""
+        return self._doc_len[index]
+
+    def _doc_index_of(self, key: tuple) -> int | None:
+        if self._doc_index is None:
+            self._doc_index = {k: i for i, k in enumerate(self._doc_keys)}
+        return self._doc_index.get(key)
 
     def idf(self, term: str) -> float:
 
@@ -345,7 +464,8 @@ class Store:
 
         for fact in facts:
             if self.add_fact(fact):
-                self._fact_terms[fact.id] = frozenset(_tokens(fact.text))
+                # Term sets are only needed by ``fact_specificity`` for the few
+                # facts that reach a ranking pass; it computes them on demand.
                 self._index_text(fact.text, key=("F", fact.id))
         for line in lines:
             existing_line = self.lines.get(line.id)
