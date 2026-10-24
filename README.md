@@ -253,8 +253,17 @@ the benchmark corpora keep their own licences, spelled out in
 ## 🔗 Integrations
 
 KITE by Memoket is a plain Python library: three calls take you from a raw conversation
-to a cited answer. Integrations across the agent ecosystem (Claude Code, Codex,
-Cursor, OpenCode, and more) are next on the roadmap.
+to a cited answer. The optional [local MCP server](docs/mcp.md) exposes those calls
+to Claude Code over stdio, with source IDs and dates attached to evidence:
+
+```bash
+python -m pip install "memoket-kite[mcp]"
+kite-mcp --memory ./artifacts/memory.xml
+```
+
+Use an existing writable KITE XML file. Follow the [Claude Code example](docs/mcp.md)
+for setup and a two-conversation temporal update from Tokyo to Berlin.
+Normal library installation remains dependency-free.
 
 Want yours first? [Tell us on Discord](https://discord.com/invite/tFh4nur4Vn).
 

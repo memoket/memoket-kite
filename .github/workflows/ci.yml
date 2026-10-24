@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: python -m pip install -e ".[dev,benchmark]"
+      - run: python -m pip install -e ".[dev,benchmark,mcp]"
       - run: ruff check .
       - run: ruff format --check .
       - name: Import modules without side effects
@@ -36,6 +36,7 @@ jobs:
           before = dict(os.environ)
           modules = [
               "memoket_kite",
+              "memoket_kite.mcp.server",
               "benchmarks.locomo.build",
               "benchmarks.locomo.evaluate",
               "benchmarks.locomo.score",

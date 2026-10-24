@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Local MCP integration
+
+- Add the optional `mcp` extra and `kite-mcp --memory PATH` stdio server for
+  one local writable XML memory, using the existing public Memory API.
+- Expose `kite_remember`, `kite_recall`, and `kite_answer` with source IDs,
+  dates, roles, and original source content in returned facts/evidence.
+- Document Claude Code setup and a Tokyo-to-Berlin temporal correction example,
+  covered by deterministic offline tests without changing retrieval behavior.
+
 ### A single answer exit, and two declared refusal rules
 
 - The post-processing stage provides two rules, `premise` and `hedge`; the

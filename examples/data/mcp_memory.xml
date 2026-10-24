@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Synthetic empty seed for the Claude Code example; copy to artifacts before writing. -->
+<codebook id="mcp-memory">
+  <vocab>
+    <topic code="activities" status="canonical" parents="" born="" />
+    <topic code="people" status="canonical" parents="" born="" />
+    <topic code="places" status="canonical" parents="" born="" />
+    <topic code="work" status="canonical" parents="" born="" />
+    <topic code="preferences" status="canonical" parents="" born="" />
+  </vocab>
+  <timeline />
+</codebook>
