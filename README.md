@@ -20,6 +20,13 @@ Open-source and vector-free, KITE achieves **🥇 93.51% on LoCoMo and 🥇 85.6
   <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/kite-architecture-flow.png" width="100%" alt="KITE at a glance: conversations become source-linked memory facts, memory settles under a governed topic map, a question compiles to an inspectable plan, and the answer arrives with receipts.">
 </p>
 
+<a id="news"></a>
+
+## 📢 News
+
+- **[2026-10-26]**: 🎬 Released an **[explainer video](#video)** of how KITE works, from a message to a cited answer.
+- **[2026-08-13]**: 🎉 First public release: **[KITE v0.1.0](https://github.com/memoket/memoket-kite/releases/tag/v0.1.0)** is open source under Apache-2.0 and on **[PyPI](https://pypi.org/project/memoket-kite/)** as `memoket-kite`.
+
 ## 💡 Why KITE by Memoket
 
 Most AI memory turns every sentence into a cloud of numbers and hands back whatever
@@ -56,6 +63,10 @@ KITE by Memoket reads what a question means, not how it sounds.
 
 The whole idea in one line: **conversations settle into facts under topics, and a
 question finds its topic and pulls that topic's memories, receipts included.**
+
+<a id="video"></a>
+
+https://github.com/user-attachments/assets/a5c053fb-36de-4eeb-8d2d-d652792314f4
 
 #### 1 · Message → Fact
 
