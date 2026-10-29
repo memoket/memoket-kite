@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import date
 
 from memoket_kite.core.algebra import execute_plan, fact_row, line_row
 from memoket_kite.pipeline import ledger
@@ -47,8 +48,10 @@ _GREP_MODIFIERS = {
     "other",
     "another",
 }
+# CJK characters are word characters, so the CJK markers match without \b.
 _DIRECTIONAL_TIME = re.compile(
-    r"\b(after|before|since|until|between|ago|passed|lapsed|之前|之后|以来)\b",
+    r"\b(after|before|since|until|between|ago|passed|lapsed)\b"
+    r"|之前|之后|之後|以前|以后|以後|以降|以来|以來",
     re.I,
 )
 _PLAN_SCORER_SCHEMA = "symbolic-execution-v1"
@@ -306,6 +309,12 @@ def _extract_question_anchors(question: str, speakers) -> QuestionAnchors:
                 f"{month_first.group(3)}-{_MONTHS[month_first.group(1).lower()]:02d}-"
                 f"{int(month_first.group(2)):02d}"
             )
+    if day:
+        # A day anchor must be a real calendar date; int() also reads full-width digits.
+        try:
+            day = date(*map(int, day.split("-"))).isoformat()
+        except ValueError:
+            day = ""
 
     month = ""
     month_match = re.search(r"\b([A-Za-z]+)\s+(\d{4})", question)

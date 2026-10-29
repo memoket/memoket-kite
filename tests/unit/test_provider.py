@@ -16,6 +16,20 @@ def test_provider_preflight_requires_the_standard_api_key(monkeypatch):
     ensure_configured("gpt-4.1-mini")
 
 
+def test_provider_reads_the_api_key_without_surrounding_whitespace(monkeypatch):
+    from memoket_kite.providers.llm import _resolve_provider
+
+    monkeypatch.setenv("OPENAI_API_KEY", " test-key\r\n")
+    assert _resolve_provider("gpt-4.1-mini")[1] == "test-key"
+
+
+def test_provider_preflight_rejects_a_multi_line_api_key_without_echoing_it(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-one\ntest-key-two")
+    with pytest.raises(RuntimeError, match="single line") as raised:
+        ensure_configured("gpt-4.1-mini")
+    assert "test-key" not in str(raised.value)
+
+
 def test_model_uses_the_openai_compatible_http_provider(monkeypatch):
     monkeypatch.setattr("memoket_kite.providers.llm._http_llm", lambda *args: "ok")
     assert llm("test prompt", model="gpt-4.1-mini") == "ok"

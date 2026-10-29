@@ -17,8 +17,11 @@ def ensure_configured(model: str = "gpt-4.1-mini") -> None:
     """
     if not str(model or "").strip():
         raise ProviderError("model cannot be empty")
-    if not os.environ.get("OPENAI_API_KEY", "").strip():
+    key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not key:
         raise ProviderError("OPENAI_API_KEY is required for this operation")
+    if "\r" in key or "\n" in key:
+        raise ProviderError("OPENAI_API_KEY must be a single line")
 
 
 def _resolve_provider(model: str) -> tuple[str, str, str]:
@@ -26,7 +29,7 @@ def _resolve_provider(model: str) -> tuple[str, str, str]:
     ensure_configured(model)
     return (
         os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
-        os.environ["OPENAI_API_KEY"],
+        os.environ["OPENAI_API_KEY"].strip(),
         model,
     )
 

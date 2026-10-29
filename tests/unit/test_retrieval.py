@@ -445,3 +445,43 @@ def test_a_single_endpoint_time_window_is_tolerated():
     queries = [{"select": "facts", "where": {"time": ["2023-05"]}}]
     _normalize_time_filters(queries, "What happened in May?", QuestionAnchors(month="2023-05"))
     assert queries[0]["where"]["time"] == ["2023-05", "2023-05"]
+
+
+def test_a_day_anchor_is_a_real_calendar_date():
+    """The day anchor becomes a plan time filter, so it is always a valid date.
+
+    Full-width digits are read by value; a date that does not exist on the
+    calendar gives no day anchor.
+    """
+    from memoket_kite.pipeline.retrieve import _extract_question_anchors
+
+    def day(question):
+        return _extract_question_anchors(question, []).day
+
+    assert day("What did Alice plan on October 18, 2026?") == "2026-10-18"
+    assert day("２０２６年１月１０日にアリスは何を計画しましたか？") == "2026-01-10"
+    assert day("What did Alice plan on September 31, 2026?") == ""
+    assert day("What did Alice plan on 2026-02-30?") == ""
+    assert day("What happened with order 4521-33-90?") == ""
+
+
+def test_cjk_directional_questions_are_not_pinned_to_the_anchor_day():
+    """A question about the time before, after, or since a date keeps an open window."""
+    from memoket_kite.pipeline.retrieve import QuestionAnchors, _normalize_time_filters
+
+    for question in (
+        "2026年1月10日之后Alice计划了什么？",
+        "2026年1月10日之前Alice计划了什么？",
+        "2026年1月10日以后Alice计划了什么？",
+        "自2026年1月10日以来Alice做了什么？",
+        "２０２６年１月１０日以降にアリスは何をしましたか？",
+    ):
+        queries = [{"select": "facts", "where": {}}]
+        _normalize_time_filters(queries, question, QuestionAnchors(day="2026-01-10"))
+        assert "time" not in queries[0]["where"], question
+
+    queries = [{"select": "facts", "where": {}}]
+    _normalize_time_filters(
+        queries, "2026年1月10日Alice计划了什么？", QuestionAnchors(day="2026-01-10")
+    )
+    assert queries[0]["where"]["time"] == ["2026-01-10", "2026-01-10"]
