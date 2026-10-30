@@ -312,6 +312,32 @@ def test_cli_runs_only_stdio(memory_path, monkeypatch):
     server.run.assert_called_once_with(transport="stdio")
 
 
+@pytest.mark.parametrize(
+    "models",
+    [
+        {},
+        {"model": "gpt-4.1-mini"},
+        {"answer_model": "gpt-4.1"},
+        {"model": "gpt-4.1-mini", "answer_model": "gpt-4.1"},
+    ],
+)
+def test_cli_forwards_only_supplied_models_to_memory_load(memory_path, monkeypatch, capsys, models):
+    load = Mock(return_value=Mock(spec=Memory))
+    run = Mock()
+    monkeypatch.setattr(Memory, "load", load)
+    monkeypatch.setattr("mcp.server.MCPServer.run", run)
+    arguments = ["--memory", str(memory_path)]
+    for key, value in models.items():
+        arguments.extend(["--" + key.replace("_", "-"), value])
+
+    main(arguments)
+
+    load.assert_called_once_with(memory_path.resolve(), **models)
+    run.assert_called_once_with(transport="stdio")
+    output = capsys.readouterr()
+    assert output.out == output.err == ""
+
+
 def test_missing_optional_sdk_has_an_actionable_error(memory_path, monkeypatch):
     real_import = builtins.__import__
 
