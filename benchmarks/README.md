@@ -12,6 +12,10 @@ has the same readable stage layout:
 | `evaluate.py` | Answer benchmark questions, with explicit resume support |
 | `score.py` | Judge results or recompute an existing judged run offline |
 
+[`locomo_asr/`](locomo_asr/README.md) is a dataset-only benchmark release with
+frozen JSON data, a strict loader, validation, and generation source. It does
+not yet provide KITE `build`, `evaluate`, or `score` bindings or ASR results.
+
 ## Benchmark policy layer
 
 A benchmark binding may enable deterministic answer policies that belong to the
@@ -41,13 +45,17 @@ and each run manifest records its digest.
 `common/paths.py` contains repository artifact paths. `tools/leak_check.py` is
 the only analysis gate retained in the release tree; CI runs it on every push,
 and a benchmark or release run should invoke it with `--require-corpus` so a
-missing corpus fails rather than reporting clean. Dataset, Codebook, cache, and
-result files always belong under the Git-ignored `artifacts/` directory.
+missing corpus fails rather than reporting clean. Generated or downloaded
+datasets, Codebooks, caches, and results belong under the Git-ignored
+`artifacts/` directory. The versioned LoCoMo-ASR release under
+`locomo_asr/data/` is the documented redistribution exception.
 
 ## Pinned datasets
 
 - **LoCoMo:** the ten-conversation `data/locomo10.json` release.
 - **LongMemEval:** the current official `longmemeval_s_cleaned.json` release.
+- **LoCoMo-ASR v1.0.0:** one clean view and seven SNR 8 through 2 ASR tiers,
+  committed under [`locomo_asr/data/`](locomo_asr/data/) with exact hashes.
 
 Exact upstream revisions, download URLs, and SHA256 values are recorded in
 [`reproduce/manifest.json`](reproduce/manifest.json). Download and verify both:

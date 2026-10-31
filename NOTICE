@@ -16,9 +16,9 @@ specific language governing permissions and limitations under the License.
 
 --------------------------------------------------------------------------------
 
-The benchmark corpora this repository evaluates against are third-party works
-under their own licences, and are not redistributed here. Their terms, copyright
-holders and full licence texts are recorded in LICENSE-DATA.md.
+Benchmark data may include third-party works under their own licences. Applicable
+terms, copyright holders, redistribution status, and full licence texts are
+recorded in LICENSE-DATA.md.
 
 Brand assets under assets/ are excluded from the Apache-2.0 grant; see the same
 file.

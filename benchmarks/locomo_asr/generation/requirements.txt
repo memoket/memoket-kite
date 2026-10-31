@@ -1,0 +1,6 @@
+numpy==2.4.2
+scipy==1.17.1
+piper-tts==1.4.2
+pyroomacoustics==0.10.1
+openai-whisper==20250625
+torch==2.10.0
