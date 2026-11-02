@@ -24,6 +24,7 @@ Open-source and vector-free, KITE achieves **🥇 93.51% on LoCoMo and 🥇 85.6
 
 ## 📢 News
 
+- **[2026-11-02]**: 📄 Our paper **[KITE: Retrieval as a Decision Procedure for Long-Term Conversational Memory](https://arxiv.org/abs/2610.41521)** is now on arXiv.
 - **[2026-10-26]**: 🎬 Released an **[explainer video](#video)** of how KITE works, from a message to a cited answer.
 - **[2026-08-13]**: 🎉 First public release: **[KITE v0.1.0](https://github.com/memoket/memoket-kite/releases/tag/v0.1.0)** is open source under Apache-2.0 and on **[PyPI](https://pypi.org/project/memoket-kite/)** as `memoket-kite`.
 
