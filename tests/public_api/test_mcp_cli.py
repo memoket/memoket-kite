@@ -55,15 +55,26 @@ def diagnostics_only(monkeypatch):
         (["--model", "gpt-4.1-mini", "--answer-model", "gpt-4.1"], "gpt-4.1-mini", "gpt-4.1"),
     ],
 )
+@pytest.mark.parametrize("read_only", [False, True])
 def test_check_reports_path_and_models(
-    memory_path, capsys, diagnostics_only, arguments, model, answer_model
+    memory_path, capsys, diagnostics_only, arguments, model, answer_model, read_only
 ):
     original = memory_path.read_bytes()
-    server.main(["--memory", str(memory_path), *arguments, "--check"])
+    server.main(
+        [
+            "--memory",
+            str(memory_path),
+            *arguments,
+            *(["--read-only"] if read_only else []),
+            "--check",
+        ]
+    )
     output = capsys.readouterr()
     assert "KITE MCP configuration" in output.out
     assert f"Memory: {memory_path}" in output.out
-    assert "Memory status: exists, readable, writable (parent writable)" in output.out
+    assert f"\nMode: {'read-only' if read_only else 'read-write'}\n" in output.out
+    status = "exists, readable" if read_only else "exists, readable, writable (parent writable)"
+    assert f"\nMemory status: {status}\n" in output.out
     assert f"\nModel: {model}\n" in output.out
     assert f"\nAnswer model: {answer_model}\n" in output.out
     assert "OPENAI_BASE_URL: not set" in output.out
@@ -76,8 +87,9 @@ def test_check_reports_path_and_models(
 
 @pytest.mark.parametrize("key_set", [False, True])
 @pytest.mark.parametrize("base_url_set", [False, True])
+@pytest.mark.parametrize("read_only", [False, True])
 def test_check_reports_environment_presence_without_secrets(
-    memory_path, monkeypatch, capsys, diagnostics_only, key_set, base_url_set
+    memory_path, monkeypatch, capsys, diagnostics_only, key_set, base_url_set, read_only
 ):
     key = "super-secret-key"
     base_url = "https://user:password@example.com/v1?api_key=secret-query-token"
@@ -86,7 +98,7 @@ def test_check_reports_environment_presence_without_secrets(
     if base_url_set:
         monkeypatch.setenv("OPENAI_BASE_URL", base_url)
 
-    server.main(["--memory", str(memory_path), "--check"])
+    server.main(["--memory", str(memory_path), *(["--read-only"] if read_only else []), "--check"])
 
     output = capsys.readouterr()
     assert f"OPENAI_API_KEY: {'set' if key_set else 'not set'}" in output.out
@@ -161,6 +173,38 @@ def test_check_rejects_unusable_memory_paths(
     assert "Configuration looks valid." not in output.out
     if kind == "missing":
         assert not memory_path.exists()
+
+
+@pytest.mark.parametrize("denied", ["file", "parent"])
+def test_read_only_check_accepts_memory_without_write_access(
+    memory_path, monkeypatch, capsys, diagnostics_only, denied
+):
+    real_access = os.access
+    refused = memory_path if denied == "file" else memory_path.parent
+    monkeypatch.setattr(
+        server.os,
+        "access",
+        lambda path, mode: False if path == refused and mode & os.W_OK else real_access(path, mode),
+    )
+    server.main(["--memory", str(memory_path), "--read-only", "--check"])
+    output = capsys.readouterr()
+    assert "Mode: read-only" in output.out
+    assert "\nMemory status: exists, readable\n" in output.out
+    assert "Configuration looks valid." in output.out
+    assert output.err == ""
+
+
+def test_read_only_check_rejects_unreadable_memory(
+    memory_path, monkeypatch, capsys, diagnostics_only
+):
+    monkeypatch.setattr(server.os, "access", lambda path, mode: False)
+    with pytest.raises(SystemExit) as error:
+        server.main(["--memory", str(memory_path), "--read-only", "--check"])
+    assert error.value.code == 2
+    output = capsys.readouterr()
+    assert "Memory status: unusable" in output.out
+    assert "memory file must be readable:" in output.err
+    assert "Configuration looks valid." not in output.out
 
 
 @pytest.mark.parametrize("option", ["--model", "--answer-model"])

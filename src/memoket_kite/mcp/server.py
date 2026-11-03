@@ -1,4 +1,4 @@
-"""Expose one writable KITE memory through MCP stdio.
+"""Expose one KITE memory through MCP stdio, optionally read-only.
 
 The SDK is imported only when constructing a server, so the base library and
 module imports remain usable without the optional ``mcp`` extra.
@@ -35,15 +35,17 @@ def _serialize_fact(fact: Fact) -> dict[str, object]:
     }
 
 
-def _validate_memory_path(memory_path: str | Path) -> Path:
+def _validate_memory_path(memory_path: str | Path, *, read_only: bool = False) -> Path:
     try:
         path = Path(memory_path).expanduser().resolve(strict=True)
         if not path.is_file():
             raise ConfigurationError(f"memory must be an existing XML file: {path}")
-        if not os.access(path, os.R_OK | os.W_OK):
-            raise ConfigurationError(f"memory file must be readable and writable: {path}")
+        access_mode = os.R_OK if read_only else os.R_OK | os.W_OK
+        if not os.access(path, access_mode):
+            required = "readable" if read_only else "readable and writable"
+            raise ConfigurationError(f"memory file must be {required}: {path}")
         # Memory.remember() atomically replaces the XML in its parent directory.
-        if not os.access(path.parent, os.W_OK | os.X_OK):
+        if not read_only and not os.access(path.parent, os.W_OK | os.X_OK):
             raise ConfigurationError(f"memory directory must be writable: {path.parent}")
         return path
     except ConfigurationError:
@@ -52,9 +54,9 @@ def _validate_memory_path(memory_path: str | Path) -> Path:
         raise ConfigurationError(f"could not configure memory {memory_path!s}: {exc}") from exc
 
 
-def _load_memory(memory_path: str | Path, **models: str) -> Memory:
+def _load_memory(memory_path: str | Path, *, read_only: bool = False, **models: str) -> Memory:
     try:
-        return Memory.load(_validate_memory_path(memory_path), **models)
+        return Memory.load(_validate_memory_path(memory_path, read_only=read_only), **models)
     except ConfigurationError:
         raise
     except (OSError, RuntimeError, KiteError) as exc:
@@ -62,19 +64,25 @@ def _load_memory(memory_path: str | Path, **models: str) -> Memory:
 
 
 def _check_configuration(
-    memory_path: str | Path, *, model: str | None = None, answer_model: str | None = None
+    memory_path: str | Path,
+    *,
+    model: str | None = None,
+    answer_model: str | None = None,
+    read_only: bool = False,
 ) -> None:
     """Inspect local setup without loading memory, providers, or the MCP SDK."""
     print("KITE MCP configuration\n")
     print(f"Memory: {memory_path}")
+    print(f"Mode: {'read-only' if read_only else 'read-write'}")
     errors = []
     try:
-        _validate_memory_path(memory_path)
+        _validate_memory_path(memory_path, read_only=read_only)
     except ConfigurationError as exc:
         print("Memory status: unusable")
         errors.append(str(exc))
     else:
-        print("Memory status: exists, readable, writable (parent writable)")
+        status = "exists, readable" if read_only else "exists, readable, writable (parent writable)"
+        print(f"Memory status: {status}")
     print(f"Model: {model if model is not None else 'default'}")
     print(f"Answer model: {answer_model if answer_model is not None else 'default'}")
     for name in ("OPENAI_BASE_URL", "OPENAI_API_KEY"):
@@ -90,9 +98,13 @@ def _check_configuration(
 
 
 def create_server(
-    memory_path: str | Path, *, model: str | None = None, answer_model: str | None = None
+    memory_path: str | Path,
+    *,
+    model: str | None = None,
+    answer_model: str | None = None,
+    read_only: bool = False,
 ) -> "MCPServer":
-    """Load one artifact once and register the three public Memory operations."""
+    """Load one artifact once and register the selected public Memory operations."""
     try:
         from mcp.server import MCPServer
         from mcp.server.mcpserver.exceptions import ToolError
@@ -108,7 +120,7 @@ def create_server(
         for key, value in (("model", model), ("answer_model", answer_model))
         if value is not None
     }
-    memory = _load_memory(memory_path, **models)
+    memory = _load_memory(memory_path, read_only=read_only, **models)
     server = MCPServer("KITE Memory")
     # SDK sync handlers run in worker threads. Serialize this instance's calls;
     # separate processes/writers against the same artifact are still unsupported.
@@ -131,7 +143,6 @@ def create_server(
         role: nonempty_text
         content: nonempty_text
 
-    @server.tool(annotations=ToolAnnotations(read_only_hint=False, open_world_hint=True))
     def kite_remember(
         messages: Annotated[list[Message], Field(min_length=1)],
         session_id: Annotated[
@@ -161,6 +172,11 @@ def create_server(
                 "session_id": session_id,
                 "facts": [_serialize_fact(fact) for fact in facts],
             }
+
+    if not read_only:
+        server.tool(annotations=ToolAnnotations(read_only_hint=False, open_world_hint=True))(
+            kite_remember
+        )
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True))
     def kite_recall(query: nonempty_text, limit: positive_limit = 10) -> dict[str, object]:
@@ -202,7 +218,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     """Check configuration or start the local stdio server."""
     parser = argparse.ArgumentParser(description="Serve one local KITE XML memory over MCP stdio.")
     parser.add_argument(
-        "--memory", type=Path, required=True, help="Existing writable XML memory file"
+        "--memory", type=Path, required=True, help="Existing XML memory file (writable by default)"
+    )
+    parser.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Expose recall and answer only; require read access",
     )
     parser.add_argument("--model", type=_model_name, help="KITE model (default: KITE's default)")
     parser.add_argument(
@@ -217,9 +238,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     }
     try:
         if args.check:
-            _check_configuration(args.memory, **models)
+            _check_configuration(args.memory, read_only=args.read_only, **models)
             return
-        server = create_server(args.memory, **models)
+        server = create_server(args.memory, read_only=args.read_only, **models)
     except ConfigurationError as exc:
         parser.error(str(exc))
     server.run(transport="stdio")

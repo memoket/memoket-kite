@@ -49,6 +49,30 @@ python -m memoket_kite.mcp.server --memory ./artifacts/claude-memory.xml
 It waits for MCP input on stdin. Use Ctrl-C to stop a directly started process.
 Configuration errors go to stderr; stdout carries MCP messages.
 
+## Read-only memory
+
+To expose an existing memory for retrieval and evidence-backed answers:
+
+```bash
+kite-mcp --memory ./artifacts/claude-memory.xml --read-only
+# Offline configuration check:
+kite-mcp --memory ./artifacts/claude-memory.xml --read-only --check
+```
+
+The server registers only `kite_recall` and `kite_answer`; `kite_remember` is
+not registered or listed in `tools/list`. Only read access to the XML file is
+required, so a file made read-only with `chmod a-w` works as-is. Recall and
+answer leave the XML unchanged and still use the configured LLM provider.
+Without `--read-only`, the existing read/write requirements and all three tools
+remain the default. `--check` reports `Mode: read-only` or `Mode: read-write`.
+
+To register this mode in Claude Code:
+
+```bash
+claude mcp add --transport stdio --scope local kite-readonly \
+  -- "$PWD/.venv/bin/kite-mcp" --memory "$PWD/artifacts/claude-memory.xml" --read-only
+```
+
 ## Register in Claude Code
 
 Run from the checkout root, in the shell where you configured the provider:
