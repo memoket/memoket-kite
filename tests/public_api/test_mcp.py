@@ -98,6 +98,27 @@ async def test_registered_tools_and_schemas(configured):
     assert tools["kite_remember"].annotations.read_only_hint is False
 
 
+async def test_read_only_tools_and_unknown_write_tool(configured, memory_path):
+    writable, memory = configured
+    async with Client(writable, raise_exceptions=True) as client:
+        default_tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+    async with Client(create_server(memory_path, read_only=True), raise_exceptions=True) as client:
+        tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+        rejected = await client.call_tool(
+            "kite_remember", {"messages": [{"role": "user", "content": "Do not store this."}]}
+        )
+        unknown = await client.call_tool("unknown_tool", {})
+    assert set(tools) == {"kite_recall", "kite_answer"}
+    for name, tool in tools.items():
+        assert tool == default_tools[name]
+    assert rejected.is_error and unknown.is_error
+    assert rejected.content[0].text == unknown.content[0].text.replace(
+        "unknown_tool", "kite_remember"
+    )
+    assert "Unknown tool: kite_remember" in rejected.content[0].text
+    memory.remember.assert_not_called()
+
+
 async def test_remember_forwards_public_arguments_and_serializes(configured, fact):
     server, memory = configured
     arguments = {
@@ -275,8 +296,9 @@ async def test_public_errors_become_mcp_tool_errors(configured, error, tool, met
     assert f"{error.__name__}: original failure detail" in result.content[0].text
 
 
-@pytest.mark.parametrize("kind", ["missing", "directory", "malformed", "unreadable", "parent"])
-def test_invalid_memory_configuration(memory_path, monkeypatch, kind):
+@pytest.mark.parametrize("read_only", [False, True])
+@pytest.mark.parametrize("kind", ["missing", "directory", "malformed", "unreadable"])
+def test_invalid_memory_configuration(memory_path, monkeypatch, kind, read_only):
     if kind == "missing":
         memory_path.unlink()
     elif kind == "directory":
@@ -285,12 +307,28 @@ def test_invalid_memory_configuration(memory_path, monkeypatch, kind):
         memory_path.write_text("<broken", encoding="utf-8")
     else:
         real_access = os.access
-        refused = memory_path if kind == "unreadable" else memory_path.parent
         monkeypatch.setattr(
             "memoket_kite.mcp.server.os.access",
-            lambda path, mode: path != refused and real_access(path, mode),
+            lambda path, mode: path != memory_path and real_access(path, mode),
         )
     with pytest.raises(ConfigurationError, match="memory"):
+        create_server(memory_path, read_only=read_only)
+
+
+@pytest.mark.parametrize("denied", ["file", "parent"])
+def test_read_only_requires_no_write_access_but_default_does(memory_path, monkeypatch, denied):
+    real_access = os.access
+    refused = memory_path if denied == "file" else memory_path.parent
+    access = Mock(
+        side_effect=lambda path, mode: (
+            False if path == refused and mode & os.W_OK else real_access(path, mode)
+        )
+    )
+    monkeypatch.setattr("memoket_kite.mcp.server.os.access", access)
+
+    create_server(memory_path, read_only=True)
+    access.assert_called_once_with(memory_path.resolve(), os.R_OK)
+    with pytest.raises(ConfigurationError, match="writable"):
         create_server(memory_path)
 
 
@@ -303,12 +341,13 @@ def test_cli_configuration_errors_go_only_to_stderr(tmp_path, capsys):
     assert "could not configure memory" in output.err
 
 
-def test_cli_runs_only_stdio(memory_path, monkeypatch):
+@pytest.mark.parametrize("read_only", [False, True])
+def test_cli_runs_only_stdio(memory_path, monkeypatch, read_only):
     server = Mock()
     factory = Mock(return_value=server)
     monkeypatch.setattr("memoket_kite.mcp.server.create_server", factory)
-    main(["--memory", str(memory_path)])
-    factory.assert_called_once_with(memory_path)
+    main(["--memory", str(memory_path), *(["--read-only"] if read_only else [])])
+    factory.assert_called_once_with(memory_path, read_only=read_only)
     server.run.assert_called_once_with(transport="stdio")
 
 
@@ -321,12 +360,17 @@ def test_cli_runs_only_stdio(memory_path, monkeypatch):
         {"model": "gpt-4.1-mini", "answer_model": "gpt-4.1"},
     ],
 )
-def test_cli_forwards_only_supplied_models_to_memory_load(memory_path, monkeypatch, capsys, models):
+@pytest.mark.parametrize("read_only", [False, True])
+def test_cli_forwards_only_supplied_models_to_memory_load(
+    memory_path, monkeypatch, capsys, models, read_only
+):
     load = Mock(return_value=Mock(spec=Memory))
     run = Mock()
     monkeypatch.setattr(Memory, "load", load)
     monkeypatch.setattr("mcp.server.MCPServer.run", run)
     arguments = ["--memory", str(memory_path)]
+    if read_only:
+        arguments.append("--read-only")
     for key, value in models.items():
         arguments.extend(["--" + key.replace("_", "-"), value])
 
@@ -373,17 +417,88 @@ assert dict(os.environ) == before
     subprocess.run([sys.executable, "-c", script], check=True, capture_output=True, timeout=10)
 
 
-async def test_stdio_client_connects_and_lists_tools_without_provider(memory_path, monkeypatch):
+@pytest.mark.parametrize("read_only", [False, True])
+async def test_stdio_client_connects_and_lists_tools_without_provider(
+    memory_path, monkeypatch, read_only
+):
     # This subprocess never performs an LLM operation; the actual pipe transport
     # and CLI must initialize successfully with no provider configuration.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     params = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "memoket_kite.mcp.server", "--memory", str(memory_path)],
+        args=[
+            "-m",
+            "memoket_kite.mcp.server",
+            "--memory",
+            str(memory_path),
+            *(["--read-only"] if read_only else []),
+        ],
     )
     async with Client(params, mode="legacy") as client:
         tools = (await client.list_tools()).tools
-    assert {tool.name for tool in tools} == {"kite_remember", "kite_recall", "kite_answer"}
+    expected = {"kite_recall", "kite_answer"}
+    if not read_only:
+        expected.add("kite_remember")
+    assert {tool.name for tool in tools} == expected
+
+
+@pytest.mark.parametrize(
+    "non_writable",
+    [False, pytest.param(True, marks=pytest.mark.skipif(os.name != "posix", reason="POSIX modes"))],
+)
+async def test_read_only_recall_and_answer_leave_memory_bytes_unchanged(
+    memory_path, monkeypatch, non_writable
+):
+    """Real load, retrieval, and answering; only provider responses are scripted."""
+    from memoket_kite.pipeline import answer as reader
+    from memoket_kite.pipeline import compile_plan as compiler
+
+    memory_path.write_bytes((ROOT / "examples" / "data" / "demo_codebook.xml").read_bytes())
+    before = memory_path.read_bytes()
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.setattr("memoket_kite.memory.ensure_configured", lambda model: None)
+    monkeypatch.setattr(
+        compiler,
+        "llm_json",
+        lambda *args, **kwargs: {
+            "queries": [{"select": "facts", "where": {"topics": [{"code": "marathon_training"}]}}],
+            "intent": "factual",
+        },
+    )
+    reader_calls = []
+
+    def scripted_reader(prompt, **kwargs):
+        evidence = prompt.split("EVIDENCE:\n", 1)[1]
+        assert "s1L1" in evidence and "Shanghai Marathon" in evidence
+        reader_calls.append(prompt)
+        return {"answer": "The Shanghai Marathon.", "evidence": ["s1L1"]}
+
+    monkeypatch.setattr(reader, "llm_json", scripted_reader)
+    mode = memory_path.stat().st_mode
+    try:
+        if non_writable:
+            # Do not assert os.access(W_OK): root may still report write access.
+            memory_path.chmod(mode & ~0o222)
+        async with Client(
+            create_server(memory_path, read_only=True), raise_exceptions=True
+        ) as client:
+            question = "What race is Alice training for?"
+            recalled = await client.call_tool("kite_recall", {"query": question, "limit": 1})
+            assert not recalled.is_error, recalled.content
+            assert recalled.structured_content["facts"][0]["id"] == "s1F1"
+            assert memory_path.read_bytes() == before
+
+            answered = await client.call_tool("kite_answer", {"question": question, "limit": 1})
+            assert not answered.is_error, answered.content
+            assert answered.structured_content["answer"] == "The Shanghai Marathon."
+            assert answered.structured_content["citations"] == ["s1L1"]
+            assert answered.structured_content["evidence"][0]["id"] == "s1F1"
+        assert len(reader_calls) == 1
+        after = memory_path.read_bytes()
+        assert after == before
+    finally:
+        memory_path.chmod(mode)
 
 
 async def test_temporal_update_persists_and_newer_evidence_wins(memory_path, monkeypatch):
