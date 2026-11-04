@@ -2,31 +2,39 @@
 
 The Apache-2.0 licence in [`LICENSE`](LICENSE) covers the source code in this
 repository. It does **not** cover benchmark data or anything derived from it.
-Benchmark datasets and locally derived artifacts remain outside KITE's source
-and package distributions; the terms below apply when users build them locally.
+Benchmark datasets and locally derived artifacts normally remain outside KITE's
+repository and Python distributions. LoCoMo-ASR v1.0.0 is the documented
+repository exception and remains outside wheel and sdist packages.
 
 ## Source datasets
 
 | Dataset | Licence | Copyright | Source | Full text |
 |---|---|---|---|---|
 | LoCoMo (`locomo10.json`) | CC BY-NC 4.0 | Snap Inc. | [snap-research/locomo](https://github.com/snap-research/locomo) | [`licenses/third-party/LoCoMo-CC-BY-NC-4.0.txt`](licenses/third-party/LoCoMo-CC-BY-NC-4.0.txt) |
+| LoCoMo-ASR v1.0.0 | CC BY-NC 4.0 for LoCoMo-authored and LoCoMo-ASR-adapted content; separate rights may apply to preserved media | See LoCoMo and the dataset-specific notices | [`benchmarks/locomo_asr/`](benchmarks/locomo_asr/) | [`licenses/third-party/LoCoMo-CC-BY-NC-4.0.txt`](licenses/third-party/LoCoMo-CC-BY-NC-4.0.txt) |
 | LongMemEval-S (cleaned) | MIT | Copyright (c) 2024 Di Wu | [xiaowu0162/LongMemEval](https://github.com/xiaowu0162/LongMemEval), cleaned copy at [xiaowu0162/longmemeval-cleaned](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned) | [`licenses/third-party/LongMemEval-MIT.txt`](licenses/third-party/LongMemEval-MIT.txt) |
 
 The full upstream licence texts are carried verbatim in
 [`licenses/third-party/`](licenses/third-party/) so users can identify the terms
 that apply before obtaining a dataset or building derived artifacts.
 
-Neither dataset is redistributed in this repository. Both are pinned by
-revision and SHA-256 in [`benchmarks/reproduce/manifest.json`](benchmarks/reproduce/manifest.json)
-and fetched from their own sources.
+The original LoCoMo and LongMemEval-S source files are not redistributed and
+remain pinned in [`benchmarks/reproduce/manifest.json`](benchmarks/reproduce/manifest.json).
+LoCoMo-ASR is redistributed here as a modified LoCoMo derivative; its source,
+pipeline provenance, counts, and hashes are recorded in
+[`benchmarks/locomo_asr/reference_manifest.json`](benchmarks/locomo_asr/reference_manifest.json).
 
 ## Modifications
 
 - LongMemEval-S is used in the cleaned revision pinned in the manifest; KITE
   does not alter it.
-- LoCoMo is used at the pinned revision, unaltered.
-- What KITE adds is derived: the codebooks below, and the run outputs that
-  quote the source conversations.
+- KITE's existing executable LoCoMo binding uses the pinned source revision
+  unaltered.
+- LoCoMo-ASR preserves the pinned LoCoMo structure and adds `asr_text` and
+  turn-level `wer` through Piper TTS, room simulation, MUSAN babble, and
+  Whisper transcription.
+- KITE also creates local derived codebooks and run outputs that may quote the
+  source conversations.
 
 ## Derived codebooks
 
