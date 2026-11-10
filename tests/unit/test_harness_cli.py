@@ -48,9 +48,9 @@ def test_reproduction_preflight_uses_the_prepared_artifact_root(
 
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     fail("OPENAI_API_KEY is required")
-    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-key")
-    fail("worker counts must be positive", "--eval-workers", "0")
-    fail("missing or invalid pinned dataset")
+    fail("worker counts must be positive", "--offline", "--eval-workers", "0")
+    fail("model cannot be empty", "--offline", "--model", " ")
+    fail("missing or invalid pinned dataset", "--offline")
     assert not root.exists()
 
     def download(url, destination, expected):
@@ -61,6 +61,9 @@ def test_reproduction_preflight_uses_the_prepared_artifact_root(
 
     monkeypatch.setattr(prepare, "_download", download)
     prepare.prepare_datasets(source_manifest)
+    assert preflight.main([*command, "--offline"]) == 0
+    assert "Offline check skipped model credentials." in capsys.readouterr().out
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-key")
     assert preflight.main(command) == 0
     assert not (root / "results").exists()
     assert not (root / "codebooks").exists()
@@ -69,7 +72,7 @@ def test_reproduction_preflight_uses_the_prepared_artifact_root(
     codebooks = root / "codebooks" / name
     codebooks.mkdir(parents=True)
     (codebooks / "partial.xml").touch()
-    fail("Codebooks already exist")
+    fail("Codebooks already exist", "--offline")
     assert preflight.main([*command, "--mode", "resume"]) == 0
     result = root / "results" / f"{name}-unit"
     result.mkdir(parents=True)

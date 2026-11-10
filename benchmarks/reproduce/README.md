@@ -9,6 +9,9 @@ expected artifact counts, metric names, and reported scores.
 ```bash
 python -m pip install -e ".[benchmark]"
 python -m benchmarks.reproduce.prepare datasets
+bash benchmarks/reproduce/locomo.sh check-offline
+bash benchmarks/reproduce/longmemeval.sh check-offline
+
 cp .env.example .env
 # Set OPENAI_API_KEY; optionally set OPENAI_BASE_URL.
 source .env
@@ -17,6 +20,7 @@ bash benchmarks/reproduce/locomo.sh
 bash benchmarks/reproduce/longmemeval.sh
 ```
 
+The offline checks need the pinned datasets and do not contact a model provider.
 Use `bash .../locomo.sh resume` or `bash .../longmemeval.sh resume` after an
 interrupted run. Failures are never swallowed: the stage exits nonzero and
 records failed IDs beside its output.

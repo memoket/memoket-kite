@@ -25,16 +25,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--build-workers", type=int, default=1)
     parser.add_argument("--eval-workers", type=int, default=4)
     parser.add_argument("--mode", choices=("full", "resume"), default="full")
+    parser.add_argument("--offline", action="store_true", help="check without model credentials")
     args = parser.parse_args(argv)
     name = args.benchmark
     if args.build_workers < 1 or args.eval_workers < 1:
         parser.error("worker counts must be positive integers")
+    if not args.model.strip():
+        parser.error("model cannot be empty")
     try:
         tag = evaluation_tag(args.tag) if name == "locomo" else safe_tag(args.tag)
         dataset = load_manifest()["datasets"][name]
         path = dataset_path(dataset["path"])
         RetrievalOptions.from_profile(PROFILES[name])
-        ensure_configured(args.model)
+        if not args.offline:
+            ensure_configured(args.model)
     except (ConfigurationError, ProviderError, ValueError) as error:
         parser.error(str(error))
 
@@ -64,6 +68,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"Codebooks already exist: {codebooks}. Use resume or a new artifact root."
             )
     print(f"Preflight passed for {name}: verified {path} and local configuration.")
+    if args.offline:
+        print("Offline check skipped model credentials.")
     return 0
 
 

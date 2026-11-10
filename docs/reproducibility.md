@@ -22,6 +22,16 @@ run. Preparation and evaluation use the same directory.
 
 ## Run the benchmarks
 
+With the datasets prepared, check the corpus hashes, retrieval profile, worker
+counts, and output locations without model credentials.
+
+```bash
+bash benchmarks/reproduce/locomo.sh check-offline
+bash benchmarks/reproduce/longmemeval.sh check-offline
+```
+
+Set credentials to check the local model configuration and run the evaluations.
+
 ```bash
 cp .env.example .env
 # Set OPENAI_API_KEY; optionally set OPENAI_BASE_URL.

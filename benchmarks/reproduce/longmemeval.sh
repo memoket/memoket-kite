@@ -20,18 +20,23 @@ PYTHON="${PYTHON:-$(command -v python || command -v python3)}"
 MODE="${1:-full}"
 RESUME=()
 CHECK_ONLY=false
+CHECK_FLAGS=()
 if [[ "$MODE" == "resume" ]]; then
   RESUME=(--resume)
-elif [[ "$MODE" == "check" ]]; then
+elif [[ "$MODE" == "check" || "$MODE" == "check-offline" ]]; then
   CHECK_ONLY=true
+  if [[ "$MODE" == "check-offline" ]]; then
+    CHECK_FLAGS=(--offline)
+  fi
   MODE=full
 elif [[ "$MODE" != "full" ]]; then
-  echo "usage: $0 [full|resume|check]" >&2
+  echo "usage: $0 [full|resume|check|check-offline]" >&2
   exit 2
 fi
 
 "$PYTHON" -m benchmarks.reproduce.preflight longmemeval \
-  --model "$MODEL" --tag "$TAG" --mode "$MODE" --build-workers "$BUILD_WORKERS" --eval-workers "$EVAL_WORKERS"
+  --model "$MODEL" --tag "$TAG" --mode "$MODE" --build-workers "$BUILD_WORKERS" \
+  --eval-workers "$EVAL_WORKERS" ${CHECK_FLAGS[@]+"${CHECK_FLAGS[@]}"}
 if [[ "$CHECK_ONLY" == true ]]; then
   exit 0
 fi
