@@ -35,13 +35,15 @@ kite-tool stage meeting-b verify
 
 kite-tool start topic-tracing --run-id trace-a --input examples/agent-workflows/topic-query.json
 kite-tool stage trace-a resolve
-kite-tool stage trace-a retrieve
+kite-tool stage trace-a retrieve --summary
 kite-tool stage trace-a report
 ```
 
 Use `kite-tool runs` to recover a lost run ID, then check
 `resume.stages` in `kite-tool status RUN_ID` for the next stage and any
-missing inputs. In the report, look at `current_reported_states.onboarding-design`, then match its fact ID to the
+missing inputs. The retrieval stage above uses `--summary` because the report
+includes the matching facts and their evidence. Look at
+`current_reported_states.onboarding-design` and match its fact ID to the
 timeline and original evidence.
 
 ## Give your agent a task

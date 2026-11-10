@@ -61,6 +61,11 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
    returns its prior artifact on the same snapshot. Inspect a current artifact
    with `kite-tool artifact RUN_ID STAGE_ID`. Start a fresh run if `resume.reason`
    is `stale_snapshot` or `stale_definition`.
+   For intermediate stages whose output you do not need to inspect, use
+   `kite-tool stage RUN_ID STAGE_ID --summary`. The response includes stage and
+   run status, retry count, and the manifest when successful. Use the full
+   response or `kite-tool artifact` when reviewing evidence, provider
+   candidates, or a deletion preview.
 6. Present the user with source-backed conclusions. Cite the conversation ID and
    segment ID or the original quote. Treat a confirmed state as a report from
    the selected evidence, and describe ambiguous, partial or missing states

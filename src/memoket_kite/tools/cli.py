@@ -79,6 +79,9 @@ def _parser() -> argparse.ArgumentParser:
     stage.add_argument("run_id")
     stage.add_argument("stage_id")
     stage.add_argument("--input", metavar="FILE", help="additional stage input file or - for stdin")
+    stage.add_argument(
+        "--summary", action="store_true", help="return stage status and manifest without its value"
+    )
     stage.add_argument("--approve", metavar="TOKEN", help="user-approved deletion preview token")
     stage.add_argument(
         "--allow-provider", action="store_true", help="allow the extractor to send source data"
@@ -119,6 +122,21 @@ def _describe(name: str | None) -> dict:
         for key, tool in TOOLS.items()
         if name is None or key == name
     }
+
+
+def _stage_summary(result: dict, stage_id: str) -> dict:
+    checkpoint = result["checkpoint"]
+    state = checkpoint["stages"][stage_id]
+    summary = {
+        "run_id": checkpoint["run_id"],
+        "stage_id": stage_id,
+        "stage_state": state["state"],
+        "run_state": checkpoint["state"],
+        "retry_count": state["retry_count"],
+    }
+    if "manifest" in result:
+        summary["manifest"] = result["manifest"]
+    return summary
 
 
 def _dispatch(args) -> tuple[dict, ToolError | None]:
@@ -203,7 +221,10 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
         if args.command == "start":
             return start(context, supplied, args.run_id), None
         if args.command == "stage":
-            return advance(context, args.run_id, args.stage_id, supplied)
+            result, error = advance(context, args.run_id, args.stage_id, supplied)
+            if args.summary:
+                result = _stage_summary(result, args.stage_id)
+            return result, error
         if args.command == "runs":
             return recent_runs(workspace, args.limit), None
         if args.command == "status":

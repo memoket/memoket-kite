@@ -43,21 +43,22 @@ def _run_demo(repo: Path, directory: Path, *, metrics: bool) -> dict:
             "--input",
             str(example / f"{name}.json"),
         )
-        call("stage", run_id, "normalize")
+        call("stage", run_id, "normalize", "--summary")
         if call("status", run_id)["stages"]["normalize"]["state"] != "completed":
             raise ToolError("demo_error", "normalized fixture did not resume")
-        call("stage", run_id, "annotate")
-        commit = call("stage", run_id, "commit")
-        if call("stage", run_id, "commit")["manifest"] != commit["manifest"]:
+        call("stage", run_id, "annotate", "--summary")
+        commit = call("stage", run_id, "commit", "--summary")
+        if call("stage", run_id, "commit", "--summary")["manifest"] != commit["manifest"]:
             raise ToolError("demo_error", "fixture commit was not idempotent")
         replays += 1
-        completed += call("stage", run_id, "verify")["checkpoint"]["state"] == "completed"
+        completed += call("stage", run_id, "verify", "--summary")["run_state"] == "completed"
 
     call(
         "start", "topic-tracing", "--run-id", "trace", "--input", str(example / "topic-query.json")
     )
-    for stage in ("resolve", "retrieve", "report"):
-        result = call("stage", "trace", stage)
+    for stage in ("resolve", "retrieve"):
+        call("stage", "trace", stage, "--summary")
+    result = call("stage", "trace", "report")
     completed += result["checkpoint"]["state"] == "completed"
     report = result["value"]
     decision_correct = (

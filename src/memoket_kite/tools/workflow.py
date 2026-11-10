@@ -329,10 +329,7 @@ def advance(
     state = checkpoint["stages"][stage_id]
     supplied = _stored_inputs(row, checkpoint)
     extra = _inputs(definition, extra)
-    input_keys = {
-        reference[6:] for reference in stage["inputs"].values() if reference.startswith("input.")
-    }
-    if not extra.keys() <= input_keys or any(
+    if not extra.keys() <= _stage_input_names(stage) or any(
         key in supplied and supplied[key] != value for key, value in extra.items()
     ):
         raise ToolError("conflict", "stage inputs can only fill its own unset input values")

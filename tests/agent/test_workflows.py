@@ -123,6 +123,46 @@ def test_discovery_and_invalid_pipeline(work, tmp_path):
     call("validate-pipeline", "../topic-tracing", error="invalid_pipeline")
 
 
+def test_stage_summary_preserves_artifacts_and_retry_errors(work):
+    _, call = work
+    source = text_input("summary-source", "private transcript in a saved artifact")
+    call("start", "memory-ingestion", "--run-id", "summary", payload={"source": source["source"]})
+    normalized = call("stage", "summary", "normalize", "--summary")
+    artifact = call("artifact", "summary", "normalize")
+    assert normalized == {
+        "ok": True,
+        "run_id": "summary",
+        "stage_id": "normalize",
+        "stage_state": "completed",
+        "run_state": "running",
+        "retry_count": 0,
+        "manifest": artifact["manifest"],
+    }
+    assert artifact["value"]["conversation"]["segments"][0]["text"] == (
+        "private transcript in a saved artifact"
+    )
+    assert call("stage", "summary", "normalize", "--summary") == normalized
+    call("stage", "summary", "commit", "--summary", error="dependency_pending")
+    failed = call("stage", "summary", "annotate", "--summary", error="missing_input")
+    assert (failed["stage_id"], failed["stage_state"], failed["run_state"]) == (
+        "annotate",
+        "failed",
+        "failed",
+    )
+    assert "manifest" not in failed
+    annotation = call(
+        "stage",
+        "summary",
+        "annotate",
+        "--summary",
+        payload={"annotations": source["annotations"]},
+    )
+    assert annotation["retry_count"] == 1
+    call("stage", "summary", "commit", "--summary")
+    assert call("stage", "summary", "verify", "--summary")["run_state"] == "completed"
+    assert call("integrity")["revisions"] == 1
+
+
 def test_discover_interrupted_runs_and_resume_without_disclosing_inputs(work):
     directory, call = work
     assert call("runs")["runs"] == []
