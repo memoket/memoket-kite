@@ -13,7 +13,7 @@ from tempfile import TemporaryDirectory
 from uuid import uuid4
 
 from .contracts import ToolError, digest, encode, now, utc_timestamp
-from .index import build_index, fact_entries, load_index, revision_id, source_key
+from .index import Index, build_index, fact_entries, load_index, revision_id, source_key
 from .ingest import source_day, source_identity
 
 _DDL = """
@@ -110,6 +110,7 @@ class Workspace:
         self.db = db
         self.directory = directory
         self.read_only = read_only
+        self._snapshot_index: Index | None = None
 
     @classmethod
     @contextmanager
@@ -382,7 +383,15 @@ class Workspace:
     def _seal_index(self, version: int, checksum: str) -> None:
         self.db.execute("INSERT OR REPLACE INTO index_seal VALUES(1, ?, ?)", (version, checksum))
 
-    def index(self, *, verify: bool = False):
+    def index(self, *, verify: bool = False) -> Index:
+        if not self.read_only or verify:
+            return self._load_index(verify=verify)
+        # The read-only connection pins one SQLite snapshot until it closes.
+        if self._snapshot_index is None:
+            self._snapshot_index = self._load_index(verify=False)
+        return self._snapshot_index
+
+    def _load_index(self, *, verify: bool) -> Index:
         current = self._memory()
         rows = self._revision_rows()
         xml = current["xml"]

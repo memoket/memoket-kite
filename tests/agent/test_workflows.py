@@ -1511,7 +1511,7 @@ def test_trace_cursor_reads_all_windows_without_repeating_evidence(work):
     assert len({state for page in pages for state in page}) == 7
 
 
-def test_direct_query_matches_staged_report_and_creates_no_workflow_data(work):
+def test_direct_query_matches_staged_report_and_creates_no_workflow_data(work, monkeypatch):
     directory, call = work
     query = {"topics": ["onboarding"], "limit": 1}
     call("query", payload={"query": query}, error="not_found")
@@ -1523,18 +1523,38 @@ def test_direct_query_matches_staged_report_and_creates_no_workflow_data(work):
     with sqlite3.connect(database) as db:
         db.execute("DELETE FROM index_seal")
     before = database.read_bytes()
+    rebuilt = 0
+    build_index = workspace.build_index
+
+    def count_rebuilds(*args, **kwargs):
+        nonlocal rebuilt
+        rebuilt += 1
+        return build_index(*args, **kwargs)
+
+    monkeypatch.setattr(workspace, "build_index", count_rebuilds)
 
     direct = call("query", payload={"query": query})["value"]
     assert direct == expected and direct["next_cursor"]
+    assert rebuilt == 1
     page = call("query", payload={"query": {**query, "cursor": direct["next_cursor"]}})["value"]
     assert page["timeline"][0]["evidence"][0]["conversation_id"] == "first"
     assert page["next_cursor"] is None
+    assert rebuilt == 2
     empty = call("query", "--pipeline", "timeline-reconstruction", payload={"query": {}})
     assert empty["value"]["matched_count"] == 2
     call("query", payload={"query": {"topics": []}}, error="invalid_input")
     call("query", payload={"query": {}, "source": {}}, error="invalid_input")
     call("query", payload={"query": {}}, error="invalid_input")
     assert database.read_bytes() == before
+    ingest(call, "third", text_input("third", "third", date="2026-06-03"))
+    call(
+        "query",
+        payload={"query": {**query, "cursor": direct["next_cursor"]}},
+        error="stale_snapshot",
+    )
+    updated = call("query", payload={"query": query})["value"]
+    assert updated["matched_count"] == 3
+    assert updated["timeline"][0]["evidence"][0]["conversation_id"] == "third"
 
 
 def test_direct_query_leaves_legacy_schema_upgrade_to_workspace_commands(work):
