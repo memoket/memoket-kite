@@ -153,7 +153,10 @@ def _parser() -> argparse.ArgumentParser:
     audio.add_argument("--ffmpeg", default="ffmpeg", help="trusted executable")
     audio.add_argument("--timeout", type=int, default=1800, help="seconds allowed per process")
     ingest = commands.add_parser("ingest", help="import a source with prepared annotations")
-    ingest.add_argument("--run-id", help="stable identifier for this new ingestion run")
+    ingest.add_argument("--run-id", help="stable identifier for the ingestion run")
+    ingest.add_argument(
+        "--resume-existing", action="store_true", help="reuse --run-id only when the input matches"
+    )
     ingest.add_argument(
         "--update", action="store_true", help="apply a source revision or add annotations"
     )
@@ -290,7 +293,10 @@ def _ingest(
     *,
     resume_id: str | None = None,
     update: bool = False,
+    resume_existing: bool = False,
 ) -> tuple[dict, ToolError | None]:
+    if resume_existing and (run_id is None or resume_id is not None):
+        raise ToolError("invalid_input", "--resume-existing requires --run-id and --input")
     if resume_id is not None and run_id is not None:
         raise ToolError("invalid_input", "--run-id is only valid when starting a new ingestion")
     if resume_id is not None and update:
@@ -305,12 +311,16 @@ def _ingest(
         context = Context(root, workspace, pipeline, extension_root=extension_root)
         if resume_id is None:
             checkpoint = start(
-                context, supplied, run_id, expected_stages=SCRIPTED_IMPORT_STAGES[pipeline]
+                context,
+                supplied,
+                run_id,
+                expected_stages=SCRIPTED_IMPORT_STAGES[pipeline],
+                resume_existing=resume_existing,
             )
         else:
             checkpoint = resume_ingestion(context, resume_id)
-            if checkpoint["state"] == "completed":
-                return _replay_ingest(context, checkpoint)
+        if checkpoint["state"] == "completed":
+            return _replay_ingest(context, checkpoint)
     run_id = checkpoint["run_id"]
     pipeline = checkpoint["pipeline_id"]
     output = {"run_id": run_id}
@@ -435,6 +445,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             extension_root,
             resume_id=args.resume,
             update=args.update,
+            resume_existing=args.resume_existing,
         )
     if args.command in {"query", "evidence"}:
         with Workspace.open(args.workspace, read_only=True) as workspace:

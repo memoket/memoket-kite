@@ -204,6 +204,7 @@ def start(
     run_id: str | None = None,
     *,
     expected_stages: tuple[tuple[str, str], ...] | None = None,
+    resume_existing: bool = False,
 ) -> dict:
     definition, fingerprint, _ = load_pipeline(
         context.root, context.pipeline, extension_root=context.extension_root
@@ -213,15 +214,26 @@ def start(
     supplied = _inputs(context, definition, supplied)
     run_id = run_id if run_id is not None else uuid4().hex
     validate(ID, run_id, "run ID")
-    if context.workspace.db.execute("SELECT 1 FROM runs WHERE id=?", (run_id,)).fetchone():
-        raise ToolError("conflict", "run ID already exists; inspect or resume that run")
+    input_digest = digest(supplied)
+    row = context.workspace.db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+    if row is not None:
+        if not resume_existing:
+            raise ToolError("conflict", "run ID already exists; inspect or resume that run")
+        checkpoint = _checkpoint(row)
+        if checkpoint["pipeline_id"] != context.pipeline:
+            raise ToolError("conflict", "run ID belongs to a different pipeline")
+        _bound_definition(context, row, checkpoint)
+        _stored_inputs(row, checkpoint)
+        if checkpoint["input_digest"] != input_digest:
+            raise ToolError("conflict", "run ID belongs to different inputs; choose a new run ID")
+        return checkpoint
     timestamp = now()
     checkpoint = {
         "run_id": run_id,
         "pipeline_id": context.pipeline,
         "pipeline_version": definition["version"],
         "definition_digest": fingerprint,
-        "input_digest": digest(supplied),
+        "input_digest": input_digest,
         "memory_version": context.workspace.version(),
         "state": "pending",
         "current_stage": None,

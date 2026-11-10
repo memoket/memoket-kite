@@ -92,14 +92,17 @@ ingestion stages with one command in a fresh workspace.
 
 ```sh
 export KITE_DATA_DIR="$(mktemp -d)"
-kite-tool ingest --run-id meeting-a --input examples/agent-workflows/first-meeting.json
+kite-tool ingest --resume-existing --run-id meeting-a --input examples/agent-workflows/first-meeting.json
 kite-tool query --input examples/agent-workflows/topic-query.json
 ```
 
 The command returns a commit receipt and integrity counts. It saves each stage
-before advancing. On an interruption, run `kite-tool ingest --resume meeting-a`
-to continue using the saved inputs. Use `kite-tool status meeting-a` to inspect
-the checkpoint. Correct an invalid annotation in the input file and start a new run.
+before advancing. With `--resume-existing`, rerun the same command to continue
+or retrieve the receipt from a completed run at the current snapshot. KITE
+checks that the pipeline and inputs match. Run `kite-tool ingest --resume meeting-a`
+to use the saved inputs without reading the input file again. Use
+`kite-tool status meeting-a` to inspect the checkpoint. Use a new run ID for
+corrected annotations or other input changes.
 Use the stage-by-stage workflow when the agent still needs to extract or review
 annotations.
 

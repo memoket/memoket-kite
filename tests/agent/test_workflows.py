@@ -509,6 +509,17 @@ def test_ingest_replay_checks_artifacts_even_when_the_run_is_completed(work):
     result = call("ingest", "--resume", "completed", error="integrity_error")
     assert result["run_id"] == "completed" and result["stage_id"] == "normalize"
     assert "receipt" not in result
+    assert (
+        call(
+            "ingest",
+            "--resume-existing",
+            "--run-id",
+            "completed",
+            payload=payload,
+            error="integrity_error",
+        )
+        == result
+    )
 
 
 def test_workflow_inspection_and_resume_recover_an_interrupted_sqlite_write(work):
@@ -1519,14 +1530,22 @@ with Workspace.open(Path(sys.argv[2])) as workspace:
         str(ROOT),
         "--workspace",
         str(directory),
-        "stage",
+        "ingest",
+        "--resume-existing",
+        "--run-id",
         "retry",
-        "commit",
+        "--input",
+        str(EXAMPLES / "first-meeting.json"),
     ]
     with ThreadPoolExecutor(2) as pool:
-        results = list(pool.map(lambda _: subprocess.check_output(command, text=True), range(2)))
+        results = list(
+            pool.map(lambda _: subprocess.check_output(command, text=True, timeout=25), range(2))
+        )
     assert json.loads(results[0]) == json.loads(results[1])
     assert call("integrity")["revisions"] == 1
+    checkpoint = call("status", "retry")
+    assert checkpoint["state"] == "completed"
+    assert {stage["attempts"] for stage in checkpoint["stages"].values()} == {1}
 
 
 def test_provider_opt_in_and_candidate_mapping(work, monkeypatch):
@@ -1652,12 +1671,24 @@ def test_ingest_command_commits_and_verifies_prepared_annotations(work):
     _, call = work
     payload = text_input("review", "Synthetic original evidence.")
     call("ingest", payload={"source": payload["source"]}, error="invalid_input")
-    result = call("ingest", "--run-id", "prepared", payload=payload)
+    call("ingest", "--resume-existing", payload=payload, error="invalid_input")
+    retry = ("ingest", "--resume-existing", "--run-id", "prepared")
+    result = call(*retry, payload=payload)
     assert result["run_id"] == "prepared" and result["receipt"]["changed"]
     assert result["integrity"]["revisions"] == result["integrity"]["facts"] == 1
     assert "Synthetic original evidence" not in json.dumps(result)
-    assert call("status", "prepared")["state"] == "completed"
+    checkpoint = call("status", "prepared")
+    assert checkpoint["state"] == "completed"
     call("ingest", "--run-id", "prepared", payload=payload, error="conflict")
+    assert (
+        call(*retry, payload={"annotations": payload["annotations"], "source": payload["source"]})
+        == result
+    )
+    changed = text_input("review", "Replacement private evidence.")
+    rejected = call(*retry, payload=changed, error="conflict")
+    assert "Replacement private evidence" not in json.dumps(rejected)
+    call(*retry, "--update", payload=payload, error="conflict")
+    assert call("status", "prepared") == checkpoint
     duplicate = call("ingest", payload=payload)
     assert not duplicate["receipt"]["changed"]
     assert duplicate["integrity"] == result["integrity"]
@@ -1711,7 +1742,7 @@ def test_ingest_command_stops_and_keeps_completed_stages_for_recovery(
     else:
         assert result["receipt"]["changed"] and stages["commit"]["state"] == "completed"
         assert call("integrity")["revisions"] == 1
-    resumed = call("ingest", "--resume", "retry")
+    resumed = call("ingest", "--resume-existing", "--run-id", "retry", payload=payload)
     assert resumed["receipt"]["changed"] and resumed["integrity"]["revisions"] == 1
     after = call("status", "retry")
     assert after["state"] == "completed" and after["stages"][failed_stage]["attempts"] == 2
@@ -1723,6 +1754,7 @@ def test_ingest_command_stops_and_keeps_completed_stages_for_recovery(
 def test_ingest_resume_checks_the_run_and_required_inputs(work):
     directory, call = work
     call("ingest", "--resume", "unknown", error="not_found")
+    call("ingest", "--resume", "unknown", "--resume-existing", error="invalid_input")
     assert not directory.exists()
     call("start", "memory-provider-ingestion", "--run-id", "provider")
     call("ingest", "--resume", "provider", error="invalid_pipeline")
@@ -1731,9 +1763,18 @@ def test_ingest_resume_checks_the_run_and_required_inputs(work):
     call("ingest", "--resume", "pending", "--run-id", "rename", error="invalid_input")
     call("ingest", "--resume", "pending", error="missing_input")
     assert call("status", "pending") == before
-    call("ingest", "--run-id", "removed", payload=text_input("removed", "Synthetic note."))
+    removed = text_input("removed", "Synthetic note.")
+    call("ingest", "--run-id", "removed", payload=removed)
     _delete_source(call, "erase", {"source": "text", "conversation_id": "removed"})
     call("ingest", "--resume", "removed", error="invalidated_run")
+    call(
+        "ingest",
+        "--resume-existing",
+        "--run-id",
+        "removed",
+        payload=removed,
+        error="deleted_source",
+    )
     assert call("integrity")["revisions"] == 0
 
 
@@ -1747,11 +1788,13 @@ def test_ingest_resume_continues_after_an_interleaved_import(work):
         payload=text_input("pending", "Pending."),
     )
     call("stage", "pending", "normalize")
-    call("ingest", "--run-id", "other", payload=text_input("other", "Other."))
+    other = text_input("other", "Other.")
+    call("ingest", "--run-id", "other", payload=other)
     result = call("ingest", "--resume", "pending")
     assert result["receipt"]["changed"] and result["integrity"]["revisions"] == 2
     assert call("status", "pending")["stages"]["normalize"]["attempts"] == 1
     call("ingest", "--resume", "other", error="stale_snapshot")
+    call("ingest", "--resume-existing", "--run-id", "other", payload=other, error="stale_snapshot")
 
 
 def test_ingest_update_uses_the_current_checksum_and_keeps_original_citations(work):
@@ -1802,7 +1845,9 @@ def test_ingest_resume_uses_the_saved_update_pipeline(work):
     for stage in ("normalize", "annotate"):
         call("stage", "revision", stage)
     call("ingest", "--resume", "revision", "--update", error="invalid_input")
-    resumed = call("ingest", "--resume", "revision")
+    resumed = call(
+        "ingest", "--resume-existing", "--update", "--run-id", "revision", payload=revised
+    )
     assert resumed["receipt"]["changed"] and resumed["integrity"]["revisions"] == 2
     assert call("status", "revision")["pipeline_id"] == "memory-update"
     assert call("ingest", "--resume", "revision") == resumed
