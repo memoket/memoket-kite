@@ -1,0 +1,12 @@
+{
+  "incident_id": "incident-42",
+  "started_at": "2026-09-08T10:00:00Z",
+  "updates": [
+    {
+      "id": "update-1",
+      "author": "oncall",
+      "offset_ms": 1250,
+      "text": "We moved the alert review to Tuesday."
+    }
+  ]
+}

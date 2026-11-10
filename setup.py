@@ -18,6 +18,10 @@ class BuildPy(build_py):
             "skills/**/SKILL.md",
             "examples/agent-workflows/*.json",
             "examples/agent-workflows/*.md",
+            "examples/agent-workflows/incident-log/*.json",
+            "examples/agent-workflows/incident-log/connector.py",
+            "examples/agent-workflows/incident-log/pipeline_defs/*.yaml",
+            "examples/agent-workflows/incident-log/skills/**/SKILL.md",
         )
         destination = Path(self.build_lib) / "memoket_kite" / "_agent_assets"
         return {

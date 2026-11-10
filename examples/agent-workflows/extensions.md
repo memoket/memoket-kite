@@ -1,126 +1,51 @@
 # Add a workflow and a source connector
 
-This example runs against an installed KITE with the `agent` extra. It imports
-one synthetic incident update from a local export and retrieves the original
-line with a project-specific workflow.
+Install KITE with the `agent` extra from this checkout or a
+[CI preview wheel](README.md). The bundled `incident-log` example imports a
+synthetic incident update and traces its original text, speaker and time.
 
-## Create a project extension
+## Copy the example to a project
 
-An extension directory contains `pipeline_defs/` and the `skills/` files that
-its workflows reference. Use a project-specific pipeline ID to avoid name
-collisions with bundled workflows. KITE validates the definition against its
-installed schemas and only runs tools in its registry.
+`kite-tool resources` locates the installed examples. Copy `incident-log` so
+you can edit the project files independently.
 
 ```sh
-project="$(mktemp -d)"
-export KITE_DATA_DIR="$(mktemp -d)"
-mkdir -p "$project/pipeline_defs" "$project/skills/incident-review"
-
-cat > "$project/skills/incident-review/SKILL.md" <<'SKILL'
----
-name: incident-review
-description: Trace an incident topic to the original updates.
----
-
-Check the resolved topic labels before retrieving evidence. In the report,
-cite each supporting incident ID and update ID. Keep proposed follow-up
-actions separate from decisions that the incident team confirmed.
-SKILL
-
-cat > "$project/pipeline_defs/example-incident-review.yaml" <<'YAML'
-id: example-incident-review
-version: 1
-description: Trace an incident topic to original updates.
-inputs:
-  query: query
-stages:
-  - id: resolve
-    skill: skills/incident-review/SKILL.md
-    tool: resolve
-    needs: []
-    inputs: {query: input.query}
-    output: resolved
-    acceptance: Review the resolved topic names.
-  - id: retrieve
-    skill: skills/incident-review/SKILL.md
-    tool: retrieve
-    needs: [resolve]
-    inputs: {resolved: stage.resolve}
-    output: matches
-    acceptance: Collect matching fact IDs.
-  - id: report
-    skill: skills/incident-review/SKILL.md
-    tool: report
-    needs: [retrieve]
-    inputs: {matches: stage.retrieve}
-    output: report
-    acceptance: Cite the original incident and update IDs.
-YAML
+examples="$(kite-tool resources | python -c 'import json, sys; print(json.load(sys.stdin)["examples"])')"
+scratch="$(mktemp -d)"
+project="$scratch/incident-log"
+cp -R "$examples/incident-log" "$project"
+export KITE_DATA_DIR="$scratch/memory"
 
 kite_ext() { kite-tool --extensions "$project" "$@"; }
 kite_ext pipelines
 kite_ext validate-pipeline example-incident-review
 ```
 
-The `skill_root` returned by `validate-pipeline` is the base for the relative
-`skill` paths in the definition. Read each referenced skill before running its
-stage. Use `kite-tool describe TOOL` to inspect the tool's inputs and output.
+The [YAML definition](incident-log/pipeline_defs/example-incident-review.yaml)
+names its input, each stage's tool and prerequisites, and its output type.
+Read the [skill](incident-log/skills/incident-review/SKILL.md) before running a
+stage. `validate-pipeline` returns `skill_root`, the base for relative skill
+paths. Use `kite-tool describe TOOL` to inspect a tool's contract.
 
-During discovery, `pipelines` reports invalid project definitions in
-`invalid_extensions` alongside the usable workflows in `pipelines`.
-`validate-pipeline NAME` and `start NAME` reject an invalid definition.
-Rename any project workflow whose ID collides with a bundled ID. To use the
-bundled version while fixing the project, run without `--extensions`.
+## Convert and import a local export
 
-## Convert a local export
-
-A connector runs outside KITE and produces a conversation using the installed
-`schemas/conversation.schema.json` contract. Keep a stable source namespace
-and preserve original conversation and segment IDs so imports can be replayed,
-updated, and cited. Read and retain only the source data you are authorized to
-use.
+The [connector](incident-log/connector.py) reads the
+[sample export](incident-log/export.json) and outputs a KITE conversation. It
+preserves the incident and update IDs, timestamps, speaker labels, and source
+text. `file-source` validates the output against the installed conversation
+schema. The [prepared annotations](incident-log/annotations.json) cite an
+original update ID.
 
 ```sh
-cat > "$project/export.json" <<'JSON'
-{
-  "incident_id": "incident-42",
-  "updates": [
-    {"id": "update-1", "author": "oncall", "text": "We moved the alert review to Tuesday."}
-  ]
-}
-JSON
-
-python3 - "$project/export.json" > "$project/conversation.json" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-export = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-incident = export["incident_id"]
-json.dump(
-    {
-        "conversation_id": incident,
-        "source": "sample-incident-log",
-        "metadata": {"source_reference": incident},
-        "segments": [
-            {"segment_id": row["id"], "speaker_id": row["author"], "text": row["text"]}
-            for row in export["updates"]
-        ],
-    },
-    sys.stdout,
-)
-PY
-
-kite-tool file-source "$project/conversation.json" --format conversation > "$project/source.json"
-kite-tool start memory-ingestion --run-id import-example --input "$project/source.json"
-kite-tool stage import-example normalize
-
-kite-tool stage import-example annotate --input - <<'JSON'
-{"annotations":{"facts":[{"content":"The alert review moved to Tuesday.","segment_ids":["update-1"],"topics":["alerts"],"status":"confirmed"}]}}
-JSON
-kite-tool stage import-example commit --summary
-kite-tool stage import-example verify --summary
+python "$project/connector.py" "$project/export.json" > "$scratch/conversation.json"
+kite-tool file-source "$scratch/conversation.json" --format conversation \
+  | kite-tool ingest --input - --annotations "$project/annotations.json" \
+      --run-id import-example --resume-existing
 ```
+
+Use stable source, conversation and segment IDs when adapting the connector.
+Keep optional metadata tied to what the export actually provides. Read and
+retain only authorized source data.
 
 ## Trace the imported evidence
 
@@ -134,7 +59,11 @@ kite_ext status review-example
 kite_ext stage review-example report
 ```
 
-The report cites conversation `incident-42`, segment `update-1`, and the
-original line about Tuesday. To resume a custom run, supply the same extension
-with `--extensions`. You can move the directory. If you change the definition
-or a referenced skill, start a new run.
+The report cites `incident-42`, update `update-1`, and the original line about
+Tuesday. Its evidence also includes `oncall` and the offset of 1250 ms.
+
+Put project definitions under `pipeline_defs/` and referenced skills under
+`skills/`. Choose a pipeline ID distinct from bundled IDs. During discovery,
+`pipelines` lists invalid definitions in `invalid_extensions`. Reuse the same
+extension when resuming a run. After editing its definition or a referenced
+skill, start a new run against the revised files.

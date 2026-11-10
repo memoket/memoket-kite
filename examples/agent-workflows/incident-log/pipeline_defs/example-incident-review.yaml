@@ -1,0 +1,27 @@
+id: example-incident-review
+version: 1
+description: Trace an incident topic to original updates.
+inputs:
+  query: query
+stages:
+  - id: resolve
+    skill: skills/incident-review/SKILL.md
+    tool: resolve
+    needs: []
+    inputs: {query: input.query}
+    output: resolved
+    acceptance: Review the resolved topic names.
+  - id: retrieve
+    skill: skills/incident-review/SKILL.md
+    tool: retrieve
+    needs: [resolve]
+    inputs: {resolved: stage.resolve}
+    output: matches
+    acceptance: Collect matching fact IDs.
+  - id: report
+    skill: skills/incident-review/SKILL.md
+    tool: report
+    needs: [retrieve]
+    inputs: {matches: stage.retrieve}
+    output: report
+    acceptance: Cite the original incident and update IDs.

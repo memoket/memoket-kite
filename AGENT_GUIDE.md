@@ -486,4 +486,6 @@ Bind arguments to `input.NAME` or the output of a direct dependency via
 The validator checks the schema, DAG, skill paths, and argument types. Increment
 the version when you change the workflow contract. A connector can transform an
 authorized export into the installed conversation schema and hand it to
-`kite-tool file-source`. Follow the [standalone extension walkthrough](examples/agent-workflows/extensions.md).
+`kite-tool file-source`. The installed package includes a connector, workflow
+and skill you can copy into a project. Follow the
+[extension walkthrough](examples/agent-workflows/extensions.md).

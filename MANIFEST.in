@@ -3,3 +3,4 @@ recursive-include pipeline_defs *.yaml
 recursive-include schemas *.json
 recursive-include skills SKILL.md
 recursive-include examples/agent-workflows *.json *.md *.py
+recursive-include examples/agent-workflows/incident-log/pipeline_defs *.yaml

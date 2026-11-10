@@ -314,5 +314,5 @@ same source ID.
 
 ## Extend KITE
 
-Follow the [extension walkthrough](extensions.md) to add a project workflow,
-skill, and local source connector using only the installed CLI.
+Follow the [extension walkthrough](extensions.md) to copy and run the bundled
+project workflow, skill, and local source connector.

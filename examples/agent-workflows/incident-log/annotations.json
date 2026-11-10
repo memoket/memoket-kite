@@ -1,0 +1,12 @@
+{
+  "annotations": {
+    "facts": [
+      {
+        "content": "The alert review moved to Tuesday.",
+        "segment_ids": ["update-1"],
+        "topics": ["alerts"],
+        "status": "confirmed"
+      }
+    ]
+  }
+}

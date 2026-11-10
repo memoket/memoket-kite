@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import sys
 import sysconfig
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -56,6 +58,56 @@ def main() -> None:
             "examples/agent-workflows/extensions.md",
         ):
             assert (assets / path).is_file(), path
+        extension = directory / "incident project"
+        shutil.copytree(assets / "examples" / "agent-workflows" / "incident-log", extension)
+        incident_workspace = directory / "incident workspace"
+        ext = ("--extensions", str(extension))
+        name = "example-incident-review"
+        catalog = call(*ext, "pipelines", workspace=incident_workspace)["pipelines"]
+        assert name in {pipeline["id"] for pipeline in catalog}
+        assert call(*ext, "validate-pipeline", name, workspace=incident_workspace)[
+            "skill_root"
+        ] == str(extension.resolve())
+        converted = directory / "incident conversation.json"
+        converted.write_bytes(
+            subprocess.check_output(
+                [sys.executable, str(extension / "connector.py"), str(extension / "export.json")],
+                cwd=directory,
+                timeout=15,
+            )
+        )
+        source = call(
+            "file-source", str(converted), "--format", "conversation", workspace=incident_workspace
+        )
+        imported = call(
+            "ingest",
+            "--annotations",
+            str(extension / "annotations.json"),
+            workspace=incident_workspace,
+            payload=source,
+        )
+        assert imported["receipt"]["changed"] and imported["integrity"]["facts"] == 1
+        run = call(
+            *ext,
+            "start",
+            name,
+            workspace=incident_workspace,
+            payload={"query": {"topics": ["alerts"], "source": "sample-incident-log"}},
+        )["run_id"]
+        for stage in ("resolve", "retrieve"):
+            call(*ext, "stage", run, stage, "--summary", workspace=incident_workspace)
+        report = call(*ext, "stage", run, "report", workspace=incident_workspace)["value"]
+        (incident,) = report["timeline"]
+        (line,) = incident["evidence"]
+        assert (line["source"], line["conversation_id"], line["segment_id"]) == (
+            "sample-incident-log",
+            "incident-42",
+            "update-1",
+        )
+        assert line["text"] == "We moved the alert review to Tuesday."
+        assert (line["speaker_id"], line["start_ms"]) == ("oncall", 1250)
+        assert incident["source_time"] == "2026-09-08T10:00:00Z"
+
         metrics = call("demo", "--metrics")["value"]
         assert metrics["pipelines_completed"] == 3 and metrics["decision_state_correct"]
         assert metrics["expected_citations_found"] == metrics["expected_citations"] == 3

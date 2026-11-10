@@ -168,20 +168,12 @@ def test_discovery_and_invalid_pipeline(work, tmp_path):
 def test_installable_extension_and_custom_connector(work, tmp_path):
     _, call = work
     extension = tmp_path / "extension"
+    shutil.copytree(EXAMPLES / "incident-log", extension)
     definitions = extension / "pipeline_defs"
-    definitions.mkdir(parents=True)
     skill = extension / "skills" / "incident-review" / "SKILL.md"
-    skill.parent.mkdir(parents=True)
-    skill.write_text("# Incident review\nUse incident timeline evidence.\n")
-    original = (ROOT / "pipeline_defs" / "topic-tracing.yaml").read_text()
-    custom = (
-        original.replace("id: topic-tracing", "id: example-incident-review", 1)
-        .replace("skills/retrieval/topic-tracing/SKILL.md", "skills/incident-review/SKILL.md")
-        .replace(
-            "skills/retrieval/evidence-verification/SKILL.md", "skills/incident-review/SKILL.md"
-        )
-    )
-    (definitions / "example-incident-review.yaml").write_text(custom)
+    original_skill = skill.read_bytes()
+    name = "example-incident-review"
+    custom = (definitions / f"{name}.yaml").read_text(encoding="utf-8")
     (extension / "schemas").mkdir()
     (extension / "schemas" / "pipeline.schema.json").write_text("ignored by the tool")
 
@@ -194,7 +186,6 @@ def test_installable_extension_and_custom_connector(work, tmp_path):
     assert "invalid_extensions" not in catalog
     built_in = "memory-ingestion"
     assert custom_call("validate-pipeline", built_in) == call("validate-pipeline", built_in)
-    name = "example-incident-review"
     assert custom_call("validate-pipeline", name)["skill_root"] == str(extension)
     (definitions / "bad-encoding.yaml").write_bytes(b"\xff")
     (definitions / "bad-date.yaml").write_text("version: 2026-13-01\n")
@@ -216,23 +207,17 @@ def test_installable_extension_and_custom_connector(work, tmp_path):
     custom_call("start", "bad-syntax", error="invalid_pipeline")
     custom_call("validate-pipeline", "bad-skill", error="invalid_pipeline")
 
-    # A local connector supplies a canonical conversation and retains the original message ID.
-    exported = tmp_path / "incident.json"
+    exported = tmp_path / "conversation.json"
     quote = "We moved the alert review to Tuesday."
-    exported.write_text(
-        json.dumps(
-            {
-                "conversation_id": "incident-42",
-                "source": "sample-incident-log",
-                "metadata": {"source_reference": "incident-42"},
-                "segments": [{"segment_id": "update-1", "text": quote}],
-            }
+    exported.write_bytes(
+        subprocess.check_output(
+            [sys.executable, str(extension / "connector.py"), str(extension / "export.json")],
+            cwd=tmp_path,
+            timeout=15,
         )
     )
     source = call("file-source", str(exported), "--format", "conversation", repo=None)
-    source["annotations"] = {
-        "facts": [{"content": quote, "segment_ids": ["update-1"], "topics": ["alerts"]}]
-    }
+    source.update(json.loads((extension / "annotations.json").read_text(encoding="utf-8")))
     ingest(call, "incident", source)
     custom_call("start", name, "--run-id", "review", payload={"query": {"topics": ["alerts"]}})
     custom_call("stage", "review", "resolve")
@@ -241,7 +226,7 @@ def test_installable_extension_and_custom_connector(work, tmp_path):
 
     skill.write_text("Changed instructions")
     assert custom_call("status", "review")["resume"]["reason"] == "stale_definition"
-    skill.write_text("# Incident review\nUse incident timeline evidence.\n")
+    skill.write_bytes(original_skill)
     relocated = tmp_path / "moved-extension"
     extension.rename(relocated)
     extension = relocated
@@ -254,6 +239,12 @@ def test_installable_extension_and_custom_connector(work, tmp_path):
         "update-1",
         quote,
     )
+    assert (evidence["conversation_id"], evidence["speaker_id"], evidence["start_ms"]) == (
+        "incident-42",
+        "oncall",
+        1250,
+    )
+    assert result["timeline"][0]["source_time"] == "2026-09-08T10:00:00Z"
 
 
 def test_extension_rejects_invalid_roots_and_builtin_shadowing(work, tmp_path):
