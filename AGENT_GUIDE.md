@@ -201,6 +201,24 @@ from an older workspace verifies the Codebook against a full rebuild.
 `kite-tool integrity` repeats that full comparison on demand. If the index
 is damaged and the source records are intact, run `memory-rebuild`.
 
+## Back up a workspace
+
+Use a new, private directory on a local filesystem that supports SQLite and
+hard links. KITE verifies SQLite integrity and rebuilds the Codebook before
+publishing the copy.
+
+```sh
+kite-tool --workspace ./memory backup ./memory-backup
+kite-tool --workspace ./memory-backup integrity
+kite-tool --workspace ./memory-backup runs
+```
+
+Open the backup as a separate workspace to recover saved checkpoints. It
+preserves the source records, checkpoints, deletion receipts, and tombstones
+present when the snapshot was taken. The copy has its own workspace identity
+and any pending deletion previews require fresh authorization. Retain and
+remove backup copies under the same policy as other private exports.
+
 ## Extend
 
 Use `kite-tool --extensions DIR` to discover and run trusted project workflows

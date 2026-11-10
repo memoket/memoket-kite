@@ -34,14 +34,14 @@ EXAMPLES = ROOT / "examples" / "agent-workflows"
 def work(tmp_path, capsys, monkeypatch):
     directory = tmp_path / "workspace"
 
-    def call(*args, payload=None, error=None, repo=ROOT):
+    def call(*args, payload=None, error=None, repo=ROOT, workspace_dir=None):
         if payload is not None:
             from io import StringIO
 
             monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
             args = (*args, "--input", "-")
         resources = [] if repo is None else ["--repo", str(repo)]
-        code = cli.main([*resources, "--workspace", str(directory), *args])
+        code = cli.main([*resources, "--workspace", str(workspace_dir or directory), *args])
         output = capsys.readouterr().out
         assert code == (2 if error else 0), output
         if args[0] == "codebook" and not error:
@@ -801,6 +801,93 @@ def test_deletion_covers_staged_sources_and_different_snapshot(work):
     call(
         "start", "memory-ingestion", "--run-id", "late-import", payload=data, error="deleted_source"
     )
+
+
+def test_verified_backup_resumes_runs_and_preserves_deletions(work, tmp_path):
+    _, call = work
+    gone = text_input("gone", "deleted content")
+    ingest(call, "gone", gone)
+    _delete_source(call, "remove", {"source": "text", "conversation_id": "gone"})
+    ingest(call, "keep", text_input("keep", "keep this evidence"))
+    draft = text_input("draft", "save this checkpoint")
+    call("start", "memory-ingestion", "--run-id", "draft", payload=draft)
+    call("stage", "draft", "normalize")
+    target = {"source": "text", "conversation_id": "keep"}
+    call("start", "memory-deletion", "--run-id", "pending-delete", payload={"target": target})
+    original_token = call("stage", "pending-delete", "preview")["value"]["approval_token"]
+    original = call("integrity")
+
+    destination = tmp_path / "snapshot"
+    receipt = call("backup", str(destination))
+    assert receipt["memory_version"] == original["memory_version"]
+    assert receipt["revisions"] == receipt["invalidated_approvals"] == 1
+    if os.name == "posix":
+        assert destination.stat().st_mode & 0o777 == 0o700
+        assert (destination / "kite.sqlite3").stat().st_mode & 0o777 == 0o600
+    assert call("integrity", workspace_dir=destination) == original
+    assert call("deletion-audit", workspace_dir=destination) == call("deletion-audit")
+    assert call("status", "pending-delete", workspace_dir=destination)["state"] == "invalidated"
+    call(
+        "artifact", "pending-delete", "preview", workspace_dir=destination, error="invalidated_run"
+    )
+    assert (
+        call("artifact", "pending-delete", "preview")["value"]["approval_token"] == original_token
+    )
+    call(
+        "start",
+        "memory-deletion",
+        "--run-id",
+        "new-preview",
+        payload={"target": target},
+        workspace_dir=destination,
+    )
+    copy_token = call("stage", "new-preview", "preview", workspace_dir=destination)["value"][
+        "approval_token"
+    ]
+    assert copy_token != original_token
+    call(
+        "stage",
+        "new-preview",
+        "apply",
+        "--approve",
+        original_token,
+        workspace_dir=destination,
+        error="permission_denied",
+    )
+
+    status = call("status", "draft", workspace_dir=destination)
+    assert status["resume"]["stages"][0]["id"] == "annotate"
+    for stage in ("annotate", "commit", "verify"):
+        call("stage", "draft", stage, workspace_dir=destination)
+    assert call("integrity", workspace_dir=destination)["revisions"] == 2
+    assert call("integrity") == original
+    call(
+        "start",
+        "memory-ingestion",
+        "--run-id",
+        "replay",
+        payload=gone,
+        workspace_dir=destination,
+        error="deleted_source",
+    )
+
+
+def test_backup_rejects_conflicts_and_cleans_failed_copies(work, tmp_path):
+    directory, call = work
+    output = tmp_path / "backup"
+    call("backup", str(output), error="not_found")
+    assert not directory.exists() and not output.exists()
+    ingest(call, "keep", text_input("keep", "keep"))
+    output.mkdir()
+    sentinel = output / "original.txt"
+    sentinel.write_text("existing output")
+    call("backup", str(output), error="conflict")
+    assert sentinel.read_text() == "existing output"
+    broken = tmp_path / "broken"
+    with sqlite3.connect(directory / "kite.sqlite3") as db:
+        db.execute("UPDATE memory SET xml=?", (b"corrupt Codebook",))
+    call("backup", str(broken), error="integrity_error")
+    assert not broken.exists()
 
 
 def test_concurrent_retry_and_crash_rollback(work):

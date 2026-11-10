@@ -98,6 +98,8 @@ def _parser() -> argparse.ArgumentParser:
         if name == "artifact":
             command.add_argument("stage_id")
     commands.add_parser("integrity", help="verify the current Codebook against its source records")
+    backup = commands.add_parser("backup", help="write a verified private copy to a new directory")
+    backup.add_argument("destination", type=Path)
     commands.add_parser("deletion-audit", help="show recent deletion receipts without source text")
     sources = commands.add_parser(
         "sources", help="list conversation identities and current checksums"
@@ -209,6 +211,9 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             whisper=args.whisper_cli,
             timeout=args.timeout,
         ), None
+
+    if args.command == "backup":
+        return Workspace.backup(args.workspace, args.destination), None
 
     if args.command in {"sources", "codebook"}:
         scope = {"source": args.source} if args.source is not None else {}

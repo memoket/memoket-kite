@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager, suppress
 from hashlib import sha256
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from uuid import uuid4
 
 from .contracts import ToolError, digest, encode, now, utc_timestamp
@@ -130,6 +131,70 @@ class Workspace:
             db.commit()
         finally:
             db.close()
+
+    @classmethod
+    def backup(cls, directory: Path, destination: Path) -> dict:
+        source = directory.expanduser().resolve()
+        if not (source / "kite.sqlite3").is_file():
+            raise ToolError("not_found", "source workspace database was not found")
+        destination = destination.expanduser().absolute()
+        try:
+            destination.mkdir(mode=0o700)
+        except FileExistsError as exc:
+            raise ToolError("conflict", "backup destination already exists") from exc
+
+        try:
+            with TemporaryDirectory(prefix=".kite-backup-", dir=destination) as temporary:
+                staging = Path(temporary)
+                database = staging / "kite.sqlite3"
+                database.touch(mode=0o600)
+                with cls.open(source) as original:
+                    # Finish any upgrade, then pin the source in a read transaction.
+                    original.db.commit()
+                    original.db.execute("BEGIN")
+                    original.version()
+                    with closing(sqlite3.connect(database, timeout=15)) as copy:
+                        original.db.backup(copy)
+                with cls.open(staging) as snapshot:
+                    if [tuple(row) for row in snapshot.db.execute("PRAGMA quick_check")] != [
+                        ("ok",)
+                    ]:
+                        raise ToolError("integrity_error", "backup SQLite integrity check failed")
+                    if snapshot.db.execute("PRAGMA foreign_key_check").fetchone():
+                        raise ToolError("integrity_error", "backup contains broken references")
+                    index = snapshot.index(verify=True)
+                    # The copy is an independent workspace. Authorization to
+                    # delete from the original does not transfer to the copy.
+                    snapshot.db.execute(
+                        "UPDATE memory SET workspace_id=? WHERE singleton=1", (uuid4().hex,)
+                    )
+                    approvals = snapshot.db.execute(
+                        """
+                        SELECT id, checkpoint FROM runs WHERE id IN (
+                            SELECT run_id FROM artifacts WHERE kind='deletion_plan'
+                        )
+                        """
+                    ).fetchall()
+                    for row in approvals:
+                        snapshot.db.execute("DELETE FROM artifacts WHERE run_id=?", (row["id"],))
+                        snapshot._redact_run(row)
+                    result = {
+                        "backup": str(destination),
+                        "memory_version": snapshot.version(),
+                        "revisions": len(index.revisions),
+                        "invalidated_approvals": len(approvals),
+                    }
+                try:
+                    os.link(database, destination / database.name)
+                except FileExistsError as exc:
+                    raise ToolError(
+                        "conflict", "backup destination was populated during copying"
+                    ) from exc
+            return result
+        except BaseException:
+            with suppress(OSError):
+                destination.rmdir()
+            raise
 
     @contextmanager
     def provider_slot(self, run_id: str, stage_id: str):
