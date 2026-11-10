@@ -75,6 +75,19 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
    explicitly. Semantic support is a host review task. KITE verifies provenance
    and index consistency deterministically.
 
+For a long transcript, normalize with `--summary`, then read the source in
+pages using the same run and stage IDs.
+
+```sh
+kite-tool stage RUN_ID normalize --summary
+kite-tool segments RUN_ID normalize --limit 25 --byte-budget 16384
+```
+
+Use the returned `next_offset` as the next `--offset` until it is null.
+The byte budget applies to the JSON segment array. If a single segment
+exceeds the budget, KITE returns that segment intact and sets `over_budget`.
+Cite the original segment IDs in the annotations.
+
 Filter a timeline by `query.events` to match normalized event labels from
 fact annotations. The query matches any listed event and intersects it with
 other filters such as `projects`, `speakers` and date bounds. Check

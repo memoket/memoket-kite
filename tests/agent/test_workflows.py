@@ -213,6 +213,73 @@ def test_extension_rejects_invalid_roots_and_builtin_shadowing(work, tmp_path):
     assert call("validate-pipeline", "topic-tracing")["ok"]
 
 
+def test_transcript_pages_preserve_segments_and_byte_boundaries(work):
+    _, call = work
+    segments = [
+        {"segment_id": "first", "text": "Exact line.\r\n", "speaker_id": "Maya", "start_ms": 3},
+        {"segment_id": "large", "text": "界" * 100, "start_ms": 8},
+        {"segment_id": "last", "text": "Finish"},
+    ]
+    source = {
+        "format": "transcript",
+        "payload": {
+            "conversation_id": "long-recording",
+            "metadata": {"source_reference": "long-recording", "project": "hidden-metadata"},
+            "segments": segments,
+        },
+    }
+    call("start", "memory-ingestion", "--run-id", "long", payload={"source": source})
+    call("stage", "long", "normalize", "--summary")
+    pages = []
+    offset = 0
+    while offset is not None:
+        page = call(
+            "segments", "long", "normalize", "--offset", str(offset), "--byte-budget", "128"
+        )
+        pages.append(page)
+        offset = page["next_offset"]
+    assert [part for page in pages for part in page["segments"]] == segments
+    assert [page["over_budget"] for page in pages] == [False, True, False]
+    assert pages[0]["total_segments"] == 3 and pages[0]["conversation_id"] == "long-recording"
+    assert "hidden-metadata" not in json.dumps(pages)
+    assert all(
+        page["segment_payload_bytes"]
+        == len(json.dumps(page["segments"], separators=(",", ":"), sort_keys=True).encode())
+        for page in pages
+    )
+    assert len(call("segments", "long", "normalize", "--limit", "1")["segments"]) == 1
+    assert not call("segments", "long", "normalize", "--offset", "3")["segments"]
+    for flag, value in (
+        ("--offset", "-1"),
+        ("--offset", "4"),
+        ("--limit", "0"),
+        ("--byte-budget", "127"),
+    ):
+        call("segments", "long", "normalize", flag, value, error="invalid_input")
+
+
+def test_transcript_pages_obey_artifact_integrity_and_deletion(work):
+    directory, call = work
+    payload = text_input("target", "synthetic sensitive line")
+    ingest(call, "target", payload)
+    call("segments", "target", "commit", error="invalid_input")
+    with sqlite3.connect(directory / "kite.sqlite3") as db:
+        row = db.execute(
+            "SELECT value FROM artifacts WHERE run_id='target' AND stage='normalize'"
+        ).fetchone()
+        db.execute("UPDATE artifacts SET value='{}' WHERE run_id='target' AND stage='normalize'")
+    call("segments", "target", "normalize", error="integrity_error")
+    with sqlite3.connect(directory / "kite.sqlite3") as db:
+        db.execute(
+            "UPDATE artifacts SET value='broken' WHERE run_id='target' AND stage='normalize'"
+        )
+    call("segments", "target", "normalize", error="integrity_error")
+    with sqlite3.connect(directory / "kite.sqlite3") as db:
+        db.execute("UPDATE artifacts SET value=? WHERE run_id='target' AND stage='normalize'", row)
+    _delete_source(call, "erase", {"source": "text", "conversation_id": "target"})
+    call("segments", "target", "normalize", error="invalidated_run")
+
+
 def test_stage_summary_preserves_artifacts_and_retry_errors(work):
     _, call = work
     source = text_input("summary-source", "private transcript in a saved artifact")

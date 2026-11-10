@@ -14,7 +14,7 @@ from .demo import run_demo
 from .ingest import file_source
 from .operations import SCHEMAS, SOURCE_SCOPE, TOOLS, Context
 from .resources import resource_root
-from .workflow import advance, artifact, load_pipeline, recent_runs, start, status
+from .workflow import advance, artifact, load_pipeline, recent_runs, start, status, transcript_page
 from .workspace import Workspace
 
 
@@ -97,6 +97,17 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("run_id")
         if name == "artifact":
             command.add_argument("stage_id")
+    segments = commands.add_parser("segments", help="read a page of a normalized transcript")
+    segments.add_argument("run_id")
+    segments.add_argument("stage_id")
+    segments.add_argument("--offset", type=int, default=0, help="zero-based segment offset")
+    segments.add_argument("--limit", type=int, default=50, help="segments per page (1–200)")
+    segments.add_argument(
+        "--byte-budget",
+        type=int,
+        default=32768,
+        help="target JSON segment bytes (128–1048576); the first segment is kept whole",
+    )
     commands.add_parser("integrity", help="verify the current Codebook against its source records")
     backup = commands.add_parser("backup", help="write a verified private copy to a new directory")
     backup.add_argument("destination", type=Path)
@@ -253,6 +264,15 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             return status(context, args.run_id), None
         if args.command == "artifact":
             return artifact(context, args.run_id, args.stage_id), None
+        if args.command == "segments":
+            return transcript_page(
+                context,
+                args.run_id,
+                args.stage_id,
+                offset=args.offset,
+                limit=args.limit,
+                byte_budget=args.byte_budget,
+            ), None
         if args.command == "deletion-audit":
             rows = workspace.db.execute(
                 "SELECT * FROM deletion_audit ORDER BY version DESC LIMIT 100"

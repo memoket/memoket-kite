@@ -277,6 +277,47 @@ def artifact(context: Context, run_id: str, stage_id: str) -> dict:
     return _artifact(context, checkpoint, stage_id)
 
 
+def transcript_page(
+    context: Context,
+    run_id: str,
+    stage_id: str,
+    *,
+    offset: int,
+    limit: int,
+    byte_budget: int,
+) -> dict:
+    if offset < 0 or not 1 <= limit <= 200 or not 128 <= byte_budget <= 1024 * 1024:
+        raise ToolError("invalid_input", "invalid transcript offset, limit or byte budget")
+    result = artifact(context, run_id, stage_id)
+    if result["manifest"]["kind"] != "conversation":
+        raise ToolError("invalid_input", "select a normalized conversation artifact")
+    conversation = result["value"]["conversation"]
+    segments = conversation["segments"]
+    if offset > len(segments):
+        raise ToolError("invalid_input", "offset is past the end of the transcript")
+
+    page = []
+    size = 2  # JSON array delimiters.
+    for segment in segments[offset : offset + limit]:
+        next_size = size + len(encode(segment)) + (1 if page else 0)
+        if page and next_size > byte_budget:
+            break
+        page.append(segment)
+        size = next_size
+    end = offset + len(page)
+    return {
+        "manifest": result["manifest"],
+        "conversation_id": conversation["conversation_id"],
+        "source": conversation["source"],
+        "total_segments": len(segments),
+        "offset": offset,
+        "next_offset": end if end < len(segments) else None,
+        "segment_payload_bytes": size,
+        "over_budget": size > byte_budget,
+        "segments": page,
+    }
+
+
 def _artifact(context: Context, checkpoint: dict, stage_id: str) -> dict:
     stage = checkpoint["stages"].get(stage_id, {})
     manifest = stage.get("artifact")
@@ -287,8 +328,12 @@ def _artifact(context: Context, checkpoint: dict, stage_id: str) -> dict:
     ).fetchone()
     if row is None:
         raise ToolError("integrity_error", "checkpoint refers to a missing artifact")
-    value = json.loads(row["value"])
-    if row["kind"] != manifest["kind"] or not row["digest"] == manifest["digest"] == digest(value):
+    try:
+        value = json.loads(row["value"])
+        value_digest = digest(value)
+    except (ValueError, RecursionError) as exc:
+        raise ToolError("integrity_error", "artifact contains invalid JSON") from exc
+    if row["kind"] != manifest["kind"] or not row["digest"] == manifest["digest"] == value_digest:
         raise ToolError("integrity_error", "artifact differs from the checkpoint manifest")
     if row["kind"] in SNAPSHOT_KINDS and manifest["memory_version"] != context.workspace.version():
         raise ToolError("stale_snapshot", "stage artifact was produced against an older snapshot")

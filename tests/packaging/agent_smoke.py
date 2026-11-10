@@ -70,6 +70,8 @@ def main() -> None:
         assert call("backup", str(recovered))["revisions"] == 0
         status = call("status", run_id, workspace=recovered)
         assert status["resume"]["stages"][0]["missing_inputs"] == {"annotations": "annotations"}
+        page = call("segments", run_id, "normalize", "--limit", "1", workspace=recovered)
+        assert page["next_offset"] is None and page["segments"][0]["text"] == quote
 
         annotations = {
             "facts": [{"content": quote, "segment_ids": ["text-1"], "topics": ["launch review"]}]
