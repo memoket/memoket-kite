@@ -6,11 +6,12 @@ import json
 import os
 import sqlite3
 from contextlib import contextmanager
+from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
 from .contracts import ToolError, digest, encode, now, utc_timestamp
-from .index import build_index, fact_entries, revision_id, source_key
+from .index import build_index, fact_entries, load_index, revision_id, source_key
 from .ingest import source_day
 
 _DDL = """
@@ -20,6 +21,11 @@ CREATE TABLE IF NOT EXISTS memory (
     version INTEGER NOT NULL,
     merges TEXT NOT NULL,
     xml BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS index_seal (
+    singleton INTEGER PRIMARY KEY CHECK (singleton=1),
+    version INTEGER NOT NULL,
+    checksum TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS revisions (
     checksum TEXT PRIMARY KEY,
@@ -45,6 +51,27 @@ CREATE TABLE IF NOT EXISTS deletion_audit (
     fact_count INTEGER NOT NULL, committed_at TEXT NOT NULL
 );
 """
+
+
+def _snapshot_checksum(xml: bytes, merges: str, rows: list[sqlite3.Row]) -> str:
+    if not isinstance(xml, bytes) or not isinstance(merges, str):
+        raise ToolError("integrity_error", "invalid stored Codebook snapshot")
+    checksum = sha256()
+
+    def frame(value: bytes) -> None:
+        checksum.update(len(value).to_bytes(8, "big"))
+        checksum.update(value)
+
+    # Change the seal format when the Codebook compiler's persisted output changes.
+    frame(b"kite-codebook-v1")
+    frame(xml)
+    frame(merges.encode("utf-8"))
+    try:
+        for row in rows:
+            frame(encode(list(row)).encode("utf-8"))
+    except (TypeError, ValueError) as exc:
+        raise ToolError("integrity_error", "invalid stored source record") from exc
+    return checksum.hexdigest()
 
 
 class Workspace:
@@ -132,18 +159,19 @@ class Workspace:
         return self.db.execute("SELECT * FROM memory WHERE singleton=1").fetchone()
 
     def version(self) -> int:
-        return self._memory()["version"]
+        return self.db.execute("SELECT version FROM memory WHERE singleton=1").fetchone()[0]
 
     def merges(self) -> dict:
-        return json.loads(self._memory()["merges"])
+        row = self.db.execute("SELECT merges FROM memory WHERE singleton=1").fetchone()
+        return json.loads(row["merges"])
 
-    def records(
+    def _revision_rows(
         self,
         *,
         source: str | None = None,
         conversation_id: str | None = None,
         active_only: bool = False,
-    ) -> list[dict]:
+    ) -> list[sqlite3.Row]:
         filters = {
             "source": source,
             "conversation_id": conversation_id,
@@ -153,8 +181,24 @@ class Workspace:
         query = "SELECT * FROM revisions"
         if filters:
             query += " WHERE " + " AND ".join(f"{key}=?" for key in filters)
+        return self.db.execute(query + " ORDER BY checksum", tuple(filters.values())).fetchall()
+
+    def records(
+        self,
+        *,
+        source: str | None = None,
+        conversation_id: str | None = None,
+        active_only: bool = False,
+    ) -> list[dict]:
+        rows = self._revision_rows(
+            source=source, conversation_id=conversation_id, active_only=active_only
+        )
+        return self._records(rows)
+
+    @staticmethod
+    def _records(rows: list[sqlite3.Row]) -> list[dict]:
         records = []
-        for row in self.db.execute(query + " ORDER BY checksum", tuple(filters.values())):
+        for row in rows:
             record = json.loads(row["payload"])
             conversation = record["conversation"]
             if (
@@ -170,10 +214,32 @@ class Workspace:
             records.append({**record, "active": bool(row["active"])})
         return records
 
-    def index(self):
-        index = build_index(self.records(), self.merges())
-        if index.xml != self._memory()["xml"]:
+    def _index_seal(self, version: int) -> str | None:
+        row = self.db.execute(
+            "SELECT checksum FROM index_seal WHERE singleton=1 AND version=?", (version,)
+        ).fetchone()
+        return row["checksum"] if row else None
+
+    def _seal_index(self, version: int, checksum: str) -> None:
+        self.db.execute("INSERT OR REPLACE INTO index_seal VALUES(1, ?, ?)", (version, checksum))
+
+    def index(self, *, verify: bool = False):
+        current = self._memory()
+        rows = self._revision_rows()
+        xml = current["xml"]
+        version = current["version"]
+        checksum = _snapshot_checksum(xml, current["merges"], rows)
+        seal = self._index_seal(version)
+        if seal is not None and seal != checksum:
+            raise ToolError("integrity_error", "Codebook snapshot seal differs from its sources")
+        records = self._records(rows)
+        if seal is not None and not verify:
+            return load_index(xml, records)
+        index = build_index(records, json.loads(current["merges"]))
+        if index.xml != xml:
             raise ToolError("integrity_error", "Codebook snapshot differs from its sources")
+        if seal is None:
+            self._seal_index(version, checksum)
         return index
 
     def list_sources(self, source: str | None = None) -> list[dict]:
@@ -228,16 +294,30 @@ class Workspace:
         return {old: new for old, new in self.merges().items() if {old, new} <= topics}
 
     def replace_index(self, merges: dict | None = None, *, force: bool = False) -> dict:
-        merges = self.merges() if merges is None else merges
-        index = build_index(self.records(), merges)
         current = self._memory()
-        if not force and index.xml == current["xml"] and encode(merges) == current["merges"]:
-            return {"changed": False, "memory_version": self.version()}
+        merges = json.loads(current["merges"]) if merges is None else merges
+        encoded_merges = encode(merges)
+        rows = self._revision_rows()
+        index = build_index(self._records(rows), merges)
+        version = current["version"]
+        checksum = _snapshot_checksum(index.xml, encoded_merges, rows)
+        seal = self._index_seal(version)
+        unchanged = (
+            not force
+            and index.xml == current["xml"]
+            and encoded_merges == current["merges"]
+            and (seal is None or seal == checksum)
+        )
+        if unchanged:
+            if seal is None:
+                self._seal_index(version, checksum)
+            return {"changed": False, "memory_version": version}
         self.db.execute(
             "UPDATE memory SET version=version+1, merges=?, xml=? WHERE singleton=1",
-            (encode(merges), index.xml),
+            (encoded_merges, index.xml),
         )
-        return {"changed": True, "memory_version": self.version()}
+        self._seal_index(version + 1, checksum)
+        return {"changed": True, "memory_version": version + 1}
 
     def commit(self, record: dict, *, append_annotations: bool = False) -> dict:
         conversation = record["conversation"]

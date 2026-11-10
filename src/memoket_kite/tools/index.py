@@ -197,6 +197,33 @@ def _validate_correction_links(facts: dict) -> None:
         raise ToolError("integrity_error", "correction references form a cycle") from exc
 
 
+def _load_index(xml: bytes, facts: dict, segments: dict, revisions: dict) -> Index:
+    try:
+        store, vocab = Store.load([io.BytesIO(xml)], strict=True)
+        if set(store.facts) != facts.keys() or set(store.lines) != segments.keys():
+            raise ToolError("integrity_error", "Codebook IDs differ from source records")
+        if any(
+            store.lines[line_id].text != segment["text"] for line_id, segment in segments.items()
+        ):
+            raise ToolError("integrity_error", "Codebook changed source text")
+        return Index(xml, store, vocab, facts, segments, revisions)
+    except (ValueError, ET.ParseError, RecursionError) as exc:
+        raise ToolError("integrity_error", "the stored Codebook failed validation") from exc
+
+
+def load_index(xml: bytes, records: list[dict]) -> Index:
+    facts, segments, revisions = {}, {}, {}
+    for record in records:
+        uid = revision_id(record)
+        revisions[uid] = record
+        facts.update(fact_entries(record))
+        segments.update(
+            (f"{uid}L{position}", segment)
+            for position, segment in enumerate(record["conversation"]["segments"], 1)
+        )
+    return _load_index(xml, facts, segments, revisions)
+
+
 def build_index(records: list[dict], merges: dict[str, str]) -> Index:
     try:
         vocab = _vocabulary(records, merges)
@@ -257,14 +284,7 @@ def build_index(records: list[dict], merges: dict[str, str]) -> Index:
         root.set("speakers", " ".join(sorted(speakers)))
         # An explicit CR entity survives the XML parser’s newline normalization.
         xml = ET.tostring(root, encoding="utf-8", xml_declaration=True).replace(b"\r", b"&#13;")
-        store, loaded_vocab = Store.load([io.BytesIO(xml)], strict=True)
-        if set(store.facts) != facts.keys() or set(store.lines) != segments.keys():
-            raise ToolError("integrity_error", "Codebook IDs differ from source records")
-        if any(
-            store.lines[line_id].text != segment["text"] for line_id, segment in segments.items()
-        ):
-            raise ToolError("integrity_error", "Codebook changed source text")
-        return Index(xml, store, loaded_vocab, facts, segments, revisions)
+        return _load_index(xml, facts, segments, revisions)
     except (ValueError, ET.ParseError, RecursionError) as exc:
         raise ToolError("integrity_error", "the proposed Codebook failed validation") from exc
 

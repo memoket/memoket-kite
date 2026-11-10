@@ -189,6 +189,12 @@ annotations before sharing, including names written in free text. The workspace
 retains the richer source metadata and lifecycle state. Use pipeline tools for
 writes to the workspace.
 
+Retrieval reuses the stored Codebook after checking its checksum against the
+workspace snapshot and validating its source IDs and lines. The first read
+from an older workspace verifies the Codebook against a full rebuild.
+`kite-tool integrity` repeats that full comparison on demand. If the index
+is damaged and the source records are intact, run `memory-rebuild`.
+
 ## Extend
 
 Use `kite-tool --extensions DIR` to discover and run trusted project workflows

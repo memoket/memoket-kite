@@ -24,7 +24,7 @@ import pytest
 from memoket_kite import Memory
 from memoket_kite.pipeline import extract
 from memoket_kite.research import Codebook, SymbolicQuery
-from memoket_kite.tools import audio, cli, operations
+from memoket_kite.tools import audio, cli, operations, workspace
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES = ROOT / "examples" / "agent-workflows"
@@ -1015,11 +1015,59 @@ def test_source_state_orders_adjacent_segments_without_ordering_overlaps(work):
     assert overlapping["timeline"][0]["evidence"][0]["end_ms"] == 2000
 
 
+def test_legacy_index_is_checked_once_and_integrity_still_rebuilds(work, monkeypatch):
+    directory, call = work
+    ingest(call, "first", fixture("first-meeting"))
+    with sqlite3.connect(directory / "kite.sqlite3") as db:
+        db.execute("DELETE FROM index_seal")
+    calls = []
+    original = workspace.build_index
+
+    def counted(*args, **kwargs):
+        calls.append(True)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(workspace, "build_index", counted)
+    report = trace(call, "legacy", {"topics": ["first run"]})
+    assert report["matched_count"] > 0
+    assert len(calls) == 1
+    with sqlite3.connect(directory / "kite.sqlite3") as db:
+        assert db.execute("SELECT version FROM index_seal").fetchone() == (1,)
+    call("integrity")
+    assert len(calls) == 2
+
+
+def test_index_seal_detects_annotation_drift_and_can_be_rebuilt(work):
+    directory, call = work
+    ingest(call, "first", fixture("first-meeting"))
+    path = directory / "kite.sqlite3"
+    with sqlite3.connect(path) as db:
+        payload = db.execute("SELECT payload FROM revisions").fetchone()[0]
+        changed = json.loads(payload)
+        changed["facts"][0]["status"] = "open"
+        db.execute("UPDATE revisions SET payload=?", (json.dumps(changed),))
+    call("integrity", error="integrity_error")
+    call(
+        "start",
+        "topic-tracing",
+        "--run-id",
+        "corrupted",
+        payload={"query": {"topics": ["first run"]}},
+    )
+    call("stage", "corrupted", "resolve", error="integrity_error")
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE revisions SET payload=?", (payload,))
+        db.execute("UPDATE index_seal SET checksum=?", ("0" * 64,))
+    call("start", "memory-rebuild", "--run-id", "rebuild")
+    assert call("stage", "rebuild", "rebuild")["value"]["changed"]
+    assert call("integrity")["memory_version"] == 2
+
+
 def test_rebuild_uses_verified_source_records(work):
     directory, call = work
     ingest(call, "first", fixture("first-meeting"))
     with sqlite3.connect(directory / "kite.sqlite3") as db:
-        db.execute("UPDATE memory SET xml=?", (b"corrupt xml",))
+        db.execute("UPDATE memory SET xml=?", ("corrupt xml",))
     call("integrity", error="integrity_error")
     call("start", "memory-rebuild", "--run-id", "repair")
     assert call("stage", "repair", "rebuild")["value"]["changed"]

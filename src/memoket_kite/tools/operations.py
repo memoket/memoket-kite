@@ -147,7 +147,7 @@ def _amend(context: Context, annotated: dict) -> dict:
 def _validate(context: Context, receipt: dict | None = None) -> dict:
     from hashlib import sha256
 
-    index = context.workspace.index()
+    index = context.workspace.index(verify=True)
     if receipt and receipt.get("revision_id") and receipt["revision_id"] not in index.revisions:
         raise ToolError("integrity_error", "committed revision is missing")
     return {
