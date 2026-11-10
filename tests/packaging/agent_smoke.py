@@ -60,6 +60,19 @@ def main() -> None:
         assert metrics["pipelines_completed"] == 3 and metrics["decision_state_correct"]
         assert metrics["expected_citations_found"] == metrics["expected_citations"] == 3
 
+        (directory / "captions.vtt").write_text(
+            "WEBVTT\n\ncue-1\n00:01.250 --> 00:03.500\n<v Ada>Let's ship it.</v>\n",
+            encoding="utf-8",
+        )
+        captions = call("file-source", "captions.vtt", "--format", "vtt", "--source-id", "captions")
+        (cue,) = captions["source"]["payload"]["segments"]
+        assert (cue["source_sentence_id"], cue["speaker_id"], cue["start_ms"], cue["end_ms"]) == (
+            "cue-1",
+            "Ada",
+            1250,
+            3500,
+        )
+
         quote = "The launch review is Tuesday."
         (directory / "notes.txt").write_text(f"Launch notes\n\n{quote}\n", encoding="utf-8")
         source = call(

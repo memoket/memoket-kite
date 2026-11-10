@@ -7,6 +7,7 @@ import re
 from hashlib import sha256
 from pathlib import Path
 
+from .captions import CAPTION_FORMATS, caption_segments
 from .contracts import (
     HASH,
     TEXT,
@@ -147,20 +148,20 @@ def file_source(
     split_lines: bool = False,
 ) -> dict:
     """Return a minimized source input without opening a memory workspace."""
-    if source_format == "text":
-        validate(TEXT, source_id, "text source ID")
-    else:
-        if split_lines:
-            raise ToolError("invalid_input", "--split-lines requires --format text")
-        if any(value is not None for value in (source_id, source_date, started_at)):
-            raise ToolError("invalid_input", "JSON exports supply their own identity and dates")
+    file_formats = ("text", *CAPTION_FORMATS)
+    if split_lines and source_format != "text":
+        raise ToolError("invalid_input", "--split-lines requires --format text")
+    if source_format in file_formats:
+        validate(TEXT, source_id, "file source ID")
+    elif any(value is not None for value in (source_id, source_date, started_at)):
+        raise ToolError("invalid_input", "JSON exports supply their own identity and dates")
     if expected_checksum is not None:
         validate(HASH, expected_checksum, "expected checksum")
     path = path.expanduser()
     if not path.is_file():
         raise ToolError("invalid_input", "source must be a local file")
     raw = read_utf8(path)
-    if source_format == "text":
+    if source_format in file_formats:
         payload = {
             "conversation_id": source_id,
             "metadata": {"source_reference": source_id},
@@ -169,7 +170,12 @@ def file_source(
             payload["source_date"] = source_date
         if started_at is not None:
             payload["started_at"] = started_at
-        if split_lines:
+        if source_format in CAPTION_FORMATS:
+            payload["metadata"]["source_sha256"] = sha256(raw.encode("utf-8")).hexdigest()
+            payload["source"] = source_format
+            payload["segments"] = caption_segments(raw, source_format)
+            source_format = "conversation"
+        elif split_lines:
             if XML_UNSAFE.search(raw):
                 raise ToolError("invalid_input", "source contains characters XML cannot represent")
             payload["metadata"]["source_sha256"] = sha256(raw.encode("utf-8")).hexdigest()

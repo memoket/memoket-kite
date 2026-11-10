@@ -2215,6 +2215,104 @@ def test_file_source_split_lines_preserves_quotes_line_numbers_and_source_checks
     call("file-source", str(path), "--format", "memoket", "--split-lines", error="invalid_input")
 
 
+def test_file_source_imports_subrip_cues_without_inferring_speakers(work, tmp_path):
+    directory, call = work
+    path = tmp_path / "captions.srt"
+    raw = "\ufeff7\r\n01:00:02,010 --> 01:00:04,300\r\nRae: First line.\r\n<i>Second line.</i>\r\n\r\n11\r\n01:00:04,300 --> 01:00:05,000\r\nNext cue.\r\n"
+    path.write_bytes(raw.encode())
+    result = call(
+        "file-source",
+        str(path),
+        "--format",
+        "srt",
+        "--source-id",
+        "rollout",
+        "--source-date",
+        "2026-05-06",
+    )
+    assert not directory.exists()
+    conversation = result["source"]["payload"]
+    assert conversation["source"] == "srt" and conversation["source_date"] == "2026-05-06"
+    assert conversation["metadata"]["source_sha256"] == hashlib.sha256(raw.encode()).hexdigest()
+    assert conversation["segments"][0] == {
+        "segment_id": "srt-id-7",
+        "source_sentence_id": "7",
+        "start_ms": 3602010,
+        "end_ms": 3604300,
+        "text": "Rae: First line.\n<i>Second line.</i>",
+    }
+    assert conversation["segments"][1]["segment_id"] == "srt-id-11"
+
+
+def test_webvtt_citations_keep_timing_and_explicit_voice(work, tmp_path):
+    _, call = work
+    path = tmp_path / "captions.vtt"
+    path.write_text(
+        "WEBVTT - synthetic meeting\nKind: captions\n\n"
+        "NOTE authorized fixture\n\n"
+        "STYLE\n::cue { color: lime; }\n\n"
+        "REGION\nid: main\n\n"
+        "decision\n00:01.250 --> 00:04.000 position:50%\n<v.main Rae>We approved PDF.</v>\n\n"
+        "00:03.500 --> 00:06.100\n<v Ada>Yes.</v>\n<v Rae>Agreed.</v>\n",
+        encoding="utf-8",
+    )
+    command = ("file-source", str(path), "--format", "vtt", "--source-id", "review")
+    source = call(*command)
+    first, second = source["source"]["payload"]["segments"]
+    assert first["segment_id"] == "vtt-id-decision" and first["speaker_id"] == "Rae"
+    assert first["source_sentence_id"] == "decision"
+    assert (first["start_ms"], first["end_ms"]) == (1250, 4000)
+    assert second["segment_id"] == "vtt-cue-2" and "speaker_id" not in second
+    assert second["text"] == "<v Ada>Yes.</v>\n<v Rae>Agreed.</v>"
+    source["annotations"] = {
+        "facts": [
+            {
+                "content": "PDF was approved.",
+                "segment_ids": ["vtt-id-decision"],
+                "topics": ["export"],
+                "status": "confirmed",
+            }
+        ]
+    }
+    receipt = ingest(call, "first", source)
+    assert not ingest(call, "repeat", source)["changed"]
+    report = call("query", payload={"query": {"topics": ["export"], "speakers": ["rae"]}})
+    evidence = report["value"]["timeline"][0]["evidence"][0]
+    assert evidence["source"] == "vtt" and evidence["text"] == first["text"]
+    assert (evidence["start_ms"], evidence["end_ms"]) == (1250, 4000)
+    context = call("evidence", evidence["source_line_id"], "--context", "1")["value"]
+    assert context["after"][0]["text"] == second["text"]
+
+    path.write_text(path.read_text().replace("00:04.000", "00:04.250"), encoding="utf-8")
+    revision = call(*command, "--expected-checksum", receipt["checksum"])
+    revision["annotations"] = source["annotations"]
+    assert ingest(call, "updated", revision, pipeline="memory-update")["changed"]
+    assert call("evidence", evidence["source_line_id"])["value"]["evidence"]["end_ms"] == 4000
+
+
+@pytest.mark.parametrize(
+    ("fmt", "body"),
+    [
+        ("vtt", "00:00.000 --> 00:01.000\nMissing header."),
+        ("vtt", "WEBVTT\n00:00.000 --> 00:01.000\nMissing blank line."),
+        ("srt", "1\n00:00:61,000 --> 00:01:03,000\nInvalid second."),
+        ("srt", "1\n00:00:02,000 --> 00:00:01,000\nReversed."),
+        (
+            "srt",
+            "1\n00:00:01,000 --> 00:00:02,000\nFirst.\n\n1\n00:00:02,000 --> 00:00:03,000\nDuplicate.",
+        ),
+    ],
+)
+def test_file_source_rejects_malformed_caption_cues(work, tmp_path, fmt, body):
+    directory, call = work
+    path = tmp_path / f"captions.{fmt}"
+    path.write_text(body, encoding="utf-8")
+    call(
+        "file-source", str(path), "--format", fmt, "--source-id", "captions", error="invalid_input"
+    )
+    assert not directory.exists()
+
+
 def test_file_source_minimizes_memoket_export_before_output(work, tmp_path):
     workspace, call = work
     path = tmp_path / "export.json"

@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from .audio import audio_source
+from .captions import CAPTION_FORMATS
 from .contracts import ToolError, decode_object, encode, read_utf8, validate
 from .demo import run_demo
 from .ingest import file_source
@@ -82,8 +83,10 @@ def _parser() -> argparse.ArgumentParser:
         "file-source", help="prepare ingestion input from a local text or conversation export"
     )
     source.add_argument("path", type=Path)
-    source.add_argument("--format", choices=("text", "memoket", "conversation"), required=True)
-    source.add_argument("--source-id", help="stable identity for a text file")
+    source.add_argument(
+        "--format", choices=("text", "memoket", "conversation", *CAPTION_FORMATS), required=True
+    )
+    source.add_argument("--source-id", help="stable identity for a text or caption file")
     source.add_argument(
         "--split-lines",
         action="store_true",

@@ -187,6 +187,15 @@ that supports SQLite locking.
   an authorized transcriber. For a local audio file, `kite-tool audio-source`
   prepares the input using FFmpeg and a local whisper.cpp model.
   See the [audio skill](skills/ingestion/audio-transcription/SKILL.md).
+- **Subtitles** use `kite-tool file-source FILE --format srt --source-id STABLE_ID`
+  or `--format vtt` for UTF-8 WebVTT. Each cue becomes a segment with the
+  original cue ID when supplied, start and end offsets in milliseconds, and
+  original cue text and markup. Cue line breaks use LF. The normalized source
+  stores the original file's SHA-256. Only an explicit WebVTT voice spanning a
+  whole cue sets `speaker_id`. Cue offsets are relative to the file, and
+  `--source-date` or `--started-at` can supply a known meeting date.
+  [SubRip format](https://www.loc.gov/preservation/digital/formats/fdd/fdd000569.shtml)
+  · [WebVTT specification](https://www.w3.org/TR/webvtt1/)
 - **Memoket** accepts an authorized record transcription response with
   `data.id` and `data.segments[].sentences[]`, or the inner data object. The
   connector keeps source IDs, original text, available speaker and millisecond

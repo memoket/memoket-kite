@@ -113,6 +113,18 @@ the previously committed checksum with `--expected-checksum` and use
 `memory-update`. Date and timestamp flags are optional for text files. Memoket
 exports retain the original record identity and any supplied dates.
 
+For an authorized WebVTT or SubRip file, use the same ingestion stages.
+
+```sh
+kite-tool file-source meeting.vtt --format vtt --source-id planning-captions \
+  | kite-tool start memory-ingestion --run-id captions --input -
+kite-tool stage captions normalize --summary
+kite-tool segments captions normalize --limit 25
+```
+
+Use `--format srt` for a SubRip file. Cite the displayed segment IDs in
+annotations. Reports preserve cue start and end offsets.
+
 ## Add an annotation to an existing conversation
 
 Use the exact same source file, identity, and any original date flags.
