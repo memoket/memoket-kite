@@ -3255,6 +3255,11 @@ def test_local_audio_failures_are_structured_and_leave_no_workspace(
     ("response", "code"),
     [
         ({"transcription": []}, "no_speech"),
+        ({"transcription": [{"text": "  ", "offsets": {"from": 0, "to": 1000}}]}, "no_speech"),
+        (
+            {"transcription": [{"text": " [BLANK_AUDIO]", "offsets": {"from": 0, "to": 10000}}]},
+            "no_speech",
+        ),
         ({"transcription": [{"text": "a sentence without offsets"}]}, "transcription_error"),
     ],
 )
@@ -3274,6 +3279,21 @@ def test_local_audio_rejects_unusable_transcript(work, tmp_path, monkeypatch, re
         "audio-source", str(recording), "--model", str(model), "--source-id", "meeting", error=code
     )
     assert not workspace.exists()
+
+
+def test_audio_preserves_silence_markers_when_the_transcript_also_contains_speech(tmp_path):
+    lines = [
+        {"text": " [BLANK_AUDIO]", "offsets": {"from": 0, "to": 1000}},
+        {
+            "text": "Keep the original [BLANK_AUDIO] label in these notes.",
+            "offsets": {"from": 1000, "to": 2000},
+        },
+    ]
+    output = tmp_path / "transcript.json"
+    output.write_text(json.dumps({"transcription": lines}), encoding="utf-8")
+    segments, _ = audio._transcript(output)
+    assert [line["text"] for line in segments] == [line["text"] for line in lines]
+    assert [line["segment_id"] for line in segments] == ["audio-1", "audio-2"]
 
 
 def test_local_audio_reports_missing_executable_before_decoding(work, tmp_path, monkeypatch):

@@ -22,6 +22,8 @@ same source ID, pass the current conversation checksum via `--expected-checksum`
 and start `memory-update`.
 Use `--timeout` for long recordings. The command processes the recording
 locally and removes scratch files when it returns.
+An empty transcript or one containing only Whisper's `[BLANK_AUDIO]` markers
+returns `no_speech`.
 
 For an existing transcript from a different transcriber, use
 `format: audio-transcript` with source segments. Obtain permission before

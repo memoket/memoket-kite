@@ -63,8 +63,8 @@ def _transcript(path: Path) -> tuple[list[dict], str | None]:
         raise ToolError(
             "transcription_error", "whisper-cli returned an invalid transcript"
         ) from exc
-    if not segments:
-        raise ToolError("no_speech", "whisper-cli returned no nonblank transcript segments")
+    if not segments or all(segment["text"].strip() == "[BLANK_AUDIO]" for segment in segments):
+        raise ToolError("no_speech", "whisper-cli returned no spoken transcript segments")
     return segments, language
 
 
