@@ -3135,6 +3135,182 @@ def test_file_source_minimizes_memoket_export_before_output(work, tmp_path):
     assert first["checksum"] == second["checksum"]
 
 
+def memoket_api_page(lines, *, offset=0, text_offset=0, next_offset=None, next_text_offset=None):
+    return {
+        "error": None,
+        "items": [
+            {
+                "conversation_id": "product-review",
+                "has_more": next_offset is not None,
+                "line_count": len(lines),
+                "lines": lines,
+                "next_offset": next_offset,
+                "next_text_offset": next_text_offset,
+                "offset": offset,
+                "text_offset": text_offset,
+                "total_line_count": 2,
+            }
+        ],
+        "next_offset": next_offset,
+        "truncated": next_offset is not None,
+    }
+
+
+@pytest.fixture
+def memoket_api_transcript():
+    first = {
+        "id": "review-line-1",
+        "speaker": "Dee",
+        "started_offset_ms": 1234,
+        "ended_offset_ms": 3856,
+        "text": "🟢 We selected the green layout.",
+        "text_offset": 0,
+        "text_truncated": False,
+    }
+    second = {
+        **first,
+        "id": "review-line-2",
+        "speaker": None,
+        "started_offset_ms": 4000,
+        "ended_offset_ms": 7300,
+        "text": "Please send the mockup tomorrow.",
+    }
+    # The first page splits the line after the emoji and following space.
+    pages = [
+        memoket_api_page(
+            [{**first, "text": first["text"][:2], "text_truncated": True}],
+            next_offset=0,
+            next_text_offset=2,
+        ),
+        memoket_api_page(
+            [{**first, "text": first["text"][2:], "text_offset": 2}],
+            text_offset=2,
+            next_offset=1,
+            next_text_offset=0,
+        ),
+        memoket_api_page([second], offset=1),
+    ]
+    return pages, memoket_api_page([first, second])
+
+
+def test_memoket_api_transcript_preserves_citations_across_pages(
+    work, tmp_path, memoket_api_transcript
+):
+    workspace, call = work
+    pages, single = memoket_api_transcript
+    pages[0]["note"] = "private response metadata"
+    path = tmp_path / "export.json"
+    path.write_text(json.dumps({"pages": pages}), encoding="utf-8")
+    source = call("file-source", str(path), "--format", "memoket")
+    assert not workspace.exists()
+    path.write_text(json.dumps(single), encoding="utf-8")
+    assert call("file-source", str(path), "--format", "memoket") == source
+    normalized = source["source"]["payload"]
+    assert "private response metadata" not in json.dumps(source)
+    assert normalized["metadata"] == {"source_reference": "product-review"}
+    assert "started_at" not in normalized and "source_date" not in normalized
+    assert normalized["segments"][0] == {
+        "segment_id": "review-line-1",
+        "speaker_id": "Dee",
+        "start_ms": 1234,
+        "end_ms": 3856,
+        "text": "🟢 We selected the green layout.",
+    }
+    assert "speaker_id" not in normalized["segments"][1]
+    annotations = {
+        "facts": [
+            {
+                "content": "The team selected the green layout.",
+                "segment_ids": ["review-line-1"],
+                "topics": ["layout"],
+                "status": "confirmed",
+            }
+        ]
+    }
+    payload = {
+        "source": {"format": "memoket", "payload": {"pages": pages}},
+        "annotations": annotations,
+    }
+    first = call("ingest", "--run-id", "paged", payload=payload)["receipt"]
+    second = call("ingest", "--run-id", "single", payload={**source, "annotations": annotations})[
+        "receipt"
+    ]
+    assert first["changed"] and not second["changed"] and first["checksum"] == second["checksum"]
+    report = call("query", payload={"query": {"topics": ["layout"]}})["value"]
+    (citation,) = report["timeline"][0]["evidence"]
+    assert citation["source"] == "memoket" and citation["conversation_id"] == "product-review"
+    assert (
+        citation["segment_id"] == "review-line-1"
+        and citation["text"] == normalized["segments"][0]["text"]
+    )
+    assert citation["revision_checksum"] == first["checksum"]
+    assert call("integrity", "--include-workflows")["revisions"] == 1
+    assert b"private response metadata" not in (workspace / "kite.sqlite3").read_bytes()
+
+
+def test_memoket_api_transcript_preserves_recording_metadata(work, memoket_api_transcript):
+    _, call = work
+    pages, _ = memoket_api_transcript
+    recording = {
+        "id": "product-review",
+        "title": "Product review",
+        "started_at": "2026-04-02T10:00:00+08:00",
+        "language_code": "en",
+        "participant_details": ["private participant metadata"],
+    }
+    # UTF-16 cursors also count the full emoji and the trailing space.
+    pages[0]["items"][0]["next_text_offset"] = 3
+    pages[1]["items"][0]["text_offset"] = 3
+    pages[1]["items"][0]["lines"][0]["text_offset"] = 3
+    source = {"source": {"format": "memoket", "payload": {"pages": pages, "recording": recording}}}
+    call("start", "memory-ingestion", "--run-id", "recording", payload=source)
+    conversation = call("stage", "recording", "normalize")["value"]["conversation"]
+    assert conversation["segments"][0]["text"] == "🟢 We selected the green layout."
+    assert conversation["title"] == "Product review" and conversation["language"] == "en"
+    assert conversation["started_at"] == recording["started_at"]
+    assert "private participant metadata" not in json.dumps(conversation)
+
+
+def test_memoket_api_transcript_rejects_incomplete_or_inconsistent_exports(
+    work, memoket_api_transcript
+):
+    _, call = work
+    pages, _ = memoket_api_transcript
+    wrong_recording = copy.deepcopy(pages)
+    wrong_recording[1]["items"][0]["conversation_id"] = "private-recording"
+    wrong_fragment = copy.deepcopy(pages)
+    wrong_fragment[1]["items"][0]["lines"][0]["id"] = "private-line"
+    wrong_offset = copy.deepcopy(pages)
+    wrong_offset[0]["items"][0]["next_text_offset"] = 8
+    wrong_total = copy.deepcopy(pages)
+    for response in wrong_total:
+        response["items"][0]["total_line_count"] = 3
+    api_error = copy.deepcopy(pages[0])
+    api_error["error"] = "private provider error"
+    for payload in (
+        pages[0],
+        api_error,
+        {"pages": pages[1:]},
+        {"pages": [pages[0], pages[2]]},
+        {"pages": pages[:-1]},
+        {"pages": wrong_recording},
+        {"pages": wrong_fragment},
+        {"pages": wrong_offset},
+        {"pages": wrong_total},
+        {"pages": pages, "recording": {"id": "private-metadata"}},
+    ):
+        result = call(
+            "start",
+            "memory-ingestion",
+            "--run-id",
+            "bad",
+            payload={"source": {"format": "memoket", "payload": payload}},
+            error="invalid_input",
+        )
+        assert "private" not in json.dumps(result)
+        call("status", "bad", error="not_found")
+
+
 def test_file_source_accepts_custom_conversations_and_rejects_invalid_inputs(work, tmp_path):
     workspace, call = work
     path = tmp_path / "export"

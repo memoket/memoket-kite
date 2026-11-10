@@ -133,6 +133,20 @@ the previously committed checksum with `--expected-checksum` and use
 `memory-update`. Date and timestamp flags are optional for text files. Memoket
 exports retain the original record identity and any supplied dates.
 
+Use the saved response directly for a complete single-page Memoket
+`get_transcripts` result. For a longer recording, follow the two paging
+cursors in the [Memoket connector reference](https://eu.memoket.ai/pages/connector)
+and bundle the saved responses in the order you received them.
+
+```sh
+jq -s '{pages: .}' first-page.json second-page.json > transcript.json
+kite-tool file-source transcript.json --format memoket
+```
+
+The bundle must contain every page for one recording. To include the recorded
+start time, title, and language, add the matching `get_conversations` item
+as the bundle's `recording` object.
+
 For an authorized WebVTT or SubRip file, use the same ingestion stages.
 
 ```sh

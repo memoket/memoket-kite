@@ -21,6 +21,7 @@ from .contracts import (
     utc_timestamp,
     validate,
 )
+from .memoket_transcript import api_transcript
 
 SOURCE = object_schema(
     {
@@ -32,6 +33,8 @@ SOURCE = object_schema(
 
 
 def _memoket(payload: dict) -> dict:
+    if not {"id", "data", "segments"} & payload.keys() and {"items", "pages"} & payload.keys():
+        return api_transcript(payload)
     if "data" in payload:
         if type(payload.get("code")) is not int or payload["code"] != 0:
             raise ToolError("invalid_input", "Memoket export must contain a successful response")
