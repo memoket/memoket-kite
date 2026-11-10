@@ -73,8 +73,14 @@ A correct string with a missing or unrelated citation fails.
 
 - `supported_claims / expected_claims` measures answer coverage. An unexpected
   key or an incorrect submitted value or citation counts as an unsupported claim.
+- `unsupported_claim_rate` divides unsupported claims by all submitted claims.
 - `expected_citations_found` counts satisfied evidence requirements. Timeline
   dates accept any cited segment from the matching date.
+- `evidence_precision` divides satisfied requirements by all submitted citation
+  entries, including duplicates, malformed entries and citations on unexpected
+  claims. `evidence_recall` divides by all expected requirements. Each distinct
+  citation in the saved report can satisfy at most one requirement per claim.
+  A rate with a zero denominator is `null`.
 - `source_scope_correct` checks the report for missing or extraneous source
   conversations, omitted undated records, and truncation. `date_scope_correct`
   checks the saved date bounds and time axis when a task specifies a range.

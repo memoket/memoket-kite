@@ -61,6 +61,49 @@ def test_unknown_claims_and_ordered_dates_are_graded():
     assert not score["passed"]
 
 
+def test_citation_precision_counts_duplicate_malformed_and_extra_claim_citations():
+    relevant = {"conversation_id": "planning", "segment_id": "decision"}
+    unrelated = {"conversation_id": "planning", "segment_id": "question"}
+    claim = {"value": "approved", "citations": [relevant]}
+    case = {"expected": {"decision": claim}}
+    report = {"timeline": [{"evidence": [{**relevant, "text": "Approved."}]}]}
+    score = score_claims(case, {}, report)
+    assert score["evidence_precision"] is None
+    assert score["evidence_recall"] == 0.0
+    assert score["unsupported_claim_rate"] is None
+
+    submitted = {
+        "decision": {**claim, "citations": [relevant, relevant, None, unrelated]},
+        "invented": {"value": "unknown", "citations": [relevant]},
+    }
+    score = score_claims(case, submitted, report)
+    assert score["submitted_citations"] == 5
+    assert score["expected_citations_found"] == 1
+    assert score["evidence_precision"] == 0.2
+    assert score["evidence_recall"] == 1.0
+    assert score["unsupported_claim_rate"] == 1.0
+    assert score["cited_evidence_bytes"] == len(b"Approved.")
+    assert not score["passed"]
+
+
+def test_overlapping_citation_requirements_need_distinct_evidence():
+    first = {"conversation_id": "planning", "segment_id": "first"}
+    second = {"conversation_id": "planning", "segment_id": "second"}
+    answer = {"decision": {"value": "approved", "citations": [first, second]}}
+    case = {"expected": answer, "allow_citations": {"decision": [[list(first.values())]] * 2}}
+    report = {"timeline": [{"evidence": [{**line, "text": "source"} for line in (first, second)]}]}
+    score = score_claims(case, answer, report)
+    assert score["expected_citations_found"] == 1
+    assert score["evidence_precision"] == score["evidence_recall"] == 0.5
+    assert not score["passed"]
+
+    case["allow_citations"]["decision"][0] = [list(first.values()), list(second.values())]
+    score = score_claims(case, answer, report)
+    assert score["expected_citations_found"] == 2
+    assert score["evidence_precision"] == score["evidence_recall"] == 1.0
+    assert score["passed"]
+
+
 def test_untrusted_transcript_requires_original_text_and_cited_decision():
     case = json.loads(FIXTURE.read_text())["cases"]["untrusted-transcript"]
     decision = deepcopy(case["expected"])

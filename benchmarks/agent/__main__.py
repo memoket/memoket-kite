@@ -151,6 +151,25 @@ def _reference_answer(case: dict, run: str, report: dict) -> dict:
     return {"run_id": run, "claims": claims}
 
 
+def _match_citations(groups: list[set[tuple]], citations: set[tuple]) -> int:
+    """Give each distinct citation credit for at most one requirement."""
+    assigned = {}
+
+    def assign(group: int, visited: set[tuple]) -> bool:
+        for citation in groups[group] & citations:
+            if citation in visited:
+                continue
+            visited.add(citation)
+            previous = assigned.get(citation)
+            # Move an earlier assignment if the earlier group has another match.
+            if previous is None or assign(previous, visited):
+                assigned[citation] = group
+                return True
+        return False
+
+    return sum(assign(group, set()) for group in range(len(groups)))
+
+
 def score_claims(case: dict, claims: dict, report: dict | None) -> dict:
     lines = {
         _citation(line): line["text"]
@@ -164,6 +183,22 @@ def score_claims(case: dict, claims: dict, report: dict | None) -> dict:
     sent = 0
     required = 0
     cited = set()
+    submissions = {}
+    for name, claim in claims.items():
+        if not isinstance(claim, dict) or not isinstance(claim.get("citations"), list):
+            continue
+        refs = claim["citations"]
+        sent += len(refs)
+        valid = {
+            _citation(item)
+            for item in refs
+            if isinstance(item, dict)
+            and isinstance(item.get("conversation_id"), str)
+            and isinstance(item.get("segment_id"), str)
+        } & lines.keys()
+        cited.update(valid)
+        submissions[name] = len(refs), valid
+
     for name, gold in expected.items():
         groups = case.get("allow_citations", {}).get(
             name,
@@ -171,33 +206,26 @@ def score_claims(case: dict, claims: dict, report: dict | None) -> dict:
         )
         groups = [{tuple(item) for item in group} for group in groups]
         required += len(groups)
-        claim = claims.get(name)
-        if not isinstance(claim, dict) or not isinstance(claim.get("citations"), list):
+        if name not in submissions:
             continue
-        try:
-            refs = [_citation(item) for item in claim["citations"]]
-            actual = set(refs)
-        except (KeyError, TypeError):
-            continue
-        sent += len(refs)
-        cited.update(actual & lines.keys())
-        valid = actual & lines.keys()
-        matched = sum(bool(group & valid) for group in groups)
+        count, valid = submissions[name]
+        claim = claims[name]
+        matched = _match_citations(groups, valid)
         hits += matched
-        if (
-            "value" in claim
-            and claim["value"] == gold["value"]
-            and matched == len(groups) == len(refs) == len(actual)
-        ):
+        if "value" in claim and claim["value"] == gold["value"] and matched == len(groups) == count:
             supported += 1
+    unsupported = len(claims) - supported
     result = {
         "expected_claims": len(expected),
         "submitted_claims": len(claims),
         "supported_claims": supported,
-        "unsupported_claims": len(claims) - supported,
+        "unsupported_claims": unsupported,
+        "unsupported_claim_rate": unsupported / len(claims) if claims else None,
         "expected_citations": required,
         "submitted_citations": sent,
         "expected_citations_found": hits,
+        "evidence_precision": hits / sent if sent else None,
+        "evidence_recall": hits / required if required else None,
         "cited_evidence_bytes": sum(len(lines[key].encode()) for key in cited),
         "passed": supported == len(expected) and not extra,
     }
