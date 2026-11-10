@@ -52,6 +52,7 @@ SCHEMAS = {
             "matched": COUNT,
             "time_axis": {"enum": ["source", "event"]},
             "omitted_unknown_time": COUNT,
+            "omitted_inferred_time": COUNT,
             "unresolved_topics": array(TEXT),
             "topic_codes": array(TEXT),
         }
@@ -69,6 +70,7 @@ SCHEMAS = {
             "matched_count": COUNT,
             "truncated": BOOL,
             "omitted_unknown_time": COUNT,
+            "omitted_inferred_time": COUNT,
             "resolved_topics": array(TEXT),
             "unresolved_topics": array(TEXT),
             "memory_version": COUNT,
@@ -160,10 +162,17 @@ def _rebuild(context: Context) -> dict:
 TOOLS = {
     "normalize": Tool(normalize, {"source": "source"}, "conversation"),
     "extract": Tool(
-        propose, {"normalized": "conversation", "model": "model"}, "annotations", "provider"
+        propose,
+        {"normalized": "conversation", "model": "model"},
+        "annotations",
+        "provider",
+        version=2,
     ),
     "annotate": Tool(
-        annotate, {"normalized": "conversation", "annotations": "annotations"}, "annotated"
+        annotate,
+        {"normalized": "conversation", "annotations": "annotations"},
+        "annotated",
+        version=2,
     ),
     "commit": Tool(_commit, {"annotated": "annotated"}, "receipt", "write"),
     "amend": Tool(_amend, {"annotated": "annotated"}, "receipt", "write"),
@@ -171,8 +180,8 @@ TOOLS = {
     "rebuild": Tool(_rebuild, {}, "receipt", "write"),
     "validate_commit": Tool(_validate, {"receipt": "receipt"}, "integrity"),
     "resolve": Tool(resolve, {"query": "query"}, "resolved"),
-    "retrieve": Tool(retrieve, {"resolved": "resolved"}, "matches", version=2),
-    "report": Tool(report, {"matches": "matches"}, "report", version=2),
+    "retrieve": Tool(retrieve, {"resolved": "resolved"}, "matches", version=3),
+    "report": Tool(report, {"matches": "matches"}, "report", version=3),
     "reclassify": Tool(reclassify, {"merge": "reclassify"}, "receipt", "write"),
     "preview_delete": Tool(_preview, {"target": "deletion_target"}, "deletion_plan"),
     "delete": Tool(_delete, {"plan": "deletion_plan"}, "receipt", "delete"),

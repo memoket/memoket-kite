@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from .contracts import DATE, TEXT, ToolError, array, object_schema, utc_timestamp
+from .index import event_date_basis
 from .ingest import source_day
 
 QUERY = object_schema(
@@ -86,9 +87,10 @@ def retrieve(context, resolved: dict) -> dict:
             )
         }
     rows = []
-    missing_time = 0
+    omitted_unknown = omitted_inferred = 0
     time_axis = query.get("time_axis", "source")
     bounded = "start_date" in query or "end_date" in query
+    time_order = {"explicit": 0, "inferred": 1, "unknown": 2}
     for fid in candidates:
         fact = index.store.facts[fid]
         record = index.revisions[fact.unit]
@@ -105,28 +107,34 @@ def retrieve(context, resolved: dict) -> dict:
         ):
             continue
         day, _, sortable = _source_time(record)
+        basis = "explicit" if day else "unknown"
         if time_axis == "event":
-            day = sortable = index.facts[fid].get("event_date", "")
-        if not day:
-            missing_time += 1
+            annotation = index.facts[fid]
+            day = sortable = annotation.get("event_date", "")
+            basis = event_date_basis(annotation)
         if bounded:
-            if not day or not query.get("start_date", "") <= day <= query.get(
-                "end_date", "9999-12-31"
-            ):
+            if basis == "inferred":
+                omitted_inferred += 1
+                continue
+            if not day:
+                omitted_unknown += 1
+                continue
+            if not query.get("start_date", "") <= day <= query.get("end_date", "9999-12-31"):
                 continue
         offsets = [index.segments[sid].get("start_ms", -1) for sid in fact.src]
-        rows.append((not bool(day), day, sortable, fact.unit, min(offsets), fid))
+        rows.append((time_order[basis], day, sortable, fact.unit, min(offsets), fid))
     rows.sort()
     # Keep the latest matched window for traces while reporting the truncation.
     limit = query.get("limit", 100)
     known = [row for row in rows if not row[0]]
-    unknown = [row for row in rows if row[0]]
-    selected = (known[-limit:] + unknown)[:limit]
+    uncertain = [row for row in rows if row[0]]
+    selected = (known[-limit:] + uncertain)[:limit]
     return {
         "fact_ids": [row[-1] for row in selected],
         "matched": len(rows),
         "time_axis": time_axis,
-        "omitted_unknown_time": missing_time - len(unknown),
+        "omitted_unknown_time": omitted_unknown,
+        "omitted_inferred_time": omitted_inferred,
         "unresolved_topics": resolved["unresolved_topics"],
         "topic_codes": resolved["topic_codes"],
     }
@@ -153,6 +161,7 @@ def _evidence(index, fid: str) -> dict:
         if time
         else "unknown",
         "event_date": annotations.get("event_date"),
+        "event_date_basis": event_date_basis(annotations),
         "source_revision_active": record["active"],
         "state_key": annotations.get("state_key"),
         "state": annotations.get("state"),
@@ -174,7 +183,9 @@ def _evidence(index, fid: str) -> dict:
 def _precedes(first: dict, second: dict, time_axis: str) -> bool:
     if time_axis == "event":
         left, right = first["event_date"], second["event_date"]
-        return bool(left and right and left < right)
+        return (
+            first["event_date_basis"] == second["event_date_basis"] == "explicit" and left < right
+        )
     if first["source_day"] and second["source_day"] and first["source_day"] != second["source_day"]:
         return first["source_day"] < second["source_day"]
     if first["time_precision"] == second["time_precision"] == "timestamp":
@@ -209,10 +220,16 @@ def _states(events: list[dict], complete: bool, time_axis: str) -> dict:
             if not any(_precedes(row, other, time_axis) for other in group if other is not row)
         ]
         values = {row["state"] for row in latest}
-        status = "confirmed" if len(values) == 1 else "ambiguous"
+        has_orderable_date = time_axis == "source" or any(
+            row["event_date_basis"] == "explicit" for row in latest
+        )
+        if not complete or (len(values) == 1 and not has_orderable_date):
+            status = "partial"
+        else:
+            status = "confirmed" if len(values) == 1 else "ambiguous"
         result[key] = {
-            "status": status if complete else "partial",
-            "value": next(iter(values)) if status == "confirmed" and complete else None,
+            "status": status,
+            "value": next(iter(values)) if status == "confirmed" else None,
             "fact_ids": [row["fact_id"] for row in latest],
         }
     return result
@@ -247,7 +264,7 @@ def report(context, matches: dict) -> dict:
     }
     complete = (
         matches["matched"] == len(timeline)
-        and matches["omitted_unknown_time"] == 0
+        and matches["omitted_unknown_time"] == matches["omitted_inferred_time"] == 0
         and not matches["unresolved_topics"]
     )
     return {
@@ -259,6 +276,7 @@ def report(context, matches: dict) -> dict:
         "matched_count": matches["matched"],
         "truncated": matches["matched"] > len(timeline),
         "omitted_unknown_time": matches["omitted_unknown_time"],
+        "omitted_inferred_time": matches["omitted_inferred_time"],
         "resolved_topics": matches["topic_codes"],
         "unresolved_topics": matches["unresolved_topics"],
         "memory_version": context.workspace.version(),

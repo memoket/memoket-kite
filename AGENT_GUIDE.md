@@ -75,11 +75,14 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
 
 By default, timelines and reported states use source dates, timestamps, and
 available offsets within a single recording. Use `query.time_axis: event` to
-order and compare facts by annotated event dates. Reports retain the source
-date for citation. Two facts on the same event day do not establish an order.
-Known overlapping source intervals also leave their order unresolved. Reports
-mark competing values as ambiguous and distinguish missing dates excluded by
-date bounds from results truncated by a limit.
+order and compare facts by explicit event dates. Mark a date derived from
+context with `event_date_basis: inferred`. Omit the date when it is unknown.
+Unbounded event timelines list inferred and unknown dates after explicitly
+dated evidence. Date bounds exclude them and report separate omission counts.
+Only explicit event dates establish precedence on the event axis. Two facts on
+the same event day or known overlapping intervals can leave competing values
+ambiguous. Reports retain the source date for citation and separately mark
+results truncated by a limit.
 
 ## Source and access
 
@@ -113,7 +116,8 @@ the environment. Apply `--allow-provider` only when the user has authorized the
 selected endpoint to receive the conversation. Provider extraction sends the
 selected transcript and its supplied context, using a fresh taxonomy. Workspace
 topics and entity labels stay local. Review the returned candidates before
-running subsequent stages. To edit candidates, supply revised annotations
+running subsequent stages. Provider-suggested event dates are labeled inferred.
+To edit candidates, supply revised annotations
 through the regular ingestion pipeline.
 
 Other workspace commands can run during extraction. A concurrent attempt at the

@@ -61,7 +61,11 @@ def propose(*, allow_provider: bool, normalized: dict, model: dict) -> dict:
                 "events": fact.get("event", []),
                 **({"subject": fact["who"]} if fact["who"] else {}),
                 **({"confidence": fact["conf"]} if fact["conf"] else {}),
-                **({"event_date": fact["t"]} if len(fact.get("t", "")) == 10 else {}),
+                **(
+                    {"event_date": fact["t"], "event_date_basis": "inferred"}
+                    if len(fact.get("t", "")) == 10
+                    else {}
+                ),
             }
             for fact in facts
         ],

@@ -24,6 +24,7 @@ FACT = object_schema(
         "kind": TEXT,
         "subject": TEXT,
         "event_date": DATE,
+        "event_date_basis": {"enum": ["explicit", "inferred"]},
         "confidence": {"enum": ["low", "med", "high"]},
         "status": {"enum": ["statement", "proposal", "confirmed", "rejected", "open", "inference"]},
         "state_key": TEXT,
@@ -34,6 +35,7 @@ FACT = object_schema(
         "events": array(TEXT),
     },
 )
+FACT["dependentRequired"] = {"event_date_basis": ["event_date"]}
 ENTITY = object_schema({"name": TEXT, "aliases": array(TEXT, 1)})
 ANNOTATIONS = object_schema(
     {"facts": array(FACT)}, {"taxonomy": array(TOPIC), "entity_aliases": array(ENTITY)}
@@ -52,6 +54,12 @@ def _symbols(values) -> list[str]:
     return sorted({_symbol(value) for value in values})
 
 
+def event_date_basis(fact: dict) -> str:
+    if "event_date" in fact:
+        return fact.get("event_date_basis", "explicit")
+    return "unknown"
+
+
 def annotate(context, normalized: dict, annotations: dict) -> dict:
     conversation = normalized["conversation"]
     segment_ids = {segment["segment_id"] for segment in conversation["segments"]}
@@ -67,6 +75,8 @@ def annotate(context, normalized: dict, annotations: dict) -> dict:
         if "supersedes" in fact and fact.get("status") != "confirmed":
             raise ToolError("invalid_input", "only confirmed facts can supersede another fact")
         cleaned = {**fact, "segment_ids": sorted(set(fact["segment_ids"]))}
+        if cleaned.get("event_date_basis") == "explicit":
+            del cleaned["event_date_basis"]
         for key in ("topics", "entities", "objects", "places", "events"):
             cleaned[key] = _symbols(fact.get(key, ()))
         cleaned["kind"] = _symbol(fact.get("kind", "statement"))
@@ -217,7 +227,7 @@ def build_index(records: list[dict], merges: dict[str, str]) -> Index:
                         "content": fact["content"],
                         "kind": fact["kind"],
                         "who": fact.get("subject", ""),
-                        "t": fact.get("event_date", ""),
+                        "t": fact["event_date"] if event_date_basis(fact) == "explicit" else "",
                         "conf": fact.get("confidence", "med"),
                         "topics": sorted({vocab.resolve_topic(topic) for topic in fact["topics"]}),
                         "entities": sorted(

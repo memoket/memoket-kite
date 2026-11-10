@@ -10,6 +10,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
@@ -642,6 +643,7 @@ def test_provider_opt_in_and_candidate_mapping(work, monkeypatch):
                 {
                     "content": "Evidence-based candidate",
                     "kind": "event",
+                    "t": "2026-02-03",
                     "topics": ["onboarding"],
                     "src": ["S1", "forged"],
                 },
@@ -663,6 +665,8 @@ def test_provider_opt_in_and_candidate_mapping(work, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-placeholder")
     result = call("stage", "model", "extract", "--allow-provider")
     assert result["value"]["facts"][0]["segment_ids"] == ["text-1"]
+    assert result["value"]["facts"][0]["event_date"] == "2026-02-03"
+    assert result["value"]["facts"][0]["event_date_basis"] == "inferred"
     assert result["value"]["taxonomy"] == [{"name": "onboarding", "parents": ["general"]}]
     for stage in ("annotate", "commit", "verify"):
         call("stage", "model", stage)
@@ -765,6 +769,63 @@ def test_event_state_uses_event_dates_and_preserves_unordered_evidence(work):
     assert dated["matched_count"] == 3
     assert dated["omitted_unknown_time"] == 1 and not dated["truncated"]
     assert dated["current_reported_states"]["owner"]["status"] == "partial"
+
+
+def test_inferred_dates_are_separate_from_explicit_and_unknown_dates(work):
+    _, call = work
+    for name, source_date, event in (
+        ("Explicit", "2026-04-01", {"event_date": "2026-03-28"}),
+        ("Inferred", "2026-04-02", {"event_date": "2026-03-30", "event_date_basis": "inferred"}),
+        ("Unknown", "2026-04-03", {}),
+    ):
+        payload = text_input(name, name, date=source_date)
+        payload["annotations"]["facts"][0].update(event)
+        ingest(call, f"import-{name}", payload)
+
+    query = {"state_key": "owner", "time_axis": "event"}
+    pipeline = "timeline-reconstruction"
+    result = trace(call, "all-events", query, pipeline)
+    assert [(row["event_date_basis"], row["event_date"]) for row in result["timeline"]] == [
+        ("explicit", "2026-03-28"),
+        ("inferred", "2026-03-30"),
+        ("unknown", None),
+    ]
+    assert result["current_reported_states"]["owner"]["status"] == "ambiguous"
+    bounded = trace(call, "bounded", {**query, "start_date": "2026-03-01"}, pipeline)
+    assert [row["state"] for row in bounded["timeline"]] == ["Explicit"]
+    assert bounded["omitted_unknown_time"] == bounded["omitted_inferred_time"] == 1
+    assert not bounded["truncated"]
+    assert bounded["current_reported_states"]["owner"]["status"] == "partial"
+    limited = trace(call, "limited", {**query, "limit": 1}, pipeline)
+    assert [row["state"] for row in limited["timeline"]] == ["Explicit"]
+    assert limited["truncated"]
+    by_source = trace(call, "source", {**query, "time_axis": "source"}, pipeline)
+    assert by_source["current_reported_states"]["owner"]["value"] == "Unknown"
+    assert by_source["omitted_inferred_time"] == 0
+    codebook = ET.fromstring(call("codebook"))
+    exported = {(fact.text or "").strip(): fact.get("t") for fact in codebook.findall(".//fact")}
+    assert exported["Explicit"] == "2026-03-28"
+    assert not exported["Inferred"] and not exported["Unknown"]
+
+
+def test_event_date_provenance_is_validated_and_cannot_assert_recency_alone(work):
+    _, call = work
+    payload = text_input("incident", "Rae", date="2026-04-01")
+    fact = payload["annotations"]["facts"][0]
+    fact["event_date_basis"] = "inferred"
+    call("start", "memory-ingestion", "--run-id", "bad", payload=payload, error="invalid_input")
+    fact["event_date"] = "2026-03-30"
+    receipt = ingest(call, "estimate", payload)
+    query = {"time_axis": "event", "state_key": "owner"}
+    state = trace(call, "estimate-only", query, "timeline-reconstruction")
+    assert state["current_reported_states"]["owner"]["status"] == "partial"
+    assert state["current_reported_states"]["owner"]["value"] is None
+    assert state["timeline"][0]["evidence"][0]["text"] == "Rae"
+    fact["event_date_basis"] = "explicit"
+    payload["source"]["expected_checksum"] = receipt["checksum"]
+    assert ingest(call, "explicit-citation", payload, pipeline="memory-update")["changed"]
+    del fact["event_date_basis"]
+    assert not ingest(call, "explicit-replay", payload, pipeline="memory-update")["changed"]
 
 
 def test_source_state_orders_adjacent_segments_without_ordering_overlaps(work):
