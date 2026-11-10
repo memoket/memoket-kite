@@ -54,7 +54,7 @@ def load_pipeline(
         validate(schema_file(root, "pipeline"), definition, "pipeline")
     except ToolError as exc:
         raise ToolError("invalid_pipeline", str(exc)) from exc
-    except (OSError, UnicodeError, yaml.YAMLError, RuntimeError) as exc:
+    except (OSError, ValueError, yaml.YAMLError, RuntimeError) as exc:
         raise ToolError("invalid_pipeline", "cannot read pipeline YAML or schema") from exc
     if definition["id"] != name:
         raise ToolError("invalid_pipeline", "pipeline ID must match its filename")

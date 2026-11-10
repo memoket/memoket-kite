@@ -159,6 +159,7 @@ def test_installable_extension_and_custom_connector(work, tmp_path):
     name = "example-incident-review"
     assert custom_call("validate-pipeline", name)["skill_root"] == str(extension)
     (definitions / "bad-encoding.yaml").write_bytes(b"\xff")
+    (definitions / "bad-date.yaml").write_text("version: 2026-13-01\n")
     (definitions / "bad-syntax.yaml").write_text("stages: [\n")
     (definitions / "not-a-file.yaml").mkdir()
     (definitions / "bad-skill.yaml").write_text(
@@ -168,6 +169,7 @@ def test_installable_extension_and_custom_connector(work, tmp_path):
     partial = custom_call("pipelines")
     assert partial["pipelines"] == catalog["pipelines"]
     assert [(issue["id"], issue["code"]) for issue in partial["invalid_extensions"]] == [
+        ("bad-date", "invalid_pipeline"),
         ("bad-encoding", "invalid_pipeline"),
         ("bad-skill", "invalid_pipeline"),
         ("bad-syntax", "invalid_pipeline"),
