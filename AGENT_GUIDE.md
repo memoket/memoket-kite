@@ -347,7 +347,9 @@ Retrieval reuses the stored Codebook after checking its checksum against the
 workspace snapshot and validating its source IDs and lines. The first read
 from an older workspace verifies the Codebook against a full rebuild.
 `kite-tool integrity` repeats that full comparison on demand. If the index
-is damaged and the source records are intact, run `memory-rebuild`.
+is damaged and the source records are intact, run `memory-rebuild`. Ordinary
+memory writes check the existing snapshot before changing it and report
+`integrity_error` on a mismatch.
 An `integrity_error` for an invalid stored source record requires a verified
 backup or an authorized original export for recovery.
 

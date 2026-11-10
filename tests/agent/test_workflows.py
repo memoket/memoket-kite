@@ -2338,6 +2338,53 @@ def test_rebuild_uses_verified_source_records(work):
     assert not call("stage", "already-healthy", "rebuild")["value"]["changed"]
 
 
+@pytest.mark.parametrize("damage", ["sealed_annotations", "legacy_index", "seal_version"])
+def test_ordinary_writes_do_not_reseal_damaged_snapshot(work, damage):
+    directory, call = work
+    source = text_input("original", "Rae owns the review.")
+    original = ingest(call, "original", source)
+    call(
+        "start",
+        "memory-deletion",
+        "--run-id",
+        "remove",
+        payload={"target": {"source": "text", "conversation_id": "original"}},
+    )
+    token = call("stage", "remove", "preview")["value"]["approval_token"]
+    database = directory / "kite.sqlite3"
+    with sqlite3.connect(database) as db:
+        raw = db.execute("SELECT payload FROM revisions").fetchone()[0]
+        record = json.loads(raw)
+        if damage == "sealed_annotations":
+            record["facts"][0]["status"] = "open"
+        elif damage == "legacy_index":
+            db.execute("DELETE FROM index_seal")
+            record["facts"][0]["content"] = "Altered stored annotation"
+        else:
+            db.execute("UPDATE index_seal SET version=version+1")
+        db.execute("UPDATE revisions SET payload=?", (json.dumps(record),))
+
+    call("stage", "remove", "apply", "--approve", token, error="integrity_error")
+    added = text_input("next", "Next review.")
+    ingest(call, "next", added, error="integrity_error")
+    ingest(call, "duplicate", source, error="integrity_error")
+    amended = copy.deepcopy(source)
+    amended["source"]["expected_checksum"] = original["checksum"]
+    amended["annotations"]["facts"][0]["content"] = "Rae is the assigned reviewer."
+    ingest(call, "amend", amended, pipeline="memory-update", error="integrity_error")
+    assert call("status", "next")["memory_version"] == original["memory_version"]
+    assert call("deletion-audit")["deletions"] == []
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT count(*) FROM revisions").fetchone() == (1,)
+        assert db.execute("SELECT count(*) FROM tombstones").fetchone() == (0,)
+        db.execute("UPDATE revisions SET payload=?", (raw,))
+        if damage == "seal_version":
+            db.execute("UPDATE index_seal SET version=version-1")
+    recovered = call("stage", "next", "commit")["value"]
+    assert recovered["changed"] and recovered["memory_version"] == original["memory_version"] + 1
+    assert call("stage", "next", "verify")["value"]["revisions"] == 2
+
+
 @pytest.mark.parametrize("damage", ["json", "structure", "facts", "identity"])
 def test_damaged_source_record_returns_private_structured_error(work, damage):
     directory, call = work

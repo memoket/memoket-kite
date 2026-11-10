@@ -436,6 +436,25 @@ class Workspace:
     def _seal_index(self, version: int, checksum: str) -> None:
         self.db.execute("INSERT OR REPLACE INTO index_seal VALUES(1, ?, ?)", (version, checksum))
 
+    def _checked_snapshot(
+        self, current: sqlite3.Row, rows: list[sqlite3.Row], hierarchy: dict
+    ) -> tuple[str, str | None]:
+        checksum = _snapshot_checksum(current["xml"], current["merges"], rows, hierarchy)
+        seal = self._index_seal(current["version"])
+        if seal is not None and seal != checksum:
+            raise ToolError("integrity_error", "Codebook snapshot seal differs from its sources")
+        if seal is None and self.db.execute("SELECT 1 FROM index_seal").fetchone():
+            raise ToolError("integrity_error", "Codebook snapshot seal belongs to another version")
+        return checksum, seal
+
+    def _require_current_index(self) -> None:
+        _, seal = self._checked_snapshot(
+            self._memory(), self._revision_rows(), self.topic_hierarchy()
+        )
+        if seal is None:
+            # Legacy workspaces need a source comparison before their first seal.
+            self.index()
+
     def index(self, *, verify: bool = False) -> Index:
         if not self.read_only or verify:
             return self._load_index(verify=verify)
@@ -450,10 +469,7 @@ class Workspace:
         xml = current["xml"]
         version = current["version"]
         hierarchy = self.topic_hierarchy()
-        checksum = _snapshot_checksum(xml, current["merges"], rows, hierarchy)
-        seal = self._index_seal(version)
-        if seal is not None and seal != checksum:
-            raise ToolError("integrity_error", "Codebook snapshot seal differs from its sources")
+        checksum, seal = self._checked_snapshot(current, rows, hierarchy)
         records = self._records(rows)
         if seal is not None and not verify:
             return load_index(xml, records)
@@ -606,6 +622,7 @@ class Workspace:
         self.require_source_allowed(
             conversation["source"], uid, conversation["metadata"]["source_reference"]
         )
+        self._require_current_index()
         prior = self.db.execute(
             "SELECT * FROM revisions WHERE source_key=? AND active=1", (key,)
         ).fetchone()
@@ -739,6 +756,7 @@ class Workspace:
     def deletion_plan(
         self, target: dict, *, run_id: str
     ) -> tuple[dict, list[dict], list[tuple[str, str]]]:
+        self._require_current_index()
         ids = set(_target_ids(target))
         source = target["source"]
         query = "SELECT * FROM revisions WHERE source=?"
