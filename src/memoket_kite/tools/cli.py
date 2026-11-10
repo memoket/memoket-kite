@@ -146,6 +146,12 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("integrity", help="verify the current Codebook against its source records")
     backup = commands.add_parser("backup", help="write a verified private copy to a new directory")
     backup.add_argument("destination", type=Path)
+    backup.add_argument(
+        "--require-deletions-from",
+        type=Path,
+        metavar="WORKSPACE",
+        help="reject recovery copies missing deletions recorded in this workspace",
+    )
     commands.add_parser("deletion-audit", help="show recent deletion receipts without source text")
     sources = commands.add_parser(
         "sources", help="list conversation identities and current checksums"
@@ -256,6 +262,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             args.workspace,
             args.destination,
             verify_runs=lambda copy: verify_run_storage(copy, root),
+            require_deletions_from=args.require_deletions_from,
         ), None
 
     if args.command == "source-history":

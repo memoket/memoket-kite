@@ -6,7 +6,7 @@ import json
 import os
 import sqlite3
 from collections.abc import Callable, Iterator
-from contextlib import closing, contextmanager, suppress
+from contextlib import ExitStack, closing, contextmanager, suppress
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -181,7 +181,12 @@ class Workspace:
 
     @classmethod
     def backup(
-        cls, directory: Path, destination: Path, *, verify_runs: Callable[[Workspace], dict]
+        cls,
+        directory: Path,
+        destination: Path,
+        *,
+        verify_runs: Callable[[Workspace], dict],
+        require_deletions_from: Path | None = None,
     ) -> dict:
         source = directory.expanduser().resolve()
         if not (source / "kite.sqlite3").is_file():
@@ -193,7 +198,10 @@ class Workspace:
             raise ToolError("conflict", "backup destination already exists") from exc
 
         try:
-            with TemporaryDirectory(prefix=".kite-backup-", dir=destination) as temporary:
+            with (
+                TemporaryDirectory(prefix=".kite-backup-", dir=destination) as temporary,
+                ExitStack() as deletion_guard,
+            ):
                 staging = Path(temporary)
                 database = staging / "kite.sqlite3"
                 database.touch(mode=0o600)
@@ -202,6 +210,13 @@ class Workspace:
                     original.db.commit()
                     original.db.execute("BEGIN")
                     original.version()
+                    checked_deletions = {}
+                    if require_deletions_from is not None:
+                        # Keep the authority's read transaction open until publication.
+                        authority = deletion_guard.enter_context(
+                            cls.open(require_deletions_from, read_only=True)
+                        )
+                        checked_deletions = original._require_deletion_history(authority)
                     with closing(sqlite3.connect(database, timeout=15)) as copy:
                         original.db.backup(copy)
                 with cls.open(staging) as snapshot:
@@ -234,6 +249,7 @@ class Workspace:
                         "revisions": len(index.revisions),
                         "invalidated_approvals": len(approvals),
                         **verified,
+                        **checked_deletions,
                     }
                 try:
                     os.link(database, destination / database.name)
@@ -246,6 +262,21 @@ class Workspace:
             with suppress(OSError):
                 destination.rmdir()
             raise
+
+    def _require_deletion_history(self, authority: Workspace) -> dict[str, int]:
+        if authority.db.execute("PRAGMA journal_mode").fetchone()[0] == "wal":
+            raise ToolError("invalid_input", "deletion authority must use a rollback journal")
+        checked = {}
+        for table, field in (
+            ("tombstones", "checked_tombstones"),
+            ("deletion_audit", "checked_deletion_receipts"),
+        ):
+            expected = {tuple(row) for row in authority.db.execute(f"SELECT * FROM {table}")}
+            actual = {tuple(row) for row in self.db.execute(f"SELECT * FROM {table}")}
+            if not expected <= actual:
+                raise ToolError("stale_backup", "backup is missing required deletion history")
+            checked[field] = len(expected)
+        return checked
 
     @contextmanager
     def provider_slot(self, run_id: str, stage_id: str):

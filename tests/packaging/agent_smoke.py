@@ -165,6 +165,15 @@ def main() -> None:
             "start", "memory-ingestion", payload=source, workspace=recovered, error="deleted_source"
         )
         assert call("integrity", workspace=recovered)["revisions"] == 0
+        rejected = directory / "rejected"
+        call(
+            "backup",
+            str(rejected),
+            "--require-deletions-from",
+            str(recovered),
+            error="stale_backup",
+        )
+        assert not rejected.exists()
         assert call("integrity")["revisions"] == 0
         assert call("status", run_id)["state"] == "failed"
         print(

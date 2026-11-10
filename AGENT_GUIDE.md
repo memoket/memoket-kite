@@ -336,6 +336,20 @@ present when the snapshot was taken. The copy has its own workspace identity
 and any pending deletion previews require fresh authorization. Retain and
 remove backup copies under the same policy as other private exports.
 
+When recovering from an older backup, use the latest trusted workspace for
+the same data as the deletion authority. Publish to a fresh directory.
+
+```sh
+kite-tool --workspace ./memory-backup backup ./memory-recovered \
+  --require-deletions-from ./memory
+```
+
+This checks all deletion receipts and reimport blocks in `./memory`. If any
+are absent from the candidate, KITE returns `stale_backup` and publishes no
+copy. Use a snapshot taken after those deletions. The guard only sees deletions
+recorded in the supplied authority. Keep that workspace available during
+recovery and apply your retention policy to existing backups separately.
+
 ## Extend
 
 Use `kite-tool --extensions DIR` to discover and run trusted project workflows

@@ -12,7 +12,7 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1193,6 +1193,86 @@ def test_backup_rejects_conflicts_and_cleans_failed_copies(work, tmp_path):
         db.execute("UPDATE memory SET xml=?", (b"corrupt Codebook",))
     call("backup", str(broken), error="integrity_error")
     assert not broken.exists()
+
+
+def test_guarded_backup_rejects_history_missing_deletions(work, tmp_path):
+    directory, call = work
+    removed = text_input("gone", "private removed content")
+    ingest(call, "gone", removed)
+    kept = ingest(call, "keep", text_input("keep", "Keep this evidence"))
+    old = tmp_path / "old"
+    call("backup", str(old))
+    target = {"source": "text", "conversation_id": "gone"}
+    _delete_source(call, "remove", target)
+
+    candidate = tmp_path / "candidate"
+    guard = ("--require-deletions-from", str(directory))
+    old_db = old / "kite.sqlite3"
+    before = old_db.read_bytes()
+    assert call("source-history", "text", "gone", workspace_dir=old)["revisions"]
+    failure = call("backup", str(candidate), *guard, workspace_dir=old, error="stale_backup")
+    assert "private removed content" not in json.dumps(failure)
+    assert not candidate.exists() and old_db.read_bytes() == before
+
+    first_safe_copy = tmp_path / "first-safe"
+    result = call("backup", str(first_safe_copy), *guard)
+    assert result["checked_tombstones"] == 2 and result["checked_deletion_receipts"] == 1
+    _delete_source(call, "remove-again", target)
+    # The earlier copy has both tombstones, but lacks the second receipt.
+    call("backup", str(candidate), *guard, workspace_dir=first_safe_copy, error="stale_backup")
+    assert not candidate.exists()
+
+    current = tmp_path / "current"
+    call("backup", str(current))
+    result = call("backup", str(candidate), *guard, workspace_dir=current)
+    assert result["checked_tombstones"] == result["checked_deletion_receipts"] == 2
+    assert call("deletion-audit", workspace_dir=candidate) == call("deletion-audit")
+    assert (
+        call("source-history", "text", "keep", workspace_dir=candidate)["current_checksum"]
+        == kept["checksum"]
+    )
+    call("source-history", "text", "gone", workspace_dir=candidate, error="not_found")
+    call(
+        "start",
+        "memory-ingestion",
+        "--run-id",
+        "replay",
+        payload=removed,
+        workspace_dir=candidate,
+        error="deleted_source",
+    )
+
+    missing = tmp_path / "missing"
+    output = tmp_path / "failed"
+    call("backup", str(output), "--require-deletions-from", str(missing), error="not_found")
+    assert not missing.exists() and not output.exists()
+
+
+def test_guarded_backup_pins_deletion_authority_through_publication(work, tmp_path, monkeypatch):
+    directory, call = work
+    call("integrity")
+    source = tmp_path / "source"
+    call("backup", str(source))
+    database = directory / "kite.sqlite3"
+    output = tmp_path / "published"
+    link = os.link
+
+    def publish(staging, destination):
+        with closing(sqlite3.connect(database, timeout=0)) as writer:
+            with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+                writer.execute("BEGIN EXCLUSIVE")
+        link(staging, destination)
+
+    monkeypatch.setattr(workspace.os, "link", publish)
+    guard = ("--require-deletions-from", str(directory))
+    assert call("backup", str(output), *guard, workspace_dir=source)["checked_tombstones"] == 0
+    with closing(sqlite3.connect(database, timeout=0)) as writer:
+        writer.execute("BEGIN EXCLUSIVE")
+        writer.commit()
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    rejected = tmp_path / "rejected"
+    call("backup", str(rejected), *guard, workspace_dir=source, error="invalid_input")
+    assert not rejected.exists()
 
 
 @pytest.mark.parametrize("damage", ["input", "payload", "missing", "orphan", "operation"])
