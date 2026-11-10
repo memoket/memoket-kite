@@ -7,6 +7,7 @@ import hashlib
 import json
 import subprocess
 import sys
+from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -316,6 +317,70 @@ def _snapshot(kite: Kite, ingestions: list[dict]) -> dict:
     }
 
 
+def _fixture_facts(fixture: dict, *, exclude: dict | None = None) -> Counter:
+    """Derive the expected fact and citation contents from the raw fixture."""
+    facts = Counter()
+    for item in fixture["sources"]:
+        source = item["source"]
+        name, raw = source["format"], source["payload"]
+        if name == "memoket":
+            raw = raw["data"]
+            identity = reference = raw["id"]
+            lines = {
+                line["line_id"]: line["text"]
+                for group in raw["segments"]
+                for line in group["sentences"]
+            }
+        else:
+            identity = raw["conversation_id"]
+            reference = raw["metadata"]["source_reference"]
+            lines = (
+                {"text-1": raw["text"]}
+                if name == "text"
+                else {line["segment_id"]: line["text"] for line in raw["segments"]}
+            )
+        if exclude == {"source": name, "conversation_id": identity}:
+            continue
+        for fact in item["annotations"]["facts"]:
+            evidence = tuple(
+                sorted((name, identity, reference, key, lines[key]) for key in fact["segment_ids"])
+            )
+            facts[fact["content"], evidence] += 1
+    return facts
+
+
+def _fact_provenance(kite: Kite, expected: Counter) -> dict:
+    report = kite.call(
+        "query", "--pipeline", "timeline-reconstruction", payload={"query": {"limit": 1000}}
+    )["value"]
+    observed = Counter(
+        (
+            row["content"],
+            tuple(
+                sorted(
+                    (
+                        line["source"],
+                        line["conversation_id"],
+                        line["source_reference"],
+                        line["segment_id"],
+                        line["text"],
+                    )
+                    for line in row["evidence"]
+                )
+            ),
+        )
+        for row in report["timeline"]
+    )
+    matched = (expected & observed).total()
+    return {
+        "expected_facts": expected.total(),
+        "observed_facts": report["matched_count"],
+        "facts_with_expected_provenance": matched,
+        "fact_provenance_completeness": _rate(matched, expected.total()),
+        "exact_match": not report["truncated"] and observed == expected,
+    }
+
+
 def _workflow_metrics(cases: dict, lifecycle: dict, successful: int, attempted: int) -> dict:
     recovery, deletion = cases[RECOVERY_CASE], cases[DELETION_CASE]
     completed_pipelines = (
@@ -358,6 +423,7 @@ def offline(fixture: dict) -> dict:
         kite = Kite(Path(directory) / "memory")
         ingestions = _seed(kite, fixture)
         snapshot = _snapshot(kite, ingestions)
+        provenance = _fact_provenance(kite, _fixture_facts(fixture))
         duplicate = _ingest(kite, "duplicate", fixture["sources"][0])
         stable = _snapshot(kite, ingestions) == snapshot
         cases = {}
@@ -365,14 +431,14 @@ def offline(fixture: dict) -> dict:
             report = kite.trace(name, case)
             cases[name] = _grade(kite, case, _reference_answer(case, name, report), snapshot)
 
-        approval, baseline = _deletion_preview(kite, "format-decision", snapshot)
+        approval, baseline = _deletion_preview(kite, "format-decision", snapshot, fixture)
         deletion = approval["run_id"]
         kite.call("stage", deletion, "apply", "--approve", approval["plan"]["approval_token"])
         case = _deletion_trace(fixture)
         surviving = kite.trace("after-delete", case)
         answer = _reference_answer(case, "after-delete", surviving)
         answer["deletion_run_id"] = deletion
-        cases[DELETION_CASE] = _score_deletion(kite, case, answer, baseline)
+        cases[DELETION_CASE] = _score_deletion(kite, case, answer, baseline, fixture)
         lifecycle = {
             "new_ingestions_completed": sum(
                 row["completed"] and row["changed"] for row in ingestions
@@ -387,6 +453,7 @@ def offline(fixture: dict) -> dict:
                 "expected_sources_preserved"
             ]
             and cases[DELETION_CASE]["post_deletion_evidence_verified"],
+            "fact_provenance_verified": provenance["exact_match"],
         }
         recovery = _offline_recovery(Path(directory) / "recovery")
         cases[RECOVERY_CASE] = recovery
@@ -402,6 +469,7 @@ def offline(fixture: dict) -> dict:
             "fixture_sha256": snapshot["fixture_sha256"],
             "passed": passed,
             "lifecycle": lifecycle,
+            "fact_provenance": provenance,
             "successful_tool_calls": successful,
             "attempted_tool_calls": attempted,
             "workflow_metrics": _workflow_metrics(cases, lifecycle, successful, attempted),
@@ -631,13 +699,20 @@ def _deletion_trace(fixture: dict) -> dict:
     }
 
 
-def _deletion_preview(kite: Kite, prior_run: str, snapshot: dict) -> tuple[dict, dict]:
+def _deletion_preview(
+    kite: Kite, prior_run: str, snapshot: dict, fixture: dict
+) -> tuple[dict, dict]:
     run = kite.call("start", "memory-deletion", payload={"target": DELETION_TARGET})["run_id"]
     plan = kite.stage(run, "preview")["value"]
-    if plan["target"] != DELETION_TARGET or plan["revisions"] != 1:
+    total_facts = _fixture_facts(fixture).total()
+    surviving_facts = _fixture_facts(fixture, exclude=DELETION_TARGET).total()
+    if (
+        plan["target"] != DELETION_TARGET
+        or plan["revisions"] != 1
+        or plan["facts"] != total_facts - surviving_facts
+    ):
         raise BenchmarkError("fixture did not produce the expected deletion preview")
     sources = kite.call("sources")["sources"]
-    integrity = kite.call("integrity")
     return {"run_id": run, "plan": plan}, {
         **snapshot,
         "case": DELETION_CASE,
@@ -646,8 +721,8 @@ def _deletion_preview(kite: Kite, prior_run: str, snapshot: dict) -> tuple[dict,
         "removed_revisions": plan["revisions"],
         "removed_facts": plan["facts"],
         "prior_run_id": prior_run,
-        "expected_revisions": integrity["revisions"] - plan["revisions"],
-        "expected_facts": integrity["facts"] - plan["facts"],
+        "expected_revisions": len(fixture["sources"]) - plan["revisions"],
+        "expected_facts": surviving_facts,
         "expected_sources": [
             source
             for source in sources
@@ -662,7 +737,7 @@ def _prepare_deletion(directory: Path, fixture: dict) -> tuple[Kite, dict]:
     snapshot = _snapshot(kite, _seed(kite, fixture))
     prior_run = "prior-report"
     kite.trace(prior_run, fixture["cases"]["format-decision"])
-    approval, baseline = _deletion_preview(kite, prior_run, snapshot)
+    approval, baseline = _deletion_preview(kite, prior_run, snapshot, fixture)
     (directory / "approved-preview.json").write_text(json.dumps(approval), encoding="utf-8")
     (directory / "baseline.json").write_text(json.dumps(baseline), encoding="utf-8")
     case = _deletion_trace(fixture)
@@ -695,7 +770,7 @@ Use `ANSWER.schema.json` for the response.
     return kite, baseline
 
 
-def _score_deletion(kite: Kite, case: dict, answer: dict, snapshot: dict) -> dict:
+def _score_deletion(kite: Kite, case: dict, answer: dict, snapshot: dict, fixture: dict) -> dict:
     integrity = kite.call("integrity")
     result = _grade(kite, case, answer, {**snapshot, **integrity})
     result.pop("workspace_unchanged")
@@ -745,6 +820,7 @@ def _score_deletion(kite: Kite, case: dict, answer: dict, snapshot: dict) -> dic
         and integrity["facts"] == snapshot["expected_facts"]
         and kite.call("sources")["sources"] == snapshot["expected_sources"]
     )
+    provenance = _fact_provenance(kite, _fixture_facts(fixture, exclude=DELETION_TARGET))
     report_verified = False
     if result["pipeline_completed"]:
         trace_run = answer["run_id"]
@@ -763,9 +839,17 @@ def _score_deletion(kite: Kite, case: dict, answer: dict, snapshot: dict) -> dic
         deletion_stage_retry_rate=_rate(deletion_retries, deletion_attempts),
         prior_report_invalidated=invalidated,
         expected_sources_preserved=preserved,
+        surviving_fact_provenance=provenance,
         post_deletion_evidence_verified=report_verified,
     )
-    result["passed"] &= applied and audited and invalidated and preserved and report_verified
+    result["passed"] &= (
+        applied
+        and audited
+        and invalidated
+        and preserved
+        and report_verified
+        and provenance["exact_match"]
+    )
     return result
 
 
@@ -811,7 +895,7 @@ def main(argv=None) -> int:
             if recovery:
                 metrics = _score_recovery(kite, recovery_fixture, answer, snapshot)
             elif deletion:
-                metrics = _score_deletion(kite, _deletion_trace(fixture), answer, snapshot)
+                metrics = _score_deletion(kite, _deletion_trace(fixture), answer, snapshot, fixture)
             else:
                 metrics = _grade(kite, fixture["cases"][args.case], answer, snapshot)
             result = {

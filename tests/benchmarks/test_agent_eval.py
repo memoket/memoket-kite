@@ -218,7 +218,33 @@ def test_deletion_score_requires_the_authorized_checkpoint(tmp_path):
     report = kite.trace("trace", case)
     answer = _reference_answer(case, "trace", report)
     answer["deletion_run_id"] = "replacement"
-    result = _score_deletion(kite, case, answer, baseline)
+    result = _score_deletion(kite, case, answer, baseline, fixture)
     assert result["expected_sources_preserved"] and result["post_deletion_evidence_verified"]
     assert result["prior_report_invalidated"]
     assert not result["approved_deletion_applied"] and not result["passed"]
+
+
+def test_deletion_grade_checks_every_surviving_fact_even_if_counts_match(tmp_path):
+    fixture = json.loads(FIXTURE.read_text())
+    altered = deepcopy(fixture)
+    catering = next(
+        item
+        for item in altered["sources"]
+        if item["source"]["payload"].get("conversation_id") == "catering"
+    )
+    catering["source"]["payload"]["text"] = "The catering spreadsheet uses TSV."
+    kite, baseline = _prepare_deletion(tmp_path / "task", altered)
+    run = baseline["deletion_run_id"]
+    kite.call("stage", run, "apply", "--approve", baseline["operation_id"])
+    case = _deletion_trace(fixture)
+    report = kite.trace("trace", case)
+    answer = _reference_answer(case, "trace", report)
+    answer["deletion_run_id"] = run
+
+    result = _score_deletion(kite, case, answer, baseline, fixture)
+    assert result["expected_sources_preserved"] and result["post_deletion_evidence_verified"]
+    assert result["approved_deletion_applied"] and result["prior_report_invalidated"]
+    provenance = result["surviving_fact_provenance"]
+    assert provenance["observed_facts"] == provenance["expected_facts"] == 7
+    assert provenance["facts_with_expected_provenance"] == 6
+    assert not provenance["exact_match"] and not result["passed"]

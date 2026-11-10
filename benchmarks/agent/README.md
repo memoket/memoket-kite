@@ -23,6 +23,8 @@ The recovery run is older than the default run list and must be located
 among newer maintenance runs.
 The approved deletion case checks the deletion receipt, the surviving source
 inventory, invalidation of the prior report, and citations from a new trace.
+It verifies all surviving facts against the raw fixture, including facts outside
+the queried topic. The offline run performs the same check before deletion.
 The `untrusted-transcript` case checks that an instruction-like transcript
 excerpt is preserved verbatim and the supported decision remains citable.
 The runner exits nonzero if any case or lifecycle check fails.
@@ -84,6 +86,10 @@ A correct string with a missing or unrelated citation fails.
 - `source_scope_correct` checks the report for missing or extraneous source
   conversations, omitted undated records, and truncation. `date_scope_correct`
   checks the saved date bounds and time axis when a task specifies a range.
+- `fact_provenance` in the offline summary and `surviving_fact_provenance` in
+  the deletion case compare stored facts with the fixture. A match requires the
+  fact text and all original source identities, references, segment IDs and quotes.
+  `exact_match` also rejects unexpected or duplicated facts.
 - `stage_retries`, `stage_attempts` and `stage_retry_rate` come from the submitted
   checkpoint for the expected pipeline. Failed or unfinished runs still count
   their recorded attempts. Recovery and deletion report the write workflow's
