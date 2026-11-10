@@ -12,9 +12,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
-from .contracts import ToolError, digest, encode, now, utc_timestamp
+from .contracts import ToolError, digest, encode, now
 from .index import Index, build_index, fact_entries, load_index, revision_id, source_key
 from .ingest import source_day, source_identity
+from .timing import precedes, source_timing
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS memory (
@@ -648,6 +649,9 @@ class Workspace:
             return
         index = self.index()
         used = {fact["supersedes"] for fact in index.facts.values() if "supersedes" in fact}
+        current = record["conversation"]
+        current_day = source_day(current)
+        segments = {segment["segment_id"]: segment for segment in current["segments"]}
         for fact in replacements:
             target = fact["supersedes"]
             prior = index.facts.get(target)
@@ -662,15 +666,22 @@ class Workspace:
                     "conflict",
                     "supersession requires an unclaimed confirmed fact with the same state key",
                 )
-            current = record["conversation"]
-            previous = index.revisions[index.store.facts[target].unit]["conversation"]
-            current_day, previous_day = source_day(current), source_day(previous)
-            current_stamp, previous_stamp = current.get("started_at"), previous.get("started_at")
-            if (previous_day and current_day and current_day < previous_day) or (
-                previous_stamp
-                and current_stamp
-                and utc_timestamp(current_stamp) < utc_timestamp(previous_stamp)
-            ):
+            previous_fact = index.store.facts[target]
+            previous = index.revisions[previous_fact.unit]
+            previous_conversation = previous["conversation"]
+            corrected_time = source_timing(
+                record["checksum"],
+                current_day,
+                current.get("started_at"),
+                [segments[sid] for sid in fact["segment_ids"]],
+            )
+            previous_time = source_timing(
+                previous["checksum"],
+                source_day(previous_conversation),
+                previous_conversation.get("started_at"),
+                [index.segments[sid] for sid in previous_fact.src],
+            )
+            if precedes(corrected_time, previous_time):
                 raise ToolError("conflict", "supersession evidence predates the target evidence")
             used.add(target)
 

@@ -2028,6 +2028,74 @@ def test_source_timeline_uses_cited_intervals_across_recordings(work, short_end_
     assert [row["state"] for row in first["timeline"]] == ["Ada"]
 
 
+@pytest.mark.parametrize("correction_is_later", [True, False])
+def test_cross_recording_correction_uses_cited_segment_times(work, correction_is_later):
+    _, call = work
+
+    def recording(name, stamp, offset):
+        payload = text_input(name, name)
+        source = payload["source"]
+        source["format"] = "transcript"
+        del source["payload"]["text"]
+        source["payload"].update(
+            started_at=stamp,
+            segments=[{"segment_id": "text-1", "text": name, "start_ms": offset}],
+        )
+        return payload
+
+    # The earlier recording captures its cited line after the later recording's line.
+    earlier_recording = recording("Ada", "2026-11-01T23:59:00Z", 65_000)
+    later_recording = recording("Rae", "2026-11-02T08:00:02+08:00", 0)
+    original, corrected = (
+        (later_recording, earlier_recording)
+        if correction_is_later
+        else (earlier_recording, later_recording)
+    )
+    first = ingest(call, "first", original)
+    target = first["revision_id"] + "F1"
+    corrected["annotations"]["facts"][0]["supersedes"] = target
+    before = call("integrity")
+    if correction_is_later:
+        updated = ingest(call, "corrected", corrected, pipeline="memory-update")
+        assert updated["changed"]
+        result = trace(call, "history", {"state_key": "owner"}, "task-tracing")
+        assert [row["state"] for row in result["timeline"]] == ["Rae", "Ada"]
+        assert [row["effective"] for row in result["timeline"]] == [False, True]
+        assert result["timeline"][1]["supersedes"] == target
+        assert result["current_reported_states"]["owner"]["value"] == "Ada"
+        assert not ingest(call, "replay", corrected, pipeline="memory-update")["changed"]
+    else:
+        rejected = ingest(call, "too-early", corrected, pipeline="memory-update", error="conflict")
+        assert "predates" in rejected["error"]["message"]
+        assert call("integrity") == before
+
+
+def test_same_revision_correction_rejects_earlier_cited_line(work):
+    _, call = work
+    payload = text_input("meeting", "Rae")
+    source = payload["source"]
+    source["format"] = "transcript"
+    del source["payload"]["text"]
+    source["payload"]["segments"] = [
+        {"segment_id": "earlier", "text": "Ada", "start_ms": 0, "end_ms": 1000},
+        {"segment_id": "text-1", "text": "Rae, confirmed by Ada", "start_ms": 1000},
+    ]
+    original = ingest(call, "first", payload)
+    source["expected_checksum"] = original["checksum"]
+    fact = payload["annotations"]["facts"][0]
+    fact.update(
+        content="Ada",
+        state="Ada",
+        segment_ids=["earlier"],
+        supersedes=original["revision_id"] + "F1",
+    )
+    ingest(call, "too-early", payload, pipeline="memory-update", error="conflict")
+    assert call("integrity")["facts"] == 1
+    fact.update(content="Rae, confirmed by Ada", state="Rae", segment_ids=["text-1"])
+    amended = ingest(call, "fix-annotation", payload, pipeline="memory-update")
+    assert amended["changed"] and amended["revision_id"] == original["revision_id"]
+
+
 def test_legacy_index_is_checked_once_and_integrity_still_rebuilds(work, monkeypatch):
     directory, call = work
     ingest(call, "first", fixture("first-meeting"))

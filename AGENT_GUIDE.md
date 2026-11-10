@@ -254,9 +254,13 @@ or checkpoint.
 To correct a confirmed decision or task, cite evidence that supports the
 corrected assertion. Supply a confirmed fact with the same `state_key` and the
 older fact ID in `supersedes`. The predecessor stays in history and the report
-marks the corrected fact as effective. Topic merges keep the old label as an
-alias. Annotate entity variants with `entity_aliases` when multiple names refer
-to the same entity.
+marks the corrected fact as effective. KITE rejects a correction whose cited
+segments are demonstrably earlier than the predecessor's evidence. The check
+uses the same source chronology as trace reports. An explicit correction can
+cite the same segment when fixing an annotation error.
+
+Topic merges keep the old label as an alias. Annotate entity variants with
+`entity_aliases` when multiple names refer to the same entity.
 
 Use `topic-reclassification` to replace the parents of an existing topic.
 Supply a `move` input with `topic` and `parents`, such as
