@@ -84,6 +84,23 @@ def main() -> None:
         assert saved["revisions"] == 2 and saved["verified_runs"] == 3
         report = call("query", "--topic", "first run", workspace=demo_workspace)["value"]
         assert report == call("artifact", "trace", "report", workspace=demo_workspace)["value"]
+        readable = subprocess.check_output(
+            [
+                str(command),
+                "--workspace",
+                str(demo_workspace),
+                "query",
+                "--topic",
+                "first run",
+                "--text",
+            ],
+            cwd=directory,
+            text=True,
+            timeout=45,
+        )
+        assert "onboarding-design  Confirmed  short checklist  [3]" in readable
+        assert readable.count("memoket/184#line-b") == 1
+        assert report["timeline"][2]["evidence"][0]["source_line_id"] in readable
         call("demo", "--save-workspace", str(demo_workspace), error="conflict")
         assert call("integrity", "--include-workflows", workspace=demo_workspace) == saved
         call("source-history", "text", "note", error="not_found")

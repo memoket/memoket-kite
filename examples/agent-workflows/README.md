@@ -38,10 +38,13 @@ without a checkout.
 
 ```sh
 kite-tool demo --text --save-workspace ./kite-demo
-kite-tool --workspace ./kite-demo query --topic "first run"
+kite-tool --workspace ./kite-demo query --topic "first run" --text
 ```
 
-The save operation requires a new destination directory. Use
+The text report shows the timeline, reported states, and original quotes. Pass a
+source line ID from the report to `kite-tool evidence` to read nearby lines.
+Omit `--text` for the complete JSON report. The save operation requires a new
+destination directory. Use
 `kite-tool --workspace ./kite-demo artifact trace report` to read the saved
 trace and compare its evidence with a fresh query.
 

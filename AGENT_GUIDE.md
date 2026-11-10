@@ -50,6 +50,8 @@ date window, and `--limit` and `--cursor` to page. Run `kite-tool query --help`
 for the available flags. For the full query schema, pass the `query` input object
 with `--input` and omit the filter flags. The command uses the built-in trace
 tools in one read transaction and saves no checkpoint or artifact.
+For a terminal view, add `--text` to read the timeline, reported states, and
+numbered quotations with source line IDs. JSON remains the default.
 
 ```sh
 kite-tool query --input - <<'JSON'

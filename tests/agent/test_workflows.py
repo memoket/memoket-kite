@@ -45,7 +45,7 @@ def work(tmp_path, capsys, monkeypatch):
         code = cli.main([*resources, "--workspace", str(workspace_dir or directory), *args])
         output = capsys.readouterr().out
         assert code == (2 if error else 0), output
-        if args[0] == "codebook" and not error:
+        if not error and (args[0] == "codebook" or (args[0] == "query" and "--text" in args)):
             return output
         data = json.loads(output)
         if args[0] in {"audio-source", "file-source"} and not error:
@@ -712,6 +712,9 @@ def test_revision_correction_consolidation_and_query_scopes(work):
     assert [row["content"] for row in report["timeline"]] == ["Alice", "Bob"]
     assert [row["effective"] for row in report["timeline"]] == [False, True]
     assert report["current_reported_states"]["owner"]["value"] == "Bob"
+    readable = call("query", "--text", "--pipeline", "task-tracing", "--topic", "launch")
+    assert "2026-01-01  Confirmed (historical)  [1]" in readable
+    assert "owner  Confirmed  Bob  [2]" in readable
     bounded = trace(
         call,
         "time",
@@ -868,6 +871,11 @@ def test_undated_correction_outside_the_filter_makes_only_its_state_partial(work
         rows = {row["state_key"]: row for row in report["timeline"]}
         assert rows["owner"]["supersession_uncertain"]
         assert not rows["phase"]["supersession_uncertain"]
+        readable = call(
+            "query", "--text", "--pipeline", "timeline-reconstruction", payload={"query": query}
+        )
+        assert readable.count("Confirmed (supersession uncertain)") == 1
+        assert "owner  Partial  [1]" in readable
 
     latest = trace(call, "current", {"topics": ["launch"]})
     assert "owner" not in latest["current_reported_states"]
@@ -1032,6 +1040,9 @@ def test_unknown_and_conflicting_dates_do_not_become_final_decisions(work):
     assert bounded["current_reported_states"]["owner"]["status"] == "partial"
     limited = trace(call, "limit", {**query, "limit": 1}, "decision-evolution")
     assert limited["truncated"] and limited["current_reported_states"]["owner"]["value"] is None
+    text = call("query", "--text", "--pipeline", "decision-evolution", "--state-key", "owner")
+    assert "owner  Ambiguous  [1] [2] [3]" in text
+    assert "Date unknown  Confirmed" in text
 
 
 def test_deletion_approval_purge_and_replay(work):
@@ -2246,6 +2257,52 @@ def test_direct_query_matches_staged_report_and_creates_no_workflow_data(work, m
     assert updated["timeline"][0]["evidence"][0]["conversation_id"] == "third"
 
 
+def test_query_text_preserves_evidence_and_pagination(work):
+    directory, call = work
+    ingest(call, "first", fixture("first-meeting"))
+    ingest(call, "second", fixture("second-meeting"))
+    database = directory / "kite.sqlite3"
+    before = database.read_bytes()
+    args = ("query", "--topic", "first run")
+    report = call(*args)["value"]
+    output = call(*args, "--text")
+    assert "Topics  onboarding" in output
+    assert "Showing 4 of 4 facts by source date" in output
+    assert "checklist-owner  Confirmed  Ravi  [3]" in output
+    assert "onboarding-design  Confirmed  short checklist  [3]" in output
+    assert output.index("Proposal") < output.index("Rejected option")
+    assert output.count("memoket/184#line-b") == 1
+    decision = report["timeline"][2]["evidence"][0]
+    assert f"> {decision['text']}" in output
+    assert f"Source line ID  {decision['source_line_id']}" in output
+    assert call("evidence", decision["source_line_id"])["value"]["evidence"] == decision
+    filtered = call(
+        "query", "--text", payload={"query": {"topics": ["first run"], "text": "ruled out"}}
+    )
+    assert "Showing 1 of 1 facts" in filtered and "Rejected option" in filtered
+
+    args = (*args, "--limit", "2")
+    page = call(*args)["value"]
+    output = call(*args, "--text")
+    assert "Showing 2 of 4 facts" in output and "onboarding-design  Partial" in output
+    assert f"Next cursor  {page['next_cursor']}" in output
+    last = call(*args, "--text", "--cursor", page["next_cursor"])
+    assert "Proposal" in last and "Next cursor" not in last
+    call("query", "--text", error="invalid_arguments")
+    assert database.read_bytes() == before
+
+
+def test_query_text_keeps_terminal_controls_visible(work):
+    _, call = work
+    quote = "Open discussion\u202e[9]\u009b2J\nSecond line"
+    ingest(call, "quoted", text_input("quoted", quote, date="2026-01-01"))
+    args = ("query", "--topic", "onboarding")
+    output = call(*args, "--text")
+    assert "    > Open discussion\\u202e[9]\\x9b2J\n    > Second line" in output
+    assert "\u202e" not in output and "\u009b" not in output
+    assert call(*args)["value"]["timeline"][0]["evidence"][0]["text"] == quote
+
+
 def test_direct_topic_arguments_match_json_without_writing_memory(work):
     directory, call = work
     ingest(call, "first", fixture("first-meeting"))
@@ -2650,6 +2707,19 @@ def test_inferred_dates_are_separate_from_explicit_and_unknown_dates(work):
     assert bounded["omitted_unknown_time"] == bounded["omitted_inferred_time"] == 1
     assert not bounded["truncated"]
     assert bounded["current_reported_states"]["owner"]["status"] == "partial"
+    output = call("query", "--text", "--pipeline", pipeline, payload={"query": query})
+    assert "2026-03-30 (inferred)  Confirmed" in output
+    bounded_text = call(
+        "query",
+        "--text",
+        "--pipeline",
+        pipeline,
+        payload={"query": {**query, "start_date": "2026-03-01", "end_date": "2026-03-31"}},
+    )
+    assert "Showing 1 of 1 facts by event date through 2026-03-31" in bounded_text
+    assert "Excluded by date filter  1 with unknown event dates" in bounded_text
+    assert "Excluded by date filter  1 with inferred event dates" in bounded_text
+    assert "owner  Partial  [1]" in bounded_text
     limited = trace(call, "limited", {**query, "limit": 1}, pipeline)
     assert [row["state"] for row in limited["timeline"]] == ["Explicit"]
     assert limited["truncated"]

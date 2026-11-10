@@ -16,6 +16,7 @@ from .ingest import file_source
 from .operations import SCHEMAS, SOURCE_SCOPE, TOOLS, Context
 from .resources import resource_root
 from .retrieve import evidence_context
+from .trace_text import render_trace
 from .workflow import (
     SCRIPTED_IMPORT_STAGES,
     TRACE_PIPELINES,
@@ -116,6 +117,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     query = commands.add_parser("query", help="run a read-only trace without saving a checkpoint")
     query.add_argument("--pipeline", choices=TRACE_PIPELINES, default="topic-tracing")
+    query.add_argument(
+        "--text",
+        dest="text_output",
+        action="store_true",
+        help="show a timeline with original quotes",
+    )
     query_input = query.add_mutually_exclusive_group()
     query_input.add_argument("--input", metavar="FILE", help="JSON input file or - for stdin")
     query_input.add_argument(
@@ -596,6 +603,8 @@ def main(argv=None) -> int:
         sys.stdout.buffer.write(result["xml"] + b"\n")
     elif args.command == "demo" and args.text:
         print(render_demo(result["value"]))
+    elif args.command == "query" and args.text_output:
+        print(render_trace(result["value"]))
     elif args.command in {"audio-source", "file-source"}:
         print(encode(result))
     else:
