@@ -250,6 +250,21 @@ def _stage_summary(result: dict, stage_id: str) -> dict:
     return summary
 
 
+def _replay_ingest(context: Context, checkpoint: dict) -> tuple[dict, ToolError | None]:
+    run_id = checkpoint["run_id"]
+    output = {"run_id": run_id}
+    for stage_id, _ in SCRIPTED_IMPORT_STAGES[checkpoint["pipeline_id"]]:
+        try:
+            value = artifact(context, run_id, stage_id)["value"]
+        except ToolError as exc:
+            return {**output, "stage_id": stage_id}, exc
+        if stage_id == "commit":
+            output["receipt"] = value
+        elif stage_id == "verify":
+            output["integrity"] = value
+    return output, None
+
+
 def _ingest(
     root: Path,
     directory: Path,
@@ -278,6 +293,8 @@ def _ingest(
             )
         else:
             checkpoint = resume_ingestion(context, resume_id)
+            if checkpoint["state"] == "completed":
+                return _replay_ingest(context, checkpoint)
     run_id = checkpoint["run_id"]
     pipeline = checkpoint["pipeline_id"]
     output = {"run_id": run_id}

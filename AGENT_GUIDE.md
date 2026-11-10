@@ -135,7 +135,8 @@ and returns its commit receipt and integrity result. It stops at the first
 failure and saves successful stages. Use `--run-id` to choose an ID. Run
 `kite-tool ingest --resume RUN_ID` to reuse the saved input and completed
 stages. Repeating a completed run against the same snapshot returns its
-original receipt. Use `status` to inspect runs and individual stages when
+original receipt and integrity result after checking the saved artifacts in
+one read transaction. Use `status` to inspect runs and individual stages when
 an agent prepares or reviews annotations interactively.
 For a prepared revision or added annotations, pass `--update` and include
 the current checksum as `source.expected_checksum`. An update resumes with

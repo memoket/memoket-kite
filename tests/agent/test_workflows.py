@@ -464,7 +464,9 @@ def test_run_listing_filters_before_paginating_in_creation_order(work):
     assert "private" not in json.dumps(call("runs"))
 
 
-def test_workflow_inspection_reads_committed_state_during_a_write(work, monkeypatch):
+def test_workflow_inspection_and_receipt_replay_read_committed_state_during_a_write(
+    work, monkeypatch
+):
     directory, call = work
     payload = text_input("inspection", "Use the committed transcript.")
     call("start", "memory-ingestion", "--run-id", "interrupted", payload=payload)
@@ -488,6 +490,23 @@ def test_workflow_inspection_reads_committed_state_during_a_write(work, monkeypa
         segments = call("segments", "interrupted", "normalize")["segments"]
         assert segments[0]["text"] == "Use the committed transcript."
         writer.rollback()
+
+        completed = call("ingest", "--resume", "interrupted")
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("UPDATE runs SET checkpoint='{}' WHERE id='interrupted'")
+        assert call("ingest", "--resume", "interrupted") == completed
+        writer.rollback()
+
+
+def test_ingest_replay_checks_artifacts_even_when_the_run_is_completed(work):
+    directory, call = work
+    payload = text_input("inspection", "Use the committed transcript.")
+    call("ingest", "--run-id", "completed", payload=payload)
+    with sqlite3.connect(directory / "kite.sqlite3") as db:
+        db.execute("UPDATE artifacts SET value='{}' WHERE run_id='completed' AND stage='normalize'")
+    result = call("ingest", "--resume", "completed", error="integrity_error")
+    assert result["run_id"] == "completed" and result["stage_id"] == "normalize"
+    assert "receipt" not in result
 
 
 def test_workflow_inspection_and_resume_recover_an_interrupted_sqlite_write(work):
