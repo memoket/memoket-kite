@@ -26,6 +26,7 @@ from .workflow import (
     query_report,
     recent_runs,
     resume_ingestion,
+    source_lines,
     start,
     status,
     transcript_page,
@@ -75,6 +76,17 @@ def _source_date_arguments(parser: argparse.ArgumentParser) -> None:
     date = parser.add_mutually_exclusive_group()
     date.add_argument("--source-date", help="known conversation day in YYYY-MM-DD format")
     date.add_argument("--started-at", help="known conversation timestamp with UTC offset")
+
+
+def _segment_page_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--offset", type=int, default=0, help="zero-based segment offset")
+    parser.add_argument("--limit", type=int, default=50, help="segments per page (1–200)")
+    parser.add_argument(
+        "--byte-budget",
+        type=int,
+        default=32768,
+        help="target JSON segment bytes (128–1048576); the first segment is kept whole",
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -230,14 +242,7 @@ def _parser() -> argparse.ArgumentParser:
     segments = commands.add_parser("segments", help="read a page of a normalized transcript")
     segments.add_argument("run_id")
     segments.add_argument("stage_id")
-    segments.add_argument("--offset", type=int, default=0, help="zero-based segment offset")
-    segments.add_argument("--limit", type=int, default=50, help="segments per page (1–200)")
-    segments.add_argument(
-        "--byte-budget",
-        type=int,
-        default=32768,
-        help="target JSON segment bytes (128–1048576); the first segment is kept whole",
-    )
+    _segment_page_arguments(segments)
     integrity = commands.add_parser(
         "integrity", help="verify the current Codebook against its source records"
     )
@@ -266,6 +271,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     history.add_argument("source")
     history.add_argument("conversation_id")
+    lines = commands.add_parser(
+        "source-lines", help="read original lines from a stored conversation"
+    )
+    lines.add_argument("source")
+    lines.add_argument("conversation_id")
+    lines.add_argument("--revision", metavar="CHECKSUM", help="retained revision, required to page")
+    _segment_page_arguments(lines)
     codebook = commands.add_parser(
         "codebook", help="write all or selected Codebook revisions as XML"
     )
@@ -446,11 +458,20 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             require_deletions_from=args.require_deletions_from,
         ), None
 
-    if args.command == "source-history":
+    if args.command in {"source-history", "source-lines"}:
         scope = {"source": args.source, "conversation_id": args.conversation_id}
         validate(SOURCE_SCOPE, scope, "source scope")
         with Workspace.open(args.workspace, read_only=True) as workspace:
-            return workspace.source_history(**scope), None
+            if args.command == "source-history":
+                return workspace.source_history(**scope), None
+            return source_lines(
+                workspace,
+                **scope,
+                checksum=args.revision,
+                offset=args.offset,
+                limit=args.limit,
+                byte_budget=args.byte_budget,
+            ), None
 
     if args.command == "integrity" and args.include_workflows:
         with Workspace.open(args.workspace, read_only=True) as workspace:

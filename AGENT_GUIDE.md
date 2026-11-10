@@ -317,6 +317,15 @@ conversation. Adding annotations to an unchanged source updates its fact count
 without changing its revision ID or checksum. The command creates no workspace
 or checkpoint.
 
+Use `kite-tool source-lines SOURCE CONVERSATION_ID` when authorized to read
+the original text of a committed conversation. It returns the current revision
+by default. A retained checksum from `source-history` selects an older revision
+with `--revision CHECKSUM`. To continue a page, pass its `revision_checksum`
+as `--revision` and its `next_offset` as `--offset`. This keeps the selected
+text consistent if a new revision is committed between reads. Each segment
+includes the `source_line_id` accepted by `kite-tool evidence`. The command
+reads committed records without depending on workflow artifacts.
+
 To correct a confirmed decision or task, cite evidence that supports the
 corrected assertion. Supply a confirmed fact with the same `state_key` and the
 older fact ID in `supersedes`. The predecessor stays in history and the report

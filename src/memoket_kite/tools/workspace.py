@@ -417,11 +417,13 @@ class Workspace:
         source: str | None = None,
         conversation_id: str | None = None,
         active_only: bool = False,
+        checksum: str | None = None,
     ) -> list[sqlite3.Row]:
         filters = {
             "source": source,
             "conversation_id": conversation_id,
             "active": 1 if active_only else None,
+            "checksum": checksum,
         }
         filters = {key: value for key, value in filters.items() if value is not None}
         query = "SELECT * FROM revisions"
@@ -445,6 +447,19 @@ class Workspace:
         rows = self.db.execute("SELECT * FROM revisions WHERE checksum=?", (checksum,)).fetchall()
         if not rows:
             raise ToolError("not_found", "source revision was not found")
+        return self._records(rows)[0]
+
+    def source_revision(self, source: str, conversation_id: str, checksum: str | None) -> dict:
+        rows = self._revision_rows(
+            source=source,
+            conversation_id=conversation_id,
+            active_only=checksum is None,
+            checksum=checksum,
+        )
+        if not rows:
+            raise ToolError("not_found", "no revision matches the requested conversation")
+        if len(rows) != 1:
+            raise ToolError("integrity_error", "conversation must have one current revision")
         return self._records(rows)[0]
 
     @staticmethod

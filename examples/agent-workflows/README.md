@@ -98,6 +98,18 @@ the report's `next_cursor` value. After the workspace changes, run the first
 page again. Use `--pipeline timeline-reconstruction` for date, speaker or project
 queries without a topic.
 
+To read the original transcript for an authorized committed conversation, use
+its source namespace and conversation ID directly.
+
+```sh
+kite-tool source-lines memoket 184 --limit 1
+```
+
+For the next page, pass the returned `revision_checksum` as `--revision` and
+`next_offset` as `--offset`. Copy a segment's `source_line_id` to `kite-tool evidence`
+to read that line with nearby context. Use `source-history` to find the checksum
+of a retained earlier revision.
+
 ## Import with prepared annotations
 
 For a local script with a prepared `source` and `annotations`, run the same

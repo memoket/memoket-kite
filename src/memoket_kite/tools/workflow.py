@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .contracts import (
+    HASH,
     ID,
     ToolError,
     decode_object,
@@ -19,6 +20,7 @@ from .contracts import (
     schema_file,
     validate,
 )
+from .index import revision_id
 from .ingest import prepare_source, source_identity
 from .operations import EXTERNAL, SCHEMAS, TOOLS, Context
 
@@ -499,28 +501,23 @@ def resume_ingestion(context: Context, run_id: str) -> dict:
     return checkpoint
 
 
-def transcript_page(
-    context: Context,
-    run_id: str,
-    stage_id: str,
-    *,
-    offset: int,
-    limit: int,
-    byte_budget: int,
-) -> dict:
+def _validate_segment_window(offset: int, limit: int, byte_budget: int) -> None:
     if offset < 0 or not 1 <= limit <= 200 or not 128 <= byte_budget <= 1024 * 1024:
         raise ToolError("invalid_input", "invalid transcript offset, limit or byte budget")
-    result = artifact(context, run_id, stage_id)
-    if result["manifest"]["kind"] != "conversation":
-        raise ToolError("invalid_input", "select a normalized conversation artifact")
-    conversation = result["value"]["conversation"]
+
+
+def _segment_page(
+    conversation: dict, *, offset: int, limit: int, byte_budget: int, revision: str | None = None
+) -> dict:
     segments = conversation["segments"]
     if offset > len(segments):
         raise ToolError("invalid_input", "offset is past the end of the transcript")
 
     page = []
     size = 2  # JSON array delimiters.
-    for segment in segments[offset : offset + limit]:
+    for position, segment in enumerate(segments[offset : offset + limit], offset + 1):
+        if revision is not None:
+            segment = {**segment, "source_line_id": f"{revision}L{position}"}
         next_size = size + len(encode(segment)) + (1 if page else 0)
         if page and next_size > byte_budget:
             break
@@ -528,7 +525,6 @@ def transcript_page(
         size = next_size
     end = offset + len(page)
     return {
-        "manifest": result["manifest"],
         "conversation_id": conversation["conversation_id"],
         "source": conversation["source"],
         "total_segments": len(segments),
@@ -537,6 +533,54 @@ def transcript_page(
         "segment_payload_bytes": size,
         "over_budget": size > byte_budget,
         "segments": page,
+    }
+
+
+def transcript_page(
+    context: Context, run_id: str, stage_id: str, *, offset: int, limit: int, byte_budget: int
+) -> dict:
+    _validate_segment_window(offset, limit, byte_budget)
+    result = artifact(context, run_id, stage_id)
+    if result["manifest"]["kind"] != "conversation":
+        raise ToolError("invalid_input", "select a normalized conversation artifact")
+    page = _segment_page(
+        result["value"]["conversation"], offset=offset, limit=limit, byte_budget=byte_budget
+    )
+    return {"manifest": result["manifest"], **page}
+
+
+def source_lines(
+    workspace,
+    source: str,
+    conversation_id: str,
+    *,
+    checksum: str | None,
+    offset: int,
+    limit: int,
+    byte_budget: int,
+) -> dict:
+    _validate_segment_window(offset, limit, byte_budget)
+    if checksum is not None:
+        validate(HASH, checksum, "revision checksum")
+    elif offset:
+        raise ToolError("invalid_input", "pass the previous page's revision_checksum as --revision")
+    record = workspace.source_revision(source, conversation_id, checksum)
+    conversation = record["conversation"]
+    revision = revision_id(record)
+    page = _segment_page(
+        conversation, offset=offset, limit=limit, byte_budget=byte_budget, revision=revision
+    )
+    return {
+        **page,
+        "source_reference": conversation["metadata"]["source_reference"],
+        "revision_checksum": record["checksum"],
+        "source_revision_active": record["active"],
+        "memory_version": workspace.version(),
+        **{
+            key: conversation[key]
+            for key in ("started_at", "source_date", "language", "title")
+            if key in conversation
+        },
     }
 
 

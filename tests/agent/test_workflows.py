@@ -278,7 +278,9 @@ def test_extension_rejects_invalid_roots_and_builtin_shadowing(work, tmp_path):
 
 
 def test_transcript_pages_preserve_segments_and_byte_boundaries(work):
-    _, call = work
+    directory, call = work
+    call("source-lines", "transcript", "long-recording", error="not_found")
+    assert not directory.exists()
     segments = [
         {"segment_id": "first", "text": "Exact line.\r\n", "speaker_id": "Maya", "start_ms": 3},
         {"segment_id": "large", "text": "界" * 100, "start_ms": 8},
@@ -320,6 +322,42 @@ def test_transcript_pages_preserve_segments_and_byte_boundaries(work):
         ("--byte-budget", "127"),
     ):
         call("segments", "long", "normalize", flag, value, error="invalid_input")
+
+    call(
+        "stage",
+        "long",
+        "annotate",
+        payload={
+            "annotations": {
+                "facts": [
+                    {
+                        "content": "Finish.",
+                        "segment_ids": ["last"],
+                        "topics": ["onboarding"],
+                    }
+                ]
+            }
+        },
+    )
+    receipt = call("stage", "long", "commit")["value"]
+    read = ("source-lines", "transcript", "long-recording", "--byte-budget", "128")
+    before = (directory / "kite.sqlite3").read_bytes()
+    first = call(*read)
+    assert first["next_offset"] == 1 and first["revision_checksum"] == receipt["checksum"]
+    call(*read, "--offset", "1", error="invalid_input")
+    pinned = (*read, "--revision", first["revision_checksum"])
+    second = call(*pinned, "--offset", str(first["next_offset"]))
+    third = call(*pinned, "--offset", str(second["next_offset"]))
+    assert third["next_offset"] is None and second["over_budget"]
+    for position, page in enumerate((first, second, third), 1):
+        (line,) = page["segments"]
+        assert line == {
+            **segments[position - 1],
+            "source_line_id": f"{receipt['revision_id']}L{position}",
+        }
+        assert page["segment_payload_bytes"] == len(encode(page["segments"]).encode())
+        assert "hidden-metadata" not in json.dumps(page)
+    assert (directory / "kite.sqlite3").read_bytes() == before
 
 
 def test_transcript_pages_obey_artifact_integrity_and_deletion(work):
@@ -2369,6 +2407,9 @@ def test_evidence_context_reads_the_cited_revision_until_deletion(work):
     call("evidence", line_id, "--context", "21", error="invalid_input")
     call("evidence", "owner", error="invalid_input")
     call("evidence", f"{line_id[:-1]}4", error="not_found")
+    lines = ("source-lines", "transcript", "handoff")
+    first_page = call(*lines, "--limit", "1")
+    assert first_page["revision_checksum"] == first["checksum"]
     assert database.read_bytes() == original
 
     revised = copy.deepcopy(payload)
@@ -2379,6 +2420,15 @@ def test_evidence_context_reads_the_cited_revision_until_deletion(work):
     old = call("evidence", line_id, "--context", "1")["value"]
     assert old["evidence"] == citation and not old["source_revision_active"]
     assert old["before"] == context["before"] and old["after"] == context["after"]
+    previous = call(*lines, "--revision", first_page["revision_checksum"], "--offset", "1")
+    assert not previous["source_revision_active"]
+    assert previous["segments"][0]["source_line_id"] == line_id
+    assert previous["segments"][0]["text"] == citation["text"]
+    current = call(*lines)
+    assert current["revision_checksum"] == latest["checksum"] and current["source_revision_active"]
+    assert current["segments"][1]["text"] == "Rae now owns the launch."
+    assert current["started_at"] == payload["source"]["payload"]["started_at"]
+    assert current["source_reference"] == "fixture:handoff"
     before_history = database.read_bytes()
     assert call("source-history", "transcript", "handoff") == {
         "ok": True,
@@ -2402,9 +2452,18 @@ def test_evidence_context_reads_the_cited_revision_until_deletion(work):
     call("source-history", "invalid/source", "handoff", error="invalid_input")
     assert database.read_bytes() == before_history
 
+    other = ingest(call, "unrelated", text_input("handoff", "Separate source namespace."))
+    call(*lines, "--revision", other["checksum"], error="not_found")
     _delete_source(call, "delete", {"source": "transcript", "conversation_id": "handoff"})
     call("evidence", line_id, error="not_found")
     call("source-history", "transcript", "handoff", error="not_found")
+    call(*lines, error="not_found")
+    call(*lines, "--revision", first["checksum"], error="not_found")
+    call("segments", "unrelated", "normalize", error="invalidated_run")
+    assert (
+        call("source-lines", "text", "handoff")["segments"][0]["text"]
+        == "Separate source namespace."
+    )
 
 
 def test_evidence_byte_budget_keeps_the_cited_line_and_contiguous_neighbors(work):
@@ -2982,7 +3041,11 @@ def test_damaged_source_record_returns_private_structured_error(work, damage):
         db.execute("UPDATE revisions SET payload=?", (raw,))
 
     corrupted = database.read_bytes()
-    for args in (("evidence", line_id), ("source-history", "text", "review")):
+    for args in (
+        ("evidence", line_id),
+        ("source-history", "text", "review"),
+        ("source-lines", "text", "review"),
+    ):
         result = call(*args, error="integrity_error")
         assert marker not in json.dumps(result)
     assert database.read_bytes() == corrupted
