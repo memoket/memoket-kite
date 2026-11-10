@@ -1551,6 +1551,70 @@ def test_direct_query_leaves_legacy_schema_upgrade_to_workspace_commands(work):
     assert call("query", payload=query)["value"]["matched_count"] == 1
 
 
+def test_evidence_context_reads_the_cited_revision_until_deletion(work):
+    directory, call = work
+    payload = {
+        "source": {
+            "format": "transcript",
+            "payload": {
+                "conversation_id": "handoff",
+                "started_at": "2026-06-01T10:00:00Z",
+                "metadata": {"source_reference": "fixture:handoff"},
+                "segments": [
+                    {"segment_id": "intro", "text": "Review the timeline.", "speaker_id": "Rae"},
+                    {
+                        "segment_id": "owner",
+                        "text": "I own the launch.",
+                        "speaker_id": "Ada",
+                        "start_ms": 500,
+                    },
+                    {"segment_id": "close", "text": "Next topic.", "speaker_id": "Rae"},
+                ],
+            },
+        },
+        "annotations": {
+            "facts": [
+                {"content": "Ada owns the launch.", "segment_ids": ["owner"], "topics": ["launch"]}
+            ]
+        },
+    }
+    first = ingest(call, "first", payload)
+    report = call("query", payload={"query": {"topics": ["launch"]}})["value"]
+    citation = report["timeline"][0]["evidence"][0]
+    line_id = citation["source_line_id"]
+    database = directory / "kite.sqlite3"
+    original = database.read_bytes()
+    exact = call("evidence", line_id)["value"]
+    assert exact["evidence"] == citation
+    assert exact["before"] == exact["after"] == []
+    assert exact["source_revision_active"] and exact["source_time"] == "2026-06-01T10:00:00Z"
+    context = call("evidence", line_id, "--context", "20")["value"]
+    before, after = context["before"][0], context["after"][0]
+    assert [row["segment_id"] for row in (before, context["evidence"], after)] == [
+        "intro",
+        "owner",
+        "close",
+    ]
+    assert all(row["revision_checksum"] == first["checksum"] for row in (before, after))
+    assert call("evidence", before["source_line_id"], "--context", "1")["value"]["before"] == []
+    call("evidence", line_id, "--context", "21", error="invalid_input")
+    call("evidence", "owner", error="invalid_input")
+    call("evidence", f"{line_id[:-1]}4", error="not_found")
+    assert database.read_bytes() == original
+
+    revised = copy.deepcopy(payload)
+    revised["source"]["expected_checksum"] = first["checksum"]
+    revised["source"]["payload"]["segments"][1]["text"] = "Rae now owns the launch."
+    revised["annotations"]["facts"][0]["content"] = "Rae now owns the launch."
+    ingest(call, "revised", revised, pipeline="memory-update")
+    old = call("evidence", line_id, "--context", "1")["value"]
+    assert old["evidence"] == citation and not old["source_revision_active"]
+    assert old["before"] == context["before"] and old["after"] == context["after"]
+
+    _delete_source(call, "delete", {"source": "transcript", "conversation_id": "handoff"})
+    call("evidence", line_id, error="not_found")
+
+
 def test_related_trace_labels_are_ranked_and_bound_to_the_evidence_page(work):
     _, call = work
     for number in range(1, 7):

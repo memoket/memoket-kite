@@ -59,6 +59,13 @@ Read the report in `value` and use `next_cursor` for another page.
 If an older workspace needs a schema upgrade, run `kite-tool integrity`
 before querying it. For durable runs, use the stage-by-stage protocol below.
 
+To check a report's original quote, use its `source_line_id` with
+`kite-tool evidence SOURCE_LINE_ID`. Add `--context 2` when authorized to
+read two neighboring segments on either side. The result identifies the
+referenced source revision and whether it is still active. Older source
+revisions remain readable by ID while retained. Deleted revisions are
+unavailable. Evidence reads save no checkpoint or artifact.
+
 1. Read the selected definition using `kite-tool validate-pipeline NAME`.
    Read the skill at each stage's `skill` path. Inspect the JSON contract with
    `kite-tool describe TOOL`.

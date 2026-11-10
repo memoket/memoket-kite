@@ -106,6 +106,8 @@ def main() -> None:
         assert report["matched_count"] == 1 and report["next_cursor"] is None
         assert call("query", payload=query, workspace=recovered)["value"] == report
         evidence = report["timeline"][0]["evidence"][0]
+        detail = call("evidence", evidence["source_line_id"], workspace=recovered)["value"]
+        assert detail["evidence"] == evidence and not detail["before"] and not detail["after"]
         assert (evidence["conversation_id"], evidence["segment_id"], evidence["text"]) == (
             "note",
             "text-line-3",

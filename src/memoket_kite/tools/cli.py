@@ -14,6 +14,7 @@ from .demo import run_demo
 from .ingest import file_source
 from .operations import SCHEMAS, SOURCE_SCOPE, TOOLS, Context
 from .resources import resource_root
+from .retrieve import evidence_context
 from .workflow import (
     TRACE_PIPELINES,
     advance,
@@ -64,6 +65,11 @@ def _parser() -> argparse.ArgumentParser:
     query.add_argument(
         "--input", required=True, metavar="FILE", help="JSON input file or - for stdin"
     )
+    evidence = commands.add_parser(
+        "evidence", help="read an original cited line and nearby context"
+    )
+    evidence.add_argument("source_line_id")
+    evidence.add_argument("--context", type=int, default=0, help="lines on either side (0–20)")
     validate = commands.add_parser(
         "validate-pipeline", help="validate and show a pipeline definition"
     )
@@ -256,8 +262,12 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             return {"xml": workspace.export_codebook(**scope, active_only=args.active_only)}, None
 
     supplied = _object(getattr(args, "input", None))
-    if args.command == "query":
+    if args.command in {"query", "evidence"}:
         with Workspace.open(args.workspace, read_only=True) as workspace:
+            if args.command == "evidence":
+                return {
+                    "value": evidence_context(workspace, args.source_line_id, args.context)
+                }, None
             return {"value": query_report(Context(root, workspace, args.pipeline), supplied)}, None
     with Workspace.open(args.workspace) as workspace:
         context = Context(

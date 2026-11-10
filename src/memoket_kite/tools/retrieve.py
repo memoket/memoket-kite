@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 
 from memoket_kite.core.vocab import norm_code
 
 from .contracts import DATE, TEXT, ToolError, array, digest, object_schema, utc_timestamp
-from .index import event_date_basis
+from .index import event_date_basis, revision_id
 from .ingest import source_day
 
 CURSOR = {"type": "string", "pattern": r"^[0-9]{1,16}\.[1-9][0-9]{0,15}\.[a-f0-9]{64}$"}
@@ -120,6 +121,45 @@ def _source_time(record: dict) -> tuple[str, str | None, str]:
     if timestamp:
         return day, timestamp, utc_timestamp(timestamp).isoformat()
     return day or "", day, day or ""
+
+
+def _citation(record: dict, line_id: str, segment: dict) -> dict:
+    conversation = record["conversation"]
+    return {
+        "source": conversation["source"],
+        "source_reference": conversation["metadata"]["source_reference"],
+        "conversation_id": conversation["conversation_id"],
+        "revision_checksum": record["checksum"],
+        "source_line_id": line_id,
+        **segment,
+    }
+
+
+def evidence_context(workspace, line_id: str, radius: int) -> dict:
+    match = re.fullmatch(r"c-([a-f0-9]{64})L([1-9][0-9]{0,4})", line_id)
+    if match is None or not 0 <= radius <= 20:
+        raise ToolError("invalid_input", "use a source_line_id and a context radius of 0–20")
+    checksum, position = match.groups()
+    record = workspace.record(checksum)
+    segments = record["conversation"]["segments"]
+    offset = int(position) - 1
+    if offset >= len(segments):
+        raise ToolError("not_found", "source line was not found")
+    revision = revision_id(record)
+
+    def cited(index: int) -> dict:
+        return _citation(record, f"{revision}L{index + 1}", segments[index])
+
+    return {
+        "evidence": cited(offset),
+        "before": [cited(index) for index in range(max(0, offset - radius), offset)],
+        "after": [
+            cited(index) for index in range(offset + 1, min(len(segments), offset + radius + 1))
+        ],
+        "source_revision_active": record["active"],
+        "source_time": _source_time(record)[1],
+        "memory_version": workspace.version(),
+    }
 
 
 def retrieve(context, resolved: dict) -> dict:
@@ -239,17 +279,7 @@ def _evidence(index, fid: str) -> dict:
         "state_key": annotations.get("state_key"),
         "state": annotations.get("state"),
         "supersedes": annotations.get("supersedes"),
-        "evidence": [
-            {
-                "source": conversation["source"],
-                "source_reference": conversation["metadata"]["source_reference"],
-                "conversation_id": conversation["conversation_id"],
-                "revision_checksum": record["checksum"],
-                "source_line_id": sid,
-                **index.segments[sid],
-            }
-            for sid in fact.src
-        ],
+        "evidence": [_citation(record, sid, index.segments[sid]) for sid in fact.src],
     }
 
 

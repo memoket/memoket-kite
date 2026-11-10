@@ -348,6 +348,12 @@ class Workspace:
         )
         return self._records(rows)
 
+    def record(self, checksum: str) -> dict:
+        rows = self.db.execute("SELECT * FROM revisions WHERE checksum=?", (checksum,)).fetchall()
+        if not rows:
+            raise ToolError("not_found", "source revision was not found")
+        return self._records(rows)[0]
+
     @staticmethod
     def _records(rows: list[sqlite3.Row]) -> list[dict]:
         records = []
