@@ -2064,6 +2064,25 @@ def test_event_filter_intersects_project_speaker_and_dates(work):
     )
     assert alternative["matched_count"] == 2
     assert not alternative["unresolved_events"]
+    flags = (
+        "query",
+        "--pipeline",
+        pipeline,
+        "--project",
+        "launch",
+        "--speaker",
+        "DAVE",
+        "--start-date",
+        "2026-03-01",
+        "--end-date",
+        "2026-03-31",
+    )
+    assert call(*flags, "--event", "RELEASE-REVIEW")["value"] == result
+    assert (
+        call(*flags, "--event", "release review", "--event", "incident triage")["value"]
+        == alternative
+    )
+    assert call(*flags, "--event", "release review", "--event", "missing")["value"] == report
 
 
 def test_task_trace_reports_unresolved_entities_without_claiming_complete_state(work):
@@ -2109,10 +2128,11 @@ def test_task_trace_reports_unresolved_entities_without_claiming_complete_state(
 
 
 def test_follow_state_history_preserves_scope_and_pagination(work):
-    _, call = work
+    directory, call = work
     for identity, name, day, topic, source, project, key in (
         ("first", "David", "2026-05-04", "checklist", "text", "pilot", "checklist-owner"),
         ("handoff", "Rae", "2026-05-05", "checklist", "text", "pilot", "checklist-owner"),
+        ("proposed", "Kim", "2026-05-06", "checklist", "text", "pilot", "checklist-owner"),
         ("future", "Future", "2026-05-08", "checklist", "text", "pilot", "checklist-owner"),
         ("private", "Other", "2026-05-06", "checklist", "archive", "pilot", "checklist-owner"),
         ("different", "Other", "2026-05-06", "checklist", "text", "other", "checklist-owner"),
@@ -2123,6 +2143,8 @@ def test_follow_state_history_preserves_scope_and_pagination(work):
         raw = payload["source"]["payload"]
         raw["metadata"]["project"] = project
         payload["annotations"]["facts"][0].update(state_key=key, state=name)
+        if identity == "proposed":
+            payload["annotations"]["facts"][0]["status"] = "proposal"
         if source != "text":
             payload["source"]["format"] = "conversation"
             raw.update(source=source, segments=[{"segment_id": "text-1", "text": raw.pop("text")}])
@@ -2139,18 +2161,50 @@ def test_follow_state_history_preserves_scope_and_pagination(work):
     pipeline = "task-tracing"
     result = trace(call, "follow", query, pipeline)
     assert call("query", "--pipeline", pipeline, payload={"query": query})["value"] == result
-    assert result["matched_count"] == 2
+    assert result["matched_count"] == 3
     assert result["followed_state_keys"] == ["checklist-owner"]
     assert [row["evidence"][0]["conversation_id"] for row in result["timeline"]] == [
         "first",
         "handoff",
+        "proposed",
     ]
     assert result["current_reported_states"]["checklist-owner"]["value"] == "Rae"
+    flags = (
+        "query",
+        "--pipeline",
+        pipeline,
+        "--contains",
+        "David owns",
+        "--topic",
+        "checklist",
+        "--source",
+        "text",
+        "--project",
+        "pilot",
+        "--end-date",
+        "2026-05-07",
+        "--follow-states",
+    )
+    database = directory / "kite.sqlite3"
+    before = database.read_bytes()
+    assert call(*flags)["value"] == result
+    readable = call(*flags, "--text")
+    assert "Followed states  checklist-owner" in readable
+    assert "checklist-owner  Confirmed  Rae  [2]" in readable
+    assert "2026-05-06  Proposal  [3]" in readable
+    assert "text/handoff#text-1" in readable
+    call(*flags, payload={"query": query}, error="invalid_arguments")
+    assert database.read_bytes() == before
 
     first = trace(call, "recent", {**query, "limit": 1}, pipeline)
     second = trace(call, "older", {**query, "limit": 1, "cursor": first["next_cursor"]}, pipeline)
-    assert [page["timeline"][0]["state"] for page in (first, second)] == ["Rae", "David"]
-    assert second["next_cursor"] is None
+    third = call(*flags, "--limit", "1", "--cursor", second["next_cursor"])["value"]
+    assert [page["timeline"][0]["state"] for page in (first, second, third)] == [
+        "Kim",
+        "Rae",
+        "David",
+    ]
+    assert third["next_cursor"] is None
     absent = trace(call, "no-anchor", {**query, "start_date": "2026-05-05"}, pipeline)
     assert absent["timeline"] == absent["followed_state_keys"] == []
 

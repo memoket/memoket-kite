@@ -90,8 +90,11 @@ def main() -> None:
                 "--workspace",
                 str(demo_workspace),
                 "query",
-                "--topic",
-                "first run",
+                "--pipeline",
+                "decision-evolution",
+                "--contains",
+                "guided tour",
+                "--follow-states",
                 "--text",
             ],
             cwd=directory,
@@ -99,6 +102,7 @@ def main() -> None:
             timeout=45,
         )
         assert "onboarding-design  Confirmed  short checklist  [3]" in readable
+        assert "Followed states  onboarding-design" in readable
         assert readable.count("memoket/184#line-b") == 1
         assert report["timeline"][2]["evidence"][0]["source_line_id"] in readable
         call("demo", "--save-workspace", str(demo_workspace), error="conflict")

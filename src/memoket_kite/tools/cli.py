@@ -151,9 +151,24 @@ def _parser() -> argparse.ArgumentParser:
         help="topic name or alias, repeat for more topics",
     )
     query.add_argument("--entity", dest="entities", action="append", help="entity name or alias")
+    query.add_argument(
+        "--event", dest="events", action="append", help="event label, repeat for more events"
+    )
     query.add_argument("--speaker", dest="speakers", action="append", help="speaker ID")
     query.add_argument("--project", dest="projects", action="append", help="source project")
+    query.add_argument(
+        "--contains",
+        dest="text",
+        metavar="PHRASE",
+        help="case-insensitive phrase in a fact or its cited lines",
+    )
     query.add_argument("--state-key", help="task or decision state key")
+    query.add_argument(
+        "--follow-states",
+        action="store_true",
+        default=None,
+        help="include history for state keys found by entity, event, speaker, or phrase",
+    )
     query.add_argument("--source", help="source namespace, for example text or memoket")
     query.add_argument("--conversation-id", help="original conversation ID, requires --source")
     query.add_argument("--start-date", help="inclusive YYYY-MM-DD start date")

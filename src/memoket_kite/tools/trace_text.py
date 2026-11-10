@@ -42,6 +42,8 @@ def render_trace(report: dict) -> str:
             lines.append(f"{field.capitalize()}  {resolved}")
         if unresolved:
             lines.append(f"Unresolved {field}  {unresolved}")
+    if keys := report.get("followed_state_keys"):
+        lines.append(f"Followed states  {', '.join(_inline(key) for key in keys)}")
     cutoff = f" through {report['end_date']}" if "end_date" in report else ""
     lines.append(
         f"Showing {len(timeline)} of {report['matched_count']} facts by {axis} date{cutoff}"

@@ -161,9 +161,9 @@ The byte budget applies to the JSON segment array. If a single segment
 exceeds the budget, KITE returns that segment intact and sets `over_budget`.
 Cite the original segment IDs in the annotations.
 
-Filter a timeline by `query.events` to match normalized event labels from
-fact annotations. The query matches any listed event and intersects it with
-other filters such as `projects`, `speakers` and date bounds. Check
+Use `--event NAME` or `query.events` to match normalized event labels from
+fact annotations. Repeat `--event` to match any listed event. KITE intersects
+these matches with filters such as `projects`, `speakers` and date bounds. Check
 `unresolved_events` in the report for labels absent from the workspace.
 
 Use `query.entities` for people or other entities named in fact annotations.
@@ -173,8 +173,11 @@ and `unresolved_entities`. When only some requested names are recognized,
 the trace retains matching evidence and marks any reported states partial.
 Use `query.speakers` for the recorded speaker on an evidence segment.
 
-Set `follow_states: true` to use a person, speaker, event or phrase as a clue
-to a task. KITE finds state keys in the initial matches and adds evidence
+Use `--contains PHRASE` to match literal text in a fact or its cited lines,
+ignoring letter case. In JSON use `query.text`.
+
+Set `--follow-states` or `query.follow_states: true` to use a person, speaker,
+event or phrase as a clue to a task. KITE finds state keys in the initial matches and adds evidence
 with those same keys, even when a later meeting names a different owner.
 Topic, source, conversation, project, date and explicit `state_key` filters apply to both
 passes. The report lists the followed keys present on each evidence page.

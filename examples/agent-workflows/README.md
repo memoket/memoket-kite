@@ -101,6 +101,18 @@ the report's `next_cursor` value. After the workspace changes, run the first
 page again. Use `--pipeline timeline-reconstruction` for date, speaker or project
 queries without a topic.
 
+If you remember an earlier phrase, use it to find the state and follow its
+history. In the saved demo, searching for the guided tour finds the later
+decision to use a short checklist and quotes the line where it was confirmed.
+
+```sh
+kite-tool --workspace ./kite-demo query --pipeline decision-evolution \
+  --contains "guided tour" --follow-states --text
+```
+
+Use `--event NAME` to start from an event label assigned in annotations.
+Repeat it to match any of the listed labels.
+
 To read the original transcript for an authorized committed conversation, use
 its source namespace and conversation ID directly.
 
