@@ -3,7 +3,14 @@
 import json
 from copy import deepcopy
 
-from benchmarks.agent.__main__ import FIXTURE, score_claims
+from benchmarks.agent.__main__ import (
+    FIXTURE,
+    RECOVERY_FIXTURE,
+    _prepare_recovery,
+    _reference_answer,
+    _score_recovery,
+    score_claims,
+)
 
 
 def test_correct_claims_require_the_actual_report_and_expected_citations():
@@ -44,3 +51,21 @@ def test_unknown_claims_and_ordered_dates_are_graded():
     assert score["expected_citations_found"] == 2
     assert score["unsupported_claims"] == 2
     assert not score["passed"]
+
+
+def test_recovery_score_rejects_replacing_the_interrupted_run(tmp_path):
+    fixture = json.loads(RECOVERY_FIXTURE.read_text())
+    directory = tmp_path / "task"
+    kite, baseline = _prepare_recovery(directory, fixture)
+    source = kite.call("file-source", str(directory / "transcript.json"), "--format", "memoket")
+    kite.start("memory-ingestion", "replacement", {**source, "annotations": fixture["annotations"]})
+    for stage in ("normalize", "annotate", "commit", "verify"):
+        kite.stage("replacement", stage)
+    report = kite.trace("trace", fixture["case"])
+    answer = _reference_answer(fixture["case"], "trace", report)
+    answer["ingestion_run_id"] = "replacement"
+
+    result = _score_recovery(kite, fixture, answer, baseline)
+    assert result["expected_write_verified"] and result["report_evidence_verified"]
+    assert not result["interrupted_run_recovered"]
+    assert not result["passed"]

@@ -17,7 +17,9 @@ The runner starts fresh CLI processes against a temporary workspace. It
 exercises four trace workflows, a cited owner correction, a duplicate import,
 recovery from a failed stage and approval-bound deletion. It checks which
 sources appear in each report, including the exclusion of undated records from
-the dated timeline. It exits nonzero if any case or lifecycle check fails.
+the dated timeline. The Memoket recovery case starts from a raw export, fails at
+the missing annotation, and verifies a successful retry and exact citation.
+The runner exits nonzero if any case or lifecycle check fails.
 
 ## Evaluate a host agent
 
@@ -41,7 +43,10 @@ checkout with the same case name.
 python -m benchmarks.agent score format-decision "$trial/task" "$trial/task/answer.json"
 ```
 
-The other cases are `owner-handoff`, `dated-timeline`, and `unconfirmed-email`.
+The other read-only cases are `owner-handoff`, `dated-timeline`, and
+`unconfirmed-email`. Use `memoket-resume` for the recovery task with the same
+`prepare` and `score` commands. The scorer verifies the original ingestion
+checkpoint, one committed source revision, and the report's exact source line.
 Use a fresh directory per trial. Record the host version, model and configuration
 alongside results when comparing runs. The scorer reads the actual checkpoint
 and report through KITE, verifies that the task used the expected pipeline at the
@@ -55,6 +60,7 @@ key. A correct string with a missing or unrelated citation fails.
 - `expected_citations_found` counts satisfied evidence requirements. Timeline
   dates accept any cited segment from the matching date.
 - `stage_retries` and `stage_attempts` come from the completed run's checkpoint.
+  The recovery case reports ingestion attempts and retries separately.
   Offline tool-call totals include the intentionally failed recovery and deletion checks.
 - `cited_evidence_bytes` and `source_corpus_bytes` compare the bytes of distinct
   cited source texts against all source texts. They measure evidence volume in

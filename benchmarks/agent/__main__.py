@@ -12,6 +12,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 FIXTURE = Path(__file__).with_name("fixture.json")
+RECOVERY_FIXTURE = Path(__file__).with_name("recovery.json")
+RECOVERY_CASE = "memoket-resume"
 
 
 class BenchmarkError(RuntimeError):
@@ -48,7 +50,9 @@ class Kite:
             result = json.loads(process.stdout)
         except ValueError as exc:
             raise BenchmarkError(f"KITE {args[0]} produced no JSON response") from exc
-        if result.get("ok") is True and process.returncode == 0:
+        if process.returncode == 0 and (
+            result.get("ok") is True or (args[0] == "file-source" and "source" in result)
+        ):
             self.successes += 1
             if error is None:
                 return result
@@ -291,6 +295,7 @@ def offline(fixture: dict) -> dict:
             "deletion_removed_target_and_preserved_other_sources": "plan-alpha" not in source_ids
             and "21" in source_ids,
         }
+        cases[RECOVERY_CASE] = _offline_recovery(Path(directory) / "recovery")
         passed = (
             all(case["passed"] for case in cases.values())
             and lifecycle["new_ingestions_completed"] == len(ingestions)
@@ -307,7 +312,7 @@ def offline(fixture: dict) -> dict:
         }
 
 
-def _answer_schema(case: dict) -> dict:
+def _answer_schema(case: dict, *, recovery: bool = False) -> dict:
     def fields(properties: dict) -> dict:
         return {
             "type": "object",
@@ -324,7 +329,10 @@ def _answer_schema(case: dict) -> dict:
             "citations": {"type": "array", "items": citation},
         }
     )
-    return fields({"run_id": string, "claims": fields(dict.fromkeys(case["fields"], claim))})
+    answer = {"run_id": string, "claims": fields(dict.fromkeys(case["fields"], claim))}
+    if recovery:
+        answer["ingestion_run_id"] = string
+    return fields(answer)
 
 
 def prepare(directory: Path, name: str, case: dict, fixture: dict) -> None:
@@ -359,6 +367,128 @@ Each claim is an object with `value` and `citations`. Each citation has
     )
 
 
+def _prepare_recovery(directory: Path, fixture: dict) -> tuple[Kite, dict]:
+    directory.mkdir(mode=0o700)
+    kite = Kite(directory / "memory")
+    export = directory / "transcript.json"
+    export.write_text(json.dumps(fixture["export"]), encoding="utf-8")
+    source = kite.call("file-source", str(export), "--format", "memoket")
+    run_id = kite.call("start", "memory-ingestion", payload=source)["run_id"]
+    normalized = kite.stage(run_id, "normalize")["value"]
+    kite.stage(run_id, "annotate", error="missing_input")
+    snapshot = {
+        "case": RECOVERY_CASE,
+        "fixture_sha256": hashlib.sha256(RECOVERY_FIXTURE.read_bytes()).hexdigest(),
+        "ingestion_run_digest": hashlib.sha256(run_id.encode()).hexdigest(),
+        "source_checksum": normalized["checksum"],
+        "source_corpus_bytes": sum(
+            len(line["text"].encode()) for line in normalized["conversation"]["segments"]
+        ),
+    }
+    (directory / "baseline.json").write_text(json.dumps(snapshot), encoding="utf-8")
+    (directory / "ANSWER.schema.json").write_text(
+        json.dumps(_answer_schema(fixture["case"], recovery=True), indent=2), encoding="utf-8"
+    )
+    (directory / "TASK.md").write_text(
+        """# Resume a Memoket import
+
+Use the installed KITE CLI in `./memory` and read its packaged operating guide.
+`transcript.json` is the raw export. A prior process normalized it, then stopped
+when annotation input was missing. Discover and resume that ingestion run.
+Keep its original source and segment IDs. Add one confirmed fact under topic
+`release review` using `review-day` as the state key. Complete the import
+and trace that topic with `topic-tracing`. Keep writes within the task directory.
+Use the CLI for workspace access and keep the baseline and export intact.
+
+Return the ingestion run ID as `ingestion_run_id`, the trace run ID as `run_id`,
+and the confirmed English weekday as claim `review_day`, with its original
+conversation and segment IDs. Use `ANSWER.schema.json` for the response.
+""",
+        encoding="utf-8",
+    )
+    return kite, snapshot
+
+
+def _score_recovery(kite: Kite, fixture: dict, answer: dict, snapshot: dict) -> dict:
+    case = fixture["case"]
+    integrity = kite.call("integrity")
+    result = _grade(kite, case, answer, {**snapshot, **integrity})
+    result.pop("workspace_unchanged")
+    resumed = False
+    ingestion_attempts = ingestion_retries = 0
+    run = answer.get("ingestion_run_id")
+    if (
+        isinstance(run, str)
+        and hashlib.sha256(run.encode()).hexdigest() == snapshot["ingestion_run_digest"]
+    ):
+        try:
+            status = kite.call("status", run)
+            stages = status["stages"]
+            ingestion_attempts = sum(stage["attempts"] for stage in stages.values())
+            ingestion_retries = sum(stage["retry_count"] for stage in stages.values())
+            resumed = (
+                status["pipeline_id"] == "memory-ingestion"
+                and status["state"] == "completed"
+                and status["snapshot_current"]
+                and stages["normalize"]["attempts"] == 1
+                and stages["annotate"]["attempts"] == 2
+                and stages["commit"]["attempts"] == 1
+                and stages["verify"]["state"] == "completed"
+            )
+        except BenchmarkError:
+            resumed = False
+    sources = kite.call("sources")["sources"]
+    expected_source = {
+        "source": "memoket",
+        "conversation_id": fixture["export"]["data"]["id"],
+        "current_checksum": snapshot["source_checksum"],
+        "revisions": 1,
+    }
+    write_verified = (
+        integrity["memory_version"] == 1
+        and integrity["facts"] == 1
+        and sources == [expected_source]
+    )
+    report_verified = False
+    if result["pipeline_completed"]:
+        report = kite.call("artifact", answer["run_id"], "report")["value"]
+        quoted = fixture["export"]["data"]["segments"][0]["sentences"][0]
+        report_verified = _reference_answer(case, answer["run_id"], report)["claims"] == case[
+            "expected"
+        ] and any(
+            line["text"] == quoted["text"]
+            and line["segment_id"] == quoted["line_id"]
+            and line["conversation_id"] == expected_source["conversation_id"]
+            for row in report["timeline"]
+            for line in row["evidence"]
+        )
+    result.update(
+        interrupted_run_recovered=resumed,
+        ingestion_stage_attempts=ingestion_attempts,
+        ingestion_stage_retries=ingestion_retries,
+        expected_write_verified=write_verified,
+        report_evidence_verified=report_verified,
+    )
+    result["passed"] &= resumed and write_verified and report_verified
+    return result
+
+
+def _offline_recovery(directory: Path) -> dict:
+    fixture = json.loads(RECOVERY_FIXTURE.read_text(encoding="utf-8"))
+    kite, snapshot = _prepare_recovery(directory, fixture)
+    run = kite.call("runs")["runs"][0]["run_id"]
+    kite.stage(run, "annotate", payload={"annotations": fixture["annotations"]})
+    kite.stage(run, "commit")
+    kite.stage(run, "verify")
+    report = kite.trace("recovered-trace", fixture["case"])
+    answer = _reference_answer(fixture["case"], "recovered-trace", report)
+    answer["ingestion_run_id"] = run
+    return {
+        "fixture_sha256": snapshot["fixture_sha256"],
+        **_score_recovery(kite, fixture, answer, snapshot),
+    }
+
+
 def main(argv=None) -> int:
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
     parser = argparse.ArgumentParser(description=__doc__)
@@ -366,7 +496,7 @@ def main(argv=None) -> int:
     sub.add_parser("offline", help="run deterministic lifecycle and retrieval cases")
     for command in ("prepare", "score"):
         action = sub.add_parser(command)
-        action.add_argument("case", choices=fixture["cases"])
+        action.add_argument("case", choices=[*fixture["cases"], RECOVERY_CASE])
         action.add_argument("directory", type=Path)
         if command == "score":
             action.add_argument("answer", type=Path)
@@ -375,24 +505,36 @@ def main(argv=None) -> int:
         if args.command == "offline":
             result = offline(fixture)
         else:
-            case = fixture["cases"][args.case]
+            recovery = args.case == RECOVERY_CASE
+            fixture_path = RECOVERY_FIXTURE if recovery else FIXTURE
+            if recovery:
+                recovery_fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
             if args.command == "prepare":
-                prepare(args.directory, args.case, case, fixture)
+                if recovery:
+                    _prepare_recovery(args.directory, recovery_fixture)
+                else:
+                    prepare(args.directory, args.case, fixture["cases"][args.case], fixture)
                 print(args.directory / "TASK.md")
                 return 0
             snapshot = json.loads((args.directory / "baseline.json").read_text(encoding="utf-8"))
             if snapshot["case"] != args.case:
                 raise BenchmarkError("workspace was prepared for a different case")
-            if snapshot["fixture_sha256"] != hashlib.sha256(FIXTURE.read_bytes()).hexdigest():
+            if snapshot["fixture_sha256"] != hashlib.sha256(fixture_path.read_bytes()).hexdigest():
                 raise BenchmarkError("case was prepared with a different fixture")
             answer = json.loads(args.answer.read_text(encoding="utf-8"))
             if not isinstance(answer, dict):
                 raise BenchmarkError("answer must be a JSON object")
+            kite = Kite(args.directory / "memory")
+            metrics = (
+                _score_recovery(kite, recovery_fixture, answer, snapshot)
+                if recovery
+                else _grade(kite, fixture["cases"][args.case], answer, snapshot)
+            )
             result = {
                 "mode": "host-agent",
                 "case": args.case,
                 "fixture_sha256": snapshot["fixture_sha256"],
-                **_grade(Kite(args.directory / "memory"), case, answer, snapshot),
+                **metrics,
             }
     except (BenchmarkError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
         print(f"Agent benchmark failed: {exc}", file=sys.stderr)
