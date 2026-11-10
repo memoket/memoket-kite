@@ -70,8 +70,9 @@ that supports SQLite locking.
 
 - **Text** uses an inline `payload.text` and becomes segment `text-1`.
 - **Transcript** and **audio-transcript** accept source segments from the user or
-  an authorized transcriber. The [audio skill](skills/ingestion/audio-transcription/SKILL.md)
-  describes how the host processes a user-selected file.
+  an authorized transcriber. For a local audio file, `kite-tool audio-source`
+  prepares the input using FFmpeg and a local whisper.cpp model.
+  See the [audio skill](skills/ingestion/audio-transcription/SKILL.md).
 - **Memoket** accepts an authorized record transcription response with
   `data.id` and `data.segments[].sentences[]`, or the inner data object. The
   connector keeps source IDs, original text, available speaker and millisecond

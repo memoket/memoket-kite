@@ -9,6 +9,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from .audio import audio_source
 from .contracts import ToolError, encode
 from .operations import SCHEMAS, TOOLS, Context
 from .workflow import advance, artifact, load_pipeline, start, status
@@ -55,6 +56,16 @@ def _parser() -> argparse.ArgumentParser:
         "describe", help="show registered tools and their JSON contracts"
     )
     describe.add_argument("tool", nargs="?", choices=sorted(TOOLS))
+    audio = commands.add_parser(
+        "audio-source", help="transcribe a local recording into a memory-ingestion input"
+    )
+    audio.add_argument("recording", type=Path)
+    audio.add_argument("--source-id", required=True, help="stable recording identifier")
+    audio.add_argument("--model", type=Path, required=True, help="local whisper.cpp model")
+    audio.add_argument("--language", default="auto", help="Whisper language code or auto")
+    audio.add_argument("--whisper-cli", default="whisper-cli", help="trusted executable")
+    audio.add_argument("--ffmpeg", default="ffmpeg", help="trusted executable")
+    audio.add_argument("--timeout", type=int, default=1800, help="seconds allowed per process")
     begin = commands.add_parser("start", help="create a checkpoint for a pipeline run")
     begin.add_argument("pipeline")
     begin.add_argument("--run-id")
@@ -112,6 +123,18 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 for definition, _ in [load_pipeline(root, path.stem)]
             ]
         }, None
+
+    if args.command == "audio-source":
+        return audio_source(
+            root,
+            args.recording,
+            args.model,
+            source_id=args.source_id,
+            language=args.language,
+            ffmpeg=args.ffmpeg,
+            whisper=args.whisper_cli,
+            timeout=args.timeout,
+        ), None
 
     supplied = _object(getattr(args, "input", None))
     with Workspace.open(args.workspace) as workspace:
@@ -179,6 +202,8 @@ def main(argv=None) -> int:
         return 2
     if args.command == "codebook":
         sys.stdout.buffer.write(result["xml"] + b"\n")
+    elif args.command == "audio-source":
+        print(encode(result))
     else:
         print(encode({"ok": True, **result}))
     return 0

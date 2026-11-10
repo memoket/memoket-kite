@@ -49,3 +49,20 @@ For an authorized real transcript, start with only its `source` input, run
 `normalize`, then use the stage skill to create an `annotations` JSON object.
 Pass it via `kite-tool stage RUN_ID annotate --input FILE`.
 See the [agent guide](../../AGENT_GUIDE.md) for contracts, lifecycle and access.
+
+## Import a local recording
+
+With FFmpeg, `whisper-cli`, and a local whisper.cpp model available, use this
+pipeline in a private workspace. Set a stable source ID for the recording.
+
+```sh
+set -o pipefail
+export KITE_DATA_DIR="$(mktemp -d)"
+kite-tool audio-source meeting.m4a --source-id meeting-audio --model /path/to/model.bin \
+  | kite-tool start memory-ingestion --run-id audio --input -
+kite-tool stage audio normalize
+```
+
+The `normalize` result contains the transcript and segment IDs. Review it and
+supply cited annotations through the remaining ingestion stages. The command
+keeps the original recording's SHA-256 and the transcriber's offsets.

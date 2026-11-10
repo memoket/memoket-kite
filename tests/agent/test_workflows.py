@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import shutil
@@ -17,7 +18,7 @@ import pytest
 from memoket_kite import Memory
 from memoket_kite.pipeline import extract
 from memoket_kite.research import Codebook, SymbolicQuery
-from memoket_kite.tools import cli
+from memoket_kite.tools import audio, cli
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES = ROOT / "examples" / "agent-workflows"
@@ -39,6 +40,8 @@ def work(tmp_path, capsys, monkeypatch):
         if args[0] == "codebook" and not error:
             return output
         data = json.loads(output)
+        if args[0] == "audio-source" and not error:
+            return data
         assert data["ok"] is (error is None)
         if error:
             assert data["error"]["code"] == error, data
@@ -481,3 +484,149 @@ def test_structured_transcript_sources(work, source_format):
     line = result["timeline"][0]["evidence"][0]
     assert line["speaker_id"] == "Maya" and line["end_ms"] == 2400
     assert line["source_reference"] == "audio:clip-1"
+
+
+def test_local_audio_command_builds_ingestion_input(work, tmp_path, monkeypatch):
+    workspace, call = work
+    recording, model = tmp_path / "meeting.mp3", tmp_path / "tiny.bin"
+    recording.write_bytes(b"fixture audio")
+    model.touch()
+    temporary = []
+    body = '  Ravi said "Ship the checklist."  '
+
+    def transcribe(command, **kwargs):
+        assert kwargs["stdin"] is subprocess.DEVNULL
+        assert kwargs["check"] and kwargs["timeout"] == 42
+        if command[0] == "ffmpeg":
+            assert command[command.index("-protocol_whitelist") + 1] == "file"
+            assert command[command.index("-i") + 1] == str(recording.resolve())
+            Path(command[-1]).write_bytes(b"waveform")
+            temporary.append(Path(command[-1]).parent)
+        else:
+            assert command[0] == "whisper-cli" and "-oj" in command
+            assert command[command.index("-l") + 1] == "en"
+            Path(command[-1]).with_suffix(".json").write_text(
+                json.dumps(
+                    {
+                        "params": {"model": "do-not-keep-this-path"},
+                        "result": {"language": "en"},
+                        "transcription": [{"text": body, "offsets": {"from": 80, "to": 2160}}],
+                    }
+                )
+            )
+
+    monkeypatch.setattr(audio, "which", lambda command: command)
+    monkeypatch.setattr(audio.subprocess, "run", transcribe)
+    output = call(
+        "audio-source",
+        str(recording),
+        "--model",
+        str(model),
+        "--source-id",
+        "recording:planning",
+        "--language",
+        "en",
+        "--timeout",
+        "42",
+    )
+    assert not workspace.exists()
+    assert len(temporary) == 1 and not temporary[0].exists()
+    payload = output["source"]["payload"]
+    assert payload["language"] == "en"
+    assert payload["metadata"]["audio_sha256"] == hashlib.sha256(recording.read_bytes()).hexdigest()
+    assert "do-not-keep-this-path" not in json.dumps(output)
+    assert "started_at" not in payload
+    output["annotations"] = {
+        "facts": [
+            {
+                "content": "Ravi confirmed the checklist.",
+                "segment_ids": ["audio-1"],
+                "topics": ["onboarding"],
+                "status": "confirmed",
+            }
+        ]
+    }
+    ingest(call, "audio", output)
+    report = trace(call, "trace", {"topics": ["onboarding"]})
+    assert report["timeline"][0]["evidence"][0]["text"] == body
+    assert report["timeline"][0]["evidence"][0]["end_ms"] == 2160
+    assert report["timeline"][0]["source_time"] is None
+
+
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        (FileNotFoundError(), "missing_dependency"),
+        (subprocess.TimeoutExpired("ffmpeg", 1), "transcription_timeout"),
+        (subprocess.CalledProcessError(1, "ffmpeg"), "transcription_error"),
+    ],
+)
+def test_local_audio_failures_are_structured_and_leave_no_workspace(
+    work,
+    tmp_path,
+    monkeypatch,
+    failure,
+    code,
+):
+    workspace, call = work
+    recording, model = tmp_path / "meeting.mp3", tmp_path / "tiny.bin"
+    recording.touch()
+    model.touch()
+    temporary = []
+
+    def fail(command, **kwargs):
+        temporary.append(Path(command[-1]).parent)
+        raise failure
+
+    monkeypatch.setattr(audio, "which", lambda command: command)
+    monkeypatch.setattr(audio.subprocess, "run", fail)
+    call(
+        "audio-source", str(recording), "--model", str(model), "--source-id", "meeting", error=code
+    )
+    assert not workspace.exists()
+    assert len(temporary) == 1 and not temporary[0].exists()
+
+
+@pytest.mark.parametrize(
+    ("response", "code"),
+    [
+        ({"transcription": []}, "no_speech"),
+        ({"transcription": [{"text": "a sentence without offsets"}]}, "transcription_error"),
+    ],
+)
+def test_local_audio_rejects_unusable_transcript(work, tmp_path, monkeypatch, response, code):
+    workspace, call = work
+    recording, model = tmp_path / "recording.wav", tmp_path / "tiny.bin"
+    recording.touch()
+    model.touch()
+
+    def transcribe(command, **kwargs):
+        if command[0] == "whisper-cli":
+            Path(command[-1]).with_suffix(".json").write_text(json.dumps(response))
+
+    monkeypatch.setattr(audio, "which", lambda command: command)
+    monkeypatch.setattr(audio.subprocess, "run", transcribe)
+    call(
+        "audio-source", str(recording), "--model", str(model), "--source-id", "meeting", error=code
+    )
+    assert not workspace.exists()
+
+
+def test_local_audio_reports_missing_executable_before_decoding(work, tmp_path, monkeypatch):
+    workspace, call = work
+    recording, model = tmp_path / "recording.wav", tmp_path / "tiny.bin"
+    recording.touch()
+    model.touch()
+    monkeypatch.setattr(
+        audio, "which", lambda command: None if command == "whisper-cli" else command
+    )
+    call(
+        "audio-source",
+        str(recording),
+        "--model",
+        str(model),
+        "--source-id",
+        "meeting",
+        error="missing_dependency",
+    )
+    assert not workspace.exists()

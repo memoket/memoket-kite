@@ -108,7 +108,16 @@ def normalize(context, source: dict) -> dict:
         conversation = payload
     else:
         conversation = {**payload, "source": fmt}
-    validate(schema_file(context.root, "conversation"), conversation, "conversation")
+    validate_conversation(context.root, conversation)
+    return {
+        "conversation": conversation,
+        "checksum": digest(conversation),
+        "expected_checksum": source.get("expected_checksum"),
+    }
+
+
+def validate_conversation(root, conversation: dict) -> None:
+    validate(schema_file(root, "conversation"), conversation, "conversation")
     segment_ids = set()
     for segment in conversation["segments"]:
         sid = segment["segment_id"]
@@ -119,11 +128,6 @@ def normalize(context, source: dict) -> dict:
             raise ToolError("invalid_input", "segment contains characters XML cannot represent")
     if XML_UNSAFE.search(conversation.get("title", "")):
         raise ToolError("invalid_input", "title contains characters XML cannot represent")
-    return {
-        "conversation": conversation,
-        "checksum": digest(conversation),
-        "expected_checksum": source.get("expected_checksum"),
-    }
 
 
 def source_day(conversation: dict) -> str | None:
