@@ -102,3 +102,9 @@ kite-tool stage audio normalize
 The `normalize` result contains the transcript and segment IDs. Review it and
 supply cited annotations through the remaining ingestion stages. The command
 keeps the original recording's SHA-256 and the transcriber's offsets.
+
+
+## Extend KITE
+
+Follow the [extension walkthrough](extensions.md) to add a project workflow,
+skill, and local source connector using only the installed CLI.

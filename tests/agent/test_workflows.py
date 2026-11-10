@@ -38,7 +38,8 @@ def work(tmp_path, capsys, monkeypatch):
 
             monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
             args = (*args, "--input", "-")
-        code = cli.main(["--repo", str(repo), "--workspace", str(directory), *args])
+        resources = [] if repo is None else ["--repo", str(repo)]
+        code = cli.main([*resources, "--workspace", str(directory), *args])
         output = capsys.readouterr().out
         assert code == (2 if error else 0), output
         if args[0] == "codebook" and not error:
@@ -121,6 +122,93 @@ def test_discovery_and_invalid_pipeline(work, tmp_path):
         path.write_text(changed)
         call("validate-pipeline", "topic-tracing", repo=repo, error="invalid_pipeline")
     call("validate-pipeline", "../topic-tracing", error="invalid_pipeline")
+
+
+def test_installable_extension_and_custom_connector(work, tmp_path):
+    _, call = work
+    extension = tmp_path / "extension"
+    definitions = extension / "pipeline_defs"
+    definitions.mkdir(parents=True)
+    skill = extension / "skills" / "incident-review" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("# Incident review\nUse incident timeline evidence.\n")
+    original = (ROOT / "pipeline_defs" / "topic-tracing.yaml").read_text()
+    custom = (
+        original.replace("id: topic-tracing", "id: example-incident-review", 1)
+        .replace("skills/retrieval/topic-tracing/SKILL.md", "skills/incident-review/SKILL.md")
+        .replace(
+            "skills/retrieval/evidence-verification/SKILL.md", "skills/incident-review/SKILL.md"
+        )
+    )
+    (definitions / "example-incident-review.yaml").write_text(custom)
+    (extension / "schemas").mkdir()
+    (extension / "schemas" / "pipeline.schema.json").write_text("ignored by the tool")
+
+    def custom_call(*args, **kwargs):
+        return call("--extensions", str(extension), *args, repo=None, **kwargs)
+
+    assert custom_call("resources")["extension_root"] == str(extension)
+    assert len(custom_call("pipelines")["pipelines"]) == 12
+    built_in = "memory-ingestion"
+    assert custom_call("validate-pipeline", built_in) == call("validate-pipeline", built_in)
+    name = "example-incident-review"
+    assert custom_call("validate-pipeline", name)["skill_root"] == str(extension)
+
+    # A local connector supplies a canonical conversation and retains the original message ID.
+    exported = tmp_path / "incident.json"
+    quote = "We moved the alert review to Tuesday."
+    exported.write_text(
+        json.dumps(
+            {
+                "conversation_id": "incident-42",
+                "source": "sample-incident-log",
+                "metadata": {"source_reference": "incident-42"},
+                "segments": [{"segment_id": "update-1", "text": quote}],
+            }
+        )
+    )
+    source = call("file-source", str(exported), "--format", "conversation", repo=None)
+    source["annotations"] = {
+        "facts": [{"content": quote, "segment_ids": ["update-1"], "topics": ["alerts"]}]
+    }
+    ingest(call, "incident", source)
+    custom_call("start", name, "--run-id", "review", payload={"query": {"topics": ["alerts"]}})
+    custom_call("stage", "review", "resolve")
+    assert call("status", "review", repo=None)["resume"]["reason"] == "invalid_pipeline"
+    assert custom_call("status", "review")["resume"]["stages"][0]["id"] == "retrieve"
+
+    skill.write_text("Changed instructions")
+    assert custom_call("status", "review")["resume"]["reason"] == "stale_definition"
+    skill.write_text("# Incident review\nUse incident timeline evidence.\n")
+    relocated = tmp_path / "moved-extension"
+    extension.rename(relocated)
+    extension = relocated
+    custom_call("stage", "review", "retrieve")
+    result = custom_call("stage", "review", "report")["value"]
+    evidence = result["timeline"][0]["evidence"][0]
+    assert (result["trace"], evidence["source"], evidence["segment_id"], evidence["text"]) == (
+        name,
+        "sample-incident-log",
+        "update-1",
+        quote,
+    )
+
+
+def test_extension_rejects_invalid_roots_and_builtin_shadowing(work, tmp_path):
+    _, call = work
+    extension = tmp_path / "extension"
+
+    def custom_call(*args, **kwargs):
+        return call("--extensions", str(extension), *args, repo=None, **kwargs)
+
+    custom_call("pipelines", error="invalid_input")
+    definitions = extension / "pipeline_defs"
+    definitions.mkdir(parents=True)
+    (definitions / "topic-tracing.yaml").write_text("id: topic-tracing")
+    error = custom_call("validate-pipeline", "topic-tracing", error="invalid_pipeline")
+    assert "shadows bundled pipeline" in error["error"]["message"]
+    custom_call("pipelines", error="invalid_pipeline")
+    assert call("validate-pipeline", "topic-tracing")["ok"]
 
 
 def test_stage_summary_preserves_artifacts_and_retry_errors(work):

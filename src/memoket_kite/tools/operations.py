@@ -110,6 +110,7 @@ class Context:
     pipeline: str
     approval: str | None = None
     allow_provider: bool = False
+    extension_root: Path | None = None
 
 
 @dataclass(frozen=True)

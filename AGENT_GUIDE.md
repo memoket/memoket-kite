@@ -5,9 +5,9 @@ Codex reads [AGENTS.md](AGENTS.md). Claude Code imports the same file via
 [CLAUDE.md](CLAUDE.md). Keep the repository and its instructions trusted.
 The installed CLI uses the workflow resources shipped with the package. Run
 `kite-tool resources` to locate the instruction files and skills from any
-directory. To try edits or use custom workflows, pass
-`kite-tool --repo /path/to/trusted/checkout`. An editable installation uses
-the source checkout by default.
+directory. Use `kite-tool --extensions DIR` to add trusted project workflows.
+To work on a full KITE checkout, pass `kite-tool --repo /path/to/trusted/checkout`.
+An editable installation uses the source checkout by default.
 
 ```sh
 python -m pip install -e '.[agent]'
@@ -160,10 +160,16 @@ writes to the workspace.
 
 ## Extend
 
-Add a YAML definition under `pipeline_defs/` and point each stage to a local
-`SKILL.md`. Bind arguments to `input.NAME` or the output of a direct
-dependency via `stage.ID`. Check the declared output type and tool with
-`kite-tool describe`. `kite-tool validate-pipeline` checks the schema, DAG,
-skill paths, and argument types. Increment the version when you change the
-workflow contract. To add an integration without editing the core, transform
-an authorized source into the conversation schema before starting ingestion.
+Use `kite-tool --extensions DIR` to discover and run trusted project workflows
+alongside the installed ones. Put YAML definitions under `DIR/pipeline_defs/`
+and their skills under `DIR/skills/`. Choose IDs distinct from the bundled
+workflows. Read each stage's relative skill path from the `skill_root` returned
+by `validate-pipeline`. Use the extension again for `status`, `stage`, and
+`artifact` on its runs.
+
+Bind arguments to `input.NAME` or the output of a direct dependency via
+`stage.ID`. Check the declared output type and tool with `kite-tool describe`.
+The validator checks the schema, DAG, skill paths, and argument types. Increment
+the version when you change the workflow contract. A connector can transform an
+authorized export into the installed conversation schema and hand it to
+`kite-tool file-source`. Follow the [standalone extension walkthrough](examples/agent-workflows/extensions.md).

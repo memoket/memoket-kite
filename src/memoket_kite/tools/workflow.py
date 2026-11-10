@@ -15,7 +15,9 @@ from .operations import EXTERNAL, SCHEMAS, TOOLS, Context
 SNAPSHOT_KINDS = {"resolved", "matches", "report", "deletion_plan", "integrity"}
 
 
-def load_pipeline(root: Path, name: str) -> tuple[dict, str]:
+def load_pipeline(
+    root: Path, name: str, *, extension_root: Path | None = None
+) -> tuple[dict, str, Path]:
     import yaml
 
     class UniqueLoader(yaml.SafeLoader):
@@ -27,8 +29,17 @@ def load_pipeline(root: Path, name: str) -> tuple[dict, str]:
 
     if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", name):
         raise ToolError("invalid_pipeline", "invalid pipeline name")
-    directory = root / "pipeline_defs"
-    path = (directory / f"{name}.yaml").resolve()
+    workflow_root = root
+    filename = f"{name}.yaml"
+    if extension_root is not None:
+        custom = extension_root / "pipeline_defs" / filename
+        if custom.exists() or custom.is_symlink():
+            builtin = root / "pipeline_defs" / filename
+            if builtin.exists() or builtin.is_symlink():
+                raise ToolError("invalid_pipeline", f"extension shadows bundled pipeline {name}")
+            workflow_root = extension_root
+    directory = workflow_root / "pipeline_defs"
+    path = (directory / filename).resolve()
     if path.parent != directory.resolve():
         raise ToolError("invalid_pipeline", "definition must be under pipeline_defs/")
     try:
@@ -61,8 +72,8 @@ def load_pipeline(root: Path, name: str) -> tuple[dict, str]:
             raise ToolError("invalid_pipeline", f"stage {stage['id']} has an invalid tool contract")
         if not set(stage["needs"]) <= stages.keys():
             raise ToolError("invalid_pipeline", f"stage {stage['id']} has an unknown dependency")
-        skill = (root / stage["skill"]).resolve()
-        if not skill.is_relative_to(root / "skills") or not skill.is_file():
+        skill = (workflow_root / stage["skill"]).resolve()
+        if not skill.is_relative_to(workflow_root / "skills") or not skill.is_file():
             raise ToolError("invalid_pipeline", f"stage {stage['id']} references a missing skill")
         skills[stage["skill"]] = skill.read_text(encoding="utf-8")
         for argument, reference in stage["inputs"].items():
@@ -84,7 +95,8 @@ def load_pipeline(root: Path, name: str) -> tuple[dict, str]:
         )
     except CycleError as exc:
         raise ToolError("invalid_pipeline", "stage dependency graph contains a cycle") from exc
-    return definition, digest([definition, skills, SCHEMAS, schema_file(root, "conversation")])
+    fingerprint = digest([definition, skills, SCHEMAS, schema_file(root, "conversation")])
+    return definition, fingerprint, workflow_root
 
 
 def _inputs(definition: dict, supplied: dict) -> dict:
@@ -99,7 +111,9 @@ def _inputs(definition: dict, supplied: dict) -> dict:
 
 
 def start(context: Context, supplied: dict, run_id: str | None = None) -> dict:
-    definition, fingerprint = load_pipeline(context.root, context.pipeline)
+    definition, fingerprint, _ = load_pipeline(
+        context.root, context.pipeline, extension_root=context.extension_root
+    )
     supplied = _inputs(definition, supplied)
     run_id = run_id if run_id is not None else uuid4().hex
     validate(ID, run_id, "run ID")
@@ -236,7 +250,9 @@ def _check_snapshot(context, row, checkpoint):
 
 def _bound_definition(context: Context, row, checkpoint: dict) -> tuple[dict, str]:
     _check_snapshot(context, row, checkpoint)
-    definition, fingerprint = load_pipeline(context.root, checkpoint["pipeline_id"])
+    definition, fingerprint, _ = load_pipeline(
+        context.root, checkpoint["pipeline_id"], extension_root=context.extension_root
+    )
     if fingerprint != row["definition"]:
         raise ToolError("stale_definition", "pipeline or skill changed; start a new run")
     return definition, fingerprint

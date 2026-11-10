@@ -31,8 +31,12 @@ def _object(path: str | None) -> dict:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="kite-tool", description=__doc__)
-    parser.add_argument(
+    resources = parser.add_mutually_exclusive_group()
+    resources.add_argument(
         "--repo", type=Path, help="override packaged resources with a trusted KITE checkout"
+    )
+    resources.add_argument(
+        "--extensions", type=Path, help="add pipelines and skills from a trusted local directory"
     )
     default_dir = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local/share")) / "kite"
     parser.add_argument(
@@ -143,31 +147,43 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
     if args.command == "describe":
         return _describe(args.tool), None
     root = resource_root(args.repo)
+    extension_root = None
+    if args.extensions is not None:
+        extension_root = args.extensions.expanduser().resolve()
+        if not (extension_root / "pipeline_defs").is_dir():
+            raise ToolError("invalid_input", "extension directory must contain pipeline_defs/")
     if args.command == "resources":
-        return {
+        result = {
             "root": str(root),
             "agent_instructions": str(root / "AGENTS.md"),
             "agent_guide": str(root / "AGENT_GUIDE.md"),
             "pipeline_definitions": str(root / "pipeline_defs"),
             "skills": str(root / "skills"),
             "examples": str(root / "examples" / "agent-workflows"),
-        }, None
+        }
+        if extension_root is not None:
+            result["extension_root"] = str(extension_root)
+        return result, None
     if args.command == "demo":
         return {"value": run_demo(root, metrics=args.metrics)}, None
     if args.command == "validate-pipeline":
-        definition, checksum = load_pipeline(root, args.pipeline)
-        return {"definition": definition, "digest": checksum}, None
+        definition, checksum, skill_root = load_pipeline(
+            root, args.pipeline, extension_root=extension_root
+        )
+        return {"definition": definition, "digest": checksum, "skill_root": str(skill_root)}, None
     if args.command == "pipelines":
-        paths = sorted((root / "pipeline_defs").glob("*.yaml"))
-        if not paths:
+        names = {path.stem for path in (root / "pipeline_defs").glob("*.yaml")}
+        if extension_root is not None:
+            names.update(path.stem for path in (extension_root / "pipeline_defs").glob("*.yaml"))
+        if not names:
             raise ToolError(
                 "invalid_pipeline", "no definitions found; use --repo with a KITE checkout"
             )
         return {
             "pipelines": [
                 {key: definition[key] for key in ("id", "version", "description")}
-                for path in paths
-                for definition, _ in [load_pipeline(root, path.stem)]
+                for name in sorted(names)
+                for definition, _, _ in [load_pipeline(root, name, extension_root=extension_root)]
             ]
         }, None
 
@@ -217,6 +233,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             getattr(args, "pipeline", ""),
             getattr(args, "approve", None),
             getattr(args, "allow_provider", False),
+            extension_root=extension_root,
         )
         if args.command == "start":
             return start(context, supplied, args.run_id), None
