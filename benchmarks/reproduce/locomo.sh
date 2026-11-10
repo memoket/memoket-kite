@@ -5,17 +5,19 @@ cd "$(dirname "$0")/../.."
 
 MODEL="${MODEL:-gpt-4.1-mini}"
 WORKERS="${WORKERS:-4}"
-# Honour the same artifact root the Python tooling reads.
-ARTIFACTS="${KITE_ARTIFACTS_DIR:-artifacts}"
 # `python` is absent on installs that ship only `python3`; the stage commands
 # below run under whichever this resolves to, so a virtualenv still wins.
 PYTHON="${PYTHON:-$(command -v python || command -v python3)}"
 MODE="${1:-full}"
 RESUME=()
+CHECK_ONLY=false
 if [[ "$MODE" == "resume" ]]; then
   RESUME=(--resume)
+elif [[ "$MODE" == "check" ]]; then
+  CHECK_ONLY=true
+  MODE=full
 elif [[ "$MODE" != "full" ]]; then
-  echo "usage: $0 [full|resume]" >&2
+  echo "usage: $0 [full|resume|check]" >&2
   exit 2
 fi
 
@@ -31,6 +33,13 @@ except ValueError as error:
     raise SystemExit(str(error)) from error
 ' "${TAG:-}")"
 
+"$PYTHON" -m benchmarks.reproduce.preflight locomo \
+  --model "$MODEL" --tag "$TAG" --mode "$MODE" --eval-workers "$WORKERS"
+if [[ "$CHECK_ONLY" == true ]]; then
+  exit 0
+fi
+
+ARTIFACTS="$("$PYTHON" -c 'from benchmarks.common.paths import ARTIFACTS_ROOT; print(ARTIFACTS_ROOT)')"
 echo "benchmark=locomo dataset=$ARTIFACTS/datasets/locomo/locomo10.json"
 echo "model=$MODEL workers=$WORKERS tag=$TAG mode=$MODE"
 

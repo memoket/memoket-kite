@@ -14,20 +14,29 @@ manifest = json.loads(pathlib.Path('benchmarks/reproduce/manifest.json').read_te
 path = manifest['benchmarks']['longmemeval']['result_path']
 sys.stdout.write(re.sub(r'^longmemeval-', '', pathlib.PurePosixPath(path).parent.name))
 ")}"
-# Honour the same artifact root the Python tooling reads.
-ARTIFACTS="${KITE_ARTIFACTS_DIR:-artifacts}"
 # `python` is absent on installs that ship only `python3`; the stage commands
 # below run under whichever this resolves to, so a virtualenv still wins.
 PYTHON="${PYTHON:-$(command -v python || command -v python3)}"
 MODE="${1:-full}"
 RESUME=()
+CHECK_ONLY=false
 if [[ "$MODE" == "resume" ]]; then
   RESUME=(--resume)
+elif [[ "$MODE" == "check" ]]; then
+  CHECK_ONLY=true
+  MODE=full
 elif [[ "$MODE" != "full" ]]; then
-  echo "usage: $0 [full|resume]" >&2
+  echo "usage: $0 [full|resume|check]" >&2
   exit 2
 fi
 
+"$PYTHON" -m benchmarks.reproduce.preflight longmemeval \
+  --model "$MODEL" --tag "$TAG" --mode "$MODE" --build-workers "$BUILD_WORKERS" --eval-workers "$EVAL_WORKERS"
+if [[ "$CHECK_ONLY" == true ]]; then
+  exit 0
+fi
+
+ARTIFACTS="$("$PYTHON" -c 'from benchmarks.common.paths import ARTIFACTS_ROOT; print(ARTIFACTS_ROOT)')"
 echo "benchmark=longmemeval dataset=$ARTIFACTS/datasets/longmemeval/longmemeval_s_cleaned.json"
 echo "model=$MODEL build_workers=$BUILD_WORKERS eval_workers=$EVAL_WORKERS tag=$TAG mode=$MODE"
 

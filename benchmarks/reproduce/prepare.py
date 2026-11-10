@@ -10,7 +10,7 @@ import urllib.request
 from pathlib import Path
 
 from benchmarks.common.paths import ARTIFACTS_ROOT, REPO_ROOT
-from benchmarks.reproduce.common import load_manifest, repository_path, sha256
+from benchmarks.reproduce.common import dataset_path, load_manifest, sha256
 
 
 def _download(url: str, destination: Path, expected_sha256: str) -> None:
@@ -36,7 +36,7 @@ def _download(url: str, destination: Path, expected_sha256: str) -> None:
 
 def prepare_datasets(manifest: dict) -> None:
     for name, dataset in manifest["datasets"].items():
-        destination = repository_path(dataset["path"])
+        destination = dataset_path(dataset["path"])
         if destination.exists() and sha256(destination) == dataset["sha256"]:
             print(f"{name}: verified {destination}")
             continue

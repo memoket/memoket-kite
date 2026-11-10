@@ -17,6 +17,8 @@ python -m benchmarks.reproduce.prepare datasets
 
 The command downloads to a temporary file, verifies its SHA256, and only then
 moves it into `artifacts/datasets/`.
+Set `KITE_ARTIFACTS_DIR` before preparing datasets when you want an isolated
+run. Preparation and evaluation use the same directory.
 
 ## Run the benchmarks
 
@@ -25,9 +27,18 @@ cp .env.example .env
 # Set OPENAI_API_KEY; optionally set OPENAI_BASE_URL.
 source .env
 
+bash benchmarks/reproduce/locomo.sh check
+bash benchmarks/reproduce/longmemeval.sh check
+
 bash benchmarks/reproduce/locomo.sh
 bash benchmarks/reproduce/longmemeval.sh
 ```
+
+The `check` commands validate a fresh run's pinned dataset, local model
+configuration, worker counts and output locations without sending model
+requests. Both full runs and resumes run these checks before building.
+Model credentials are checked for presence locally. The provider validates
+them on the first model request.
 
 Current LoCoMo runs use the answer prompt without concrete answer examples and
 default to the `example-free-v1` result tag. A rerun can reuse existing

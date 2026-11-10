@@ -17,6 +17,70 @@ import pytest
 from benchmarks.common import manifest
 
 
+@pytest.mark.parametrize("name", ["locomo", "longmemeval"])
+def test_reproduction_preflight_uses_the_prepared_artifact_root(
+    name, tmp_path, monkeypatch, capsys
+):
+    from benchmarks.reproduce import common, preflight, prepare
+
+    root = tmp_path / "isolated"
+    monkeypatch.setattr(common, "ARTIFACTS_ROOT", root)
+    monkeypatch.setattr(preflight, "RESULTS_ROOT", root / "results")
+    monkeypatch.setattr(preflight, "CODEBOOKS_ROOT", root / "codebooks")
+    dataset = b"synthetic pinned data"
+    source_manifest = {
+        "datasets": {
+            name: {
+                "path": f"artifacts/datasets/{name}/data.json",
+                "url": "https://example.invalid/pinned",
+                "sha256": hashlib.sha256(dataset).hexdigest(),
+            }
+        }
+    }
+    monkeypatch.setattr(preflight, "load_manifest", lambda: source_manifest)
+    command = [name, "--tag", "unit", "--model", "local-test"]
+
+    def fail(message, *flags):
+        with pytest.raises(SystemExit) as error:
+            preflight.main([*command, *flags])
+        assert error.value.code == 2
+        assert message in capsys.readouterr().err
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    fail("OPENAI_API_KEY is required")
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-key")
+    fail("worker counts must be positive", "--eval-workers", "0")
+    fail("missing or invalid pinned dataset")
+    assert not root.exists()
+
+    def download(url, destination, expected):
+        assert destination == root / "datasets" / name / "data.json"
+        assert expected == hashlib.sha256(dataset).hexdigest()
+        destination.parent.mkdir(parents=True)
+        destination.write_bytes(dataset)
+
+    monkeypatch.setattr(prepare, "_download", download)
+    prepare.prepare_datasets(source_manifest)
+    assert preflight.main(command) == 0
+    assert not (root / "results").exists()
+    assert not (root / "codebooks").exists()
+    assert "synthetic-test-key" not in capsys.readouterr().out
+
+    codebooks = root / "codebooks" / name
+    codebooks.mkdir(parents=True)
+    (codebooks / "partial.xml").touch()
+    fail("Codebooks already exist")
+    assert preflight.main([*command, "--mode", "resume"]) == 0
+    result = root / "results" / f"{name}-unit"
+    result.mkdir(parents=True)
+    (result / "manifest.json").touch()
+    fail("result directory already exists")
+    (result / preflight.LOCK_NAME).touch()
+    fail("writer lock", "--mode", "resume")
+    (result / "judge_manifest.json").touch()
+    fail("are sealed", "--mode", "resume")
+
+
 def test_longmemeval_main_records_provenance_before_answering(corpus, tmp_path, monkeypatch):
     from benchmarks.longmemeval import evaluate
 
