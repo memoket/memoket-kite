@@ -123,6 +123,7 @@ def test_discovery_and_invalid_pipeline(work, tmp_path):
     ):
         path.write_text(changed)
         call("validate-pipeline", "topic-tracing", repo=repo, error="invalid_pipeline")
+    call("pipelines", repo=repo, error="invalid_pipeline")
     call("validate-pipeline", "../topic-tracing", error="invalid_pipeline")
 
 
@@ -150,11 +151,30 @@ def test_installable_extension_and_custom_connector(work, tmp_path):
         return call("--extensions", str(extension), *args, repo=None, **kwargs)
 
     assert custom_call("resources")["extension_root"] == str(extension)
-    assert len(custom_call("pipelines")["pipelines"]) == 13
+    catalog = custom_call("pipelines")
+    assert len(catalog["pipelines"]) == 13
+    assert "invalid_extensions" not in catalog
     built_in = "memory-ingestion"
     assert custom_call("validate-pipeline", built_in) == call("validate-pipeline", built_in)
     name = "example-incident-review"
     assert custom_call("validate-pipeline", name)["skill_root"] == str(extension)
+    (definitions / "bad-encoding.yaml").write_bytes(b"\xff")
+    (definitions / "bad-syntax.yaml").write_text("stages: [\n")
+    (definitions / "not-a-file.yaml").mkdir()
+    (definitions / "bad-skill.yaml").write_text(
+        custom.replace(name, "bad-skill").replace("SKILL.md", "unreadable.md")
+    )
+    skill.with_name("unreadable.md").write_bytes(b"\xff")
+    partial = custom_call("pipelines")
+    assert partial["pipelines"] == catalog["pipelines"]
+    assert [(issue["id"], issue["code"]) for issue in partial["invalid_extensions"]] == [
+        ("bad-encoding", "invalid_pipeline"),
+        ("bad-skill", "invalid_pipeline"),
+        ("bad-syntax", "invalid_pipeline"),
+        ("not-a-file", "invalid_pipeline"),
+    ]
+    custom_call("start", "bad-syntax", error="invalid_pipeline")
+    custom_call("validate-pipeline", "bad-skill", error="invalid_pipeline")
 
     # A local connector supplies a canonical conversation and retains the original message ID.
     exported = tmp_path / "incident.json"
@@ -209,7 +229,11 @@ def test_extension_rejects_invalid_roots_and_builtin_shadowing(work, tmp_path):
     (definitions / "topic-tracing.yaml").write_text("id: topic-tracing")
     error = custom_call("validate-pipeline", "topic-tracing", error="invalid_pipeline")
     assert "shadows bundled pipeline" in error["error"]["message"]
-    custom_call("pipelines", error="invalid_pipeline")
+    catalog = custom_call("pipelines")
+    bundled = call("pipelines")["pipelines"]
+    assert catalog["pipelines"] == [row for row in bundled if row["id"] != "topic-tracing"]
+    assert catalog["invalid_extensions"] == [{"id": "topic-tracing", **error["error"]}]
+    custom_call("start", "topic-tracing", error="invalid_pipeline")
     assert call("validate-pipeline", "topic-tracing")["ok"]
 
 

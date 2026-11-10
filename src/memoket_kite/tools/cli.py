@@ -14,7 +14,16 @@ from .demo import run_demo
 from .ingest import file_source
 from .operations import SCHEMAS, SOURCE_SCOPE, TOOLS, Context
 from .resources import resource_root
-from .workflow import advance, artifact, load_pipeline, recent_runs, start, status, transcript_page
+from .workflow import (
+    advance,
+    artifact,
+    discover_pipelines,
+    load_pipeline,
+    recent_runs,
+    start,
+    status,
+    transcript_page,
+)
 from .workspace import Workspace
 
 
@@ -190,20 +199,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
         )
         return {"definition": definition, "digest": checksum, "skill_root": str(skill_root)}, None
     if args.command == "pipelines":
-        names = {path.stem for path in (root / "pipeline_defs").glob("*.yaml")}
-        if extension_root is not None:
-            names.update(path.stem for path in (extension_root / "pipeline_defs").glob("*.yaml"))
-        if not names:
-            raise ToolError(
-                "invalid_pipeline", "no definitions found; use --repo with a KITE checkout"
-            )
-        return {
-            "pipelines": [
-                {key: definition[key] for key in ("id", "version", "description")}
-                for name in sorted(names)
-                for definition, _, _ in [load_pipeline(root, name, extension_root=extension_root)]
-            ]
-        }, None
+        return discover_pipelines(root, extension_root=extension_root), None
 
     if args.command == "file-source":
         return file_source(

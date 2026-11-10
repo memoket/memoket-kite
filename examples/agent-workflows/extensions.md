@@ -66,6 +66,12 @@ The `skill_root` returned by `validate-pipeline` is the base for the relative
 `skill` paths in the definition. Read each referenced skill before running its
 stage. Use `kite-tool describe TOOL` to inspect the tool's inputs and output.
 
+During discovery, `pipelines` reports invalid project definitions in
+`invalid_extensions` alongside the usable workflows in `pipelines`.
+`validate-pipeline NAME` and `start NAME` reject an invalid definition.
+Rename any project workflow whose ID collides with a bundled ID. To use the
+bundled version while fixing the project, run without `--extensions`.
+
 ## Convert a local export
 
 A connector runs outside KITE and produces a conversation using the installed

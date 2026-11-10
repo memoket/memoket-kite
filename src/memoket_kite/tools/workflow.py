@@ -40,10 +40,12 @@ def load_pipeline(
                 raise ToolError("invalid_pipeline", f"extension shadows bundled pipeline {name}")
             workflow_root = extension_root
     directory = workflow_root / "pipeline_defs"
-    path = (directory / filename).resolve()
-    if path.parent != directory.resolve():
-        raise ToolError("invalid_pipeline", "definition must be under pipeline_defs/")
     try:
+        path = (directory / filename).resolve()
+        if path.parent != directory.resolve():
+            raise ToolError("invalid_pipeline", "definition must be under pipeline_defs/")
+        if not path.is_file():
+            raise ToolError("invalid_pipeline", "pipeline YAML must be a regular file")
         with path.open(encoding="utf-8") as stream:
             raw = stream.read(128 * 1024 + 1)
         if len(raw) > 128 * 1024:
@@ -52,7 +54,7 @@ def load_pipeline(
         validate(schema_file(root, "pipeline"), definition, "pipeline")
     except ToolError as exc:
         raise ToolError("invalid_pipeline", str(exc)) from exc
-    except (OSError, yaml.YAMLError, RecursionError) as exc:
+    except (OSError, UnicodeError, yaml.YAMLError, RuntimeError) as exc:
         raise ToolError("invalid_pipeline", "cannot read pipeline YAML or schema") from exc
     if definition["id"] != name:
         raise ToolError("invalid_pipeline", "pipeline ID must match its filename")
@@ -73,10 +75,17 @@ def load_pipeline(
             raise ToolError("invalid_pipeline", f"stage {stage['id']} has an invalid tool contract")
         if not set(stage["needs"]) <= stages.keys():
             raise ToolError("invalid_pipeline", f"stage {stage['id']} has an unknown dependency")
-        skill = (workflow_root / stage["skill"]).resolve()
-        if not skill.is_relative_to(workflow_root / "skills") or not skill.is_file():
-            raise ToolError("invalid_pipeline", f"stage {stage['id']} references a missing skill")
-        skills[stage["skill"]] = skill.read_text(encoding="utf-8")
+        try:
+            skill = (workflow_root / stage["skill"]).resolve()
+            if not skill.is_relative_to(workflow_root / "skills") or not skill.is_file():
+                raise ToolError(
+                    "invalid_pipeline", f"stage {stage['id']} references a missing skill"
+                )
+            skills[stage["skill"]] = skill.read_text(encoding="utf-8")
+        except (OSError, UnicodeError, RuntimeError) as exc:
+            raise ToolError(
+                "invalid_pipeline", f"stage {stage['id']} skill cannot be read"
+            ) from exc
         for argument, reference in stage["inputs"].items():
             scope, key = reference.split(".")
             kind = (
@@ -108,6 +117,30 @@ def load_pipeline(
     if tool_versions:
         parts.append(tool_versions)
     return definition, digest(parts), workflow_root
+
+
+def discover_pipelines(root: Path, *, extension_root: Path | None = None) -> dict:
+    bundled = {path.stem for path in (root / "pipeline_defs").glob("*.yaml")}
+    extensions = set()
+    if extension_root is not None:
+        extensions = {path.stem for path in (extension_root / "pipeline_defs").glob("*.yaml")}
+    if not bundled and not extensions:
+        raise ToolError("invalid_pipeline", "no definitions found; use --repo with a KITE checkout")
+
+    pipelines, invalid_extensions = [], []
+    for name in sorted(bundled | extensions):
+        try:
+            definition, _, _ = load_pipeline(root, name, extension_root=extension_root)
+        except ToolError as error:
+            if name not in extensions:
+                raise
+            invalid_extensions.append({"id": name, "code": error.code, "message": str(error)})
+            continue
+        pipelines.append({key: definition[key] for key in ("id", "version", "description")})
+    result = {"pipelines": pipelines}
+    if invalid_extensions:
+        result["invalid_extensions"] = invalid_extensions
+    return result
 
 
 def _inputs(context: Context, definition: dict, supplied: dict) -> dict:
