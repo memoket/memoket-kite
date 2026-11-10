@@ -118,6 +118,12 @@ def main() -> None:
         report = call("stage", trace, "report", workspace=recovered)["value"]
         assert report["matched_count"] == 1 and report["next_cursor"] is None
         assert call("query", payload=query, workspace=recovered)["value"] == report
+        limited = {"query": {**query["query"], "evidence_byte_budget": 128}}
+        budgeted = call("query", payload=limited, workspace=recovered)["value"]
+        assert (
+            budgeted["evidence_budget"]["over_budget"]
+            and budgeted["timeline"] == report["timeline"]
+        )
         evidence = report["timeline"][0]["evidence"][0]
         detail = call("evidence", evidence["source_line_id"], workspace=recovered)["value"]
         assert detail["evidence"] == evidence and not detail["before"] and not detail["after"]

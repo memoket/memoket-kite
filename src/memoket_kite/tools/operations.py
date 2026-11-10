@@ -29,6 +29,7 @@ JSON_OBJECT = {"type": "object"}
 RELATED_LABELS = array(
     object_schema({"code": TEXT, "fact_count": COUNT, "fact_ids": array(TEXT, 1, 3)}), maximum=10
 )
+EVIDENCE_BUDGET = object_schema({"limit_bytes": COUNT, "payload_bytes": COUNT, "over_budget": BOOL})
 RECEIPT = object_schema(
     {"changed": BOOL, "memory_version": COUNT},
     {"revision_id": TEXT, "checksum": HASH, "deleted_revisions": COUNT, "operation_id": HASH},
@@ -80,7 +81,7 @@ SCHEMAS = {
             "entity_codes": array(TEXT),
             "unresolved_entities": array(TEXT),
         },
-        {"end_date": DATE},
+        {"end_date": DATE, "evidence_budget": EVIDENCE_BUDGET},
     ),
     "report": object_schema(
         {
@@ -107,7 +108,7 @@ SCHEMAS = {
             "unresolved_entities": array(TEXT),
             "memory_version": COUNT,
         },
-        {"end_date": DATE},
+        {"end_date": DATE, "evidence_budget": EVIDENCE_BUDGET},
     ),
     "receipt": RECEIPT,
     "integrity": object_schema(
@@ -220,8 +221,8 @@ TOOLS = {
     "rebuild": Tool(_rebuild, {}, "receipt", "write"),
     "validate_commit": Tool(_validate, {"receipt": "receipt"}, "integrity"),
     "resolve": Tool(resolve, {"query": "query"}, "resolved", version=4),
-    "retrieve": Tool(retrieve, {"resolved": "resolved"}, "matches", version=7),
-    "report": Tool(report, {"matches": "matches"}, "report", version=8),
+    "retrieve": Tool(retrieve, {"resolved": "resolved"}, "matches", version=8),
+    "report": Tool(report, {"matches": "matches"}, "report", version=9),
     "reclassify": Tool(reclassify, {"merge": "reclassify"}, "receipt", "write", version=2),
     "move_topic": Tool(move_topic, {"move": "topic_move"}, "receipt", "write"),
     "preview_delete": Tool(_preview, {"target": "deletion_target"}, "deletion_plan", version=4),

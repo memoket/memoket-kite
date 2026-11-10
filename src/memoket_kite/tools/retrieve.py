@@ -7,7 +7,7 @@ from collections import defaultdict
 
 from memoket_kite.core.vocab import norm_code
 
-from .contracts import DATE, TEXT, ToolError, array, digest, object_schema, utc_timestamp
+from .contracts import DATE, TEXT, ToolError, array, digest, encode, object_schema, utc_timestamp
 from .index import event_date_basis, revision_id
 from .ingest import source_day
 
@@ -28,6 +28,7 @@ QUERY = object_schema(
         "source": TEXT,
         "state_key": TEXT,
         "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "evidence_byte_budget": {"type": "integer", "minimum": 128, "maximum": 1024 * 1024},
         "cursor": CURSOR,
     },
 )
@@ -135,6 +136,28 @@ def _citation(record: dict, line_id: str, segment: dict) -> dict:
     }
 
 
+def _citations(index, fact) -> list[dict]:
+    record = index.revisions[fact.unit]
+    return [_citation(record, sid, index.segments[sid]) for sid in fact.src]
+
+
+def _budgeted_page(index, rows: list[tuple], budget: int) -> tuple[list[tuple], dict]:
+    size = 2  # Outer JSON array delimiters.
+    count = 0
+    for row in rows:
+        fact = index.store.facts[row[-1]]
+        next_size = size + len(encode(_citations(index, fact))) + (1 if count else 0)
+        if count and next_size > budget:
+            break
+        size = next_size
+        count += 1
+    return rows[:count], {
+        "limit_bytes": budget,
+        "payload_bytes": size,
+        "over_budget": size > budget,
+    }
+
+
 def evidence_context(workspace, line_id: str, radius: int) -> dict:
     match = re.fullmatch(r"c-([a-f0-9]{64})L([1-9][0-9]{0,4})", line_id)
     if match is None or not 0 <= radius <= 20:
@@ -224,16 +247,24 @@ def retrieve(context, resolved: dict) -> dict:
         offsets = [index.segments[sid].get("start_ms", -1) for sid in fact.src]
         rows.append((time_order[basis], day, sortable, fact.unit, min(offsets), fid))
     rows.sort()
-    # Return the most recent dated window first, in chronological order.
+    # Select from newest dated to oldest, then from the uncertain tail.
     limit = query.get("limit", 100)
     scope = _page_scope(context, query)
     offset = _page_offset(scope, query)
     known = [row for row in rows if not row[0]]
     uncertain = [row for row in rows if row[0]]
     end = max(0, len(known) - offset)
-    selected = known[max(0, end - limit) : end]
+    selected = known[max(0, end - limit) : end][::-1]
+    dated_count = len(selected)
     uncertain_start = max(0, offset - len(known))
     selected += uncertain[uncertain_start : uncertain_start + limit - len(selected)]
+    extras = {}
+    if "evidence_byte_budget" in query:
+        selected, extras["evidence_budget"] = _budgeted_page(
+            index, selected, query["evidence_byte_budget"]
+        )
+    # Keep the displayed dated portion chronological after budgeting.
+    selected[:dated_count] = reversed(selected[:dated_count])
     next_offset = offset + len(selected)
     return {
         "fact_ids": [row[-1] for row in selected],
@@ -249,6 +280,7 @@ def retrieve(context, resolved: dict) -> dict:
         "entity_codes": resolved["entity_codes"],
         "unresolved_entities": resolved["unresolved_entities"],
         **({"end_date": query["end_date"]} if "end_date" in query else {}),
+        **extras,
     }
 
 
@@ -279,7 +311,7 @@ def _evidence(index, fid: str) -> dict:
         "state_key": annotations.get("state_key"),
         "state": annotations.get("state"),
         "supersedes": annotations.get("supersedes"),
-        "evidence": [_citation(record, sid, index.segments[sid]) for sid in fact.src],
+        "evidence": _citations(index, fact),
     }
 
 
@@ -419,6 +451,7 @@ def report(context, matches: dict) -> dict:
         "trace": context.pipeline,
         "time_axis": matches["time_axis"],
         **({"end_date": end_date} if end_date is not None else {}),
+        **({"evidence_budget": matches["evidence_budget"]} if "evidence_budget" in matches else {}),
         "timeline": timeline,
         **sections,
         "current_reported_states": _states(timeline, complete, matches["time_axis"]),

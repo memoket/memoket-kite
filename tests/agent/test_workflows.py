@@ -25,6 +25,7 @@ from memoket_kite import Memory
 from memoket_kite.pipeline import extract
 from memoket_kite.research import Codebook, SymbolicQuery
 from memoket_kite.tools import audio, cli, operations, workspace
+from memoket_kite.tools.contracts import encode
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES = ROOT / "examples" / "agent-workflows"
@@ -1555,6 +1556,46 @@ def test_direct_query_matches_staged_report_and_creates_no_workflow_data(work, m
     updated = call("query", payload={"query": query})["value"]
     assert updated["matched_count"] == 3
     assert updated["timeline"][0]["evidence"][0]["conversation_id"] == "third"
+
+
+def test_evidence_budget_pages_keep_exact_quotes_and_chronological_windows(work):
+    _, call = work
+    for name, quote, day in (
+        ("old", "Old", "2026-05-01"),
+        ("large", "界" * 600, "2026-05-02"),
+        ("recent", "Recent", "2026-05-03"),
+        ("latest", "Latest", "2026-05-04"),
+        ("unknown", "Unknown", None),
+    ):
+        ingest(call, name, text_input(name, quote, date=day))
+    query = {"topics": ["onboarding"], "limit": 5, "evidence_byte_budget": 1100}
+    first = trace(call, "staged", query)
+    assert first == call("query", payload={"query": query})["value"]
+    assert first["next_cursor"]
+    call(
+        "query",
+        payload={"query": {**query, "evidence_byte_budget": 1200, "cursor": first["next_cursor"]}},
+        error="invalid_input",
+    )
+    second = call("query", payload={"query": {**query, "cursor": first["next_cursor"]}})["value"]
+    third = call("query", payload={"query": {**query, "cursor": second["next_cursor"]}})["value"]
+    assert third["next_cursor"] is None
+    assert [
+        [row["evidence"][0]["conversation_id"] for row in report["timeline"]]
+        for report in (first, second, third)
+    ] == [["recent", "latest"], ["large"], ["old", "unknown"]]
+    assert second["timeline"][0]["evidence"][0]["text"] == "界" * 600
+    for report, oversized in ((first, False), (second, True), (third, False)):
+        payload = [row["evidence"] for row in report["timeline"]]
+        size = len(encode(payload).encode())
+        assert report["evidence_budget"] == {
+            "limit_bytes": 1100,
+            "payload_bytes": size,
+            "over_budget": oversized,
+        }
+        assert (size > 1100) == oversized
+        assert report["matched_count"] == 5 and report["truncated"]
+        assert report["current_reported_states"]["owner"]["status"] == "partial"
 
 
 def test_direct_query_leaves_legacy_schema_upgrade_to_workspace_commands(work):

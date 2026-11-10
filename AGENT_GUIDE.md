@@ -159,6 +159,13 @@ recent dated window, then work backward and finish with any uncertain dates.
 A partial page leaves reported states tentative. If memory changes, restart
 from the first page.
 
+Set `query.evidence_byte_budget` to target 128–1,048,576 bytes for the JSON
+array of cited evidence lists on a page. This applies alongside `query.limit`.
+The report returns `evidence_budget.payload_bytes` for those lists. Other
+report fields use additional bytes. If the first fact's evidence exceeds the
+target, its citations stay intact on their own page and `over_budget` is true.
+Use the same budget when passing a continuation cursor.
+
 For topic-filtered traces, check `related_topics` and `related_entities`
 for labels that also appear in the current page's evidence. Each list contains
 up to ten labels ranked by matching fact count, with up to three supporting
