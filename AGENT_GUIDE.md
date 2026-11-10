@@ -121,9 +121,27 @@ Exports, host-agent transcripts and external backups are separate copies and
 follow the operator's retention policy. Handle all artifact and Codebook
 output as private data.
 
-`kite-tool codebook` exports a snapshot readable by `Memory.load` and
-`Codebook.load`. The workspace retains the richer source metadata and lifecycle
-state. Use pipeline tools for writes to the workspace.
+## Export a Codebook
+
+Run `kite-tool sources` to find conversation IDs and current checksums without
+reading transcript text. Use the checksum for incremental source updates or the
+source and ID to select an export.
+
+```sh
+umask 077
+kite-tool codebook --source memoket --conversation-id RECORD_ID --active-only > selected.xml
+```
+
+The XML is readable by `Memory.load` and `Codebook.load`. The example exports
+only the current revision of the selected record. Omit `--active-only` to
+include its history. Use `--source` alone to select a source namespace.
+Plain `kite-tool codebook` exports the full workspace snapshot.
+
+Scoped export rebuilds the Codebook from selected records and their supported
+taxonomy, preserving original source lines. Review the selected text and
+annotations before sharing, including names written in free text. The workspace
+retains the richer source metadata and lifecycle state. Use pipeline tools for
+writes to the workspace.
 
 ## Extend
 

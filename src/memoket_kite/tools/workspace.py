@@ -95,9 +95,24 @@ class Workspace:
     def merges(self) -> dict:
         return json.loads(self._memory()["merges"])
 
-    def records(self) -> list[dict]:
+    def records(
+        self,
+        *,
+        source: str | None = None,
+        conversation_id: str | None = None,
+        active_only: bool = False,
+    ) -> list[dict]:
+        filters = {
+            "source": source,
+            "conversation_id": conversation_id,
+            "active": 1 if active_only else None,
+        }
+        filters = {key: value for key, value in filters.items() if value is not None}
+        query = "SELECT * FROM revisions"
+        if filters:
+            query += " WHERE " + " AND ".join(f"{key}=?" for key in filters)
         records = []
-        for row in self.db.execute("SELECT * FROM revisions ORDER BY checksum"):
+        for row in self.db.execute(query + " ORDER BY checksum", tuple(filters.values())):
             record = json.loads(row["payload"])
             conversation = record["conversation"]
             if (
@@ -118,6 +133,57 @@ class Workspace:
         if index.xml != self._memory()["xml"]:
             raise ToolError("integrity_error", "Codebook snapshot differs from its sources")
         return index
+
+    def list_sources(self, source: str | None = None) -> list[dict]:
+        rows = self.db.execute(
+            """
+            SELECT source, conversation_id, count(*) AS revisions,
+                max(CASE WHEN active=1 THEN checksum END) AS current_checksum
+            FROM revisions
+            WHERE (? IS NULL OR source=?)
+            GROUP BY source, conversation_id
+            ORDER BY source, conversation_id
+            """,
+            (source, source),
+        )
+        return [dict(row) for row in rows]
+
+    def export_codebook(
+        self,
+        *,
+        source: str | None = None,
+        conversation_id: str | None = None,
+        active_only: bool = False,
+    ) -> bytes:
+        if conversation_id is not None and source is None:
+            raise ToolError("invalid_input", "conversation scope requires a source namespace")
+        if source is None and not active_only:
+            return self.index().xml
+        records = self.records(
+            source=source,
+            conversation_id=conversation_id,
+            active_only=active_only,
+        )
+        if source is not None and not records:
+            raise ToolError("not_found", "no revisions match the requested export scope")
+        retained_facts = {fact_id for record in records for fact_id, _ in fact_entries(record)}
+        for record in records:
+            for fact in record["facts"]:
+                if "supersedes" in fact and fact["supersedes"] not in retained_facts:
+                    # Correction edges are workspace metadata. Build a detached
+                    # index using only links within the exported source set.
+                    del fact["supersedes"]
+        return build_index(records, self._supported_merges(records)).xml
+
+    def _supported_merges(self, records: list[dict]) -> dict:
+        topics = {
+            topic for record in records for fact in record["facts"] for topic in fact["topics"]
+        }
+        for record in records:
+            for topic in record["taxonomy"]:
+                topics.add(topic["name"])
+                topics.update(topic["parents"])
+        return {old: new for old, new in self.merges().items() if {old, new} <= topics}
 
     def replace_index(self, merges: dict | None = None, *, force: bool = False) -> dict:
         merges = self.merges() if merges is None else merges
@@ -300,15 +366,7 @@ class Workspace:
                 "UPDATE runs SET inputs='{}', definition='', checkpoint=? WHERE id=?",
                 (encode(checkpoint), row["id"]),
             )
-        topics = {
-            topic for record in retained for fact in record["facts"] for topic in fact["topics"]
-        }
-        for record in retained:
-            for topic in record["taxonomy"]:
-                topics.add(topic["name"])
-                topics.update(topic["parents"])
-        merges = {old: new for old, new in self.merges().items() if {old, new} <= topics}
-        receipt = self.replace_index(merges, force=True)
+        receipt = self.replace_index(self._supported_merges(retained), force=True)
         self.db.execute(
             "INSERT INTO deletion_audit VALUES(?, ?, ?, ?, ?)",
             (approval, receipt["memory_version"], len(rows), plan["facts"], now()),

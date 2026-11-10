@@ -9,10 +9,10 @@ import sys
 from pathlib import Path
 
 from .audio import audio_source
-from .contracts import ToolError, decode_object, encode, read_utf8
+from .contracts import ToolError, decode_object, encode, read_utf8, validate
 from .demo import run_demo
 from .ingest import file_source
-from .operations import SCHEMAS, TOOLS, Context
+from .operations import SCHEMAS, TARGET, TOOLS, Context
 from .resources import resource_root
 from .workflow import advance, artifact, load_pipeline, start, status
 from .workspace import Workspace
@@ -90,7 +90,18 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("stage_id")
     commands.add_parser("integrity", help="verify the current Codebook against its source records")
     commands.add_parser("deletion-audit", help="show recent deletion receipts without source text")
-    commands.add_parser("codebook", help="write the current XML snapshot to stdout")
+    sources = commands.add_parser(
+        "sources", help="list conversation identities and current checksums"
+    )
+    sources.add_argument("--source", help="select a source namespace")
+    codebook = commands.add_parser(
+        "codebook", help="write all or selected Codebook revisions as XML"
+    )
+    codebook.add_argument("--source", help="select a source namespace")
+    codebook.add_argument("--conversation-id", help="select a conversation within --source")
+    codebook.add_argument(
+        "--active-only", action="store_true", help="include only current source revisions"
+    )
     return parser
 
 
@@ -163,6 +174,21 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             timeout=args.timeout,
         ), None
 
+    if args.command in {"sources", "codebook"}:
+        scope = {"source": args.source} if args.source is not None else {}
+        conversation_id = getattr(args, "conversation_id", None)
+        if conversation_id is not None:
+            scope["conversation_id"] = conversation_id
+        if scope:
+            validate(TARGET, scope, "source scope")
+        with Workspace.open(args.workspace) as workspace:
+            if args.command == "sources":
+                return {
+                    "sources": workspace.list_sources(args.source),
+                    "memory_version": workspace.version(),
+                }, None
+            return {"xml": workspace.export_codebook(**scope, active_only=args.active_only)}, None
+
     supplied = _object(getattr(args, "input", None))
     with Workspace.open(args.workspace) as workspace:
         context = Context(
@@ -185,8 +211,6 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 "SELECT * FROM deletion_audit ORDER BY version DESC LIMIT 100"
             )
             return {"deletions": [dict(row) for row in rows]}, None
-        if args.command == "codebook":
-            return {"xml": workspace.index().xml}, None
         return TOOLS["validate"].function(context), None
 
 

@@ -848,3 +848,109 @@ def test_integrity_rejects_dangling_or_cyclic_correction_links(work, target):
         db.execute("UPDATE revisions SET payload=?", (json.dumps(record),))
     call("integrity", error="integrity_error")
     call("codebook", error="integrity_error")
+
+
+def test_scoped_codebook_excludes_unselected_sources_and_cross_scope_metadata(work, tmp_path):
+    _, call = work
+    private = text_input("shared-id", "private-mint-transcript", topic="private-mint-topic")
+    private["source"] = {
+        "format": "conversation",
+        "payload": {
+            "conversation_id": "shared-id",
+            "source": "archive",
+            "title": "private-mint-title",
+            "metadata": {"source_reference": "private-mint-reference"},
+            "segments": [
+                {
+                    "segment_id": "text-1",
+                    "text": "private-mint-transcript",
+                    "speaker_id": "private-mint-speaker",
+                }
+            ],
+        },
+    }
+    private["annotations"]["taxonomy"] = [
+        {"name": "private-mint-topic", "aliases": ["private-mint-alias"]},
+    ]
+    private_fact = ingest(call, "private", private)["revision_id"] + "F1"
+    public = text_input("shared-id", "Shared Ada", topic="public-release")
+    public["annotations"]["facts"][0]["supersedes"] = private_fact
+    original = ingest(call, "public-original", public)
+    revised = text_input("shared-id", "Shared Rae", topic="public-release")
+    revised["source"]["expected_checksum"] = original["checksum"]
+    revised["annotations"]["facts"][0]["supersedes"] = original["revision_id"] + "F1"
+    current_revision = ingest(call, "public-revision", revised, pipeline="memory-update")
+    ingest(
+        call, "other", text_input("other", "unselected-text-sibling", topic="unselected-sibling")
+    )
+
+    call(
+        "start",
+        "memory-consolidation",
+        "--run-id",
+        "merge-to-private",
+        payload={"merge": {"from_topic": "public-release", "to_topic": "private-mint-topic"}},
+    )
+    call("stage", "merge-to-private", "commit")
+    call("stage", "merge-to-private", "verify")
+    before = call("integrity")
+    inventory = call("sources", "--source", "text")
+    assert inventory["memory_version"] == before["memory_version"]
+    assert [item["conversation_id"] for item in inventory["sources"]] == ["other", "shared-id"]
+    assert inventory["sources"][1] == {
+        "source": "text",
+        "conversation_id": "shared-id",
+        "revisions": 2,
+        "current_checksum": current_revision["checksum"],
+    }
+    inventory_text = json.dumps(call("sources"))
+    assert "private-mint" not in inventory_text and "Shared Rae" not in inventory_text
+    full = call("codebook")
+    assert all(
+        text in full
+        for text in (
+            "private-mint-transcript",
+            "private_mint_topic",
+            "private_mint_alias",
+            "unselected-text-sibling",
+        )
+    )
+
+    text_only = call("codebook", "--source", "text")
+    assert "unselected-text-sibling" in text_only and "private-mint-transcript" not in text_only
+    scoped = call("codebook", "--source", "text", "--conversation-id", "shared-id")
+    assert "Shared Ada" in scoped and "Shared Rae" in scoped
+    assert all(secret not in scoped for secret in ("private-mint", "private_mint", "unselected-"))
+    assert "public_release" in scoped
+    scoped_path = tmp_path / "scoped.xml"
+    scoped_path.write_text(scoped, encoding="utf-8")
+    assert Memory.load(scoped_path)
+    evidence = (
+        Codebook.load(scoped_path, strict=True)
+        .query(
+            SymbolicQuery(topics=("public release",)),
+        )
+        .evidence
+    )
+    assert {item.text for item in evidence if item.type == "fact"} == {"Shared Ada", "Shared Rae"}
+
+    current = call(
+        "codebook", "--source", "text", "--conversation-id", "shared-id", "--active-only"
+    )
+    assert "Shared Rae" in current and "Shared Ada" not in current
+    assert "private-mint" not in current and "unselected-" not in current
+    assert call("integrity") == before
+    assert call("codebook") == full
+
+
+def test_scoped_codebook_rejects_missing_or_ambiguous_selectors(work):
+    _, call = work
+    ingest(call, "note", text_input("note", "Known note"))
+    call("codebook", "--conversation-id", "note", error="invalid_input")
+    call("codebook", "--source", "TEXT", error="invalid_input")
+    call("codebook", "--source", "archive", error="not_found")
+    call("codebook", "--source", "text", "--conversation-id", "missing", error="not_found")
+    call("sources", "--source", "TEXT", error="invalid_input")
+    _delete_source(call, "erase-note", {"source": "text", "conversation_id": "note"})
+    assert call("sources", "--source", "text")["sources"] == []
+    call("codebook", "--source", "text", "--conversation-id", "note", error="not_found")
