@@ -1,0 +1,22 @@
+id: topic-reclassification
+version: 1
+description: Move a topic under existing parents while preserving its facts and aliases.
+inputs:
+  move: topic_move
+stages:
+  - id: commit
+    skill: skills/memory/topic-classification/SKILL.md
+    tool: move_topic
+    needs: []
+    inputs:
+      move: input.move
+    output: receipt
+    acceptance: The requested parents replace the topic's prior parents in an acyclic taxonomy.
+  - id: verify
+    skill: skills/memory/index-building/SKILL.md
+    tool: validate_commit
+    needs: [commit]
+    inputs:
+      receipt: stage.commit
+    output: integrity
+    acceptance: The source records and strict Codebook agree.

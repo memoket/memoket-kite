@@ -41,6 +41,7 @@ ANNOTATIONS = object_schema(
     {"facts": array(FACT)}, {"taxonomy": array(TOPIC), "entity_aliases": array(ENTITY)}
 )
 RECLASSIFY = object_schema({"from_topic": TEXT, "to_topic": TEXT})
+TOPIC_MOVE = object_schema({"topic": TEXT, "parents": array(TEXT, maximum=8)})
 
 
 def _symbol(value: str) -> str:
@@ -125,7 +126,9 @@ class Index:
     revisions: dict
 
 
-def _vocabulary(records: list[dict], merges: dict[str, str]) -> Vocab:
+def _vocabulary(
+    records: list[dict], merges: dict[str, str], hierarchy: dict[str, list[str]]
+) -> Vocab:
     vocab = Vocab()
     definitions: dict[str, set] = {}
     parent_edges: list[tuple[str, str]] = []
@@ -154,8 +157,6 @@ def _vocabulary(records: list[dict], merges: dict[str, str]) -> Vocab:
     for name, parent in parent_edges:
         canonical = vocab.resolve_topic(parent) or vocab.define_root(parent)
         parents.setdefault(name, set()).add(canonical)
-    for name, direct in sorted(parents.items()):
-        vocab.move_topic(name, sorted(direct))
     for name, aliases in sorted(entities.items()):
         for alias in sorted(aliases):
             resolved = vocab.resolve_entity(alias)
@@ -169,6 +170,12 @@ def _vocabulary(records: list[dict], merges: dict[str, str]) -> Vocab:
                     vocab.define_root(topic)
             for entity in fact["entities"]:
                 vocab.register_entity(entity)
+    for name, direct in hierarchy.items():
+        if name not in vocab.topics or not set(direct) <= vocab.topics.keys():
+            raise ToolError("integrity_error", "topic hierarchy refers to an absent topic")
+        parents[name] = set(direct)
+    for name, direct in sorted(parents.items()):
+        vocab.move_topic(name, sorted(direct))
     return vocab
 
 
@@ -224,9 +231,11 @@ def load_index(xml: bytes, records: list[dict]) -> Index:
     return _load_index(xml, facts, segments, revisions)
 
 
-def build_index(records: list[dict], merges: dict[str, str]) -> Index:
+def build_index(
+    records: list[dict], merges: dict[str, str], hierarchy: dict[str, list[str]] | None = None
+) -> Index:
     try:
-        vocab = _vocabulary(records, merges)
+        vocab = _vocabulary(records, merges, hierarchy or {})
         root = ET.Element("memory")
         root.append(vocab.to_xml())
         timeline = ET.SubElement(root, "timeline")
@@ -300,4 +309,27 @@ def reclassify(context, merge: dict) -> dict:
     merges = context.workspace.merges()
     merges = {key: new if value == old else value for key, value in merges.items()}
     merges[old] = new
-    return context.workspace.replace_index(merges)
+    hierarchy = context.workspace.topic_hierarchy()
+    if old in hierarchy or new in hierarchy:
+        hierarchy.pop(old, None)
+        hierarchy[new] = sorted(index.vocab.topics[old].parents | index.vocab.topics[new].parents)
+    hierarchy = {
+        topic: sorted({new if parent == old else parent for parent in parents} - {topic})
+        for topic, parents in hierarchy.items()
+    }
+    return context.workspace.replace_index(merges, hierarchy=hierarchy)
+
+
+def move_topic(context, move: dict) -> dict:
+    index = context.workspace.index()
+    topic = index.vocab.resolve_topic(move["topic"])
+    parents = {index.vocab.resolve_topic(parent) for parent in move["parents"]}
+    if not topic or None in parents:
+        raise ToolError("invalid_input", "the topic and its parents must already exist")
+    if topic in parents:
+        raise ToolError("invalid_input", "a topic cannot be its own parent")
+    if parents == index.vocab.topics[topic].parents:
+        return {"changed": False, "memory_version": context.workspace.version()}
+    hierarchy = context.workspace.topic_hierarchy()
+    hierarchy[topic] = sorted(parents)
+    return context.workspace.replace_index(hierarchy=hierarchy)

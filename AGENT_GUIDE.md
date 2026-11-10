@@ -33,6 +33,7 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
 | Follow how a decision or requirement changed | `decision-evolution` |
 | Append a source revision or a cited correction | `memory-update` |
 | Merge two equivalent topic labels | `memory-consolidation` |
+| Change a topic's parents | `topic-reclassification` |
 | Audit the source records and Codebook | `memory-maintenance` |
 | Rebuild a damaged snapshot from committed records | `memory-rebuild` |
 | Preview and apply permanent workspace deletion | `memory-deletion` |
@@ -152,6 +153,13 @@ older fact ID in `supersedes`. The predecessor stays in history and the report
 marks the corrected fact as effective. Topic merges keep the old label as an
 alias. Annotate entity variants with `entity_aliases` when multiple names refer
 to the same entity.
+
+Use `topic-reclassification` to replace the parents of an existing topic.
+Supply a `move` input with `topic` and `parents`, such as
+`{"move":{"topic":"checklist","parents":["product"]}}`. Use an empty list to
+make the topic a root. Existing aliases resolve to canonical labels. After
+`commit` and `verify`, tracing from a new parent includes the moved topic
+and its descendants, with the original fact and source IDs.
 
 Deletion uses the source namespace. Set `conversation_id` for one conversation
 or `conversation_ids` for a set of up to 100 distinct IDs in that namespace.

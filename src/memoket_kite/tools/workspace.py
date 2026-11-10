@@ -23,6 +23,10 @@ CREATE TABLE IF NOT EXISTS memory (
     merges TEXT NOT NULL,
     xml BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS topic_hierarchy (
+    topic TEXT PRIMARY KEY,
+    parents TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS index_seal (
     singleton INTEGER PRIMARY KEY CHECK (singleton=1),
     version INTEGER NOT NULL,
@@ -54,7 +58,7 @@ CREATE TABLE IF NOT EXISTS deletion_audit (
 """
 
 
-def _snapshot_checksum(xml: bytes, merges: str, rows: list[sqlite3.Row]) -> str:
+def _snapshot_checksum(xml: bytes, merges: str, rows: list[sqlite3.Row], hierarchy: dict) -> str:
     if not isinstance(xml, bytes) or not isinstance(merges, str):
         raise ToolError("integrity_error", "invalid stored Codebook snapshot")
     checksum = sha256()
@@ -67,6 +71,9 @@ def _snapshot_checksum(xml: bytes, merges: str, rows: list[sqlite3.Row]) -> str:
     frame(b"kite-codebook-v1")
     frame(xml)
     frame(merges.encode("utf-8"))
+    if hierarchy:
+        frame(b"topic-hierarchy")
+        frame(encode(hierarchy).encode("utf-8"))
     try:
         for row in rows:
             frame(encode(list(row)).encode("utf-8"))
@@ -247,6 +254,21 @@ class Workspace:
         row = self.db.execute("SELECT merges FROM memory WHERE singleton=1").fetchone()
         return json.loads(row["merges"])
 
+    def topic_hierarchy(self) -> dict[str, list[str]]:
+        try:
+            hierarchy = {
+                row["topic"]: json.loads(row["parents"])
+                for row in self.db.execute("SELECT topic, parents FROM topic_hierarchy")
+            }
+        except (TypeError, ValueError) as exc:
+            raise ToolError("integrity_error", "invalid stored topic hierarchy") from exc
+        if any(
+            not isinstance(parents, list) or any(not isinstance(parent, str) for parent in parents)
+            for parents in hierarchy.values()
+        ):
+            raise ToolError("integrity_error", "invalid stored topic hierarchy")
+        return hierarchy
+
     def _revision_rows(
         self,
         *,
@@ -310,14 +332,15 @@ class Workspace:
         rows = self._revision_rows()
         xml = current["xml"]
         version = current["version"]
-        checksum = _snapshot_checksum(xml, current["merges"], rows)
+        hierarchy = self.topic_hierarchy()
+        checksum = _snapshot_checksum(xml, current["merges"], rows, hierarchy)
         seal = self._index_seal(version)
         if seal is not None and seal != checksum:
             raise ToolError("integrity_error", "Codebook snapshot seal differs from its sources")
         records = self._records(rows)
         if seal is not None and not verify:
             return load_index(xml, records)
-        index = build_index(records, json.loads(current["merges"]))
+        index = build_index(records, json.loads(current["merges"]), hierarchy)
         if index.xml != xml:
             raise ToolError("integrity_error", "Codebook snapshot differs from its sources")
         if seal is None:
@@ -363,9 +386,10 @@ class Workspace:
                     # Correction edges are workspace metadata. Build a detached
                     # index using only links within the exported source set.
                     del fact["supersedes"]
-        return build_index(records, self._supported_merges(records)).xml
+        merges, hierarchy = self._supported_taxonomy(records)
+        return build_index(records, merges, hierarchy).xml
 
-    def _supported_merges(self, records: list[dict]) -> dict:
+    def _supported_taxonomy(self, records: list[dict]) -> tuple[dict, dict]:
         topics = {
             topic for record in records for fact in record["facts"] for topic in fact["topics"]
         }
@@ -373,21 +397,33 @@ class Workspace:
             for topic in record["taxonomy"]:
                 topics.add(topic["name"])
                 topics.update(topic["parents"])
-        return {old: new for old, new in self.merges().items() if {old, new} <= topics}
+        merges = {old: new for old, new in self.merges().items() if {old, new} <= topics}
+        canonical = {merges.get(topic, topic) for topic in topics}
+        hierarchy = {
+            topic: [parent for parent in parents if parent in canonical]
+            for topic, parents in self.topic_hierarchy().items()
+            if topic in canonical
+        }
+        return merges, hierarchy
 
-    def replace_index(self, merges: dict | None = None, *, force: bool = False) -> dict:
+    def replace_index(
+        self, merges: dict | None = None, *, hierarchy: dict | None = None, force: bool = False
+    ) -> dict:
         current = self._memory()
+        previous_hierarchy = self.topic_hierarchy()
+        hierarchy = previous_hierarchy if hierarchy is None else hierarchy
         merges = json.loads(current["merges"]) if merges is None else merges
         encoded_merges = encode(merges)
         rows = self._revision_rows()
-        index = build_index(self._records(rows), merges)
+        index = build_index(self._records(rows), merges, hierarchy)
         version = current["version"]
-        checksum = _snapshot_checksum(index.xml, encoded_merges, rows)
+        checksum = _snapshot_checksum(index.xml, encoded_merges, rows, hierarchy)
         seal = self._index_seal(version)
         unchanged = (
             not force
             and index.xml == current["xml"]
             and encoded_merges == current["merges"]
+            and hierarchy == previous_hierarchy
             and (seal is None or seal == checksum)
         )
         if unchanged:
@@ -398,6 +434,12 @@ class Workspace:
             "UPDATE memory SET version=version+1, merges=?, xml=? WHERE singleton=1",
             (encoded_merges, index.xml),
         )
+        if hierarchy != previous_hierarchy:
+            self.db.execute("DELETE FROM topic_hierarchy")
+            self.db.executemany(
+                "INSERT INTO topic_hierarchy VALUES(?, ?)",
+                ((topic, encode(parents)) for topic, parents in hierarchy.items()),
+            )
         self._seal_index(version + 1, checksum)
         return {"changed": True, "memory_version": version + 1}
 
@@ -640,7 +682,8 @@ class Workspace:
         self.db.execute("DELETE FROM artifacts")
         for row in self.db.execute("SELECT id, checkpoint FROM runs").fetchall():
             self._redact_run(row)
-        receipt = self.replace_index(self._supported_merges(retained), force=True)
+        merges, hierarchy = self._supported_taxonomy(retained)
+        receipt = self.replace_index(merges, hierarchy=hierarchy, force=True)
         self.db.execute(
             "INSERT INTO deletion_audit VALUES(?, ?, ?, ?, ?)",
             (approval, receipt["memory_version"], len(rows), plan["facts"], now()),

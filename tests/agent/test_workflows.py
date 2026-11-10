@@ -107,7 +107,7 @@ def trace(call, run_id, query, pipeline="topic-tracing"):
 
 def test_discovery_and_invalid_pipeline(work, tmp_path):
     _, call = work
-    assert len(call("pipelines")["pipelines"]) == 11
+    assert len(call("pipelines")["pipelines"]) == 12
     assert call("describe", "delete")["delete"]["effect"] == "delete"
     repo = tmp_path / "definitions"
     for folder in ("schemas", "skills", "pipeline_defs"):
@@ -150,7 +150,7 @@ def test_installable_extension_and_custom_connector(work, tmp_path):
         return call("--extensions", str(extension), *args, repo=None, **kwargs)
 
     assert custom_call("resources")["extension_root"] == str(extension)
-    assert len(custom_call("pipelines")["pipelines"]) == 12
+    assert len(custom_call("pipelines")["pipelines"]) == 13
     built_in = "memory-ingestion"
     assert custom_call("validate-pipeline", built_in) == call("validate-pipeline", built_in)
     name = "example-incident-review"
@@ -434,6 +434,86 @@ def test_revision_correction_consolidation_and_query_scopes(work):
     )
     assert [row["content"] for row in bounded["timeline"]] == ["Bob"]
     assert trace(call, "unknown", {"topics": ["nonexistent"]})["matched_count"] == 0
+
+
+def test_topic_reclassification_preserves_evidence_and_rejects_cycles(work):
+    _, call = work
+    source = text_input("launch", "The kickoff checklist is approved.", topic="onboarding")
+    source["annotations"]["taxonomy"] = [
+        {"name": "onboarding", "aliases": ["kickoff"], "parents": ["growth"]},
+        {"name": "checklist", "parents": ["onboarding"]},
+        {"name": "product", "aliases": ["product team"]},
+    ]
+    source["annotations"]["facts"][0]["topics"] = ["checklist"]
+    original = ingest(call, "launch", source)
+    before = trace(call, "old-parent", {"topics": ["growth"]})["timeline"][0]
+
+    def move(run, topic, parents, error=None):
+        call(
+            "start",
+            "topic-reclassification",
+            "--run-id",
+            run,
+            payload={"move": {"topic": topic, "parents": parents}},
+        )
+        receipt = call("stage", run, "commit", error=error)
+        if error is None:
+            call("stage", run, "verify")
+            return receipt["value"]
+
+    receipt = move("move", "kickoff", ["product team"])
+    assert receipt["changed"]
+    assert not move("no-op", "onboarding", ["product"])["changed"]
+    for topic in ("product", "kickoff"):
+        row = trace(call, f"by-{topic}", {"topics": [topic]})["timeline"][0]
+        assert row["fact_id"] == before["fact_id"] and row["evidence"] == before["evidence"]
+    assert trace(call, "no-old-parent", {"topics": ["growth"]})["matched_count"] == 0
+    assert call("sources")["sources"][0]["current_checksum"] == original["checksum"]
+
+    move("cycle", "product", ["checklist"], error="integrity_error")
+    move("missing", "kickoff", ["absent"], error="invalid_input")
+    assert call("integrity")["memory_version"] == receipt["memory_version"]
+    assert move("root", "kickoff", [])["changed"]
+    assert trace(call, "root-read", {"topics": ["kickoff"]})["matched_count"] == 1
+    assert trace(call, "no-new-parent", {"topics": ["product"]})["matched_count"] == 0
+
+
+def test_topic_hierarchy_survives_merge_and_prunes_out_of_scope_parents(work):
+    _, call = work
+    child = text_input("child", "Approved checklist", topic="checklist")
+    child["annotations"]["taxonomy"] = [{"name": "checklist", "parents": ["growth"]}]
+    ingest(call, "child", child)
+    for topic in ("product", "release"):
+        parent = text_input(topic, f"{topic} note", topic=topic)
+        parent["annotations"] = {"facts": [], "taxonomy": [{"name": topic}]}
+        ingest(call, topic, parent)
+    call(
+        "start",
+        "topic-reclassification",
+        "--run-id",
+        "move",
+        payload={"move": {"topic": "checklist", "parents": ["product"]}},
+    )
+    call("stage", "move", "commit")
+    call(
+        "start",
+        "memory-consolidation",
+        "--run-id",
+        "merge",
+        payload={"merge": {"from_topic": "product", "to_topic": "release"}},
+    )
+    call("stage", "merge", "commit")
+    assert trace(call, "merged", {"topics": ["release"]})["matched_count"] == 1
+
+    snapshot = ET.fromstring(call("codebook", "--source", "text", "--conversation-id", "child"))
+    assert snapshot.find(".//topic[@code='checklist']").get("parents") == ""
+    assert snapshot.find(".//topic[@code='release']") is None
+    _delete_source(call, "remove", {"source": "text", "conversation_id": "release"})
+    assert call("integrity")["revisions"] == 2
+    assert trace(call, "child-stays", {"topics": ["checklist"]})["matched_count"] == 1
+    assert trace(call, "parent-removed", {"topics": ["release"]})["unresolved_topics"] == [
+        "release"
+    ]
 
 
 def test_bounded_history_applies_only_corrections_through_the_selected_day(work):
