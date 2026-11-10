@@ -133,14 +133,13 @@ jobs:
           /tmp/wheelsmoke/bin/pip check
           cd "$GITHUB_WORKSPACE"
           /tmp/wheelsmoke/bin/pip install --quiet "${wheel}[agent]"
-          cd "$consumer"
-          mkdir pipeline_defs
-          printf 'invalid: local definition\n' > pipeline_defs/memory-ingestion.yaml
-          /tmp/wheelsmoke/bin/kite-tool resources
-          /tmp/wheelsmoke/bin/kite-tool validate-pipeline memory-ingestion >/dev/null
-          /tmp/wheelsmoke/bin/kite-tool demo --metrics
-          set -o pipefail
-          printf 'A synthetic note for the installed CLI.\n' > notes.txt
-          /tmp/wheelsmoke/bin/kite-tool file-source notes.txt --format text --source-id installed-note \
-            | /tmp/wheelsmoke/bin/kite-tool --workspace ./memory start memory-ingestion --run-id installed-note --input -
-          /tmp/wheelsmoke/bin/kite-tool --workspace ./memory stage installed-note normalize >/dev/null
+          /tmp/wheelsmoke/bin/python "$GITHUB_WORKSPACE/tests/packaging/agent_smoke.py"
+      - name: Install and verify the source distribution
+        if: matrix.python-version == '3.12'
+        run: |
+          environment="$(mktemp -d)"
+          python -m venv "$environment"
+          sdist="$(echo dist/*.tar.gz)"
+          "$environment/bin/python" -m pip install --quiet "${sdist}[agent]"
+          "$environment/bin/python" -m pip check
+          "$environment/bin/python" "$GITHUB_WORKSPACE/tests/packaging/agent_smoke.py"

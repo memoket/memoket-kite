@@ -99,6 +99,15 @@ jobs:
           assert memoket_kite.Memory
           PY
           /tmp/memoket-kite-wheel/bin/pip check
+      - name: Verify the agent workflow in both distributions
+        run: |
+          for distribution in dist/*.whl dist/*.tar.gz; do
+            environment="$(mktemp -d)"
+            python -m venv "$environment"
+            "$environment/bin/python" -m pip install --quiet "${distribution}[agent]"
+            "$environment/bin/python" -m pip check
+            "$environment/bin/python" "$GITHUB_WORKSPACE/tests/packaging/agent_smoke.py"
+          done
       - name: Store distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

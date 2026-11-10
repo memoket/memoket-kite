@@ -25,6 +25,20 @@ ruff format --check src tests benchmarks examples
 pytest
 ```
 
+To exercise the installed agent workflows, build the distributions and run the
+smoke check from a fresh virtual environment with the `agent` extra installed.
+
+```sh
+check_dir="$(mktemp -d)"
+python -m build --outdir "$check_dir/dist"
+python -m venv "$check_dir/venv"
+"$check_dir/venv/bin/python" -m pip install "$(echo "$check_dir"/dist/*.whl)[agent]"
+"$check_dir/venv/bin/python" tests/packaging/agent_smoke.py
+```
+
+The same check runs against the source distribution in CI and both
+distributions before publication.
+
 ## Pull requests
 
 - Keep each pull request focused and explain both the change and its motivation.
