@@ -3271,6 +3271,71 @@ def test_memoket_api_transcript_preserves_recording_metadata(work, memoket_api_t
     assert "private participant metadata" not in json.dumps(conversation)
 
 
+def test_file_source_reads_memoket_pages_and_selects_recording_metadata(
+    work, tmp_path, memoket_api_transcript
+):
+    directory, call = work
+    pages, single = memoket_api_transcript
+    recording = {
+        "id": "product-review",
+        "title": "Product review",
+        "started_at": "2026-04-02T10:00:00+08:00",
+        "language_code": "en",
+        "participant_details": ["private speaker details"],
+    }
+    metadata = {
+        "error": None,
+        "items": [{"id": "other-recording", "title": "private title"}, recording],
+    }
+    paths = [tmp_path / f"page-{number}.json" for number in range(len(pages))]
+    metadata_path = tmp_path / "recordings.json"
+    for path, page in zip(paths, pages, strict=True):
+        path.write_text(json.dumps(page), encoding="utf-8")
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    command = (
+        "file-source",
+        str(paths[0]),
+        "--format",
+        "memoket",
+        "--recording-metadata",
+        str(metadata_path),
+    )
+    source = call(*command, "--page", str(paths[1]), "--page", str(paths[2]))
+    assert "private" not in json.dumps(source)
+    conversation = source["source"]["payload"]
+    assert conversation["started_at"] == recording["started_at"]
+    assert conversation["title"] == recording["title"] and conversation["language"] == "en"
+    assert [line["segment_id"] for line in conversation["segments"]] == [
+        "review-line-1",
+        "review-line-2",
+    ]
+    call(*command, "--page", str(paths[2]), "--page", str(paths[1]), error="invalid_input")
+    call(*command, "--page", str(tmp_path / "missing"), error="invalid_input")
+    assert not directory.exists()
+    for path, page in zip(paths, pages, strict=True):
+        assert json.loads(path.read_text(encoding="utf-8")) == page
+    assert json.loads(metadata_path.read_text(encoding="utf-8")) == metadata
+    paths[0].write_text(json.dumps(single), encoding="utf-8")
+    assert call(*command) == source
+    metadata_path.write_text(json.dumps(recording), encoding="utf-8")
+    assert call(*command) == source
+    metadata["items"].append(recording)
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    result = call(*command, error="invalid_input")
+    assert result["error"]["message"] == "Memoket metadata must contain one matching recording"
+    call(
+        "file-source",
+        str(paths[0]),
+        "--format",
+        "text",
+        "--source-id",
+        "notes",
+        "--page",
+        str(paths[1]),
+        error="invalid_input",
+    )
+
+
 def test_memoket_api_transcript_rejects_incomplete_or_inconsistent_exports(
     work, memoket_api_transcript
 ):

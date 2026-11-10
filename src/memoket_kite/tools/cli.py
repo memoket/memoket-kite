@@ -114,6 +114,20 @@ def _parser() -> argparse.ArgumentParser:
     date.add_argument("--source-date", help="known conversation day in YYYY-MM-DD format")
     date.add_argument("--started-at", help="known conversation timestamp with UTC offset")
     source.add_argument("--expected-checksum", help="current source checksum for a revision")
+    source.add_argument(
+        "--page",
+        type=Path,
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="next saved Memoket get_transcripts page, repeat in order",
+    )
+    source.add_argument(
+        "--recording-metadata",
+        type=Path,
+        metavar="FILE",
+        help="saved Memoket get_conversations response or recording item",
+    )
     audio = commands.add_parser(
         "audio-source", help="transcribe a local recording into a memory-ingestion input"
     )
@@ -315,6 +329,8 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             started_at=args.started_at,
             expected_checksum=args.expected_checksum,
             split_lines=args.split_lines,
+            pages=args.page,
+            recording_metadata=args.recording_metadata,
         ), None
 
     if args.command == "audio-source":

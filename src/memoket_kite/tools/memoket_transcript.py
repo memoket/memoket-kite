@@ -32,6 +32,22 @@ def _segment(line: dict) -> dict:
     return segment
 
 
+def _recording(payload: dict, identity: str) -> dict:
+    if payload.get("error") is not None:
+        raise ToolError("invalid_input", "Memoket recording metadata reports an API error")
+    if "id" in payload:
+        if payload["id"] != identity:
+            raise ToolError("invalid_input", "Memoket recording metadata has a different ID")
+        return payload
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise ToolError("invalid_input", "expected a successful Memoket get_conversations response")
+    matches = [item for item in items if isinstance(item, dict) and item.get("id") == identity]
+    if len(matches) != 1:
+        raise ToolError("invalid_input", "Memoket metadata must contain one matching recording")
+    return matches[0]
+
+
 def api_transcript(payload: dict) -> dict:
     pages = payload.get("pages", [payload])
     if not isinstance(pages, list) or not pages:
@@ -118,9 +134,7 @@ def api_transcript(payload: dict) -> dict:
         "metadata": {"source_reference": identity},
     }
     if "recording" in payload:
-        recording = payload["recording"]
-        if recording["id"] != identity:
-            raise ToolError("invalid_input", "Memoket recording metadata has a different ID")
+        recording = _recording(payload["recording"], identity)
         for original, field in (
             ("title", "title"),
             ("started_at", "started_at"),

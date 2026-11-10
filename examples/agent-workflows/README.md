@@ -135,17 +135,19 @@ exports retain the original record identity and any supplied dates.
 
 Use the saved response directly for a complete single-page Memoket
 `get_transcripts` result. For a longer recording, follow the two paging
-cursors in the [Memoket connector reference](https://eu.memoket.ai/pages/connector)
-and bundle the saved responses in the order you received them.
+cursors and pass each saved response in the order you received it.
+See the [Memoket connector reference](https://eu.memoket.ai/pages/connector).
 
 ```sh
-jq -s '{pages: .}' first-page.json second-page.json > transcript.json
-kite-tool file-source transcript.json --format memoket
+kite-tool file-source first-page.json --format memoket \
+  --page second-page.json --recording-metadata recordings.json \
+  | kite-tool start memory-ingestion --run-id transcript-pages --input -
 ```
 
-The bundle must contain every page for one recording. To include the recorded
-start time, title, and language, add the matching `get_conversations` item
-as the bundle's `recording` object.
+Repeat `--page` for each additional response from the same recording.
+The optional `--recording-metadata` file can contain the saved
+`get_conversations` response or the matching recording item. KITE selects
+the matching ID and preserves its start time, title, and language.
 
 For an authorized WebVTT or SubRip file, use the same ingestion stages.
 

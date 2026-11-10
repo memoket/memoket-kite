@@ -141,6 +141,13 @@ def prepare_source(root: Path, source: dict) -> tuple[dict, dict]:
     return source, conversation
 
 
+def _read_source_file(path: Path) -> str:
+    path = path.expanduser()
+    if not path.is_file():
+        raise ToolError("invalid_input", "source must be a local file")
+    return read_utf8(path)
+
+
 def file_source(
     root: Path,
     path: Path,
@@ -151,21 +158,22 @@ def file_source(
     started_at: str | None,
     expected_checksum: str | None,
     split_lines: bool = False,
+    pages: list[Path] | None = None,
+    recording_metadata: Path | None = None,
 ) -> dict:
     """Return a minimized source input without opening a memory workspace."""
     file_formats = ("text", *CAPTION_FORMATS)
     if split_lines and source_format != "text":
         raise ToolError("invalid_input", "--split-lines requires --format text")
+    if (pages or recording_metadata is not None) and source_format != "memoket":
+        raise ToolError("invalid_input", "--page and --recording-metadata require --format memoket")
     if source_format in file_formats:
         validate(TEXT, source_id, "file source ID")
     elif any(value is not None for value in (source_id, source_date, started_at)):
         raise ToolError("invalid_input", "JSON exports supply their own identity and dates")
     if expected_checksum is not None:
         validate(HASH, expected_checksum, "expected checksum")
-    path = path.expanduser()
-    if not path.is_file():
-        raise ToolError("invalid_input", "source must be a local file")
-    raw = read_utf8(path)
+    raw = _read_source_file(path)
     if source_format in file_formats:
         payload = {
             "conversation_id": source_id,
@@ -195,6 +203,16 @@ def file_source(
             payload["text"] = raw
     else:
         payload = decode_object(raw)
+        if pages:
+            payload = {
+                "pages": [payload, *(decode_object(_read_source_file(page)) for page in pages)]
+            }
+        if recording_metadata is not None:
+            if "pages" not in payload:
+                payload = {"pages": [payload]}
+            if "recording" in payload:
+                raise ToolError("invalid_input", "supply Memoket recording metadata only once")
+            payload["recording"] = decode_object(_read_source_file(recording_metadata))
     _, conversation = prepare_source(root, {"format": source_format, "payload": payload})
     source = {"format": "conversation", "payload": conversation}
     if expected_checksum is not None:
