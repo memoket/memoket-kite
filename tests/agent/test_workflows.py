@@ -2338,6 +2338,50 @@ def test_rebuild_uses_verified_source_records(work):
     assert not call("stage", "already-healthy", "rebuild")["value"]["changed"]
 
 
+@pytest.mark.parametrize("damage", ["json", "structure", "facts", "identity"])
+def test_damaged_source_record_returns_private_structured_error(work, damage):
+    directory, call = work
+    marker = "synthetic-private-citation-marker"
+    source = text_input("review", marker)
+    receipt = ingest(call, "original", source)
+    line_id = f"{receipt['revision_id']}L1"
+    database = directory / "kite.sqlite3"
+    with sqlite3.connect(database) as db:
+        raw = db.execute("SELECT payload FROM revisions").fetchone()[0]
+        record = json.loads(raw)
+        if damage == "json":
+            raw = raw[:-1]
+        elif damage == "structure":
+            del record["conversation"]["metadata"]
+            raw = json.dumps(record)
+        elif damage == "facts":
+            record["facts"] = {"invalid": marker}
+            raw = json.dumps(record)
+        else:
+            record["checksum"] = "0" * 64
+            raw = json.dumps(record)
+        db.execute("UPDATE revisions SET payload=?", (raw,))
+
+    corrupted = database.read_bytes()
+    for args in (("evidence", line_id), ("source-history", "text", "review")):
+        result = call(*args, error="integrity_error")
+        assert marker not in json.dumps(result)
+    assert database.read_bytes() == corrupted
+
+    call("start", "memory-rebuild", "--run-id", "rebuild")
+    call("stage", "rebuild", "rebuild", error="integrity_error")
+    assert call("status", "rebuild")["memory_version"] == receipt["memory_version"]
+    call(
+        "start",
+        "memory-deletion",
+        "--run-id",
+        "remove",
+        payload={"target": {"source": "text", "conversation_id": "review"}},
+    )
+    call("stage", "remove", "preview", error="integrity_error")
+    assert call("deletion-audit")["deletions"] == []
+
+
 @pytest.mark.parametrize("source_format", ["transcript", "audio-transcript", "conversation"])
 def test_structured_transcript_sources(work, source_format):
     _, call = work

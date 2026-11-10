@@ -12,7 +12,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
-from .contracts import ToolError, digest, encode, now
+from .contracts import ToolError, decode_object, digest, encode, now
 from .index import Index, build_index, fact_entries, load_index, revision_id, source_key
 from .ingest import source_day, source_identity
 from .timing import precedes, source_timing
@@ -389,23 +389,43 @@ class Workspace:
         return self._records(rows)[0]
 
     @staticmethod
-    def _records(rows: list[sqlite3.Row]) -> list[dict]:
-        records = []
-        for row in rows:
-            record = json.loads(row["payload"])
+    def _decode_revision(row: sqlite3.Row) -> dict:
+        try:
+            record = decode_object(row["payload"])
             conversation = record["conversation"]
-            if (
+            mismatched = (
                 record["checksum"] != row["checksum"]
                 or digest(conversation) != row["checksum"]
                 or source_key(conversation) != row["source_key"]
                 or conversation["source"] != row["source"]
                 or conversation["conversation_id"] != row["conversation_id"]
-            ):
-                raise ToolError(
-                    "integrity_error", "a source record differs from its stored identity"
+            )
+            segments = conversation["segments"]
+            fields = (record["facts"], record["taxonomy"], record["entity_aliases"])
+            malformed = (
+                not isinstance(segments, list)
+                or not segments
+                or any(
+                    not isinstance(segment, dict)
+                    or not isinstance(segment.get("segment_id"), str)
+                    or not isinstance(segment.get("text"), str)
+                    for segment in segments
                 )
-            records.append({**record, "active": bool(row["active"])})
-        return records
+                or any(
+                    not isinstance(items, list) or any(not isinstance(item, dict) for item in items)
+                    for items in fields
+                )
+            )
+        except (ToolError, KeyError, TypeError, ValueError, RecursionError) as exc:
+            raise ToolError("integrity_error", "invalid stored source record") from exc
+        if mismatched:
+            raise ToolError("integrity_error", "a source record differs from its stored identity")
+        if malformed:
+            raise ToolError("integrity_error", "invalid stored source record")
+        return record
+
+    def _records(self, rows: list[sqlite3.Row]) -> list[dict]:
+        return [{**self._decode_revision(row), "active": bool(row["active"])} for row in rows]
 
     def _index_seal(self, version: int) -> str | None:
         row = self.db.execute(
@@ -621,7 +641,7 @@ class Workspace:
         return {**receipt, **self.replace_index()}
 
     def _append_annotations(self, prior: sqlite3.Row, record: dict) -> dict:
-        stored = json.loads(prior["payload"])
+        stored = self._decode_revision(prior)
         additions = {}
         for field in ("facts", "taxonomy", "entity_aliases"):
             seen = {digest(item) for item in stored[field]}
@@ -718,7 +738,7 @@ class Workspace:
 
     def deletion_plan(
         self, target: dict, *, run_id: str
-    ) -> tuple[dict, list[sqlite3.Row], list[tuple[str, str]]]:
+    ) -> tuple[dict, list[dict], list[tuple[str, str]]]:
         ids = set(_target_ids(target))
         source = target["source"]
         query = "SELECT * FROM revisions WHERE source=?"
@@ -726,7 +746,8 @@ class Workspace:
             placeholders = ", ".join("?" for _ in ids)
             query += f" AND conversation_id IN ({placeholders})"
         rows = self.db.execute(query, (source, *sorted(ids))).fetchall()
-        fact_count = sum(len(json.loads(row["payload"])["facts"]) for row in rows)
+        records = [self._decode_revision(row) for row in rows]
+        fact_count = sum(len(record["facts"]) for record in records)
         stored = {row["conversation_id"] for row in rows}
         extras = {}
         if "conversation_ids" in target:
@@ -775,23 +796,22 @@ class Workspace:
             | {("conversation", digest([source, item])) for item in stored | staged | ids}
         )
         approval = digest([workspace_id, run_id, impact, runs, artifacts, tombstones])
-        return {**impact, "approval_token": approval}, rows, tombstones
+        return {**impact, "approval_token": approval}, records, tombstones
 
     def delete(self, plan: dict, approval: str | None, *, run_id: str) -> dict:
         if approval is None:
             raise ToolError("awaiting_approval", "delete requires the user-approved preview token")
         if approval != plan["approval_token"]:
             raise ToolError("permission_denied", "approval does not match the deletion preview")
-        current, rows, tombstones = self.deletion_plan(plan["target"], run_id=run_id)
+        current, records, tombstones = self.deletion_plan(plan["target"], run_id=run_id)
         if current["approval_token"] != approval:
             raise ToolError("stale_preview", "deletion impact changed; start a new deletion run")
         self.db.executemany("INSERT OR IGNORE INTO tombstones VALUES(?, ?)", tombstones)
         deleted = {}
-        for row in rows:
-            self.db.execute("DELETE FROM revisions WHERE checksum=?", (row["checksum"],))
+        for record in records:
+            self.db.execute("DELETE FROM revisions WHERE checksum=?", (record["checksum"],))
             deleted.update(
-                (fact_id, fact.get("supersedes"))
-                for fact_id, fact in fact_entries(json.loads(row["payload"]))
+                (fact_id, fact.get("supersedes")) for fact_id, fact in fact_entries(record)
             )
         retained = self.records()
         for record in retained:
@@ -830,6 +850,6 @@ class Workspace:
         receipt = self.replace_index(merges, hierarchy=hierarchy, force=True)
         self.db.execute(
             "INSERT INTO deletion_audit VALUES(?, ?, ?, ?, ?)",
-            (approval, receipt["memory_version"], len(rows), plan["facts"], now()),
+            (approval, receipt["memory_version"], len(records), plan["facts"], now()),
         )
-        return {**receipt, "deleted_revisions": len(rows), "operation_id": approval}
+        return {**receipt, "deleted_revisions": len(records), "operation_id": approval}

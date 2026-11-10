@@ -348,6 +348,8 @@ workspace snapshot and validating its source IDs and lines. The first read
 from an older workspace verifies the Codebook against a full rebuild.
 `kite-tool integrity` repeats that full comparison on demand. If the index
 is damaged and the source records are intact, run `memory-rebuild`.
+An `integrity_error` for an invalid stored source record requires a verified
+backup or an authorized original export for recovery.
 
 Run `kite-tool integrity --include-workflows` to also check SQLite references,
 checkpoint inputs and saved artifact digests. This mode opens an existing
