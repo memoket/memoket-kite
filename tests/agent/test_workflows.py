@@ -25,7 +25,7 @@ from memoket_kite import Memory
 from memoket_kite.pipeline import extract
 from memoket_kite.research import Codebook, SymbolicQuery
 from memoket_kite.tools import audio, cli, operations, workspace
-from memoket_kite.tools.contracts import ToolError, digest, encode
+from memoket_kite.tools.contracts import ToolError, digest, encode, validate
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES = ROOT / "examples" / "agent-workflows"
@@ -1425,7 +1425,12 @@ def test_dates_input_and_artifact_integrity(work):
     directory, call = work
     bad = text_input("bad-date", "body")
     bad["source"]["payload"]["started_at"] = "2026-01-01T13:00:00"
-    call("start", "memory-ingestion", "--run-id", "bad", payload=bad, error="invalid_input")
+    invalid = call(
+        "start", "memory-ingestion", "--run-id", "bad", payload=bad, error="invalid_input"
+    )
+    assert (
+        invalid["error"]["message"] == "conversation.started_at fails date-time format validation"
+    )
     call("status", "bad", error="not_found")
     good = text_input("good", "body")
     call("start", "memory-ingestion", "--run-id", "bad", payload=good)
@@ -1436,6 +1441,38 @@ def test_dates_input_and_artifact_integrity(work):
     if os.name == "posix":
         directory.chmod(0o755)
         call("integrity", error="permission_denied")
+
+
+def test_ingest_validation_locates_fields_without_echoing_source_data(work):
+    _, call = work
+    payload = text_input("review", "private transcript marker")
+    metadata = payload["source"]["payload"]["metadata"]
+    del metadata["source_reference"]
+    failure = call("ingest", "--run-id", "repair", payload=payload, error="invalid_input")
+    assert failure["error"]["message"] == "conversation.metadata requires source_reference"
+    metadata["source_reference"] = "private source marker"
+    facts = payload["annotations"]["facts"]
+    facts.append({**facts[0], "event_date": "private date marker"})
+    failure = call("ingest", "--run-id", "repair", payload=payload, error="invalid_input")
+    assert failure["error"]["message"] == (
+        "input annotations.facts[1].event_date fails date format validation"
+    )
+    del facts[1]["event_date"]
+    facts[1]["private field marker"] = "private value marker"
+    failure = call("ingest", "--run-id", "repair", payload=payload, error="invalid_input")
+    assert failure["error"]["message"] == "input annotations.facts[1] contains unsupported fields"
+    assert "private" not in json.dumps(failure)
+    call("status", "repair", error="not_found")
+
+
+def test_validation_masks_keys_in_open_maps():
+    with pytest.raises(ToolError) as exc:
+        validate(
+            {"type": "object", "additionalProperties": {"type": "integer"}},
+            {"private key": "private value"},
+            "mapping",
+        )
+    assert str(exc.value) == "mapping[*] fails type validation"
 
 
 def test_late_source_validation_preserves_pending_checkpoint(work):

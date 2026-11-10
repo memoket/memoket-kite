@@ -84,6 +84,8 @@ exceeds the target. Other response fields use additional bytes.
    confirmed.
 4. Inspect the JSON response, including `value`, `manifest` and `checkpoint`.
    An exit code of 2 means the command failed and the JSON error provides a code.
+   Schema errors identify the field path and failed rule, or name missing
+   required fields. Paths show array positions and mask keys in open maps.
    Retry a recoverable failed stage with the same ID. Stop downstream work until
    the prerequisite succeeds. If the run ID was lost, use `kite-tool runs`
    to find it in the same workspace. The list shows the latest 20 runs by

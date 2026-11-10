@@ -71,6 +71,33 @@ def utc_timestamp(value: str) -> datetime:
     return datetime.fromisoformat(f"{day}T{clock}.{fraction}{offset}").astimezone(timezone.utc)
 
 
+def _validation_message(problem, location: str) -> str:
+    # Only disclose schema field names and array positions. Instance keys and
+    # jsonschema's message may contain private source or annotation data.
+    schema_path = iter(list(problem.absolute_schema_path)[:-1])
+    instance_path = iter(problem.absolute_path)
+    for step in schema_path:
+        if step == "properties":
+            location += f".{next(schema_path)}"
+            next(instance_path, None)
+        elif step == "items":
+            index = next(instance_path, None)
+            location += f"[{index}]" if isinstance(index, int) else "[]"
+        elif step == "additionalProperties":
+            location += "[*]"
+            next(instance_path, None)
+
+    rule = problem.validator
+    if rule == "required":
+        missing = [field for field in problem.validator_value if field not in problem.instance]
+        return f"{location} requires {', '.join(missing)}"
+    if rule == "additionalProperties":
+        return f"{location} contains unsupported fields"
+    if rule == "format":
+        rule = f"{problem.validator_value} format"
+    return f"{location} fails {rule} validation"
+
+
 def validate(schema: dict, value, label: str) -> None:
     from jsonschema import Draft202012Validator, FormatChecker
 
@@ -84,8 +111,7 @@ def validate(schema: dict, value, label: str) -> None:
 
     problem = next(Draft202012Validator(schema, format_checker=checker).iter_errors(value), None)
     if problem is not None:
-        # Error messages from jsonschema may contain the entire private input.
-        raise ToolError("invalid_input", f"{label} fails {problem.validator} validation")
+        raise ToolError("invalid_input", _validation_message(problem, label))
 
 
 def schema_file(root: Path, name: str) -> dict:
