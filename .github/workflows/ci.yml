@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: python -m pip install -e ".[dev,benchmark,mcp]"
+      - run: python -m pip install -e ".[dev,benchmark,mcp,agent]"
       - run: ruff check .
       - run: ruff format --check .
       - name: Import modules without side effects
@@ -57,6 +57,7 @@ jobs:
         run: |
           python examples/inspect_codebook.py
           python examples/temporal_reasoning.py
+          python examples/agent-workflows/demo.py
       # No licensed corpus is available here, so this asserts the gate reports
       # that rather than reporting clean. The audit itself runs at release
       # time, where `--require-corpus` makes an absent corpus an error.

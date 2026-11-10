@@ -85,3 +85,12 @@ For a full local reproduction, configure the LLM endpoint and run the two
 scripts under `reproduce/`. The workflow fetches the pinned upstream datasets
 and rebuilds the evaluation under the local `artifacts/` tree. See
 [`docs/reproducibility.md`](../docs/reproducibility.md) for the complete contract.
+
+## Agent workflow fixture
+
+Run `python examples/agent-workflows/demo.py --metrics` after installing the
+`agent` extra. It reports pipeline completion, replay recovery, evidence
+coverage, citation recall and decision state against a fixed synthetic
+scenario. The annotations and expected outputs are checked into the example.
+This deterministic integration measurement is separate from model-dependent
+extraction and benchmark scores.

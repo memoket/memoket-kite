@@ -278,12 +278,13 @@ class Store:
         if not uid or not uid.strip():
             raise ValueError("Unit id must be non-empty")
         date = uel.get("date", "")
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
-            raise ValueError(f"invalid Unit date: {date!r}")
-        try:
-            _date.fromisoformat(date)
-        except ValueError as exc:
-            raise ValueError(f"invalid Unit date: {date!r}") from exc
+        if date or uel.get("date_unknown") != "true":
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+                raise ValueError(f"invalid Unit date: {date!r}")
+            try:
+                _date.fromisoformat(date)
+            except ValueError as exc:
+                raise ValueError(f"invalid Unit date: {date!r}") from exc
         dur = uel.get("dur", "0m")
         u = Unit(
             uid,

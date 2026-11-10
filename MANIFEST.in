@@ -1,0 +1,5 @@
+include AGENTS.md AGENT_GUIDE.md CLAUDE.md
+recursive-include pipeline_defs *.yaml
+recursive-include schemas *.json
+recursive-include skills SKILL.md
+recursive-include examples/agent-workflows *.json *.md *.py

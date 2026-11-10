@@ -1,0 +1,20 @@
+id: memory-rebuild
+version: 1
+description: Rebuild the XML snapshot from committed source records and verify it.
+inputs: {}
+stages:
+  - id: rebuild
+    skill: skills/memory/index-building/SKILL.md
+    tool: rebuild
+    needs: []
+    inputs: {}
+    output: receipt
+    acceptance: The validated Codebook can replace a damaged snapshot.
+  - id: verify
+    skill: skills/memory/index-building/SKILL.md
+    tool: validate_commit
+    needs: [rebuild]
+    inputs:
+      receipt: stage.rebuild
+    output: integrity
+    acceptance: The strict Codebook exactly matches the committed records.

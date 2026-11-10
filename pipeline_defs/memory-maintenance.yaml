@@ -1,0 +1,12 @@
+id: memory-maintenance
+version: 1
+description: Audit the current index and compare it with source records.
+inputs: {}
+stages:
+  - id: verify
+    skill: skills/memory/index-building/SKILL.md
+    tool: validate
+    needs: []
+    inputs: {}
+    output: integrity
+    acceptance: The strict Codebook exactly matches the committed records.

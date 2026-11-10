@@ -32,6 +32,7 @@ Issues = "https://github.com/memoket/memoket-kite/issues"
 
 [project.optional-dependencies]
 benchmark = ["tiktoken>=0.7"]
+agent = ["PyYAML>=6,<7", "jsonschema>=4.18,<5"]
 mcp = ["mcp>=2.3,<3"]
 dev = [
     "build>=1.2",
@@ -41,6 +42,7 @@ dev = [
 ]
 
 [project.scripts]
+kite-tool = "memoket_kite.tools.cli:main"
 kite-mcp = "memoket_kite.mcp.server:main"
 
 [tool.setuptools]

@@ -1,0 +1,25 @@
+{
+  "source": {
+    "format": "text",
+    "payload": {
+      "conversation_id": "design-1",
+      "title": "Onboarding design",
+      "started_at": "2026-09-01T10:00:00Z",
+      "metadata": {"source_reference": "notes:design-1", "project": "onboarding"},
+      "text": "We proposed a guided tour. It is still open for discussion."
+    }
+  },
+  "annotations": {
+    "taxonomy": [{"name": "onboarding", "aliases": ["first run"]}],
+    "facts": [
+      {
+        "content": "The team proposed a guided tour.",
+        "segment_ids": ["text-1"],
+        "topics": ["onboarding"],
+        "status": "proposal",
+        "state_key": "onboarding-design",
+        "state": "guided tour"
+      }
+    ]
+  }
+}

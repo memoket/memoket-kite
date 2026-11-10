@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "KITE stage artifact manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "stage_id", "kind", "digest", "memory_version", "operation_id", "created_at"],
+  "properties": {
+    "run_id": {"type": "string"},
+    "stage_id": {"type": "string"},
+    "kind": {"type": "string"},
+    "digest": {"$ref": "#/$defs/digest"},
+    "memory_version": {"type": "integer", "minimum": 0},
+    "operation_id": {"$ref": "#/$defs/digest"},
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+}

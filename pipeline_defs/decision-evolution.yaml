@@ -1,0 +1,30 @@
+id: decision-evolution
+version: 1
+description: Trace proposals, confirmed decisions, revisions and open questions.
+inputs:
+  query: query
+stages:
+  - id: resolve
+    skill: skills/retrieval/decision-evolution/SKILL.md
+    tool: resolve
+    needs: []
+    inputs:
+      query: input.query
+    output: resolved
+    acceptance: Known topic names resolve through aliases and descendants.
+  - id: retrieve
+    skill: skills/retrieval/decision-evolution/SKILL.md
+    tool: retrieve
+    needs: [resolve]
+    inputs:
+      resolved: stage.resolve
+    output: matches
+    acceptance: Matching fact IDs follow the time and source filters.
+  - id: report
+    skill: skills/retrieval/evidence-verification/SKILL.md
+    tool: report
+    needs: [retrieve]
+    inputs:
+      matches: stage.retrieve
+    output: report
+    acceptance: Every timeline entry links to original segments and identifies its reported status.

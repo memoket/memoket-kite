@@ -1,0 +1,50 @@
+{
+  "source": {
+    "format": "memoket",
+    "payload": {
+      "code": 0,
+      "data": {
+        "id": "184",
+        "name": "Onboarding decision",
+        "date": "2026-09-04",
+        "transcript_version": 1,
+        "segments": [{
+          "id": "801",
+          "sentences": [
+            {"id": "901", "line_id": "line-a", "time": 1.2, "speaker": "Maya",
+             "text": "We ruled out the guided tour because it delays first use."},
+            {"id": "902", "line_id": "line-b", "time": 4.8, "speaker": "Maya",
+             "text": "We decided to ship a short checklist. Ravi will implement it."}
+          ]
+        }]
+      }
+    }
+  },
+  "annotations": {
+    "facts": [
+      {
+        "content": "The guided tour was ruled out because it delays first use.",
+        "segment_ids": ["line-a"],
+        "topics": ["onboarding"],
+        "status": "rejected"
+      },
+      {
+        "content": "The team decided to ship a short checklist.",
+        "segment_ids": ["line-b"],
+        "topics": ["onboarding"],
+        "status": "confirmed",
+        "state_key": "onboarding-design",
+        "state": "short checklist"
+      },
+      {
+        "content": "Ravi will implement the checklist.",
+        "segment_ids": ["line-b"],
+        "topics": ["onboarding"],
+        "entities": ["Ravi"],
+        "status": "confirmed",
+        "state_key": "checklist-owner",
+        "state": "Ravi"
+      }
+    ]
+  }
+}

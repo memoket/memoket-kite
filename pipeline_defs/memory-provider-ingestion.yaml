@@ -1,0 +1,49 @@
+id: memory-provider-ingestion
+version: 1
+description: Propose annotations using the opt-in KITE extractor.
+inputs:
+  source: source
+  model: model
+stages:
+  - id: normalize
+    skill: skills/ingestion/source-normalization/SKILL.md
+    tool: normalize
+    needs: []
+    inputs:
+      source: input.source
+    output: conversation
+    acceptance: Source checksum and original segments are available.
+  - id: extract
+    skill: skills/memory/fact-extraction/SKILL.md
+    tool: extract
+    needs: [normalize]
+    inputs:
+      normalized: stage.normalize
+      model: input.model
+    output: annotations
+    acceptance: The extractor returns candidate annotations with valid source segment IDs.
+  - id: annotate
+    skill: skills/memory/fact-extraction/SKILL.md
+    tool: annotate
+    needs: [normalize, extract]
+    inputs:
+      normalized: stage.normalize
+      annotations: stage.extract
+    output: annotated
+    acceptance: The candidate annotations pass source and field validation.
+  - id: commit
+    skill: skills/memory/index-building/SKILL.md
+    tool: commit
+    needs: [annotate]
+    inputs:
+      annotated: stage.annotate
+    output: receipt
+    acceptance: A single validated revision is committed or a repeat is acknowledged.
+  - id: verify
+    skill: skills/memory/index-building/SKILL.md
+    tool: validate_commit
+    needs: [commit]
+    inputs:
+      receipt: stage.commit
+    output: integrity
+    acceptance: The source records and strict Codebook agree.

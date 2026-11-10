@@ -20,6 +20,24 @@ Open-source and vector-free, KITE achieves **🥇 93.51% on LoCoMo and 🥇 85.6
   <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/kite-architecture-flow.png" width="100%" alt="KITE at a glance: conversations become source-linked memory facts, memory settles under a governed topic map, a question compiles to an inspectable plan, and the answer arrives with receipts.">
 </p>
 
+## Give your agent the context from your meetings
+
+KITE turns meeting notes, transcripts, and Memoket conversations into
+evidence-backed memory. Codex and Claude Code use the same YAML workflows and
+skills to trace decisions, recover task history, and resume interrupted imports.
+
+From a KITE checkout, try the offline demo with two synthetic meetings.
+
+```bash
+python -m pip install -e '.[agent]'
+python examples/agent-workflows/demo.py
+```
+
+The demo follows an early proposal through to a decision and shows the original
+lines behind it. For the stage-by-stage commands, see the
+[agent quickstart](examples/agent-workflows/README.md) and
+[operating guide](AGENT_GUIDE.md).
+
 <a id="news"></a>
 
 ## 📢 News

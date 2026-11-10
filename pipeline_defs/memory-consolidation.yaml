@@ -1,0 +1,22 @@
+id: memory-consolidation
+version: 1
+description: Consolidate equivalent topic labels and rebuild the Codebook.
+inputs:
+  merge: reclassify
+stages:
+  - id: commit
+    skill: skills/memory/topic-classification/SKILL.md
+    tool: reclassify
+    needs: []
+    inputs:
+      merge: input.merge
+    output: receipt
+    acceptance: Both existing topic labels resolve to one canonical code.
+  - id: verify
+    skill: skills/memory/index-building/SKILL.md
+    tool: validate_commit
+    needs: [commit]
+    inputs:
+      receipt: stage.commit
+    output: integrity
+    acceptance: The source records and strict Codebook agree.

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "KITE run checkpoint v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "pipeline_id", "pipeline_version", "definition_digest", "input_digest", "memory_version", "state", "current_stage", "stages", "created_at", "updated_at"],
+  "properties": {
+    "run_id": {"type": "string"},
+    "pipeline_id": {"type": "string"},
+    "pipeline_version": {"type": "integer", "minimum": 1},
+    "definition_digest": {"$ref": "#/$defs/digest"},
+    "input_digest": {"$ref": "#/$defs/digest"},
+    "memory_version": {"$ref": "#/$defs/count"},
+    "state": {"$ref": "#/$defs/state"},
+    "current_stage": {"type": ["string", "null"]},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "stages": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object", "additionalProperties": false,
+        "required": ["state", "attempts", "retry_count", "error"],
+        "properties": {
+          "state": {"$ref": "#/$defs/state"},
+          "attempts": {"$ref": "#/$defs/count"},
+          "retry_count": {"$ref": "#/$defs/count"},
+          "error": {"type": ["string", "null"]},
+          "artifact": {"type": "object"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "count": {"type": "integer", "minimum": 0},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "state": {"enum": ["pending", "running", "completed", "failed", "awaiting_approval", "invalidated", "redacted"]}
+  }
+}

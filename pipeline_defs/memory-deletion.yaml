@@ -1,0 +1,22 @@
+id: memory-deletion
+version: 1
+description: Preview and delete a conversation or source with explicit approval.
+inputs:
+  target: deletion_target
+stages:
+  - id: preview
+    skill: skills/memory/memory-deletion/SKILL.md
+    tool: preview_delete
+    needs: []
+    inputs:
+      target: input.target
+    output: deletion_plan
+    acceptance: Impact and a snapshot-bound approval token are available.
+  - id: apply
+    skill: skills/memory/memory-deletion/SKILL.md
+    tool: delete
+    needs: [preview]
+    inputs:
+      plan: stage.preview
+    output: receipt
+    acceptance: Authorized deletion rebuilds the index and removes prior content artifacts.

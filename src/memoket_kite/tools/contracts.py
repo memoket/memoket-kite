@@ -1,0 +1,89 @@
+"""Validation shared by the stage interface and the durable workspace."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+class ToolError(Exception):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def encode(value) -> str:
+    return json.dumps(
+        value, sort_keys=True, ensure_ascii=True, allow_nan=False, separators=(",", ":")
+    )
+
+
+def digest(value) -> str:
+    return hashlib.sha256(encode(value).encode()).hexdigest()
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+_TIMESTAMP = re.compile(
+    r"(\d{4}-\d{2}-\d{2})[Tt](\d{2}:\d{2}:\d{2})(?:[.](\d{1,6}))?([Zz]|[+-]\d{2}:\d{2})"
+)
+
+
+def utc_timestamp(value: str) -> datetime:
+    match = _TIMESTAMP.fullmatch(value)
+    if not match:
+        raise ValueError("expected an ISO timestamp with an explicit offset")
+    day, clock, fraction, offset = match.groups()
+    if offset == "-00:00" or (len(offset) > 1 and int(offset[-2:]) >= 60):
+        raise ValueError("invalid timestamp offset")
+    offset = "+00:00" if offset.upper() == "Z" else offset
+    # Python 3.10 requires fractional seconds to have three or six digits.
+    fraction = (fraction or "").ljust(6, "0")
+    return datetime.fromisoformat(f"{day}T{clock}.{fraction}{offset}").astimezone(timezone.utc)
+
+
+def validate(schema: dict, value, label: str) -> None:
+    from jsonschema import Draft202012Validator, FormatChecker
+
+    checker = FormatChecker()
+
+    @checker.checks("date-time", raises=(ValueError, OverflowError))
+    def is_timestamp(item):
+        if isinstance(item, str):
+            utc_timestamp(item)
+        return True
+
+    problem = next(Draft202012Validator(schema, format_checker=checker).iter_errors(value), None)
+    if problem is not None:
+        # Error messages from jsonschema may contain the entire private input.
+        raise ToolError("invalid_input", f"{label} fails {problem.validator} validation")
+
+
+def schema_file(root: Path, name: str) -> dict:
+    return json.loads((root / "schemas" / f"{name}.schema.json").read_text(encoding="utf-8"))
+
+
+def object_schema(required: dict, optional: dict | None = None) -> dict:
+    return {
+        "type": "object",
+        "required": list(required),
+        "additionalProperties": False,
+        "properties": {**required, **(optional or {})},
+    }
+
+
+TEXT = {"type": "string", "minLength": 1, "pattern": r"\S"}
+ID = {"type": "string", "pattern": r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"}
+HASH = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+DATE = {"type": "string", "format": "date"}
+COUNT = {"type": "integer", "minimum": 0}
+XML_UNSAFE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
+
+
+def array(items: dict, minimum: int = 0, maximum: int = 10000) -> dict:
+    return {"type": "array", "items": items, "minItems": minimum, "maxItems": maximum}

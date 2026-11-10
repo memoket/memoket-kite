@@ -1,0 +1,40 @@
+id: memory-ingestion
+version: 1
+description: Construct source-backed memory from an authorized conversation.
+inputs:
+  source: source
+  annotations: annotations
+stages:
+  - id: normalize
+    skill: skills/ingestion/source-normalization/SKILL.md
+    tool: normalize
+    needs: []
+    inputs:
+      source: input.source
+    output: conversation
+    acceptance: Source checksum and original segments are available.
+  - id: annotate
+    skill: skills/memory/fact-extraction/SKILL.md
+    tool: annotate
+    needs: [normalize]
+    inputs:
+      normalized: stage.normalize
+      annotations: input.annotations
+    output: annotated
+    acceptance: Every claim cites one or more segments in the normalized conversation.
+  - id: commit
+    skill: skills/memory/index-building/SKILL.md
+    tool: commit
+    needs: [annotate]
+    inputs:
+      annotated: stage.annotate
+    output: receipt
+    acceptance: A single validated revision is committed or a repeat is acknowledged.
+  - id: verify
+    skill: skills/memory/index-building/SKILL.md
+    tool: validate_commit
+    needs: [commit]
+    inputs:
+      receipt: stage.commit
+    output: integrity
+    acceptance: The source records and strict Codebook agree.
