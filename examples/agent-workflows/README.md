@@ -9,6 +9,24 @@ kite-tool demo
 
 Use `kite-tool resources` to locate the workflow and example files in an installed package.
 
+To try a CI build without cloning, open a successful run for the commit you
+want to try in [GitHub Actions](https://github.com/memoket/memoket-kite/actions/workflows/ci.yml).
+Sign in to GitHub and download `kite-preview-distributions` from the run's
+Artifacts section. Extract it and install the wheel with the `agent` extra
+in a fresh virtual environment.
+
+```sh
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install './memoket_kite-0.1.0-py3-none-any.whl[agent]'
+kite-tool demo
+```
+
+In Windows PowerShell, use `.\.venv\Scripts\Activate.ps1` to activate the
+environment.
+Use the downloaded wheel's filename if the version differs. CI retains these
+builds for 14 days.
+
 The demo imports an early text proposal and a later Memoket transcript in
 separate processes, resumes from their checkpoints, and traces the topic by
 its alias. The report cites the line where the team chose a short checklist.
