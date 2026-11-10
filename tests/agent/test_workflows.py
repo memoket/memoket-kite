@@ -3617,11 +3617,18 @@ def memoket_api_transcript():
     return pages, memoket_api_page([first, second])
 
 
+@pytest.mark.parametrize("split_emoji", [False, True], ids=["code-point", "utf16-surrogate"])
 def test_memoket_api_transcript_preserves_citations_across_pages(
-    work, tmp_path, memoket_api_transcript
+    work, tmp_path, memoket_api_transcript, split_emoji
 ):
     workspace, call = work
     pages, single = memoket_api_transcript
+    if split_emoji:
+        first, second = (page["items"][0] for page in pages[:2])
+        first["lines"][0]["text"] = "\ud83d"
+        first["next_text_offset"] = 1
+        second["text_offset"] = second["lines"][0]["text_offset"] = 1
+        second["lines"][0]["text"] = "\udfe2 " + second["lines"][0]["text"]
     pages[0]["note"] = "private response metadata"
     path = tmp_path / "export.json"
     path.write_text(json.dumps({"pages": pages}), encoding="utf-8")
@@ -3771,6 +3778,8 @@ def test_memoket_api_transcript_rejects_incomplete_or_inconsistent_exports(
     wrong_fragment[1]["items"][0]["lines"][0]["id"] = "private-line"
     wrong_offset = copy.deepcopy(pages)
     wrong_offset[0]["items"][0]["next_text_offset"] = 8
+    unpaired_surrogate = copy.deepcopy(pages)
+    unpaired_surrogate[1]["items"][0]["lines"][0]["text"] = "\udfe2 invalid text"
     wrong_total = copy.deepcopy(pages)
     for response in wrong_total:
         response["items"][0]["total_line_count"] = 3
@@ -3785,6 +3794,7 @@ def test_memoket_api_transcript_rejects_incomplete_or_inconsistent_exports(
         {"pages": wrong_recording},
         {"pages": wrong_fragment},
         {"pages": wrong_offset},
+        {"pages": unpaired_surrogate},
         {"pages": wrong_total},
         {"pages": pages, "recording": {"id": "private-metadata"}},
     ):

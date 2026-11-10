@@ -103,7 +103,14 @@ def api_transcript(payload: dict) -> dict:
                     raise ToolError("invalid_input", "invalid Memoket transcript continuation")
                 pending, text_offset = segment, next_text_offset
             else:
-                segments.append({**segment, "text": "".join(fragments)})
+                joined = "".join(fragments)
+                if len(fragments) > 1:
+                    # A UTF-16 cursor can leave half a character in each JSON page.
+                    # Unpaired surrogates still fail conversation validation.
+                    joined = joined.encode("utf-16-le", errors="surrogatepass").decode(
+                        "utf-16-le", errors="surrogatepass"
+                    )
+                segments.append({**segment, "text": joined})
                 pending, text_offset = None, 0
                 fragments.clear()
 
