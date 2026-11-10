@@ -75,6 +75,13 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
    explicitly. Semantic support is a host review task. KITE verifies provenance
    and index consistency deterministically.
 
+A pending `memory-ingestion` run for a new source can resume after another
+import commits. Its normalized conversation and annotations remain available
+when `snapshot_current` is false and `resume.state` is `available`. Commit
+validates the source identity, revision and annotation references against the
+current memory. Source updates with an expected checksum still require a
+current snapshot. Deletion invalidates pending imports and clears their artifacts.
+
 For a long transcript, normalize with `--summary`, then read the source in
 pages using the same run and stage IDs.
 

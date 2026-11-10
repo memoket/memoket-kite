@@ -747,6 +747,53 @@ def test_same_source_amendments_guard_competing_corrections(work):
     assert call("integrity")["facts"] == 2
 
 
+def test_pending_import_reuses_artifacts_after_interleaved_commits(work):
+    _, call = work
+    call("start", "memory-ingestion", "--run-id", "first", payload=fixture("first-meeting"))
+    normalized = call("stage", "first", "normalize")["manifest"]
+    annotated = call("stage", "first", "annotate")["manifest"]
+    other = ingest(call, "second", fixture("second-meeting"))
+    status = call("status", "first")
+    assert not status["snapshot_current"]
+    assert status["resume"]["state"] == "available"
+    assert status["resume"]["stages"][0]["id"] == "commit"
+    assert call("artifact", "first", "normalize")["manifest"] == normalized
+    assert call("artifact", "first", "annotate")["manifest"] == annotated
+    committed = call("stage", "first", "commit")
+    assert committed["value"]["memory_version"] == other["memory_version"] + 1
+
+    latest = ingest(call, "third", text_input("third", "A third conversation"))
+    assert call("stage", "first", "commit")["manifest"] == committed["manifest"]
+    verified = call("stage", "first", "verify")
+    assert verified["value"]["revisions"] == 3
+    assert verified["value"]["memory_version"] == latest["memory_version"]
+    status = call("status", "first")
+    assert status["resume"]["state"] == "complete"
+    assert status["stages"]["annotate"]["attempts"] == status["stages"]["commit"]["attempts"] == 1
+
+
+def test_interleaved_import_preserves_source_conflict_and_update_guards(work):
+    _, call = work
+    original = text_input("same", "Original record")
+    different = text_input("same", "Different record")
+    for run, payload in (("duplicate", original), ("conflicting", different)):
+        call("start", "memory-ingestion", "--run-id", run, payload=payload)
+        call("stage", run, "normalize")
+        call("stage", run, "annotate")
+
+    receipt = ingest(call, "original", original)
+    duplicate = call("stage", "duplicate", "commit")["value"]
+    assert duplicate == {**receipt, "changed": False}
+    call("stage", "conflicting", "commit", error="conflict")
+    different["source"]["expected_checksum"] = receipt["checksum"]
+    call("start", "memory-ingestion", "--run-id", "update", payload=different)
+    call("stage", "update", "normalize")
+    call("stage", "update", "annotate")
+    ingest(call, "new", text_input("new", "Another record"))
+    call("stage", "update", "commit", error="stale_snapshot")
+    assert call("integrity")["facts"] == 2
+
+
 def test_unknown_and_conflicting_dates_do_not_become_final_decisions(work):
     _, call = work
     ingest(call, "a", text_input("a", "Alice", date="2026-01-01"))

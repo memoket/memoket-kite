@@ -13,6 +13,7 @@ from .ingest import minimize_source, source_identity
 from .operations import EXTERNAL, SCHEMAS, TOOLS, Context
 
 SNAPSHOT_KINDS = {"resolved", "matches", "report", "deletion_plan", "integrity"}
+LOCAL_IMPORT_TOOLS = {"normalize", "annotate", "commit", "validate_commit"}
 
 
 def load_pipeline(
@@ -250,24 +251,31 @@ def status(context: Context, run_id: str) -> dict:
     }
 
 
-def _check_snapshot(context, row, checkpoint):
+def _bound_definition(context: Context, row, checkpoint: dict) -> tuple[dict, str]:
     if checkpoint["state"] == "invalidated":
         raise ToolError("invalidated_run", "deletion invalidated this run")
-    if checkpoint["memory_version"] != context.workspace.version():
-        raise ToolError(
-            "stale_snapshot", "memory changed; start a new run against the current snapshot"
-        )
     if row["definition"] != checkpoint["definition_digest"]:
         raise ToolError("integrity_error", "checkpoint definition digest differs from its record")
 
-
-def _bound_definition(context: Context, row, checkpoint: dict) -> tuple[dict, str]:
-    _check_snapshot(context, row, checkpoint)
+    stale = checkpoint["memory_version"] != context.workspace.version()
+    stale_error = ToolError(
+        "stale_snapshot", "memory changed; start a new run against the current snapshot"
+    )
+    if stale:
+        if checkpoint["pipeline_id"] != "memory-ingestion" or checkpoint["state"] == "completed":
+            raise stale_error
+        source = _stored_inputs(row, checkpoint).get("source")
+        if not isinstance(source, dict) or "expected_checksum" in source:
+            raise stale_error
     definition, fingerprint, _ = load_pipeline(
         context.root, checkpoint["pipeline_id"], extension_root=context.extension_root
     )
     if fingerprint != row["definition"]:
         raise ToolError("stale_definition", "pipeline, skill or tool changed; start a new run")
+    if stale and any(stage["tool"] not in LOCAL_IMPORT_TOOLS for stage in definition["stages"]):
+        raise stale_error
+    # Local preprocessing only depends on the source and annotations. Commit
+    # and verification still check the current records in the same transaction.
     return definition, fingerprint
 
 
