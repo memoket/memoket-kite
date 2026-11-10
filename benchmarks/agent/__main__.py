@@ -14,6 +14,8 @@ from tempfile import TemporaryDirectory
 FIXTURE = Path(__file__).with_name("fixture.json")
 RECOVERY_FIXTURE = Path(__file__).with_name("recovery.json")
 RECOVERY_CASE = "memoket-resume"
+DELETION_CASE = "approved-deletion"
+DELETION_TARGET = {"source": "text", "conversation_id": "plan-alpha"}
 
 
 class BenchmarkError(RuntimeError):
@@ -265,23 +267,14 @@ def offline(fixture: dict) -> dict:
             case_result["passed"] &= case_result["source_scope_correct"]
             cases[name] = case_result
 
-        kite.start(
-            "memory-deletion",
-            "deletion",
-            {"target": {"source": "text", "conversation_id": "plan-alpha"}},
-        )
-        token = kite.stage("deletion", "preview")["value"]["approval_token"]
-        kite.call("stage", "deletion", "apply", "--approve", token)
-        kite.call("artifact", "format-decision", "report", error="invalidated_run")
-        # The deleted conversation contributed the alias, so check surviving
-        # evidence with the canonical topic.
-        surviving = kite.trace(
-            "after-delete",
-            {"pipeline": "topic-tracing", "query": {"topics": ["reporting-refresh"]}},
-        )
-        source_ids = {
-            line["conversation_id"] for row in surviving["timeline"] for line in row["evidence"]
-        }
+        approval, baseline = _deletion_preview(kite, "format-decision", snapshot)
+        deletion = approval["run_id"]
+        kite.call("stage", deletion, "apply", "--approve", approval["plan"]["approval_token"])
+        case = _deletion_trace(fixture)
+        surviving = kite.trace("after-delete", case)
+        answer = _reference_answer(case, "after-delete", surviving)
+        answer["deletion_run_id"] = deletion
+        cases[DELETION_CASE] = _score_deletion(kite, case, answer, baseline)
         lifecycle = {
             "new_ingestions_completed": sum(
                 row["completed"] and row["changed"] for row in ingestions
@@ -292,8 +285,10 @@ def offline(fixture: dict) -> dict:
             and stable,
             "interrupted_stage_recovered": ingestions[0]["completed"]
             and ingestions[0]["retries"] == 1,
-            "deletion_removed_target_and_preserved_other_sources": "plan-alpha" not in source_ids
-            and "21" in source_ids,
+            "deletion_removed_target_and_preserved_other_sources": cases[DELETION_CASE][
+                "expected_sources_preserved"
+            ]
+            and cases[DELETION_CASE]["post_deletion_evidence_verified"],
         }
         cases[RECOVERY_CASE] = _offline_recovery(Path(directory) / "recovery")
         passed = (
@@ -312,7 +307,7 @@ def offline(fixture: dict) -> dict:
         }
 
 
-def _answer_schema(case: dict, *, recovery: bool = False) -> dict:
+def _answer_schema(case: dict, *, write_run: str | None = None) -> dict:
     def fields(properties: dict) -> dict:
         return {
             "type": "object",
@@ -330,8 +325,8 @@ def _answer_schema(case: dict, *, recovery: bool = False) -> dict:
         }
     )
     answer = {"run_id": string, "claims": fields(dict.fromkeys(case["fields"], claim))}
-    if recovery:
-        answer["ingestion_run_id"] = string
+    if write_run:
+        answer[write_run] = string
     return fields(answer)
 
 
@@ -387,7 +382,8 @@ def _prepare_recovery(directory: Path, fixture: dict) -> tuple[Kite, dict]:
     }
     (directory / "baseline.json").write_text(json.dumps(snapshot), encoding="utf-8")
     (directory / "ANSWER.schema.json").write_text(
-        json.dumps(_answer_schema(fixture["case"], recovery=True), indent=2), encoding="utf-8"
+        json.dumps(_answer_schema(fixture["case"], write_run="ingestion_run_id"), indent=2),
+        encoding="utf-8",
     )
     (directory / "TASK.md").write_text(
         """# Resume a Memoket import
@@ -489,6 +485,148 @@ def _offline_recovery(directory: Path) -> dict:
     }
 
 
+def _deletion_trace(fixture: dict) -> dict:
+    case = fixture["cases"]["format-decision"]
+    return {
+        **case,
+        "query": {"topics": ["reporting-refresh"]},
+        "expected_source_ids": [
+            identity
+            for identity in case["expected_source_ids"]
+            if identity != DELETION_TARGET["conversation_id"]
+        ],
+    }
+
+
+def _deletion_preview(kite: Kite, prior_run: str, snapshot: dict) -> tuple[dict, dict]:
+    run = kite.call("start", "memory-deletion", payload={"target": DELETION_TARGET})["run_id"]
+    plan = kite.stage(run, "preview")["value"]
+    if plan["target"] != DELETION_TARGET or plan["revisions"] != 1:
+        raise BenchmarkError("fixture did not produce the expected deletion preview")
+    sources = kite.call("sources")["sources"]
+    integrity = kite.call("integrity")
+    return {"run_id": run, "plan": plan}, {
+        **snapshot,
+        "case": DELETION_CASE,
+        "deletion_run_id": run,
+        "operation_id": plan["approval_token"],
+        "removed_revisions": plan["revisions"],
+        "removed_facts": plan["facts"],
+        "prior_run_id": prior_run,
+        "expected_revisions": integrity["revisions"] - plan["revisions"],
+        "expected_facts": integrity["facts"] - plan["facts"],
+        "expected_sources": [
+            source
+            for source in sources
+            if any(source[key] != value for key, value in DELETION_TARGET.items())
+        ],
+    }
+
+
+def _prepare_deletion(directory: Path, fixture: dict) -> tuple[Kite, dict]:
+    directory.mkdir(mode=0o700)
+    kite = Kite(directory / "memory")
+    snapshot = _snapshot(kite, _seed(kite, fixture))
+    prior_run = "prior-report"
+    kite.trace(prior_run, fixture["cases"]["format-decision"])
+    approval, baseline = _deletion_preview(kite, prior_run, snapshot)
+    (directory / "approved-preview.json").write_text(json.dumps(approval), encoding="utf-8")
+    (directory / "baseline.json").write_text(json.dumps(baseline), encoding="utf-8")
+    case = _deletion_trace(fixture)
+    (directory / "ANSWER.schema.json").write_text(
+        json.dumps(_answer_schema(case, write_run="deletion_run_id"), indent=2), encoding="utf-8"
+    )
+    (directory / "TASK.md").write_text(
+        """# Verify an approved synthetic conversation deletion
+
+Read the installed KITE operating guide via `kite-tool resources`. Use only
+the synthetic workspace at `./memory` and access it through the installed CLI.
+
+The benchmark operator authorizes the exact preview in
+`approved-preview.json` for this synthetic task. Inspect the saved preview
+in that run and check it against the authorized preview before applying it.
+If the preview differs, stop and report the discrepancy. Apply only that
+approved operation. Preserve the other conversations and keep the task files intact.
+
+Verify the deletion via the audit and confirm that the earlier report
+`prior-report` is invalidated. Trace the canonical `reporting-refresh`
+topic again. Report which export format was confirmed and which was rejected,
+using their short uppercase names and citing the surviving evidence.
+
+Return the deletion run ID as `deletion_run_id`, the post-deletion trace ID as
+`run_id`, and the claims `confirmed_format` and `rejected_format`.
+Use `ANSWER.schema.json` for the response.
+""",
+        encoding="utf-8",
+    )
+    return kite, baseline
+
+
+def _score_deletion(kite: Kite, case: dict, answer: dict, snapshot: dict) -> dict:
+    integrity = kite.call("integrity")
+    result = _grade(kite, case, answer, {**snapshot, **integrity})
+    result.pop("workspace_unchanged")
+    run = snapshot["deletion_run_id"]
+    audit = kite.call("deletion-audit")["deletions"]
+    expected_version = snapshot["memory_version"] + 1
+    audited = len(audit) == 1 and all(
+        audit[0].get(key) == value
+        for key, value in {
+            "operation": snapshot["operation_id"],
+            "version": expected_version,
+            "revision_count": snapshot["removed_revisions"],
+            "fact_count": snapshot["removed_facts"],
+        }.items()
+    )
+    applied = False
+    if answer.get("deletion_run_id") == run:
+        try:
+            status = kite.call("status", run)
+            receipt = kite.call("artifact", run, "apply")["value"]
+            applied = (
+                status["pipeline_id"] == "memory-deletion"
+                and status["state"] == "completed"
+                and status["stages"]["preview"]["state"] == "redacted"
+                and receipt["memory_version"] == expected_version
+                and receipt["deleted_revisions"] == snapshot["removed_revisions"]
+                and receipt["operation_id"] == snapshot["operation_id"]
+            )
+        except BenchmarkError:
+            applied = False
+    try:
+        kite.call("artifact", snapshot["prior_run_id"], "report", error="invalidated_run")
+        invalidated = True
+    except BenchmarkError:
+        invalidated = False
+    preserved = (
+        integrity["memory_version"] == expected_version
+        and integrity["revisions"] == snapshot["expected_revisions"]
+        and integrity["facts"] == snapshot["expected_facts"]
+        and kite.call("sources")["sources"] == snapshot["expected_sources"]
+    )
+    report_verified = False
+    if result["pipeline_completed"]:
+        trace_run = answer["run_id"]
+        report = kite.call("artifact", trace_run, "report")["value"]
+        resolved = kite.call("artifact", trace_run, "resolve")["value"]
+        source_ids = {
+            line["conversation_id"] for row in report["timeline"] for line in row["evidence"]
+        }
+        report_verified = (
+            resolved["query"] == case["query"]
+            and source_ids == set(case["expected_source_ids"])
+            and _reference_answer(case, trace_run, report)["claims"] == case["expected"]
+        )
+    result.update(
+        approved_deletion_applied=applied and audited,
+        prior_report_invalidated=invalidated,
+        expected_sources_preserved=preserved,
+        post_deletion_evidence_verified=report_verified,
+    )
+    result["passed"] &= applied and audited and invalidated and preserved and report_verified
+    return result
+
+
 def main(argv=None) -> int:
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
     parser = argparse.ArgumentParser(description=__doc__)
@@ -496,7 +634,7 @@ def main(argv=None) -> int:
     sub.add_parser("offline", help="run deterministic lifecycle and retrieval cases")
     for command in ("prepare", "score"):
         action = sub.add_parser(command)
-        action.add_argument("case", choices=[*fixture["cases"], RECOVERY_CASE])
+        action.add_argument("case", choices=[*fixture["cases"], RECOVERY_CASE, DELETION_CASE])
         action.add_argument("directory", type=Path)
         if command == "score":
             action.add_argument("answer", type=Path)
@@ -506,12 +644,15 @@ def main(argv=None) -> int:
             result = offline(fixture)
         else:
             recovery = args.case == RECOVERY_CASE
+            deletion = args.case == DELETION_CASE
             fixture_path = RECOVERY_FIXTURE if recovery else FIXTURE
             if recovery:
                 recovery_fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
             if args.command == "prepare":
                 if recovery:
                     _prepare_recovery(args.directory, recovery_fixture)
+                elif deletion:
+                    _prepare_deletion(args.directory, fixture)
                 else:
                     prepare(args.directory, args.case, fixture["cases"][args.case], fixture)
                 print(args.directory / "TASK.md")
@@ -525,11 +666,12 @@ def main(argv=None) -> int:
             if not isinstance(answer, dict):
                 raise BenchmarkError("answer must be a JSON object")
             kite = Kite(args.directory / "memory")
-            metrics = (
-                _score_recovery(kite, recovery_fixture, answer, snapshot)
-                if recovery
-                else _grade(kite, fixture["cases"][args.case], answer, snapshot)
-            )
+            if recovery:
+                metrics = _score_recovery(kite, recovery_fixture, answer, snapshot)
+            elif deletion:
+                metrics = _score_deletion(kite, _deletion_trace(fixture), answer, snapshot)
+            else:
+                metrics = _grade(kite, fixture["cases"][args.case], answer, snapshot)
             result = {
                 "mode": "host-agent",
                 "case": args.case,

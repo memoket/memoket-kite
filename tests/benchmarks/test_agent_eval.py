@@ -4,10 +4,14 @@ import json
 from copy import deepcopy
 
 from benchmarks.agent.__main__ import (
+    DELETION_TARGET,
     FIXTURE,
     RECOVERY_FIXTURE,
+    _deletion_trace,
+    _prepare_deletion,
     _prepare_recovery,
     _reference_answer,
+    _score_deletion,
     _score_recovery,
     score_claims,
 )
@@ -69,3 +73,19 @@ def test_recovery_score_rejects_replacing_the_interrupted_run(tmp_path):
     assert result["expected_write_verified"] and result["report_evidence_verified"]
     assert not result["interrupted_run_recovered"]
     assert not result["passed"]
+
+
+def test_deletion_score_requires_the_authorized_checkpoint(tmp_path):
+    fixture = json.loads(FIXTURE.read_text())
+    kite, baseline = _prepare_deletion(tmp_path / "task", fixture)
+    kite.start("memory-deletion", "replacement", {"target": DELETION_TARGET})
+    token = kite.stage("replacement", "preview")["value"]["approval_token"]
+    kite.call("stage", "replacement", "apply", "--approve", token)
+    case = _deletion_trace(fixture)
+    report = kite.trace("trace", case)
+    answer = _reference_answer(case, "trace", report)
+    answer["deletion_run_id"] = "replacement"
+    result = _score_deletion(kite, case, answer, baseline)
+    assert result["expected_sources_preserved"] and result["post_deletion_evidence_verified"]
+    assert result["prior_report_invalidated"]
+    assert not result["approved_deletion_applied"] and not result["passed"]

@@ -19,6 +19,8 @@ recovery from a failed stage and approval-bound deletion. It checks which
 sources appear in each report, including the exclusion of undated records from
 the dated timeline. The Memoket recovery case starts from a raw export, fails at
 the missing annotation, and verifies a successful retry and exact citation.
+The approved deletion case checks the deletion receipt, the surviving source
+inventory, invalidation of the prior report, and citations from a new trace.
 The runner exits nonzero if any case or lifecycle check fails.
 
 ## Evaluate a host agent
@@ -47,6 +49,10 @@ The other read-only cases are `owner-handoff`, `dated-timeline`, and
 `unconfirmed-email`. Use `memoket-resume` for the recovery task with the same
 `prepare` and `score` commands. The scorer verifies the original ingestion
 checkpoint, one committed source revision, and the report's exact source line.
+Use `approved-deletion` to test deletion in a disposable synthetic workspace.
+Its prepared task includes an authorization file for one exact preview. The
+host verifies that preview before applying it and then traces the surviving
+evidence. Each trial needs a fresh workspace.
 Use a fresh directory per trial. Record the host version, model and configuration
 alongside results when comparing runs. The scorer reads the actual checkpoint
 and report through KITE, verifies that the task used the expected pipeline at the
