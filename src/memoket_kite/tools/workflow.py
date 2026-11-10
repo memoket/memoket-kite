@@ -258,25 +258,51 @@ def _checkpoint(row) -> dict:
     return checkpoint
 
 
-def recent_runs(workspace, limit: int) -> dict:
+def recent_runs(
+    workspace,
+    limit: int,
+    *,
+    pipeline: str | None = None,
+    unfinished: bool = False,
+    before: str | None = None,
+) -> dict:
     if not 1 <= limit <= 100:
         raise ToolError("invalid_input", "run limit must be between 1 and 100")
     version = workspace.version()
-    rows = workspace.db.execute(
-        "SELECT checkpoint FROM runs ORDER BY rowid DESC LIMIT ?",
-        (limit,),
-    )
+    if before is None:
+        rows = workspace.db.execute("SELECT id, checkpoint FROM runs ORDER BY rowid DESC")
+    else:
+        validate(ID, before, "run ID")
+        position = workspace.db.execute("SELECT rowid FROM runs WHERE id=?", (before,)).fetchone()
+        if position is None:
+            raise ToolError("not_found", "page boundary run was not found")
+        rows = workspace.db.execute(
+            "SELECT id, checkpoint FROM runs WHERE rowid < ? ORDER BY rowid DESC", (position[0],)
+        )
     fields = ("run_id", "pipeline_id", "state", "current_stage", "created_at", "updated_at")
     runs = []
+    next_before = None
     for row in rows:
-        checkpoint = json.loads(row["checkpoint"])
-        runs.append(
-            {
-                **{field: checkpoint[field] for field in fields},
-                "snapshot_current": checkpoint["memory_version"] == version,
-            }
-        )
-    return {"runs": runs, "memory_version": version}
+        checkpoint = _checkpoint(row)
+        try:
+            summary = {field: checkpoint[field] for field in fields}
+            summary["snapshot_current"] = checkpoint["memory_version"] == version
+        except KeyError as exc:
+            raise ToolError("integrity_error", "run checkpoint is missing summary fields") from exc
+        if pipeline is not None and summary["pipeline_id"] != pipeline:
+            continue
+        if unfinished and summary["state"] not in (
+            "pending",
+            "running",
+            "failed",
+            "awaiting_approval",
+        ):
+            continue
+        if len(runs) == limit:
+            next_before = runs[-1]["run_id"]
+            break
+        runs.append(summary)
+    return {"runs": runs, "memory_version": version, "next_before": next_before}
 
 
 def _stored_inputs(row, checkpoint: dict) -> dict:

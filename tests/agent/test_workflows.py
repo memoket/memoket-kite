@@ -433,6 +433,37 @@ def test_discover_interrupted_runs_and_resume_without_disclosing_inputs(work):
     assert "private-marker" not in json.dumps(status)
 
 
+def test_run_listing_filters_before_paginating_in_creation_order(work):
+    _, call = work
+    call("start", "memory-ingestion", "--run-id", "first-pending")
+    call("start", "memory-ingestion", "--run-id", "failed")
+    call("stage", "failed", "normalize", error="missing_input")
+    call("start", "memory-maintenance", "--run-id", "maintenance")
+    call("start", "memory-ingestion", "--run-id", "later-pending")
+    call(
+        "ingest",
+        "--run-id",
+        "completed",
+        payload=text_input("private-source-marker", "private-text-marker"),
+    )
+
+    filters = ("runs", "--pipeline", "memory-ingestion", "--unfinished", "--limit", "1")
+    page = call(*filters)
+    assert [run["run_id"] for run in page["runs"]] == ["later-pending"]
+    assert page["next_before"] == "later-pending"
+    call("start", "memory-ingestion", "--run-id", "created-between-pages")
+    page = call(*filters, "--before", page["next_before"])
+    assert [(run["run_id"], run["state"]) for run in page["runs"]] == [("failed", "failed")]
+    assert page["next_before"] == "failed"
+    page = call(*filters, "--before", page["next_before"])
+    assert [run["run_id"] for run in page["runs"]] == ["first-pending"]
+    assert page["next_before"] is None
+    assert call(*filters, "--before", "first-pending")["runs"] == []
+    assert call("runs", "--pipeline", "memory-maintenance")["runs"][0]["run_id"] == "maintenance"
+    call("runs", "--before", "missing", error="not_found")
+    assert "private" not in json.dumps(call("runs"))
+
+
 def test_resume_failed_stage_and_preserve_exact_sources(work, tmp_path):
     _, call = work
     payload = fixture("first-meeting")
@@ -898,7 +929,11 @@ def test_deletion_approval_purge_and_replay(work):
     )
     status = call("status", "delete")
     assert status["resume"]["stages"][0]["required_flags"] == ["--approve"]
-    assert plan["approval_token"] not in json.dumps([status, call("runs")])
+    unfinished = call("runs", "--unfinished")
+    assert [(run["run_id"], run["state"]) for run in unfinished["runs"]] == [
+        ("delete", "awaiting_approval")
+    ]
+    assert plan["approval_token"] not in json.dumps([status, unfinished])
     call("stage", "delete", "apply", "--approve", "wrong", error="permission_denied")
     receipt = call("stage", "delete", "apply", "--approve", plan["approval_token"])
     assert receipt["value"]["deleted_revisions"] == 1
@@ -907,6 +942,7 @@ def test_deletion_approval_purge_and_replay(work):
     assert status["state"] == "invalidated"
     assert status["resume"]["reason"] == "invalidated_run"
     assert call("status", "delete")["resume"]["state"] == "complete"
+    assert call("runs", "--unfinished")["runs"] == []
     call("artifact", "old-report", "report", error="invalidated_run")
     call("artifact", "delete", "preview", error="not_found")
     assert b"private-celadon-body" not in (directory / "kite.sqlite3").read_bytes()

@@ -163,6 +163,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     runs = commands.add_parser("runs", help="list recent workflow runs without source content")
     runs.add_argument("--limit", type=int, default=20, help="number of runs to show (1–100)")
+    runs.add_argument("--pipeline", help="only show runs for this pipeline ID")
+    runs.add_argument(
+        "--unfinished", action="store_true", help="hide completed and invalidated runs"
+    )
+    runs.add_argument("--before", metavar="RUN_ID", help="show runs created before this run")
     for name in ("status", "artifact"):
         command = commands.add_parser(name)
         command.add_argument("run_id")
@@ -417,7 +422,13 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 result = _stage_summary(result, args.stage_id)
             return result, error
         if args.command == "runs":
-            return recent_runs(workspace, args.limit), None
+            return recent_runs(
+                workspace,
+                args.limit,
+                pipeline=args.pipeline,
+                unfinished=args.unfinished,
+                before=args.before,
+            ), None
         if args.command == "status":
             return status(context, args.run_id), None
         if args.command == "artifact":
