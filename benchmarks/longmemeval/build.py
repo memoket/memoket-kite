@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from benchmarks.common.build_provenance import build_attributes, reuse_existing
 from benchmarks.common.paths import CACHE_ROOT, CODEBOOKS_ROOT, DATASETS_ROOT
 from benchmarks.longmemeval import adapter, profile
 from memoket_kite.core.vocab import Vocab, norm_code
@@ -221,18 +222,24 @@ def build_codebook(
     """Build and atomically publish one fully finalized Codebook."""
     question_id = instance["question_id"]
     output = OUTPUT_DIR / f"{question_id}.xml"
-    if output.exists() and not force:
-        if resume:
-            return f"{question_id}: skipped"
-        raise RuntimeError(f"Codebook exists; pass --resume or --force: {output}")
+    units = list(adapter.iter_units(instance))
+    attributes = build_attributes(
+        model,
+        {"id": question_id, "units": units},
+        builder=__file__,
+        adapter=adapter.__file__,
+        profile=profile.__file__,
+    )
+    if reuse_existing(output, attributes, resume=resume, force=force):
+        return f"{question_id}: skipped"
 
     vocabulary = Vocab(admission_k=4, promote_units=3)
     for topic in profile.SEED_ROOTS:
         vocabulary.define_root(topic)
-    root = ET.Element("codebook", id=question_id, speakers="user assistant")
+    root = ET.Element("codebook", id=question_id, speakers="user assistant", **attributes)
     timeline = ET.SubElement(root, "timeline")
     extraction_cache = CACHE_ROOT / "extraction" / "longmemeval" / _model_slug(model)
-    for session in adapter.iter_units(instance):
+    for session in units:
         facts = extract_facts(
             vocabulary,
             profile,
@@ -302,6 +309,7 @@ def main(argv: list[str] | None = None) -> int:
     with DATASET.open(encoding="utf-8") as stream:
         data = json.load(stream)
     indices = select_indices(data, args.n)[args.shard :: args.shards]
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     print(
         f"dataset={DATASET} model={args.model} workers={args.workers} "
         f"codebooks={len(indices)} output={OUTPUT_DIR}",

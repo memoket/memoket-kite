@@ -10,6 +10,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from benchmarks.common.build_provenance import build_attributes, reuse_existing
 from benchmarks.common.paths import CACHE_ROOT, CODEBOOKS_ROOT, DATASETS_ROOT
 from benchmarks.locomo import adapter, profile
 from memoket_kite.core.vocab import Vocab
@@ -46,27 +47,27 @@ def build_sample(
     """Build one sample atomically and return its sample ID."""
     sample_id = sample["sample_id"]
     output = OUTPUT_DIR / f"{sample_id}.xml"
-    if output.exists() and not force:
-        if resume:
-            return f"{sample_id}: skipped"
-        raise RuntimeError(f"Codebook exists; pass --resume or --force: {output}")
+    speakers = " ".join(
+        [sample["conversation"].get("speaker_a", ""), sample["conversation"].get("speaker_b", "")]
+    )
+    units = list(adapter.iter_units(sample))
+    attributes = build_attributes(
+        model,
+        {"id": sample_id, "speakers": speakers, "units": units},
+        builder=__file__,
+        adapter=adapter.__file__,
+        profile=profile.__file__,
+    )
+    if reuse_existing(output, attributes, resume=resume, force=force):
+        return f"{sample_id}: skipped"
 
     vocabulary = Vocab(admission_k=4, promote_units=3)
     for topic in profile.SEED_ROOTS:
         vocabulary.define_root(topic)
-    root = ET.Element(
-        "codebook",
-        id=sample_id,
-        speakers=" ".join(
-            [
-                sample["conversation"].get("speaker_a", ""),
-                sample["conversation"].get("speaker_b", ""),
-            ]
-        ),
-    )
+    root = ET.Element("codebook", id=sample_id, speakers=speakers, **attributes)
     timeline = ET.SubElement(root, "timeline")
     cache_dir = CACHE_ROOT / "extraction" / "locomo" / _model_slug(model) / sample_id
-    for session in adapter.iter_units(sample):
+    for session in units:
         facts = extract_facts(
             vocabulary,
             profile,

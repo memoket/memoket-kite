@@ -31,7 +31,13 @@ bash benchmarks/reproduce/longmemeval.sh
 
 Current LoCoMo runs use the answer prompt without concrete answer examples and
 default to the `example-free-v1` result tag. A rerun can reuse existing
-Codebooks with `bash benchmarks/reproduce/locomo.sh resume`.
+Codebooks with `bash benchmarks/reproduce/locomo.sh resume` when their build
+provenance matches. New Codebooks record the extraction model and digests of
+the provider endpoint, normalized source sessions and build code. A build
+resume rejects mismatched or unstamped Codebooks before extraction for that
+record. Keep historical Codebooks for verification or evaluate a new build
+under a separate `KITE_ARTIFACTS_DIR`. The build command's `--force` option
+explicitly replaces existing Codebooks.
 
 Each script prints the dataset path, model IDs, worker count, output directory,
 and stage before doing work. Build and evaluation commands support `--resume`;
