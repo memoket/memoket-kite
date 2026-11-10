@@ -5,6 +5,7 @@ import os
 import re
 import time
 import urllib.request
+from urllib.error import HTTPError
 
 from memoket_kite.errors import ProviderError
 
@@ -76,7 +77,13 @@ def llm(
             out = _http_llm(prompt, timeout, temperature, model)
             if out:
                 return out
-        except Exception as e:  # HTTP errors, timeouts, rate limits
+        except HTTPError as error:
+            status = error.code
+            error.close()
+            last = f"HTTP {status}"
+            if 400 <= status < 500 and status not in (408, 409, 429):
+                break
+        except Exception as e:  # Connection, timeout or response errors.
             last = e
         # No sleep after the final attempt: there is nothing left to wait for,
         # and the caller pays the backoff only to receive the same error.

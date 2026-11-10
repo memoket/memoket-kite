@@ -3909,6 +3909,9 @@ def blocked_provider(monkeypatch):
         def do_POST(self):
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.put(payload)
+            if self.headers["Authorization"] == "Bearer rejected-test-placeholder":
+                self.send_error(401, "synthetic rejected credentials")
+                return
             if not release.wait(timeout=20):
                 self.send_error(503)
                 return
@@ -3981,6 +3984,46 @@ def _provider_process(directory, repo=ROOT):
         if process.poll() is None:
             process.kill()
         process.communicate(timeout=10)
+
+
+def test_provider_authentication_failure_can_resume_without_reimporting(
+    work, blocked_provider, monkeypatch
+):
+    directory, call = work
+    release, requests = blocked_provider
+    _begin_provider(call)
+    normalized = call("artifact", "provider", "normalize")
+    command = _cli_process(directory, "stage", "provider", "extract", "--allow-provider")
+    monkeypatch.setenv("OPENAI_API_KEY", "rejected-test-placeholder")
+    process = subprocess.run(command, capture_output=True, text=True, timeout=12, check=False)
+    assert process.returncode == 2, process.stderr or process.stdout
+    failed = json.loads(process.stdout)
+    assert failed["error"]["code"] == "provider_error"
+    stage = failed["checkpoint"]["stages"]["extract"]
+    assert stage["state"] == "failed" and stage["attempts"] == 1
+    assert "rejected-test-placeholder" not in json.dumps(failed)
+    assert requests.get(timeout=1)["model"] == "test-model" and requests.empty()
+    call("artifact", "provider", "extract", error="not_found")
+    assert call("integrity")["revisions"] == 0
+
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-placeholder")
+    release.set()
+    candidate = json.loads(subprocess.check_output(command, text=True, timeout=12))
+    assert candidate["checkpoint"]["stages"]["extract"]["retry_count"] == 1
+    assert requests.get(timeout=1)["model"] == "test-model"
+    assert call("artifact", "provider", "normalize") == normalized
+    assert call("stage", "provider", "extract")["manifest"] == candidate["manifest"]
+    assert requests.empty()
+    for stage_id in ("annotate", "commit", "verify"):
+        call("stage", "provider", stage_id)
+    report = call("query", "--topic", "general")["value"]
+    (evidence,) = report["timeline"][0]["evidence"]
+    assert (evidence["conversation_id"], evidence["segment_id"], evidence["text"]) == (
+        "design-1",
+        "text-1",
+        "We proposed a guided tour. It is still open for discussion.",
+    )
+    assert call("integrity")["revisions"] == 1
 
 
 def test_provider_request_releases_workspace_and_keeps_other_labels_local(work, blocked_provider):

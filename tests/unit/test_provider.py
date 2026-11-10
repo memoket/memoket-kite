@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+from urllib.error import HTTPError
 
 import pytest
 
@@ -44,6 +45,23 @@ def test_provider_retries_only_between_attempts(monkeypatch):
         llm("test prompt", model="gpt-4.1-mini", retries=0)
     assert len(calls) == 1
     assert sleeps == []
+
+
+@pytest.mark.parametrize(("status", "attempts"), [(400, 1), (401, 1), (403, 1), (429, 3), (503, 3)])
+def test_provider_retries_only_retryable_http_failures(monkeypatch, status, attempts):
+    calls = []
+    sleeps = []
+
+    def fail(*args):
+        calls.append(args)
+        raise HTTPError("https://example.invalid", status, "private provider diagnostic", {}, None)
+
+    monkeypatch.setattr("memoket_kite.providers.llm._http_llm", fail)
+    monkeypatch.setattr("memoket_kite.providers.llm.time.sleep", sleeps.append)
+    with pytest.raises(RuntimeError, match=rf"^llm failed: HTTP {status}$"):
+        llm("synthetic prompt", retries=2)
+    assert len(calls) == attempts
+    assert sleeps == [2, 4][: attempts - 1]
 
 
 def test_llm_json_retries_non_object_json(monkeypatch):

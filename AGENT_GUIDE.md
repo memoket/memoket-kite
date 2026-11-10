@@ -290,7 +290,10 @@ through the regular ingestion pipeline.
 Other workspace commands can run during extraction. A concurrent attempt at the
 same stage returns `provider_busy`. When a response arrives, KITE checks the
 workspace version and run again before saving it. An interrupted stage can be
-retried. Handle copies already sent to the endpoint under its retention policy.
+retried. If the endpoint rejects credentials, correct the configuration and
+retry the same stage with `--allow-provider` after confirming authorization.
+KITE saves candidate annotations only after a successful response.
+Handle copies already sent to the endpoint under its retention policy.
 
 ## Lifecycle
 
