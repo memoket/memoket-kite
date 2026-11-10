@@ -1275,13 +1275,16 @@ def test_guarded_backup_pins_deletion_authority_through_publication(work, tmp_pa
     assert not rejected.exists()
 
 
-@pytest.mark.parametrize("damage", ["input", "payload", "missing", "orphan", "operation"])
-def test_backup_rejects_broken_run_storage(work, tmp_path, damage):
+@pytest.mark.parametrize(
+    "damage", ["input", "payload", "missing", "orphan", "foreign_key", "operation", "table"]
+)
+def test_workflow_integrity_and_backup_reject_broken_run_storage(work, tmp_path, damage):
     directory, call = work
     payload = text_input("draft", "private test transcript")
     call("start", "memory-ingestion", "--run-id", "draft", payload=payload)
     call("stage", "draft", "normalize")
-    with sqlite3.connect(directory / "kite.sqlite3") as db:
+    database = directory / "kite.sqlite3"
+    with sqlite3.connect(database) as db:
         if damage == "input":
             db.execute("UPDATE runs SET inputs='{}'")
         elif damage == "payload":
@@ -1292,10 +1295,19 @@ def test_backup_rejects_broken_run_storage(work, tmp_path, damage):
             db.execute(
                 "INSERT INTO artifacts SELECT run_id, 'orphan', kind, digest, value FROM artifacts"
             )
+        elif damage == "foreign_key":
+            db.execute("PRAGMA foreign_keys=OFF")
+            db.execute("UPDATE artifacts SET run_id='missing-run'")
+        elif damage == "table":
+            db.execute("DROP TABLE artifacts")
         else:
             checkpoint = json.loads(db.execute("SELECT checkpoint FROM runs").fetchone()[0])
             checkpoint["stages"]["normalize"]["artifact"]["operation_id"] = "0" * 64
             db.execute("UPDATE runs SET checkpoint=?", (json.dumps(checkpoint),))
+    before = database.read_bytes()
+    full = call("integrity", "--include-workflows", error="integrity_error")
+    assert "private test transcript" not in json.dumps(full)
+    assert database.read_bytes() == before
     assert call("integrity")["revisions"] == 0
     destination = tmp_path / "rejected"
     result = call("backup", str(destination), error="integrity_error")
@@ -1304,10 +1316,17 @@ def test_backup_rejects_broken_run_storage(work, tmp_path, damage):
 
 
 def test_backup_verifies_stale_trace_artifacts_without_resuming_them(work, tmp_path):
-    _, call = work
+    directory, call = work
+    call("integrity", "--include-workflows", error="not_found")
+    assert not directory.exists()
     ingest(call, "first", text_input("first", "Initial evidence"))
     trace(call, "old-trace", {"topics": ["onboarding"]})
     ingest(call, "second", text_input("second", "Later evidence"))
+    database = directory / "kite.sqlite3"
+    before = database.read_bytes()
+    full = call("integrity", "--include-workflows")
+    assert (full["revisions"], full["verified_runs"], full["verified_artifacts"]) == (2, 3, 11)
+    assert database.read_bytes() == before
     destination = tmp_path / "copy"
     result = call("backup", str(destination))
     assert result["verified_runs"] == 3 and result["verified_artifacts"] == 11

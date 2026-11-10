@@ -102,6 +102,16 @@ def main() -> None:
             1,
             1,
         )
+        verified = call("integrity", "--include-workflows", workspace=recovered)
+        assert (
+            verified["revisions"],
+            verified["verified_runs"],
+            verified["verified_artifacts"],
+        ) == (
+            0,
+            1,
+            1,
+        )
         status = call("status", run_id, workspace=recovered)
         assert status["resume"]["stages"][0]["missing_inputs"] == {"annotations": "annotations"}
         page = call(

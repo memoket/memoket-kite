@@ -143,7 +143,14 @@ def _parser() -> argparse.ArgumentParser:
         default=32768,
         help="target JSON segment bytes (128–1048576); the first segment is kept whole",
     )
-    commands.add_parser("integrity", help="verify the current Codebook against its source records")
+    integrity = commands.add_parser(
+        "integrity", help="verify the current Codebook against its source records"
+    )
+    integrity.add_argument(
+        "--include-workflows",
+        action="store_true",
+        help="check SQLite, checkpoints and artifacts in an existing workspace without writing",
+    )
     backup = commands.add_parser("backup", help="write a verified private copy to a new directory")
     backup.add_argument("destination", type=Path)
     backup.add_argument(
@@ -270,6 +277,12 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
         validate(SOURCE_SCOPE, scope, "source scope")
         with Workspace.open(args.workspace, read_only=True) as workspace:
             return workspace.source_history(**scope), None
+
+    if args.command == "integrity" and args.include_workflows:
+        with Workspace.open(args.workspace, read_only=True) as workspace:
+            workspace.verify_sqlite()
+            index = TOOLS["validate"].function(Context(root, workspace, ""))
+            return {**index, **verify_run_storage(workspace, root)}, None
 
     if args.command in {"sources", "codebook"}:
         scope = {"source": args.source} if args.source is not None else {}

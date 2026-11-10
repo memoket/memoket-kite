@@ -221,12 +221,7 @@ class Workspace:
                     with closing(sqlite3.connect(database, timeout=15)) as copy:
                         original.db.backup(copy)
                 with cls.open(staging) as snapshot:
-                    if [tuple(row) for row in snapshot.db.execute("PRAGMA quick_check")] != [
-                        ("ok",)
-                    ]:
-                        raise ToolError("integrity_error", "backup SQLite integrity check failed")
-                    if snapshot.db.execute("PRAGMA foreign_key_check").fetchone():
-                        raise ToolError("integrity_error", "backup contains broken references")
+                    snapshot.verify_sqlite()
                     index = snapshot.index(verify=True)
                     verified = verify_runs(snapshot)
                     # The copy is an independent workspace. Authorization to
@@ -263,6 +258,12 @@ class Workspace:
             with suppress(OSError):
                 destination.rmdir()
             raise
+
+    def verify_sqlite(self) -> None:
+        if [tuple(row) for row in self.db.execute("PRAGMA quick_check")] != [("ok",)]:
+            raise ToolError("integrity_error", "SQLite integrity check failed")
+        if self.db.execute("PRAGMA foreign_key_check").fetchone():
+            raise ToolError("integrity_error", "workspace contains broken references")
 
     def _require_deletion_history(self, authority: Workspace) -> dict[str, int]:
         if authority.db.execute("PRAGMA journal_mode").fetchone()[0] == "wal":

@@ -343,6 +343,11 @@ from an older workspace verifies the Codebook against a full rebuild.
 `kite-tool integrity` repeats that full comparison on demand. If the index
 is damaged and the source records are intact, run `memory-rebuild`.
 
+Run `kite-tool integrity --include-workflows` to also check SQLite references,
+checkpoint inputs and saved artifact digests. This mode opens an existing
+workspace read-only and reports verified run and artifact counts. It can
+verify historical artifacts even if their workflows need a fresh run.
+
 ## Back up a workspace
 
 Use a new, private directory on a local filesystem that supports SQLite and
@@ -354,7 +359,7 @@ fresh run against the current snapshot or workflow definition.
 
 ```sh
 kite-tool --workspace ./memory backup ./memory-backup
-kite-tool --workspace ./memory-backup integrity
+kite-tool --workspace ./memory-backup integrity --include-workflows
 kite-tool --workspace ./memory-backup runs
 ```
 

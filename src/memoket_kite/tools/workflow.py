@@ -264,6 +264,11 @@ def _stored_inputs(row, checkpoint: dict) -> dict:
 
 def verify_run_storage(workspace, root: Path) -> dict[str, int]:
     """Verify persisted runs without requiring their current pipeline definitions."""
+    tables = workspace.db.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('runs', 'artifacts')"
+    ).fetchone()[0]
+    if tables != 2:
+        raise ToolError("integrity_error", "workspace is missing workflow tables")
     checkpoint_schema = schema_file(root, "checkpoint")
     artifact_schema = schema_file(root, "artifact")
     memory_version = workspace.version()
