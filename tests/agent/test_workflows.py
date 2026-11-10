@@ -1540,6 +1540,10 @@ def test_task_trace_reports_unresolved_entities_without_claiming_complete_state(
     assert complete["resolved_entities"] == ["david_huang"]
     assert complete["unresolved_entities"] == []
     assert complete["current_reported_states"]["owner"]["value"] == "David"
+    followed = trace(call, "follow-alias", {**query, "follow_states": True}, "task-tracing")
+    assert followed["followed_state_keys"] == ["owner"]
+    assert [row["state"] for row in followed["timeline"]] == ["David", "Rae"]
+    assert followed["current_reported_states"]["owner"]["value"] == "Rae"
 
     either = trace(call, "either", {**query, "entities": ["Dave", "Rae"]}, "task-tracing")
     assert either["matched_count"] == 2
@@ -1561,6 +1565,53 @@ def test_task_trace_reports_unresolved_entities_without_claiming_complete_state(
     assert unknown["resolved_entities"] == []
     assert unknown["unresolved_entities"] == ["Unknown Person"]
     assert unknown["timeline"] == [] and unknown["current_reported_states"] == {}
+
+
+def test_follow_state_history_preserves_scope_and_pagination(work):
+    _, call = work
+    for identity, name, day, topic, source, project, key in (
+        ("first", "David", "2026-05-04", "checklist", "text", "pilot", "checklist-owner"),
+        ("handoff", "Rae", "2026-05-05", "checklist", "text", "pilot", "checklist-owner"),
+        ("future", "Future", "2026-05-08", "checklist", "text", "pilot", "checklist-owner"),
+        ("private", "Other", "2026-05-06", "checklist", "archive", "pilot", "checklist-owner"),
+        ("different", "Other", "2026-05-06", "checklist", "text", "other", "checklist-owner"),
+        ("off-topic", "Other", "2026-05-06", "unrelated", "text", "pilot", "checklist-owner"),
+        ("different-key", "Other", "2026-05-06", "checklist", "text", "pilot", "different-owner"),
+    ):
+        payload = text_input(identity, f"{name} owns the task.", date=day, topic=topic)
+        raw = payload["source"]["payload"]
+        raw["metadata"]["project"] = project
+        payload["annotations"]["facts"][0].update(state_key=key, state=name)
+        if source != "text":
+            payload["source"]["format"] = "conversation"
+            raw.update(source=source, segments=[{"segment_id": "text-1", "text": raw.pop("text")}])
+        ingest(call, identity, payload)
+
+    query = {
+        "text": "David owns",
+        "topics": ["checklist"],
+        "source": "text",
+        "projects": ["pilot"],
+        "end_date": "2026-05-07",
+        "follow_states": True,
+    }
+    pipeline = "task-tracing"
+    result = trace(call, "follow", query, pipeline)
+    assert call("query", "--pipeline", pipeline, payload={"query": query})["value"] == result
+    assert result["matched_count"] == 2
+    assert result["followed_state_keys"] == ["checklist-owner"]
+    assert [row["evidence"][0]["conversation_id"] for row in result["timeline"]] == [
+        "first",
+        "handoff",
+    ]
+    assert result["current_reported_states"]["checklist-owner"]["value"] == "Rae"
+
+    first = trace(call, "recent", {**query, "limit": 1}, pipeline)
+    second = trace(call, "older", {**query, "limit": 1, "cursor": first["next_cursor"]}, pipeline)
+    assert [page["timeline"][0]["state"] for page in (first, second)] == ["Rae", "David"]
+    assert second["next_cursor"] is None
+    absent = trace(call, "no-anchor", {**query, "start_date": "2026-05-05"}, pipeline)
+    assert absent["timeline"] == absent["followed_state_keys"] == []
 
 
 def test_trace_cursor_reads_all_windows_without_repeating_evidence(work):

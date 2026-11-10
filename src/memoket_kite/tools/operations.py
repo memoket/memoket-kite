@@ -81,7 +81,7 @@ SCHEMAS = {
             "entity_codes": array(TEXT),
             "unresolved_entities": array(TEXT),
         },
-        {"end_date": DATE, "evidence_budget": EVIDENCE_BUDGET},
+        {"end_date": DATE, "evidence_budget": EVIDENCE_BUDGET, "followed_state_keys": array(TEXT)},
     ),
     "report": object_schema(
         {
@@ -108,7 +108,7 @@ SCHEMAS = {
             "unresolved_entities": array(TEXT),
             "memory_version": COUNT,
         },
-        {"end_date": DATE, "evidence_budget": EVIDENCE_BUDGET},
+        {"end_date": DATE, "evidence_budget": EVIDENCE_BUDGET, "followed_state_keys": array(TEXT)},
     ),
     "receipt": RECEIPT,
     "integrity": object_schema(
@@ -221,8 +221,8 @@ TOOLS = {
     "rebuild": Tool(_rebuild, {}, "receipt", "write"),
     "validate_commit": Tool(_validate, {"receipt": "receipt"}, "integrity"),
     "resolve": Tool(resolve, {"query": "query"}, "resolved", version=4),
-    "retrieve": Tool(retrieve, {"resolved": "resolved"}, "matches", version=9),
-    "report": Tool(report, {"matches": "matches"}, "report", version=10),
+    "retrieve": Tool(retrieve, {"resolved": "resolved"}, "matches", version=10),
+    "report": Tool(report, {"matches": "matches"}, "report", version=11),
     "reclassify": Tool(reclassify, {"merge": "reclassify"}, "receipt", "write", version=2),
     "move_topic": Tool(move_topic, {"move": "topic_move"}, "receipt", "write"),
     "preview_delete": Tool(_preview, {"target": "deletion_target"}, "deletion_plan", version=4),

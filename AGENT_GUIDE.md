@@ -133,6 +133,17 @@ and `unresolved_entities`. When only some requested names are recognized,
 the trace retains matching evidence and marks any reported states partial.
 Use `query.speakers` for the recorded speaker on an evidence segment.
 
+Set `follow_states: true` to use a person, speaker, event or phrase as a clue
+to a task. KITE finds state keys in the initial matches and adds evidence
+with those same keys, even when a later meeting names a different owner.
+Topic, source, project, date and explicit `state_key` filters apply to both
+passes. The report lists the followed keys present on each evidence page.
+Give each evolving state a distinct key, such as `onboarding-checklist-owner`.
+
+```json
+{"query":{"topics":["onboarding"],"entities":["David"],"follow_states":true}}
+```
+
 By default, timelines and reported states use source dates, timestamps, and
 cited segment offsets. With a timestamped recording, KITE adds known offsets
 to its start time and compares evidence intervals across recordings. Overlapping

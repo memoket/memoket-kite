@@ -28,6 +28,7 @@ QUERY = object_schema(
         "time_axis": {"enum": ["source", "event"]},
         "source": TEXT,
         "state_key": TEXT,
+        "follow_states": {"type": "boolean"},
         "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
         "evidence_byte_budget": {"type": "integer", "minimum": 128, "maximum": 1024 * 1024},
         "cursor": CURSOR,
@@ -184,36 +185,20 @@ def evidence_context(workspace, line_id: str, radius: int) -> dict:
     }
 
 
-def retrieve(context, resolved: dict) -> dict:
-    index = context.workspace.index()
-    query = resolved["query"]
-    candidates = set(index.facts)
-    if "topics" in query:
-        candidates &= set().union(
-            *(index.store.by_topic.get(code, set()) for code in resolved["topic_codes"])
-        )
-    if "entities" in query:
-        candidates &= set().union(
-            *(index.store.by_entity.get(code, set()) for code in resolved["entity_codes"])
-        )
-    if "events" in query:
-        candidates &= set().union(*(index.store.by_event[code] for code in resolved["event_codes"]))
-    if "speakers" in query:
-        speakers = {speaker.casefold() for speaker in query["speakers"]}
-        candidates = {
-            fid
-            for fid in candidates
-            if any(
-                index.segments[sid].get("speaker_id", "").casefold() in speakers
-                for sid in index.store.facts[fid].src
-            )
-        }
+def _trace_rows(
+    index, candidates: set[str], query: dict, time_axis: str, state_keys: set[str] | None = None
+) -> tuple[list[tuple], int, int]:
     rows = []
     omitted_unknown = omitted_inferred = 0
-    time_axis = query.get("time_axis", "source")
     bounded = "start_date" in query or "end_date" in query
     time_order = {"explicit": 0, "inferred": 1, "unknown": 2}
     for fid in candidates:
+        annotation = index.facts[fid]
+        key = annotation.get("state_key")
+        if ("state_key" in query and key != query["state_key"]) or (
+            state_keys is not None and key not in state_keys
+        ):
+            continue
         fact = index.store.facts[fid]
         record = index.revisions[fact.unit]
         conversation = record["conversation"]
@@ -221,17 +206,9 @@ def retrieve(context, resolved: dict) -> dict:
             continue
         if "projects" in query and conversation["metadata"].get("project") not in query["projects"]:
             continue
-        if "state_key" in query and index.facts[fid].get("state_key") != query["state_key"]:
-            continue
-        if "text" in query and not any(
-            query["text"].casefold() in text.casefold()
-            for text in [fact.text, *(index.segments[sid]["text"] for sid in fact.src)]
-        ):
-            continue
         day = source_day(conversation) or ""
         basis = "explicit" if day else "unknown"
         if time_axis == "event":
-            annotation = index.facts[fid]
             day = annotation.get("event_date", "")
             basis = event_date_basis(annotation)
         if bounded:
@@ -250,6 +227,60 @@ def retrieve(context, resolved: dict) -> dict:
             sortable = absolute[0]
         first_offset = min(line.get("start_ms", -1) for line in segments)
         rows.append((time_order[basis], sortable, fact.unit, first_offset, fid))
+    return rows, omitted_unknown, omitted_inferred
+
+
+def retrieve(context, resolved: dict) -> dict:
+    index = context.workspace.index()
+    query = resolved["query"]
+    candidates = set(index.facts)
+    if "topics" in query:
+        candidates &= set().union(
+            *(index.store.by_topic.get(code, set()) for code in resolved["topic_codes"])
+        )
+    follow = query.get("follow_states", False)
+    topic_scope = candidates.copy() if follow else set()
+    if "entities" in query:
+        candidates &= set().union(
+            *(index.store.by_entity.get(code, set()) for code in resolved["entity_codes"])
+        )
+    if "events" in query:
+        candidates &= set().union(*(index.store.by_event[code] for code in resolved["event_codes"]))
+    if "speakers" in query:
+        speakers = {speaker.casefold() for speaker in query["speakers"]}
+        candidates = {
+            fid
+            for fid in candidates
+            if any(
+                index.segments[sid].get("speaker_id", "").casefold() in speakers
+                for sid in index.store.facts[fid].src
+            )
+        }
+    if "text" in query:
+        needle = query["text"].casefold()
+        candidates = {
+            fid
+            for fid in candidates
+            if needle in index.store.facts[fid].text.casefold()
+            or any(
+                needle in index.segments[sid]["text"].casefold()
+                for sid in index.store.facts[fid].src
+            )
+        }
+    time_axis = query.get("time_axis", "source")
+    rows, omitted_unknown, omitted_inferred = _trace_rows(index, candidates, query, time_axis)
+    extras = {}
+    if follow:
+        keys = {
+            index.facts[row[-1]]["state_key"] for row in rows if "state_key" in index.facts[row[-1]]
+        }
+        if keys:
+            additional, unknown, inferred = _trace_rows(
+                index, topic_scope - candidates, query, time_axis, keys
+            )
+            rows.extend(additional)
+            omitted_unknown += unknown
+            omitted_inferred += inferred
     rows.sort()
     # Select from newest dated to oldest, then from the uncertain tail.
     limit = query.get("limit", 100)
@@ -262,13 +293,20 @@ def retrieve(context, resolved: dict) -> dict:
     dated_count = len(selected)
     uncertain_start = max(0, offset - len(known))
     selected += uncertain[uncertain_start : uncertain_start + limit - len(selected)]
-    extras = {}
     if "evidence_byte_budget" in query:
         selected, extras["evidence_budget"] = _budgeted_page(
             index, selected, query["evidence_byte_budget"]
         )
     # Keep the displayed dated portion chronological after budgeting.
     selected[:dated_count] = reversed(selected[:dated_count])
+    if follow:
+        extras["followed_state_keys"] = sorted(
+            {
+                index.facts[row[-1]]["state_key"]
+                for row in selected
+                if "state_key" in index.facts[row[-1]]
+            }
+        )
     next_offset = offset + len(selected)
     return {
         "fact_ids": [row[-1] for row in selected],
@@ -442,6 +480,11 @@ def report(context, matches: dict) -> dict:
         "time_axis": matches["time_axis"],
         **({"end_date": end_date} if end_date is not None else {}),
         **({"evidence_budget": matches["evidence_budget"]} if "evidence_budget" in matches else {}),
+        **(
+            {"followed_state_keys": matches["followed_state_keys"]}
+            if "followed_state_keys" in matches
+            else {}
+        ),
         "timeline": timeline,
         **sections,
         "current_reported_states": _states(timeline, complete, matches["time_axis"]),
