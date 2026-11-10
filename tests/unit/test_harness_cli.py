@@ -39,18 +39,24 @@ def test_longmemeval_main_records_provenance_before_answering(corpus, tmp_path, 
 
 
 def test_locomo_main_accepts_its_own_arguments(corpus, tmp_path, monkeypatch):
-    from benchmarks.locomo import evaluate
+    from benchmarks.locomo import evaluate, profile
 
     monkeypatch.setattr(evaluate, "RESULTS_ROOT", tmp_path)
     monkeypatch.setattr(evaluate, "evaluate_sample", lambda *a, **k: [])
-    result_dir = tmp_path / "locomo-unit"
+    result_dir = tmp_path / "locomo-example-free-v1"
     result_dir.mkdir()
     (result_dir / "failed.txt").write_text("stale failure\n")
-    evaluate.main(["--tag", "unit", "--workers", "1", "--samples", "0"])
+    evaluate.main(["--workers", "1", "--samples", "0"])
 
     recorded = json.loads((result_dir / "manifest.json").read_text())
     assert recorded["binding"] == "benchmarks.locomo.profile"
     assert recorded["samples"] == [0]
+    assert (
+        recorded["prompt_sha"]["ANSWER_PROMPT"]
+        == hashlib.sha256(profile.ANSWER_PROMPT.encode()).hexdigest()[:16]
+    )
+    instructions, _, _ = profile.ANSWER_PROMPT.partition("Return ONLY JSON")
+    assert '"' not in instructions
     # the value is a configuration choice; what matters is that it is recorded
     assert isinstance(recorded["config"]["DUAL_DATE"], bool)
     assert recorded["config"]["POSTPROC_RULES"] == ""
@@ -65,6 +71,9 @@ def test_locomo_main_accepts_its_own_arguments(corpus, tmp_path, monkeypatch):
         ["--workers", "1", "--samples", "0", "0"],
         ["--workers", "1", "--samples", "999"],
         ["--workers", "1", "--samples", "0", "--tag", "../../../outside"],
+        ["--workers", "1", "--samples", "0", "--tag", "freeze2-0811"],
+        ["--workers", "1", "--samples", "0", "--tag", "FREEZE2-0811"],
+        ["--workers", "1", "--samples", "0", "--tag", "v0.1.0"],
     ],
 )
 def test_locomo_rejects_invalid_run_identity_before_creating_it(

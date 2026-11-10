@@ -18,6 +18,7 @@ from benchmarks.common import (
 )
 from benchmarks.common.judging import judge_cache_key
 from benchmarks.common.paths import CODEBOOKS_ROOT, RESULTS_ROOT, safe_tag
+from benchmarks.locomo import DEFAULT_TAG
 from benchmarks.locomo.evaluate import DATASET, _load_dataset
 from benchmarks.locomo.protocol import CATEGORIES, JUDGE_PROMPT, preprocess_answer, summarize
 from memoket_kite.providers.llm import llm_json
@@ -153,7 +154,7 @@ def _print_summary(metrics: dict, *, model: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tag", default="v0.1.0")
+    parser.add_argument("--tag", default=DEFAULT_TAG)
     parser.add_argument("--judge-model", default="gpt-4.1-mini")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--results", type=Path)

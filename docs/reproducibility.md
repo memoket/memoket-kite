@@ -18,7 +18,7 @@ python -m benchmarks.reproduce.prepare datasets
 The command downloads to a temporary file, verifies its SHA256, and only then
 moves it into `artifacts/datasets/`.
 
-## Full reproduction
+## Run the benchmarks
 
 ```bash
 cp .env.example .env
@@ -28,6 +28,10 @@ source .env
 bash benchmarks/reproduce/locomo.sh
 bash benchmarks/reproduce/longmemeval.sh
 ```
+
+Current LoCoMo runs use the answer prompt without concrete answer examples and
+default to the `example-free-v1` result tag. A rerun can reuse existing
+Codebooks with `bash benchmarks/reproduce/locomo.sh resume`.
 
 Each script prints the dataset path, model IDs, worker count, output directory,
 and stage before doing work. Build and evaluation commands support `--resume`;
@@ -47,11 +51,19 @@ extract Facts
 Both finalization stages are enabled visibly in
 `benchmarks/longmemeval/profile.py` and run uniformly for all 500 haystacks.
 
-## Verify the reference reproduction
+## Verify historical results
 
-With the default `TAG` and `MODEL`, the scripts write to the paths declared in
-the reproduction manifest. After rebuilding both reference runs, verify them
-against the recorded contract:
+The reference verifier checks the archived paths and scores in the reproduction
+manifest. To run the prior LoCoMo prompt configuration, use a separate
+checkout of the source revision before the example removal.
+
+```bash
+git worktree add --detach ../kite-locomo-reference 618928450ddeab33aab2ec63d1843532fb3a3441
+```
+
+Run the setup and reproduction commands from that checkout. Historical
+LoCoMo tags are reserved on the current branch. If the historical judged
+artifacts are available, verify them against the recorded contract.
 
 ```bash
 python -m benchmarks.reproduce.verify locomo
@@ -59,11 +71,11 @@ python -m benchmarks.reproduce.verify longmemeval
 ```
 
 The verifier checks the reference paths, local manifests, corpus digests,
-Codebook and row counts, and reported aggregates. Runs made with a custom `TAG`
-or `MODEL` can validate their seals and recompute their own metrics directly:
+Codebook and row counts, and reported aggregates. To validate a new run's
+seal and recompute its own metrics, use the tag and judge from that run.
 
 ```bash
-python -m benchmarks.locomo.score --tag my-run --judge-model gpt-4.1-mini --offline
+python -m benchmarks.locomo.score --tag example-free-v1 --judge-model gpt-4.1-mini --offline
 python -m benchmarks.longmemeval.score --tag my-run --judge-model gpt-4.1-mini --offline
 ```
 

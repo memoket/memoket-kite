@@ -11,9 +11,9 @@ from datetime import datetime
 from pathlib import Path
 
 from benchmarks.common import manifest, ownership, singlewriter
-from benchmarks.common.paths import CODEBOOKS_ROOT, DATASETS_ROOT, RESULTS_ROOT, safe_tag
+from benchmarks.common.paths import CODEBOOKS_ROOT, DATASETS_ROOT, RESULTS_ROOT
 from benchmarks.common.resume import completed_rows
-from benchmarks.locomo import profile
+from benchmarks.locomo import DEFAULT_TAG, evaluation_tag, profile
 from benchmarks.locomo.protocol import CATEGORIES
 from memoket_kite.core.algebra import Store
 from memoket_kite.errors import ConfigurationError
@@ -166,14 +166,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default="gpt-4.1-mini")
     parser.add_argument("--answer-model", default="")
     parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--tag", default="v0.1.0")
+    parser.add_argument("--tag", default=DEFAULT_TAG)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--plan-cache", type=Path)
     args = parser.parse_args(argv)
     if args.workers < 1:
         parser.error("--workers must be a positive integer")
     try:
-        args.tag = safe_tag(args.tag)
+        args.tag = evaluation_tag(args.tag)
     except ValueError as error:
         parser.error(str(error))
     # Resolve the rule set first: a typo must cost nothing, not surface after

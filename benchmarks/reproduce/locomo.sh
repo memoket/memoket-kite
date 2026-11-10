@@ -5,14 +5,6 @@ cd "$(dirname "$0")/../.."
 
 MODEL="${MODEL:-gpt-4.1-mini}"
 WORKERS="${WORKERS:-4}"
-# The reference tag is taken from the manifest so the default local run uses
-# the documented result path. Override TAG to keep an experiment separate.
-TAG="${TAG:-$("${PYTHON_BOOTSTRAP:-$(command -v python3 || command -v python)}" -c "
-import json, pathlib, re, sys
-manifest = json.loads(pathlib.Path('benchmarks/reproduce/manifest.json').read_text())
-path = manifest['benchmarks']['locomo']['result_path']
-sys.stdout.write(re.sub(r'^locomo-', '', pathlib.PurePosixPath(path).parent.name))
-")}"
 # Honour the same artifact root the Python tooling reads.
 ARTIFACTS="${KITE_ARTIFACTS_DIR:-artifacts}"
 # `python` is absent on installs that ship only `python3`; the stage commands
@@ -26,6 +18,18 @@ elif [[ "$MODE" != "full" ]]; then
   echo "usage: $0 [full|resume]" >&2
   exit 2
 fi
+
+# Validate the tag before starting the model-backed Codebook build.
+TAG="$("$PYTHON" -c '
+import sys
+
+from benchmarks.locomo import DEFAULT_TAG, evaluation_tag
+
+try:
+    print(evaluation_tag(sys.argv[1] or DEFAULT_TAG))
+except ValueError as error:
+    raise SystemExit(str(error)) from error
+' "${TAG:-}")"
 
 echo "benchmark=locomo dataset=$ARTIFACTS/datasets/locomo/locomo10.json"
 echo "model=$MODEL workers=$WORKERS tag=$TAG mode=$MODE"

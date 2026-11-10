@@ -209,12 +209,11 @@ EVIDENCE (chronological; [date weekday] (id, src=dialog ids) text | verbatim quo
 Kernel policies:
 {policies}
 
-Style: give ONLY the core answer as a short phrase ("7 May 2023", "a golden
-retriever", "painting and hiking"). Enumerations: every distinct supported item,
-comma-separated. Dates like "7 May 2023".
-Pick the MOST SPECIFIC supported wording — "red and purple lighting" beats
-"colorful lighting"; a brand/model name beats its category; if several rows
-describe the same thing at different precision, answer with the most precise.
+Style: give ONLY the core answer as a short phrase. For lists, include every
+distinct supported item, comma-separated. Format full dates as day month year.
+Pick the MOST SPECIFIC supported wording. Prefer a supported brand or model to
+a generic category. If several rows describe the same thing at different
+levels of precision, answer with the most precise supported detail.
 
 Return ONLY JSON: {{"answer": str, "evidence": [src ids used]}}"""
 

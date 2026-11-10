@@ -233,9 +233,10 @@ more runnable examples in
 
 ## 📊 Historical Benchmark Results
 
-These figures come from the recorded reference runs. A corpus audit found an
-example in the LoCoMo answer prompt that matches a reference answer. A rerun with
-neutral examples is needed to measure the effect.
+These figures come from the recorded reference runs. A corpus audit found two
+scored LoCoMo answers that matched examples in the old answer prompt. The
+current prompt omits those examples. A new model run is needed to measure the
+effect.
 
 <div align="center">
 
