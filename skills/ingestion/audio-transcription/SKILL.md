@@ -16,6 +16,10 @@ kite-tool audio-source meeting.m4a --source-id recording-1 --model /path/to/mode
 The command accepts common local audio formats such as WAV, M4A, MP3, FLAC
 and Ogg. It preserves transcribed text, millisecond offsets, language when
 detected and the original recording's SHA-256. Supply `--language` if known.
+Supply `--started-at` with a UTC offset when the recording start is known, or
+`--source-date` when only the day is known. For a revised recording, use the
+same source ID, pass the current conversation checksum via `--expected-checksum`,
+and start `memory-update`.
 Use `--timeout` for long recordings. The command processes the recording
 locally and removes scratch files when it returns.
 

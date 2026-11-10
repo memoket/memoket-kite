@@ -10,7 +10,7 @@ from pathlib import Path
 from shutil import which
 from tempfile import TemporaryDirectory
 
-from .contracts import TEXT, ToolError, validate
+from .contracts import HASH, TEXT, ToolError, schema_file, validate
 from .ingest import validate_conversation
 
 _AUDIO_FORMATS = "wav,mp3,aac,mov,ogg,flac,matroska,webm,aiff"
@@ -29,9 +29,19 @@ def _run(command: list[str], tool: str, timeout: int) -> None:
     except FileNotFoundError as exc:
         raise ToolError("missing_dependency", f"install {tool} or select its executable") from exc
     except subprocess.TimeoutExpired as exc:
-        raise ToolError("transcription_timeout", f"{tool} timed out") from exc
+        raise ToolError(
+            "transcription_timeout",
+            f"{tool} timed out after {timeout} seconds. Increase --timeout.",
+        ) from exc
     except subprocess.CalledProcessError as exc:
-        raise ToolError("transcription_error", f"{tool} could not process the recording") from exc
+        hint = (
+            "Check that the file has an audio track in a supported format."
+            if tool == "ffmpeg"
+            else "Check that --model points to a compatible whisper.cpp model and --language is supported."
+        )
+        raise ToolError(
+            "transcription_error", f"{tool} could not process the recording. {hint}"
+        ) from exc
 
 
 def _transcript(path: Path) -> tuple[list[dict], str | None]:
@@ -68,10 +78,22 @@ def audio_source(
     ffmpeg: str,
     whisper: str,
     timeout: int,
+    source_date: str | None = None,
+    started_at: str | None = None,
+    expected_checksum: str | None = None,
 ) -> dict:
     validate(TEXT, source_id, "recording identifier")
     if not re.fullmatch(r"auto|[a-z]{2,3}", language) or timeout < 1:
         raise ToolError("invalid_input", "provide a Whisper language code and positive timeout")
+    if source_date is not None and started_at is not None:
+        raise ToolError("invalid_input", "supply only one of --source-date and --started-at")
+    dates = {}
+    for field, value in (("source_date", source_date), ("started_at", started_at)):
+        if value is not None:
+            validate(schema_file(root, "conversation")["properties"][field], value, field)
+            dates[field] = value
+    if expected_checksum is not None:
+        validate(HASH, expected_checksum, "expected checksum")
     recording, model = recording.expanduser().resolve(), model.expanduser().resolve()
     if not recording.is_file() or not model.is_file():
         raise ToolError("invalid_input", "recording and model must both be local files")
@@ -147,9 +169,13 @@ def audio_source(
         "source": "audio-transcript",
         "metadata": {"source_reference": source_id, "audio_sha256": checksum.hexdigest()},
         "segments": segments,
+        **dates,
     }
     if detected:
         conversation["language"] = detected
     validate_conversation(root, conversation)
     del conversation["source"]
-    return {"source": {"format": "audio-transcript", "payload": conversation}}
+    source = {"format": "audio-transcript", "payload": conversation}
+    if expected_checksum is not None:
+        source["expected_checksum"] = expected_checksum
+    return {"source": source}

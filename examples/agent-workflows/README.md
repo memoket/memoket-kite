@@ -208,6 +208,7 @@ pipeline in a private workspace. Set a stable source ID for the recording.
 set -o pipefail
 export KITE_DATA_DIR="$(mktemp -d)"
 kite-tool audio-source meeting.m4a --source-id meeting-audio --model /path/to/model.bin \
+  --started-at 2026-11-10T09:00:00+08:00 \
   | kite-tool start memory-ingestion --run-id audio --input -
 kite-tool stage audio normalize
 ```
@@ -215,6 +216,10 @@ kite-tool stage audio normalize
 The `normalize` result contains the transcript and segment IDs. Review it and
 supply cited annotations through the remaining ingestion stages. The command
 keeps the original recording's SHA-256 and the transcriber's offsets.
+Use `--source-date YYYY-MM-DD` if you only know the day. Leave both time options
+out when the recording date is unknown. For a revised recording, pass the
+current checksum via `--expected-checksum` and start `memory-update` with the
+same source ID.
 
 
 ## Extend KITE

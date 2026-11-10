@@ -2954,7 +2954,17 @@ def test_structured_transcript_sources(work, source_format):
     assert line["source_reference"] == "audio:clip-1"
 
 
-def test_local_audio_command_builds_ingestion_input(work, tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("date_args", "source_time", "precision"),
+    [
+        ((), None, "unknown"),
+        (("--source-date", "2026-11-10"), "2026-11-10", "date"),
+        (("--started-at", "2026-11-10T09:15:00+08:00"), "2026-11-10T09:15:00+08:00", "timestamp"),
+    ],
+)
+def test_local_audio_command_builds_ingestion_input(
+    work, tmp_path, monkeypatch, date_args, source_time, precision
+):
     workspace, call = work
     recording, model = tmp_path / "meeting.mp3", tmp_path / "tiny.bin"
     recording.write_bytes(b"fixture audio")
@@ -2985,7 +2995,7 @@ def test_local_audio_command_builds_ingestion_input(work, tmp_path, monkeypatch)
 
     monkeypatch.setattr(audio, "which", lambda command: command)
     monkeypatch.setattr(audio.subprocess, "run", transcribe)
-    output = call(
+    args = (
         "audio-source",
         str(recording),
         "--model",
@@ -2996,14 +3006,17 @@ def test_local_audio_command_builds_ingestion_input(work, tmp_path, monkeypatch)
         "en",
         "--timeout",
         "42",
+        *date_args,
     )
+    output = call(*args)
     assert not workspace.exists()
     assert len(temporary) == 1 and not temporary[0].exists()
     payload = output["source"]["payload"]
     assert payload["language"] == "en"
     assert payload["metadata"]["audio_sha256"] == hashlib.sha256(recording.read_bytes()).hexdigest()
     assert "do-not-keep-this-path" not in json.dumps(output)
-    assert "started_at" not in payload
+    assert payload.get("started_at") == (source_time if precision == "timestamp" else None)
+    assert payload.get("source_date") == (source_time if precision == "date" else None)
     output["annotations"] = {
         "facts": [
             {
@@ -3014,11 +3027,41 @@ def test_local_audio_command_builds_ingestion_input(work, tmp_path, monkeypatch)
             }
         ]
     }
-    ingest(call, "audio", output)
+    receipt = ingest(call, "audio", output)
     report = trace(call, "trace", {"topics": ["onboarding"]})
     assert report["timeline"][0]["evidence"][0]["text"] == body
     assert report["timeline"][0]["evidence"][0]["end_ms"] == 2160
-    assert report["timeline"][0]["source_time"] is None
+    assert report["timeline"][0]["source_time"] == source_time
+    assert report["timeline"][0]["time_precision"] == precision
+
+    revised = call(*args, "--expected-checksum", receipt["checksum"])
+    assert revised["source"]["expected_checksum"] == receipt["checksum"]
+
+
+@pytest.mark.parametrize(
+    ("metadata_args", "message"),
+    [
+        (("--source-date", "2026-02-30"), "source_date fails date format"),
+        (("--started-at", "2026-11-10T09:15:00"), "started_at fails date-time format"),
+        (("--expected-checksum", "bad"), "expected checksum fails pattern"),
+    ],
+)
+def test_audio_rejects_invalid_metadata_before_transcribing(
+    work, monkeypatch, metadata_args, message
+):
+    _, call = work
+    monkeypatch.setattr(audio, "which", lambda *_: pytest.fail("transcription was attempted"))
+    result = call(
+        "audio-source",
+        "recording.m4a",
+        "--model",
+        "model.bin",
+        "--source-id",
+        "meeting",
+        *metadata_args,
+        error="invalid_input",
+    )
+    assert message in result["error"]["message"]
 
 
 @pytest.mark.parametrize(
