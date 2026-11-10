@@ -107,7 +107,7 @@ class Workspace:
                 lock.execute("BEGIN EXCLUSIVE")
             except sqlite3.OperationalError as exc:
                 if (
-                    getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_BUSY
+                    getattr(exc, "sqlite_errorname", None) == "SQLITE_BUSY"
                     or str(exc) == "database is locked"
                 ):
                     raise ToolError(
