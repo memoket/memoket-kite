@@ -74,6 +74,9 @@ def _parser() -> argparse.ArgumentParser:
         "--metrics", action="store_true", help="emit deterministic fixture metrics"
     )
     demo_output.add_argument("--text", action="store_true", help="show the decision and citations")
+    demo.add_argument(
+        "--save-workspace", type=Path, metavar="PATH", help="save the demo to a new workspace"
+    )
     query = commands.add_parser("query", help="run a read-only trace without saving a checkpoint")
     query.add_argument("--pipeline", choices=TRACE_PIPELINES, default="topic-tracing")
     query.add_argument(
@@ -335,7 +338,9 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             result["extension_root"] = str(extension_root)
         return result, None
     if args.command == "demo":
-        return {"value": run_demo(root, metrics=args.metrics)}, None
+        return {
+            "value": run_demo(root, metrics=args.metrics, save_workspace=args.save_workspace)
+        }, None
     if args.command == "validate-pipeline":
         definition, checksum, skill_root = load_pipeline(
             root, args.pipeline, extension_root=extension_root

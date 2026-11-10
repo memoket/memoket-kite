@@ -59,8 +59,17 @@ def main() -> None:
         metrics = call("demo", "--metrics")["value"]
         assert metrics["pipelines_completed"] == 3 and metrics["decision_state_correct"]
         assert metrics["expected_citations_found"] == metrics["expected_citations"] == 3
+        demo_workspace = directory / "demo workspace"
         demo = subprocess.check_output(
-            [str(command), "--workspace", str(original), "demo", "--text"],
+            [
+                str(command),
+                "--workspace",
+                str(original),
+                "demo",
+                "--text",
+                "--save-workspace",
+                str(demo_workspace),
+            ],
             text=True,
             cwd=directory,
             timeout=45,
@@ -71,6 +80,14 @@ def main() -> None:
         assert demo.index("memoket/184#line-a") < demo.index("memoket/184#line-b")
         assert demo.count("memoket/184#line-b") == 1
         assert "We decided to ship a short checklist. Ravi will implement it." in demo
+        saved = call("integrity", "--include-workflows", workspace=demo_workspace)
+        assert saved["revisions"] == 2 and saved["verified_runs"] == 3
+        report = call(
+            "query", workspace=demo_workspace, payload={"query": {"topics": ["first run"]}}
+        )["value"]
+        assert report == call("artifact", "trace", "report", workspace=demo_workspace)["value"]
+        call("demo", "--save-workspace", str(demo_workspace), error="conflict")
+        assert call("integrity", "--include-workflows", workspace=demo_workspace) == saved
         call("source-history", "text", "note", error="not_found")
         assert not original.exists()
 

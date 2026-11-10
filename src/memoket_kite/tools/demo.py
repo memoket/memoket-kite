@@ -9,6 +9,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from .contracts import ToolError
+from .workflow import verify_run_storage
+from .workspace import Workspace
 
 
 def _run_demo(repo: Path, directory: Path, *, metrics: bool) -> dict:
@@ -101,9 +103,15 @@ def _run_demo(repo: Path, directory: Path, *, metrics: bool) -> dict:
     return report
 
 
-def run_demo(repo: Path, *, metrics: bool = False) -> dict:
+def run_demo(repo: Path, *, metrics: bool = False, save_workspace: Path | None = None) -> dict:
     with TemporaryDirectory(prefix="kite-demo-") as path:
-        return _run_demo(repo, Path(path), metrics=metrics)
+        directory = Path(path)
+        report = _run_demo(repo, directory, metrics=metrics)
+        if save_workspace is not None:
+            Workspace.backup(
+                directory, save_workspace, verify_runs=lambda copy: verify_run_storage(copy, repo)
+            )
+        return report
 
 
 def render_demo(report: dict) -> str:

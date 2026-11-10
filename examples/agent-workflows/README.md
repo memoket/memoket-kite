@@ -33,6 +33,19 @@ its alias. The report cites the line where the team chose a short checklist.
 Run `kite-tool demo` for the complete JSON report, or
 `kite-tool demo --metrics` for deterministic fixture metrics.
 
+Keep a verified copy of the demo in a new workspace to try your own queries
+without a checkout.
+
+```sh
+kite-tool demo --text --save-workspace ./kite-demo
+printf '%s\n' '{"query":{"topics":["first run"]}}' \
+  | kite-tool --workspace ./kite-demo query --input -
+```
+
+The save operation requires a new destination directory. Use
+`kite-tool --workspace ./kite-demo artifact trace report` to read the saved
+trace and compare its evidence with a fresh query.
+
 ## Try the stages yourself
 
 Run these commands from the KITE checkout.
