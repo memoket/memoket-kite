@@ -273,15 +273,17 @@ def _checkpoint(row) -> dict:
 
 
 def recent_runs(
-    workspace,
+    context: Context,
     limit: int,
     *,
     pipeline: str | None = None,
     unfinished: bool = False,
+    resumable: bool = False,
     before: str | None = None,
 ) -> dict:
     if not 1 <= limit <= 100:
         raise ToolError("invalid_input", "run limit must be between 1 and 100")
+    workspace = context.workspace
     version = workspace.version()
     if before is None:
         rows = workspace.db.execute("SELECT id, checkpoint FROM runs ORDER BY rowid DESC")
@@ -305,13 +307,21 @@ def recent_runs(
             raise ToolError("integrity_error", "run checkpoint is missing summary fields") from exc
         if pipeline is not None and summary["pipeline_id"] != pipeline:
             continue
-        if unfinished and summary["state"] not in (
+        if (unfinished or resumable) and summary["state"] not in (
             "pending",
             "running",
             "failed",
             "awaiting_approval",
         ):
             continue
+        if resumable:
+            stored = workspace.db.execute(
+                "SELECT definition, inputs FROM runs WHERE id=?", (row["id"],)
+            ).fetchone()
+            resume = _resume(context, stored, checkpoint)
+            if resume["state"] != "available":
+                continue
+            summary["resume"] = resume
         if len(runs) == limit:
             next_before = runs[-1]["run_id"]
             break
@@ -418,6 +428,7 @@ def _resume(context: Context, row, checkpoint: dict) -> dict:
     if any(stage["error"] == "stale_preview" for stage in checkpoint["stages"].values()):
         return {"state": "blocked", "reason": "stale_preview", "stages": []}
     eligible = []
+    blocked_reason = None
     flags = {"provider": ["--allow-provider"], "delete": ["--approve"]}
     for stage in definition["stages"]:
         stage_id = stage["id"]
@@ -426,6 +437,17 @@ def _resume(context: Context, row, checkpoint: dict) -> dict:
             "invalidated",
             "redacted",
         } or _dependency_pending(checkpoint, stage):
+            continue
+        try:
+            for reference in stage["inputs"].values():
+                if reference.startswith("stage."):
+                    prerequisite = _artifact(context, checkpoint, reference[6:])
+                    if prerequisite["manifest"]["kind"] == "deletion_plan":
+                        context.workspace.deletion_impact(
+                            prerequisite["value"], run_id=checkpoint["run_id"]
+                        )
+        except ToolError as error:
+            blocked_reason = blocked_reason or error.code
             continue
         missing = _stage_input_names(stage) - supplied.keys()
         eligible.append(
@@ -438,7 +460,7 @@ def _resume(context: Context, row, checkpoint: dict) -> dict:
             }
         )
     if not eligible:
-        return {"state": "blocked", "reason": "dependency_pending", "stages": []}
+        return {"state": "blocked", "reason": blocked_reason or "dependency_pending", "stages": []}
     return {"state": "available", "stages": eligible}
 
 

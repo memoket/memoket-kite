@@ -56,7 +56,7 @@ Run these commands from the KITE checkout.
 export KITE_DATA_DIR="$(mktemp -d)"
 kite-tool start memory-ingestion --run-id meeting-a --input examples/agent-workflows/first-meeting.json
 kite-tool stage meeting-a normalize
-kite-tool runs
+kite-tool runs --resumable --pipeline memory-ingestion
 kite-tool status meeting-a
 kite-tool stage meeting-a annotate
 kite-tool stage meeting-a commit
@@ -74,10 +74,10 @@ kite-tool stage trace-a retrieve --summary
 kite-tool stage trace-a report
 ```
 
-Use `kite-tool runs` to recover a lost run ID, then check
-`resume.stages` in `kite-tool status RUN_ID` for the next stage and any
-missing inputs. The retrieval stage above uses `--summary` because the report
-includes the matching facts and their evidence. Look at
+Use `kite-tool runs --resumable` to recover a lost run ID and see the
+next stage, missing inputs, and required flags. Use `kite-tool status RUN_ID`
+to inspect a specific checkpoint. The retrieval stage above uses `--summary`
+because the report includes the matching facts and their evidence. Look at
 `current_reported_states.onboarding-design` and match its fact ID to the
 timeline and original evidence.
 

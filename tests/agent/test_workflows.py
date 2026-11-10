@@ -504,6 +504,49 @@ def test_run_listing_filters_before_paginating_in_creation_order(work):
     assert "private" not in json.dumps(call("runs"))
 
 
+def test_resumable_run_listing_checks_snapshots_and_artifacts_before_paging(work):
+    directory, call = work
+    seed = text_input("seed", "Original note")
+    baseline = ingest(call, "seed", seed)
+    changed = text_input("seed", "Replacement note")
+    changed["source"]["expected_checksum"] = baseline["checksum"]
+    call("start", "memory-update", "--run-id", "stale", payload=changed)
+
+    source = text_input("private-source", "private-text-marker")
+    call("start", "memory-ingestion", "--run-id", "append", payload={"source": source["source"]})
+    call("stage", "append", "normalize")
+    call("start", "memory-ingestion", "--run-id", "damaged", payload=source)
+    call("stage", "damaged", "normalize")
+    ingest(call, "advance", text_input("advance", "New unrelated conversation"))
+    call("start", "memory-ingestion", "--run-id", "recent")
+
+    database = directory / "kite.sqlite3"
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE artifacts SET value='{}' WHERE run_id='damaged'")
+    before = database.read_bytes()
+    assert call("status", "stale")["resume"]["reason"] == "stale_snapshot"
+    assert call("status", "damaged")["resume"]["reason"] == "integrity_error"
+    assert [row["run_id"] for row in call("runs", "--unfinished")["runs"]] == [
+        "recent",
+        "damaged",
+        "append",
+        "stale",
+    ]
+    first = call("runs", "--resumable", "--limit", "1")
+    second = call("runs", "--resumable", "--limit", "1", "--before", first["next_before"])
+    assert first["next_before"] == "recent" and second["next_before"] is None
+    (row,) = second["runs"]
+    assert row["run_id"] == "append" and not row["snapshot_current"]
+    assert row["resume"] == call("status", "append")["resume"]
+    assert row["resume"]["stages"][0]["missing_inputs"] == {"annotations": "annotations"}
+    assert "private" not in json.dumps([first, second]) and database.read_bytes() == before
+
+    call("stage", "append", "annotate", payload={"annotations": source["annotations"]})
+    receipt = call("ingest", "--resume", "append")
+    assert receipt["receipt"]["changed"] and receipt["integrity"]["revisions"] == 3
+    assert call("ingest", "--resume", "append") == receipt
+
+
 def test_workflow_inspection_and_receipt_replay_read_committed_state_during_a_write(
     work, monkeypatch
 ):
@@ -513,6 +556,7 @@ def test_workflow_inspection_and_receipt_replay_read_committed_state_during_a_wr
     normalized = call("stage", "interrupted", "normalize")
     checkpoint = call("status", "interrupted")
     listing = call("runs", "--unfinished")
+    resumable = call("runs", "--resumable")
 
     connect = sqlite3.connect
 
@@ -525,6 +569,7 @@ def test_workflow_inspection_and_receipt_replay_read_committed_state_during_a_wr
         writer.execute("BEGIN IMMEDIATE")
         writer.execute("UPDATE runs SET checkpoint='{}' WHERE id='interrupted'")
         assert call("runs", "--unfinished") == listing
+        assert call("runs", "--resumable") == resumable
         assert call("status", "interrupted") == checkpoint
         assert call("artifact", "interrupted", "normalize")["value"] == normalized["value"]
         segments = call("segments", "interrupted", "normalize")["segments"]
@@ -1318,6 +1363,8 @@ def test_deletion_preview_rejects_changed_workflow_impact_without_memory_write(w
     target = {"target": {"source": "text", "conversation_id": "remove"}}
     call("start", "memory-deletion", "--run-id", "old", payload=target)
     old = call("stage", "old", "preview")["value"]
+    listing = call("runs", "--resumable", "--pipeline", "memory-deletion")
+    assert listing["runs"][0]["resume"]["stages"][0]["required_flags"] == ["--approve"]
     if change == "new-artifact":
         call("stage", "pending", "normalize")
     else:
@@ -1326,6 +1373,8 @@ def test_deletion_preview_rejects_changed_workflow_impact_without_memory_write(w
     unchanged = call("integrity")
     assert unchanged["memory_version"] == old["memory_version"]
     call("deletion-impact", "old", error="stale_preview")
+    assert call("status", "old")["resume"]["reason"] == "stale_preview"
+    assert call("runs", "--resumable", "--pipeline", "memory-deletion")["runs"] == []
     call("stage", "old", "apply", "--approve", old["approval_token"], error="stale_preview")
     assert call("integrity") == unchanged
     assert call("deletion-audit")["deletions"] == []

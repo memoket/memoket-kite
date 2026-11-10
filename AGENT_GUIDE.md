@@ -98,7 +98,10 @@ exceeds the target. Other response fields use additional bytes.
    the prerequisite succeeds. If the run ID was lost, use `kite-tool runs`
    to find it in the same workspace. The list shows the latest 20 runs by
    creation order. Use `--limit` to show up to 100, and narrow the list with
-   `--pipeline NAME` or `--unfinished`. If `next_before` is present and non-null,
+   `--pipeline NAME` or `--unfinished`. Use `--resumable` to list runs with
+   a valid next stage. The listing checks saved inputs and prerequisite
+   artifacts, and reports missing input names and required flags in
+   `resume.stages`. If `next_before` is present and non-null,
    pass it as `--before RUN_ID` with the same filters to see older runs.
    In initialized workspaces, `runs`, `status`, `artifact`, and `segments`
    read committed state without taking a write lock. Recovering from an

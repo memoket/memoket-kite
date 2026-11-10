@@ -132,6 +132,9 @@ def main() -> None:
         call("stage", run_id, "normalize", "--summary")
         call("stage", run_id, "annotate", error="missing_input")
         assert call("runs")["runs"][0]["run_id"] == run_id
+        (resumable,) = call("runs", "--resumable")["runs"]
+        assert resumable["run_id"] == run_id
+        assert resumable["resume"]["stages"][0]["missing_inputs"] == {"annotations": "annotations"}
         backup = call("backup", str(recovered))
         assert (backup["revisions"], backup["verified_runs"], backup["verified_artifacts"]) == (
             0,

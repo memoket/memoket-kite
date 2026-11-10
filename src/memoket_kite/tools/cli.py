@@ -279,6 +279,11 @@ def _parser() -> argparse.ArgumentParser:
     runs.add_argument(
         "--unfinished", action="store_true", help="hide completed and invalidated runs"
     )
+    runs.add_argument(
+        "--resumable",
+        action="store_true",
+        help="show runs with valid next stages and their requirements",
+    )
     runs.add_argument("--before", metavar="RUN_ID", help="show runs created before this run")
     for name in ("status", "artifact"):
         command = commands.add_parser(name)
@@ -597,10 +602,11 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             return result, error
         if args.command == "runs":
             return recent_runs(
-                workspace,
+                context,
                 args.limit,
                 pipeline=args.pipeline,
                 unfinished=args.unfinished,
+                resumable=args.resumable,
                 before=args.before,
             ), None
         if args.command == "status":
