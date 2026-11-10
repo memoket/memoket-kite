@@ -263,8 +263,11 @@ is damaged and the source records are intact, run `memory-rebuild`.
 ## Back up a workspace
 
 Use a new, private directory on a local filesystem that supports SQLite and
-hard links. KITE verifies SQLite integrity and rebuilds the Codebook before
-publishing the copy.
+hard links. Before publishing the copy, KITE verifies SQLite integrity, the
+Codebook, checkpoint inputs, and the links and digests of saved stage artifacts.
+The receipt counts the verified runs and artifacts before removing pending
+deletion approvals. Older checkpoints can be backed up even if they need a
+fresh run against the current snapshot or workflow definition.
 
 ```sh
 kite-tool --workspace ./memory backup ./memory-backup

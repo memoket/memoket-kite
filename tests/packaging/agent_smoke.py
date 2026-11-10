@@ -69,7 +69,12 @@ def main() -> None:
         call("stage", run_id, "normalize", "--summary")
         call("stage", run_id, "annotate", error="missing_input")
         assert call("runs")["runs"][0]["run_id"] == run_id
-        assert call("backup", str(recovered))["revisions"] == 0
+        backup = call("backup", str(recovered))
+        assert (backup["revisions"], backup["verified_runs"], backup["verified_artifacts"]) == (
+            0,
+            1,
+            1,
+        )
         status = call("status", run_id, workspace=recovered)
         assert status["resume"]["stages"][0]["missing_inputs"] == {"annotations": "annotations"}
         page = call(

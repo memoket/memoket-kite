@@ -196,8 +196,17 @@ def _run(workspace, run_id: str):
     row = workspace.db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
     if row is None:
         raise ToolError("not_found", "run was not found")
-    checkpoint = json.loads(row["checkpoint"])
-    return row, checkpoint
+    return row, _checkpoint(row)
+
+
+def _checkpoint(row) -> dict:
+    try:
+        checkpoint = decode_object(row["checkpoint"])
+    except ToolError as exc:
+        raise ToolError("integrity_error", "run checkpoint is not a valid JSON object") from exc
+    if checkpoint.get("run_id") != row["id"]:
+        raise ToolError("integrity_error", "checkpoint ID differs from its record")
+    return checkpoint
 
 
 def recent_runs(workspace, limit: int) -> dict:
@@ -229,6 +238,68 @@ def _stored_inputs(row, checkpoint: dict) -> dict:
     if checkpoint["input_digest"] != digest(supplied):
         raise ToolError("integrity_error", "run input differs from its digest")
     return supplied
+
+
+def verify_run_storage(workspace, root: Path) -> dict[str, int]:
+    """Verify persisted runs without requiring their current pipeline definitions."""
+    checkpoint_schema = schema_file(root, "checkpoint")
+    artifact_schema = schema_file(root, "artifact")
+    memory_version = workspace.version()
+    runs = artifacts = 0
+    for row in workspace.db.execute("SELECT * FROM runs"):
+        checkpoint = _checkpoint(row)
+        try:
+            validate(checkpoint_schema, checkpoint, "stored checkpoint")
+            for stage in checkpoint["stages"].values():
+                if "artifact" in stage:
+                    validate(artifact_schema, stage["artifact"], "stored artifact manifest")
+        except ToolError as exc:
+            raise ToolError("integrity_error", str(exc)) from exc
+        current_stage = checkpoint["current_stage"]
+        if current_stage is not None and current_stage not in checkpoint["stages"]:
+            raise ToolError("integrity_error", "checkpoint names an unknown current stage")
+        if checkpoint["memory_version"] > memory_version:
+            raise ToolError("integrity_error", "checkpoint refers to a future memory snapshot")
+        supplied = _stored_inputs(row, checkpoint)
+        if checkpoint["state"] == "invalidated":
+            if (
+                supplied
+                or row["definition"]
+                or any(stage["state"] != "invalidated" for stage in checkpoint["stages"].values())
+            ):
+                raise ToolError("integrity_error", "invalidated run retains workflow data")
+        elif row["definition"] != checkpoint["definition_digest"]:
+            raise ToolError("integrity_error", "checkpoint definition differs from its record")
+
+        expected = {}
+        for stage_id, stage in checkpoint["stages"].items():
+            manifest = stage.get("artifact")
+            if (stage["state"] == "completed") != (manifest is not None):
+                raise ToolError(
+                    "integrity_error", "checkpoint stage and artifact manifest disagree"
+                )
+            if manifest is None:
+                continue
+            if (
+                manifest["run_id"] != row["id"]
+                or manifest["stage_id"] != stage_id
+                or manifest["operation_id"] != digest([row["id"], stage_id])
+                or manifest["memory_version"] > checkpoint["memory_version"]
+            ):
+                raise ToolError("integrity_error", "artifact manifest does not belong to its stage")
+            expected[stage_id] = manifest
+        for artifact_row in workspace.db.execute(
+            "SELECT * FROM artifacts WHERE run_id=?", (row["id"],)
+        ):
+            manifest = expected.pop(artifact_row["stage"], None)
+            if manifest is None:
+                raise ToolError("integrity_error", "artifact is not referenced by its checkpoint")
+            _verified_artifact_value(artifact_row, manifest)
+            artifacts += 1
+        if expected:
+            raise ToolError("integrity_error", "checkpoint refers to a missing artifact")
+        runs += 1
+    return {"verified_runs": runs, "verified_artifacts": artifacts}
 
 
 def _stage_input_names(stage: dict) -> set[str]:
@@ -369,17 +440,21 @@ def _artifact(context: Context, checkpoint: dict, stage_id: str) -> dict:
     ).fetchone()
     if row is None:
         raise ToolError("integrity_error", "checkpoint refers to a missing artifact")
-    try:
-        value = json.loads(row["value"])
-        value_digest = digest(value)
-    except (ValueError, RecursionError) as exc:
-        raise ToolError("integrity_error", "artifact contains invalid JSON") from exc
-    if row["kind"] != manifest["kind"] or not row["digest"] == manifest["digest"] == value_digest:
-        raise ToolError("integrity_error", "artifact differs from the checkpoint manifest")
+    value = _verified_artifact_value(row, manifest)
     if row["kind"] in SNAPSHOT_KINDS and manifest["memory_version"] != context.workspace.version():
         raise ToolError("stale_snapshot", "stage artifact was produced against an older snapshot")
     validate(SCHEMAS[row["kind"]], value, "stored artifact")
     return {"manifest": manifest, "value": value}
+
+
+def _verified_artifact_value(row, manifest: dict) -> dict:
+    try:
+        value = decode_object(row["value"])
+    except ToolError as exc:
+        raise ToolError("integrity_error", "artifact contains invalid JSON") from exc
+    if row["kind"] != manifest["kind"] or not row["digest"] == manifest["digest"] == digest(value):
+        raise ToolError("integrity_error", "artifact differs from the checkpoint manifest")
+    return value
 
 
 def _save(context: Context, checkpoint: dict, supplied: dict, fingerprint: str) -> None:

@@ -1041,6 +1041,7 @@ def test_verified_backup_resumes_runs_and_preserves_deletions(work, tmp_path):
     receipt = call("backup", str(destination))
     assert receipt["memory_version"] == original["memory_version"]
     assert receipt["revisions"] == receipt["invalidated_approvals"] == 1
+    assert (receipt["verified_runs"], receipt["verified_artifacts"]) == (5, 7)
     if os.name == "posix":
         assert destination.stat().st_mode & 0o777 == 0o700
         assert (destination / "kite.sqlite3").stat().st_mode & 0o777 == 0o600
@@ -1108,6 +1109,46 @@ def test_backup_rejects_conflicts_and_cleans_failed_copies(work, tmp_path):
         db.execute("UPDATE memory SET xml=?", (b"corrupt Codebook",))
     call("backup", str(broken), error="integrity_error")
     assert not broken.exists()
+
+
+@pytest.mark.parametrize("damage", ["input", "payload", "missing", "orphan", "operation"])
+def test_backup_rejects_broken_run_storage(work, tmp_path, damage):
+    directory, call = work
+    payload = text_input("draft", "private test transcript")
+    call("start", "memory-ingestion", "--run-id", "draft", payload=payload)
+    call("stage", "draft", "normalize")
+    with sqlite3.connect(directory / "kite.sqlite3") as db:
+        if damage == "input":
+            db.execute("UPDATE runs SET inputs='{}'")
+        elif damage == "payload":
+            db.execute("UPDATE artifacts SET value='{}'")
+        elif damage == "missing":
+            db.execute("DELETE FROM artifacts")
+        elif damage == "orphan":
+            db.execute(
+                "INSERT INTO artifacts SELECT run_id, 'orphan', kind, digest, value FROM artifacts"
+            )
+        else:
+            checkpoint = json.loads(db.execute("SELECT checkpoint FROM runs").fetchone()[0])
+            checkpoint["stages"]["normalize"]["artifact"]["operation_id"] = "0" * 64
+            db.execute("UPDATE runs SET checkpoint=?", (json.dumps(checkpoint),))
+    assert call("integrity")["revisions"] == 0
+    destination = tmp_path / "rejected"
+    result = call("backup", str(destination), error="integrity_error")
+    assert "private test transcript" not in json.dumps(result)
+    assert not destination.exists()
+
+
+def test_backup_verifies_stale_trace_artifacts_without_resuming_them(work, tmp_path):
+    _, call = work
+    ingest(call, "first", text_input("first", "Initial evidence"))
+    trace(call, "old-trace", {"topics": ["onboarding"]})
+    ingest(call, "second", text_input("second", "Later evidence"))
+    destination = tmp_path / "copy"
+    result = call("backup", str(destination))
+    assert result["verified_runs"] == 3 and result["verified_artifacts"] == 11
+    copied = call("status", "old-trace", workspace_dir=destination)
+    assert copied["resume"]["reason"] == "stale_snapshot"
 
 
 def test_concurrent_retry_and_crash_rollback(work):

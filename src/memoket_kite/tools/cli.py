@@ -23,6 +23,7 @@ from .workflow import (
     start,
     status,
     transcript_page,
+    verify_run_storage,
 )
 from .workspace import Workspace
 
@@ -226,7 +227,11 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
         ), None
 
     if args.command == "backup":
-        return Workspace.backup(args.workspace, args.destination), None
+        return Workspace.backup(
+            args.workspace,
+            args.destination,
+            verify_runs=lambda copy: verify_run_storage(copy, root),
+        ), None
 
     if args.command in {"sources", "codebook"}:
         scope = {"source": args.source} if args.source is not None else {}

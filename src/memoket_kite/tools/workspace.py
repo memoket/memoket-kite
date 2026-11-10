@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from collections.abc import Callable
 from contextlib import closing, contextmanager, suppress
 from hashlib import sha256
 from pathlib import Path
@@ -140,7 +141,9 @@ class Workspace:
             db.close()
 
     @classmethod
-    def backup(cls, directory: Path, destination: Path) -> dict:
+    def backup(
+        cls, directory: Path, destination: Path, *, verify_runs: Callable[[Workspace], dict]
+    ) -> dict:
         source = directory.expanduser().resolve()
         if not (source / "kite.sqlite3").is_file():
             raise ToolError("not_found", "source workspace database was not found")
@@ -170,6 +173,7 @@ class Workspace:
                     if snapshot.db.execute("PRAGMA foreign_key_check").fetchone():
                         raise ToolError("integrity_error", "backup contains broken references")
                     index = snapshot.index(verify=True)
+                    verified = verify_runs(snapshot)
                     # The copy is an independent workspace. Authorization to
                     # delete from the original does not transfer to the copy.
                     snapshot.db.execute(
@@ -190,6 +194,7 @@ class Workspace:
                         "memory_version": snapshot.version(),
                         "revisions": len(index.revisions),
                         "invalidated_approvals": len(approvals),
+                        **verified,
                     }
                 try:
                     os.link(database, destination / database.name)
