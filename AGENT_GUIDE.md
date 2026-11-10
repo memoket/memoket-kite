@@ -237,6 +237,15 @@ and avoid creating new facts. Use `memory-update` with the current checksum as
 is unchanged, the same workflow appends only new annotations. Existing fact
 IDs, source lines, and the source checksum stay stable.
 
+Use `kite-tool source-history SOURCE CONVERSATION_ID` to look up the current
+checksum and inspect retained revisions without loading transcript text into
+the agent context. The current revision appears first, followed by prior
+revisions ordered by checksum. Each entry has a Codebook revision ID, source
+day when known, and segment and fact counts. The source day refers to the
+conversation. Adding annotations to an unchanged source updates its fact count
+without changing its revision ID or checksum. The command creates no workspace
+or checkpoint.
+
 To correct a confirmed decision or task, cite evidence that supports the
 corrected assertion. Supply a confirmed fact with the same `state_key` and the
 older fact ID in `supersedes`. The predecessor stays in history and the report

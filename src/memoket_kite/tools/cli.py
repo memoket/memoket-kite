@@ -151,6 +151,11 @@ def _parser() -> argparse.ArgumentParser:
         "sources", help="list conversation identities and current checksums"
     )
     sources.add_argument("--source", help="select a source namespace")
+    history = commands.add_parser(
+        "source-history", help="list one conversation's stored revisions without transcript text"
+    )
+    history.add_argument("source")
+    history.add_argument("conversation_id")
     codebook = commands.add_parser(
         "codebook", help="write all or selected Codebook revisions as XML"
     )
@@ -252,6 +257,12 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             args.destination,
             verify_runs=lambda copy: verify_run_storage(copy, root),
         ), None
+
+    if args.command == "source-history":
+        scope = {"source": args.source, "conversation_id": args.conversation_id}
+        validate(SOURCE_SCOPE, scope, "source scope")
+        with Workspace.open(args.workspace, read_only=True) as workspace:
+            return workspace.source_history(**scope), None
 
     if args.command in {"sources", "codebook"}:
         scope = {"source": args.source} if args.source is not None else {}

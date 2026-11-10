@@ -130,9 +130,11 @@ annotations. Reports preserve cue start and end offsets.
 ## Add an annotation to an existing conversation
 
 Use the exact same source file, identity, and any original date flags.
-Get the current checksum from `kite-tool sources`, then prepare an update.
+Look up the current checksum for the conversation, then prepare an update.
 
 ```sh
+kite-tool source-history text planning-notes
+# Set current_checksum to the current_checksum value from the output above.
 kite-tool file-source notes.txt --format text --source-id planning-notes --split-lines \
   --expected-checksum "$current_checksum" \
   | kite-tool start memory-update --run-id amend-notes --input -

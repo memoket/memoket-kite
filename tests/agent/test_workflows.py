@@ -725,6 +725,10 @@ def test_same_source_amendment_keeps_citations_and_is_idempotent(work):
     assert updated["changed"] and updated["memory_version"] == source_version + 1
     assert (updated["revision_id"], updated["checksum"]) == (old["revision_id"], old["checksum"])
     assert not ingest(call, "amendment-replay", amendment, pipeline="memory-update")["changed"]
+    history = call("source-history", "text", "amend-launch")
+    assert history["current_checksum"] == old["checksum"]
+    assert history["memory_version"] == updated["memory_version"]
+    assert len(history["revisions"]) == 1 and history["revisions"][0]["facts"] == 3
     assert call("integrity")["memory_version"] == updated["memory_version"]
     result = trace(call, "after-amendment", {"topics": ["launch"]})
     assert result["matched_count"] == 3
@@ -1667,13 +1671,36 @@ def test_evidence_context_reads_the_cited_revision_until_deletion(work):
     revised["source"]["expected_checksum"] = first["checksum"]
     revised["source"]["payload"]["segments"][1]["text"] = "Rae now owns the launch."
     revised["annotations"]["facts"][0]["content"] = "Rae now owns the launch."
-    ingest(call, "revised", revised, pipeline="memory-update")
+    latest = ingest(call, "revised", revised, pipeline="memory-update")
     old = call("evidence", line_id, "--context", "1")["value"]
     assert old["evidence"] == citation and not old["source_revision_active"]
     assert old["before"] == context["before"] and old["after"] == context["after"]
+    before_history = database.read_bytes()
+    assert call("source-history", "transcript", "handoff") == {
+        "ok": True,
+        "source": "transcript",
+        "conversation_id": "handoff",
+        "current_checksum": latest["checksum"],
+        "memory_version": latest["memory_version"],
+        "revisions": [
+            {
+                "revision_id": receipt["revision_id"],
+                "checksum": receipt["checksum"],
+                "active": active,
+                "source_day": "2026-06-01",
+                "segments": 3,
+                "facts": 1,
+            }
+            for receipt, active in ((latest, True), (first, False))
+        ],
+    }
+    call("source-history", "text", "handoff", error="not_found")
+    call("source-history", "invalid/source", "handoff", error="invalid_input")
+    assert database.read_bytes() == before_history
 
     _delete_source(call, "delete", {"source": "transcript", "conversation_id": "handoff"})
     call("evidence", line_id, error="not_found")
+    call("source-history", "transcript", "handoff", error="not_found")
 
 
 def test_related_trace_labels_are_ranked_and_bound_to_the_evidence_page(work):

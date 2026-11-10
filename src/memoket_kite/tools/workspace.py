@@ -425,6 +425,32 @@ class Workspace:
         )
         return [dict(row) for row in rows]
 
+    def source_history(self, source: str, conversation_id: str) -> dict:
+        records = self.records(source=source, conversation_id=conversation_id)
+        if not records:
+            raise ToolError("not_found", "no revisions match the requested conversation")
+        active = [record for record in records if record["active"]]
+        if len(active) != 1:
+            raise ToolError("integrity_error", "conversation must have one current revision")
+        records.sort(key=lambda record: not record["active"])
+        return {
+            "source": source,
+            "conversation_id": conversation_id,
+            "current_checksum": active[0]["checksum"],
+            "memory_version": self.version(),
+            "revisions": [
+                {
+                    "revision_id": revision_id(record),
+                    "checksum": record["checksum"],
+                    "active": record["active"],
+                    "source_day": source_day(record["conversation"]),
+                    "segments": len(record["conversation"]["segments"]),
+                    "facts": len(record["facts"]),
+                }
+                for record in records
+            ],
+        }
+
     def export_codebook(
         self,
         *,

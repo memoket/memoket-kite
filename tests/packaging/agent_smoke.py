@@ -71,6 +71,7 @@ def main() -> None:
         assert demo.index("memoket/184#line-a") < demo.index("memoket/184#line-b")
         assert demo.count("memoket/184#line-b") == 1
         assert "We decided to ship a short checklist. Ravi will implement it." in demo
+        call("source-history", "text", "note", error="not_found")
         assert not original.exists()
 
         (directory / "captions.vtt").write_text(
@@ -145,6 +146,11 @@ def main() -> None:
             "text-line-3",
             quote,
         )
+        history = call("source-history", "text", "note", workspace=recovered)
+        (revision,) = history["revisions"]
+        assert revision["active"] and revision["source_day"] is None
+        assert revision["segments"] == 2 and revision["facts"] == 1
+        assert history["current_checksum"] == evidence["revision_checksum"]
 
         target = {"target": {"source": "text", "conversation_ids": ["note"]}}
         removal = call("start", "memory-deletion", payload=target, workspace=recovered)["run_id"]
