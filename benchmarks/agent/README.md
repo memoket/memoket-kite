@@ -27,6 +27,12 @@ It verifies all surviving facts against the raw fixture, including facts outside
 the queried topic. The offline run performs the same check before deletion.
 The `untrusted-transcript` case checks that an instruction-like transcript
 excerpt is preserved verbatim and the supported decision remains citable.
+The `incremental_update` result uses its own fixed [fixture](update.json). It
+amends a conversation using its current checksum, checks the updated state and
+both revisions, and reads the old line by its revision checksum. It also checks
+that replay returns the same receipt, a distinct update with a stale checksum is
+rejected, and the index and evidence still match all expected sources. The
+result records the update fixture digest and the pass or failure of each check.
 The runner exits nonzero if any case or lifecycle check fails.
 
 ## Evaluate a host agent
@@ -104,7 +110,7 @@ success. Pipeline and stage totals cover each case's trace, the original Memoket
 ingestion and the approved deletion. Recovery covers both deliberate
 interruptions. Task success covers all seven cases. The top-level tool-call
 counts include setup, grading, and intentionally failed calls, so they measure
-the complete offline runner's calls.
+the complete offline runner's calls, including the incremental update check.
 
 Keep `deterministic` and `host-agent` results separate. The offline run provides
 repeatable tool and index checks. Host scores depend on the selected runtime and

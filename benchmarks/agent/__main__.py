@@ -14,6 +14,7 @@ from tempfile import TemporaryDirectory
 
 FIXTURE = Path(__file__).with_name("fixture.json")
 RECOVERY_FIXTURE = Path(__file__).with_name("recovery.json")
+UPDATE_FIXTURE = Path(__file__).with_name("update.json")
 RECOVERY_CASE = "memoket-resume"
 DELETION_CASE = "approved-deletion"
 DELETION_TARGET = {"source": "text", "conversation_id": "plan-alpha"}
@@ -381,6 +382,98 @@ def _fact_provenance(kite: Kite, expected: Counter) -> dict:
     }
 
 
+def _offline_update(directory: Path) -> dict:
+    fixture_bytes = UPDATE_FIXTURE.read_bytes()
+    fixture = json.loads(fixture_bytes)
+    original, revised, unrelated = fixture["sources"]
+    kite = Kite(directory)
+    initial = kite.call("ingest", "--run-id", "original", payload=original)["receipt"]
+    baseline = kite.call("ingest", "--run-id", "unrelated", payload=unrelated)["integrity"]
+
+    update = deepcopy(revised)
+    update["source"]["expected_checksum"] = initial["checksum"]
+    committed = kite.call("ingest", "--update", "--run-id", "amend", payload=update)
+    revision = committed["receipt"]
+    replay = kite.call("ingest", "--resume", "amend")
+    update["source"]["payload"]["source_date"] = fixture["stale_source_date"]
+    stale = kite.call("ingest", "--update", "--run-id", "stale", payload=update, error="conflict")
+
+    source = original["source"]
+    namespace, identity = source["format"], source["payload"]["conversation_id"]
+    history = kite.call("source-history", namespace, identity)
+    original_lines = kite.call(
+        "source-lines", namespace, identity, "--revision", initial["checksum"]
+    )
+    state_key = revised["annotations"]["facts"][0]["state_key"]
+    report = kite.call(
+        "query",
+        "--pipeline",
+        "task-tracing",
+        payload={
+            "query": {"state_key": state_key, "source": namespace, "conversation_id": identity}
+        },
+    )["value"]
+    expected = _fixture_facts(fixture)
+    provenance = _fact_provenance(kite, expected)
+    integrity = kite.call("integrity", "--include-workflows")
+    state = report["current_reported_states"].get(state_key, {})
+    timeline = report["timeline"]
+    original_citations = timeline[0]["evidence"] if timeline else []
+    expected_source_lines = sum(
+        1 if item["source"]["format"] == "text" else len(item["source"]["payload"]["segments"])
+        for item in fixture["sources"]
+    )
+    checks = {
+        "revision_committed": revision["changed"]
+        and revision["checksum"] != initial["checksum"]
+        and revision["revision_id"] != initial["revision_id"]
+        and revision["memory_version"] == baseline["memory_version"] + 1,
+        "history_preserved": history["current_checksum"] == revision["checksum"]
+        and [(row["revision_id"], row["checksum"], row["active"]) for row in history["revisions"]]
+        == [
+            (revision["revision_id"], revision["checksum"], True),
+            (initial["revision_id"], initial["checksum"], False),
+        ],
+        "historical_source_readable": original_lines["revision_checksum"] == initial["checksum"]
+        and not original_lines["source_revision_active"]
+        and [line["source_line_id"] for line in original_lines["segments"]]
+        == [line["source_line_id"] for line in original_citations]
+        and [
+            {key: value for key, value in line.items() if key != "source_line_id"}
+            for line in original_lines["segments"]
+        ]
+        == source["payload"]["segments"],
+        "current_state_updated": not report["truncated"]
+        and [
+            (row["effective"], [line["revision_checksum"] for line in row["evidence"]])
+            for row in timeline
+        ]
+        == [(False, [initial["checksum"]]), (True, [revision["checksum"]])]
+        and state
+        == {
+            "status": "confirmed",
+            "value": revised["annotations"]["facts"][0]["state"],
+            "fact_ids": [timeline[-1]["fact_id"]],
+        },
+        "retry_idempotent": replay == committed,
+        "stale_write_rejected": stale["stage_id"] == "commit",
+        "index_consistent": integrity["revisions"] == len(fixture["sources"])
+        and integrity["facts"] == expected.total()
+        and integrity["source_lines"] == expected_source_lines
+        and integrity["codebook_sha256"] != baseline["codebook_sha256"]
+        and all(integrity[key] == value for key, value in committed["integrity"].items()),
+        "fact_provenance_verified": provenance["exact_match"],
+    }
+    return {
+        "fixture_sha256": hashlib.sha256(fixture_bytes).hexdigest(),
+        "passed": all(checks.values()),
+        **checks,
+        "fact_provenance": provenance,
+        "successful_tool_calls": kite.successes,
+        "attempted_tool_calls": kite.calls,
+    }
+
+
 def _workflow_metrics(cases: dict, lifecycle: dict, successful: int, attempted: int) -> dict:
     recovery, deletion = cases[RECOVERY_CASE], cases[DELETION_CASE]
     completed_pipelines = (
@@ -439,6 +532,7 @@ def offline(fixture: dict) -> dict:
         answer = _reference_answer(case, "after-delete", surviving)
         answer["deletion_run_id"] = deletion
         cases[DELETION_CASE] = _score_deletion(kite, case, answer, baseline, fixture)
+        update = _offline_update(Path(directory) / "update")
         lifecycle = {
             "new_ingestions_completed": sum(
                 row["completed"] and row["changed"] for row in ingestions
@@ -454,6 +548,7 @@ def offline(fixture: dict) -> dict:
             ]
             and cases[DELETION_CASE]["post_deletion_evidence_verified"],
             "fact_provenance_verified": provenance["exact_match"],
+            "incremental_update_verified": update["passed"],
         }
         recovery = _offline_recovery(Path(directory) / "recovery")
         cases[RECOVERY_CASE] = recovery
@@ -462,13 +557,16 @@ def offline(fixture: dict) -> dict:
             and lifecycle["new_ingestions_completed"] == len(ingestions)
             and all(value for value in lifecycle.values())
         )
-        successful = kite.successes + recovery["successful_tool_calls"]
-        attempted = kite.calls + recovery["attempted_tool_calls"]
+        successful = (
+            kite.successes + recovery["successful_tool_calls"] + update["successful_tool_calls"]
+        )
+        attempted = kite.calls + recovery["attempted_tool_calls"] + update["attempted_tool_calls"]
         return {
             "mode": "deterministic",
             "fixture_sha256": snapshot["fixture_sha256"],
             "passed": passed,
             "lifecycle": lifecycle,
+            "incremental_update": update,
             "fact_provenance": provenance,
             "successful_tool_calls": successful,
             "attempted_tool_calls": attempted,

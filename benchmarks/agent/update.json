@@ -1,0 +1,65 @@
+{
+  "stale_source_date": "2026-10-03",
+  "sources": [
+    {
+      "source": {
+        "format": "transcript",
+        "payload": {
+          "conversation_id": "review-handoff",
+          "source_date": "2026-10-01",
+          "metadata": {"source_reference": "review-handoff"},
+          "segments": [{"segment_id": "owner-line", "text": "Maya owns the review."}]
+        }
+      },
+      "annotations": {
+        "facts": [{
+          "content": "Maya owns the review.",
+          "topics": ["review handoff"],
+          "segment_ids": ["owner-line"],
+          "status": "confirmed",
+          "state_key": "review-owner",
+          "state": "Maya"
+        }]
+      }
+    },
+    {
+      "source": {
+        "format": "transcript",
+        "payload": {
+          "conversation_id": "review-handoff",
+          "source_date": "2026-10-02",
+          "metadata": {"source_reference": "review-handoff"},
+          "segments": [{"segment_id": "owner-line", "text": "Inez has taken over the review."}]
+        }
+      },
+      "annotations": {
+        "facts": [{
+          "content": "Inez owns the review.",
+          "topics": ["review handoff"],
+          "segment_ids": ["owner-line"],
+          "status": "confirmed",
+          "state_key": "review-owner",
+          "state": "Inez"
+        }]
+      }
+    },
+    {
+      "source": {
+        "format": "text",
+        "payload": {
+          "conversation_id": "room-check",
+          "source_date": "2026-10-01",
+          "metadata": {"source_reference": "room-check"},
+          "text": "The projector is ready."
+        }
+      },
+      "annotations": {
+        "facts": [{
+          "content": "The projector is ready.",
+          "topics": ["room readiness"],
+          "segment_ids": ["text-1"]
+        }]
+      }
+    }
+  ]
+}

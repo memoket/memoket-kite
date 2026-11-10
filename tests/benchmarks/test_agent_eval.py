@@ -10,6 +10,7 @@ from benchmarks.agent.__main__ import (
     Kite,
     _deletion_trace,
     _grade,
+    _offline_update,
     _prepare_deletion,
     _prepare_recovery,
     _reference_answer,
@@ -248,3 +249,19 @@ def test_deletion_grade_checks_every_surviving_fact_even_if_counts_match(tmp_pat
     assert provenance["observed_facts"] == provenance["expected_facts"] == 7
     assert provenance["facts_with_expected_provenance"] == 6
     assert not provenance["exact_match"] and not result["passed"]
+
+
+def test_update_benchmark_requires_the_historical_source_text(tmp_path, monkeypatch):
+    original_call = Kite.call
+
+    def changed_history(kite, *args, **kwargs):
+        result = original_call(kite, *args, **kwargs)
+        if args[0] == "source-lines":
+            result["segments"][0]["text"] = "The historical line was replaced."
+        return result
+
+    monkeypatch.setattr(Kite, "call", changed_history)
+    result = _offline_update(tmp_path / "memory")
+    assert result["history_preserved"] and result["current_state_updated"]
+    assert result["index_consistent"] and result["fact_provenance_verified"]
+    assert not result["historical_source_readable"] and not result["passed"]
