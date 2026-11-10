@@ -1,8 +1,7 @@
 """Audit shipped text for terms concentrated in a small part of a corpus.
 
-A term appearing in shipped text and in only a handful of a corpus's documents
-is too specific to be task language and too rare to be coincidence. Findings
-require review rather than being an automatic verdict.
+Concentration identifies wording for reviewers to check for possible benchmark
+leakage. A match may come from ordinary language or a corpus-specific example.
 
 The scan covers every string a binding exports and the library modules whose
 text reaches a reader. A missing corpus is reported as SKIPPED; passing
@@ -205,6 +204,26 @@ def audit() -> tuple[list[tuple], list[str]]:
     return findings, skipped
 
 
+def _review_groups(findings: list[tuple]) -> list[dict]:
+    """Group duplicate terms while retaining every source that matched."""
+    groups = {}
+    for scope, symbol, term, corpus, matching, total, count in sorted(
+        findings, key=lambda item: (item[3], item[2], item[0], item[1])
+    ):
+        key = (corpus, term)
+        if key not in groups:
+            groups[key] = {
+                "corpus": corpus,
+                "term": term,
+                "matching_documents": matching,
+                "total_documents": total,
+                "occurrences": count,
+                "sources": [],
+            }
+        groups[key]["sources"].append({"scope": scope, "symbol": symbol})
+    return list(groups.values())
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -212,27 +231,41 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="fail when a corpus is missing, instead of reporting it as skipped",
     )
+    parser.add_argument("--json", action="store_true", help="emit a grouped JSON review report")
     args = parser.parse_args(argv)
 
     findings, skipped = audit()
+    scanned = sorted(set(CORPORA) - set(skipped))
+    required_missing = bool(skipped and args.require_corpus)
+    exit_code = 2 if required_missing else int(bool(findings))
+    if args.json:
+        report = {
+            "schema_version": 1,
+            "scanned_corpora": scanned,
+            "skipped_corpora": sorted(skipped),
+            "required_corpus_missing": required_missing,
+            "finding_count": len(findings),
+            "review_groups": _review_groups(findings),
+        }
+        print(json.dumps(report, indent=2))
+        return exit_code
+
     for name in skipped:
-        print(f"SKIPPED {name}: corpus not present at {CORPORA[name]}")
-    if skipped and args.require_corpus:
+        print(f"SKIPPED {name}: corpus missing or empty at {CORPORA[name]}")
+    if required_missing:
         print("Corpus required for this audit; refusing to report a result.")
-        return 2
-    if findings:
+    elif findings:
         print("Terms requiring manual review:")
         for item in sorted(findings, key=lambda value: (value[4] / value[5], -value[6])):
             print(
                 f"{item[0]}.{item[1]} term={item[2]!r} corpus={item[3]} "
                 f"documents={item[4]}/{item[5]} occurrences={item[6]}"
             )
-        return 1
-    if skipped and not [name for name in CORPORA if name not in skipped]:
+    elif not scanned:
         print("No corpus was read; nothing was audited.")
-        return 0
-    print("No concentrated terms found in the corpora that were read.")
-    return 0
+    else:
+        print("No concentrated terms found in the corpora that were read.")
+    return exit_code
 
 
 if __name__ == "__main__":

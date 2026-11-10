@@ -130,3 +130,17 @@ corpus's documents. It scans every string a binding exports and the library
 modules whose text reaches a reader. A missing corpus is reported as SKIPPED;
 `--require-corpus` makes it an error. Run it with the flag before publishing a
 number.
+
+Use JSON for manual review or to compare two checkouts against the same pinned
+inputs. The report groups matches by corpus and term, lists the source symbols,
+and records which corpora were scanned or skipped. It contains counts and terms
+from shipped code without excerpts from the corpora.
+
+```bash
+mkdir -p artifacts/audits
+python -m benchmarks.tools.leak_check --require-corpus --json > artifacts/audits/corpus.json
+```
+
+Exit code `1` signals terms for review. Exit code `2` signals a missing required
+corpus. With `--require-corpus`, exit code `0` means both corpora were scanned
+and no terms met the audit thresholds.

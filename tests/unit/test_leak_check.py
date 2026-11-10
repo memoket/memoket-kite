@@ -23,10 +23,20 @@ def test_a_missing_corpus_is_reported_as_skipped_and_never_as_clean(tmp_path, mo
     assert "nothing was audited" in printed
 
 
-def test_a_required_corpus_that_is_missing_fails_the_gate(tmp_path, monkeypatch):
+def test_a_required_corpus_that_is_missing_fails_the_gate(tmp_path, monkeypatch, capsys):
     """Benchmark and release runs declare the corpus required, and get a failure."""
     monkeypatch.setattr(leak_check, "CORPORA", {"absent": tmp_path / "nothing.json"})
     assert leak_check.main(["--require-corpus"]) == 2
+    capsys.readouterr()
+    assert leak_check.main(["--require-corpus", "--json"]) == 2
+    assert json.loads(capsys.readouterr().out) == {
+        "schema_version": 1,
+        "scanned_corpora": [],
+        "skipped_corpora": ["absent"],
+        "required_corpus_missing": True,
+        "finding_count": 0,
+        "review_groups": [],
+    }
 
 
 def test_a_term_planted_in_a_prompt_is_reported(tmp_path, monkeypatch):
@@ -98,7 +108,7 @@ def test_word_prefixes_and_occurrences_follow_the_audit_rule():
     }
 
 
-def test_concentrated_terms_are_reported_in_each_matching_source(tmp_path, monkeypatch):
+def test_concentrated_terms_are_reported_in_each_matching_source(tmp_path, monkeypatch, capsys):
     documents = [{"turn": "zorbicular " * 5}, *[{"turn": "ordinary"}] * 5]
     monkeypatch.setattr(leak_check, "CORPORA", {"fake": _corpus(tmp_path, "fake", documents)})
     monkeypatch.setattr(leak_check, "_binding_text", lambda benchmark: {"PROMPT": "zorbicular"})
@@ -111,6 +121,27 @@ def test_concentrated_terms_are_reported_in_each_matching_source(tmp_path, monke
         ],
         [],
     )
+    assert leak_check.main(["--json", "--require-corpus"]) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "schema_version": 1,
+        "scanned_corpora": ["fake"],
+        "skipped_corpora": [],
+        "required_corpus_missing": False,
+        "finding_count": 2,
+        "review_groups": [
+            {
+                "corpus": "fake",
+                "term": "zorbicular",
+                "matching_documents": 1,
+                "total_documents": 6,
+                "occurrences": 5,
+                "sources": [
+                    {"scope": "fake", "symbol": "PROMPT"},
+                    {"scope": "library", "symbol": "reader"},
+                ],
+            }
+        ],
+    }
 
 
 def test_the_real_bindings_and_library_are_in_scope():
