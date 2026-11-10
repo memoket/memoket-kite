@@ -115,12 +115,17 @@ retried. Handle copies already sent to the endpoint under its retention policy.
 ## Lifecycle
 
 Duplicate imports of the same normalized source return the original checksum
-and avoid creating new facts. For a changed source record, supply its current
-checksum as `source.expected_checksum` to append a new version. Past evidence
-stays in history. To correct a fact, annotate new evidence with a confirmed
-state, the same `state_key`, and the older fact ID in `supersedes`. Topic merges
-keep the old label as an alias. Annotate entity variants with
-`entity_aliases` when multiple names refer to the same entity.
+and avoid creating new facts. Use `memory-update` with the current checksum as
+`source.expected_checksum` to append a changed source revision. When the source
+is unchanged, the same workflow appends only new annotations. Existing fact
+IDs, source lines, and the source checksum stay stable.
+
+To correct a confirmed decision or task, cite evidence that supports the
+corrected assertion. Supply a confirmed fact with the same `state_key` and the
+older fact ID in `supersedes`. The predecessor stays in history and the report
+marks the corrected fact as effective. Topic merges keep the old label as an
+alias. Annotate entity variants with `entity_aliases` when multiple names refer
+to the same entity.
 
 Deletion uses the source namespace and optionally a conversation ID. Run
 `preview`, show its selector and impact, and obtain explicit authorization

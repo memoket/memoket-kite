@@ -125,6 +125,10 @@ def _commit(context: Context, annotated: dict) -> dict:
     return context.workspace.commit(annotated)
 
 
+def _amend(context: Context, annotated: dict) -> dict:
+    return context.workspace.commit(annotated, append_annotations=True)
+
+
 def _validate(context: Context, receipt: dict | None = None) -> dict:
     from hashlib import sha256
 
@@ -161,6 +165,7 @@ TOOLS = {
         annotate, {"normalized": "conversation", "annotations": "annotations"}, "annotated"
     ),
     "commit": Tool(_commit, {"annotated": "annotated"}, "receipt", "write"),
+    "amend": Tool(_amend, {"annotated": "annotated"}, "receipt", "write"),
     "validate": Tool(_validate, {}, "integrity"),
     "rebuild": Tool(_rebuild, {}, "receipt", "write"),
     "validate_commit": Tool(_validate, {"receipt": "receipt"}, "integrity"),

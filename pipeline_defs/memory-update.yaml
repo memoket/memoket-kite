@@ -1,6 +1,6 @@
 id: memory-update
-version: 1
-description: Append a source revision or a cited correction to existing memory.
+version: 2
+description: Append a source revision or cited annotations to existing memory.
 inputs:
   source: source
   annotations: annotations
@@ -21,15 +21,15 @@ stages:
       normalized: stage.normalize
       annotations: input.annotations
     output: annotated
-    acceptance: A correction is grounded in new source evidence.
+    acceptance: Every added fact or correction cites the supplied source evidence.
   - id: commit
     skill: skills/memory/index-building/SKILL.md
-    tool: commit
+    tool: amend
     needs: [annotate]
     inputs:
       annotated: stage.annotate
     output: receipt
-    acceptance: A single validated revision is committed or a repeat is acknowledged.
+    acceptance: The revision or annotation additions are committed once, preserving original evidence.
   - id: verify
     skill: skills/memory/index-building/SKILL.md
     tool: validate_commit

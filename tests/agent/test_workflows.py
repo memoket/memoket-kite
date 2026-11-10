@@ -414,6 +414,92 @@ def test_revision_correction_consolidation_and_query_scopes(work):
     assert trace(call, "unknown", {"topics": ["nonexistent"]})["matched_count"] == 0
 
 
+def test_same_source_amendment_keeps_citations_and_is_idempotent(work):
+    directory, call = work
+    quote = "Maya will observe the launch. Rae owns it. Review happens on Tuesday."
+    original = text_input("amend-launch", quote, date="2026-11-01", topic="launch")
+    original["annotations"]["facts"][0].update(content="Maya owns launch", state="Maya")
+    old = ingest(call, "original", original)
+    target = old["revision_id"] + "F1"
+    source_version = old["memory_version"]
+    amendment = copy.deepcopy(original)
+    amendment["annotations"]["facts"] = [
+        {
+            "content": "Rae owns launch",
+            "state_key": "owner",
+            "state": "Rae",
+            "segment_ids": ["text-1"],
+            "topics": ["launch"],
+            "status": "confirmed",
+            "supersedes": target,
+        },
+        {
+            "content": "Launch review happens on Tuesday",
+            "segment_ids": ["text-1"],
+            "topics": ["launch"],
+        },
+    ]
+    ingest(call, "missing-checksum", amendment, pipeline="memory-update", error="conflict")
+    amendment["source"]["expected_checksum"] = "0" * 64
+    ingest(call, "wrong-checksum", amendment, pipeline="memory-update", error="conflict")
+    amendment["source"]["expected_checksum"] = old["checksum"]
+    assert not ingest(call, "ordinary-duplicate", amendment)["changed"]
+
+    invalid = copy.deepcopy(amendment)
+    invalid["annotations"]["taxonomy"] = [
+        {"name": "launch", "parents": ["cycle"]},
+        {"name": "cycle", "parents": ["launch"]},
+    ]
+    ingest(call, "invalid", invalid, pipeline="memory-update", error="integrity_error")
+    assert call("integrity")["facts"] == 1
+    assert call("integrity")["memory_version"] == source_version
+
+    updated = ingest(call, "correction", amendment, pipeline="memory-update")
+    assert updated["changed"] and updated["memory_version"] == source_version + 1
+    assert (updated["revision_id"], updated["checksum"]) == (old["revision_id"], old["checksum"])
+    assert not ingest(call, "amendment-replay", amendment, pipeline="memory-update")["changed"]
+    assert call("integrity")["memory_version"] == updated["memory_version"]
+    result = trace(call, "after-amendment", {"topics": ["launch"]})
+    assert result["matched_count"] == 3
+    by_content = {row["content"]: row for row in result["timeline"]}
+    assert by_content["Maya owns launch"]["fact_id"] == target
+    assert not by_content["Maya owns launch"]["effective"]
+    assert by_content["Rae owns launch"]["effective"]
+    assert result["current_reported_states"]["owner"]["value"] == "Rae"
+    for row in result["timeline"]:
+        evidence = row["evidence"][0]
+        assert (evidence["segment_id"], evidence["text"]) == ("text-1", quote)
+    assert call("integrity")["source_lines"] == 1
+    receipt = _delete_source(
+        call, "erase-amended", {"source": "text", "conversation_id": "amend-launch"}
+    )
+    assert receipt["deleted_revisions"] == 1
+    assert call("integrity")["facts"] == 0
+    assert quote.encode() not in (directory / "kite.sqlite3").read_bytes()
+    ingest(call, "deleted-amendment", amendment, pipeline="memory-update", error="deleted_source")
+
+
+def test_same_source_amendments_guard_competing_corrections(work):
+    _, call = work
+    original = text_input("same-log", "Original source evidence", date="2026-11-01")
+    old = ingest(call, "original", original)
+    corrections = {}
+    for name in ("first", "second"):
+        payload = copy.deepcopy(original)
+        payload["source"]["expected_checksum"] = old["checksum"]
+        payload["annotations"]["facts"][0].update(
+            content=name, state=name, supersedes=old["revision_id"] + "F1"
+        )
+        corrections[name] = payload
+        call("start", "memory-update", "--run-id", name, payload=payload)
+        call("stage", name, "normalize")
+        call("stage", name, "annotate")
+    call("stage", "first", "commit")
+    call("stage", "second", "commit", error="stale_snapshot")
+    ingest(call, "second-retry", corrections["second"], pipeline="memory-update", error="conflict")
+    assert call("integrity")["facts"] == 2
+
+
 def test_unknown_and_conflicting_dates_do_not_become_final_decisions(work):
     _, call = work
     ingest(call, "a", text_input("a", "Alice", date="2026-01-01"))

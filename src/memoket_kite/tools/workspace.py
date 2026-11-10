@@ -239,7 +239,7 @@ class Workspace:
         )
         return {"changed": True, "memory_version": self.version()}
 
-    def commit(self, record: dict) -> dict:
+    def commit(self, record: dict, *, append_annotations: bool = False) -> dict:
         conversation = record["conversation"]
         key = source_key(conversation)
         uid = conversation["conversation_id"]
@@ -259,6 +259,8 @@ class Workspace:
                 "conflict", "source reference is already bound to another conversation ID"
             )
         if prior and prior["checksum"] == checksum:
+            if append_annotations:
+                return {**receipt, **self._append_annotations(prior, record)}
             return {**receipt, "changed": False, "memory_version": self.version()}
         collision = self.db.execute(
             "SELECT 1 FROM revisions WHERE source=? AND conversation_id=? AND source_key<>?",
@@ -280,6 +282,30 @@ class Workspace:
             (checksum, key, conversation["source"], uid, encode(payload)),
         )
         return {**receipt, **self.replace_index()}
+
+    def _append_annotations(self, prior: sqlite3.Row, record: dict) -> dict:
+        stored = json.loads(prior["payload"])
+        additions = {}
+        for field in ("facts", "taxonomy", "entity_aliases"):
+            seen = {digest(item) for item in stored[field]}
+            additions[field] = []
+            for item in record[field]:
+                fingerprint = digest(item)
+                if fingerprint not in seen:
+                    seen.add(fingerprint)
+                    additions[field].append(item)
+        if not any(additions.values()):
+            return {"changed": False, "memory_version": self.version()}
+        if record["expected_checksum"] != prior["checksum"]:
+            raise ToolError("conflict", "new annotations require the current expected_checksum")
+        self._validate_supersession({**record, "facts": additions["facts"]})
+        for field, items in additions.items():
+            stored[field].extend(items)
+        self.db.execute(
+            "UPDATE revisions SET payload=? WHERE checksum=?",
+            (encode(stored), prior["checksum"]),
+        )
+        return self.replace_index(force=True)
 
     def _validate_supersession(self, record: dict) -> None:
         replacements = [fact for fact in record["facts"] if "supersedes" in fact]

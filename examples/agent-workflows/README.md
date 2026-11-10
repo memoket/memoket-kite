@@ -86,6 +86,25 @@ the previously committed checksum with `--expected-checksum` and use
 `memory-update`. Date and timestamp flags are optional for text files. Memoket
 exports retain the original record identity and any supplied dates.
 
+## Add an annotation to an existing conversation
+
+Use the exact same source file, identity, and any original date flags.
+Get the current checksum from `kite-tool sources`, then prepare an update.
+
+```sh
+kite-tool file-source notes.txt --format text --source-id planning-notes \
+  --expected-checksum "$current_checksum" \
+  | kite-tool start memory-update --run-id amend-notes --input -
+kite-tool stage amend-notes normalize
+kite-tool stage amend-notes annotate --input additional-annotations.json
+kite-tool stage amend-notes commit --summary
+kite-tool stage amend-notes verify --summary
+```
+
+Supply only the added facts or taxonomy in `additional-annotations.json`.
+Each fact cites an existing segment. To correct a confirmed state, use the
+same state key and put the previous fact ID in `supersedes`.
+
 ## Import a local recording
 
 With FFmpeg, `whisper-cli`, and a local whisper.cpp model available, use this
