@@ -122,9 +122,11 @@ available for another attempt with the corrected source.
 For local scripts with a complete `source` and `annotations` object,
 `kite-tool ingest --input FILE` runs the standard local ingestion workflow
 and returns its commit receipt and integrity result. It stops at the first
-failure and saves successful stages. Use `--run-id` to choose an ID, and
-`status` and `stage` to inspect or resume the run. Use the individual stages
-when an agent prepares or reviews annotations interactively.
+failure and saves successful stages. Use `--run-id` to choose an ID. Run
+`kite-tool ingest --resume RUN_ID` to reuse the saved input and completed
+stages. Repeating a completed run against the same snapshot returns its
+original receipt. Use `status` to inspect runs and individual stages when
+an agent prepares or reviews annotations interactively.
 
 For a long transcript, normalize with `--summary`, then read the source in
 pages using the same run and stage IDs.

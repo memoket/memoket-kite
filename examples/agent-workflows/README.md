@@ -85,8 +85,9 @@ kite-tool query --input examples/agent-workflows/topic-query.json
 ```
 
 The command returns a commit receipt and integrity counts. It saves each stage
-before advancing. On an interruption, use `status` and `stage` to resume the
-saved run. Correct an invalid annotation in the input file and start a new run.
+before advancing. On an interruption, run `kite-tool ingest --resume meeting-a`
+to continue using the saved inputs. Use `kite-tool status meeting-a` to inspect
+the checkpoint. Correct an invalid annotation in the input file and start a new run.
 Use the stage-by-stage workflow when the agent still needs to extract or review
 annotations.
 

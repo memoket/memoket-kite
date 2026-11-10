@@ -24,6 +24,7 @@ from .workflow import (
     load_pipeline,
     query_report,
     recent_runs,
+    resume_ingestion,
     start,
     status,
     transcript_page,
@@ -124,9 +125,9 @@ def _parser() -> argparse.ArgumentParser:
     audio.add_argument("--timeout", type=int, default=1800, help="seconds allowed per process")
     ingest = commands.add_parser("ingest", help="import a source with prepared annotations")
     ingest.add_argument("--run-id", help="stable identifier for this new ingestion run")
-    ingest.add_argument(
-        "--input", required=True, metavar="FILE", help="JSON input file or - for stdin"
-    )
+    ingest_mode = ingest.add_mutually_exclusive_group(required=True)
+    ingest_mode.add_argument("--input", metavar="FILE", help="JSON input file or - for stdin")
+    ingest_mode.add_argument("--resume", metavar="RUN_ID", help="resume an existing local import")
     begin = commands.add_parser("start", help="create a checkpoint for a pipeline run")
     begin.add_argument("pipeline")
     begin.add_argument("--run-id")
@@ -227,14 +228,25 @@ def _stage_summary(result: dict, stage_id: str) -> dict:
 
 
 def _ingest(
-    root: Path, directory: Path, supplied: dict, run_id: str | None, extension_root: Path | None
+    root: Path,
+    directory: Path,
+    supplied: dict,
+    run_id: str | None,
+    extension_root: Path | None,
+    *,
+    resume_id: str | None = None,
 ) -> tuple[dict, ToolError | None]:
-    if supplied.keys() != {"source", "annotations"}:
+    if resume_id is not None and run_id is not None:
+        raise ToolError("invalid_input", "--run-id is only valid when starting a new ingestion")
+    if resume_id is None and supplied.keys() != {"source", "annotations"}:
         raise ToolError("invalid_input", "ingest requires both source and annotations")
     pipeline = "memory-ingestion"
-    with Workspace.open(directory) as workspace:
+    with Workspace.open(directory, read_only=resume_id is not None) as workspace:
         context = Context(root, workspace, pipeline, extension_root=extension_root)
-        checkpoint = start(context, supplied, run_id, expected_stages=_INGESTION_STAGES)
+        if resume_id is None:
+            checkpoint = start(context, supplied, run_id, expected_stages=_INGESTION_STAGES)
+        else:
+            checkpoint = resume_ingestion(context, resume_id, _INGESTION_STAGES)
     run_id = checkpoint["run_id"]
     output = {"run_id": run_id}
     for stage_id, _ in _INGESTION_STAGES:
@@ -344,7 +356,9 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
 
     supplied = _object(getattr(args, "input", None))
     if args.command == "ingest":
-        return _ingest(root, args.workspace, supplied, args.run_id, extension_root)
+        return _ingest(
+            root, args.workspace, supplied, args.run_id, extension_root, resume_id=args.resume
+        )
     if args.command in {"query", "evidence"}:
         with Workspace.open(args.workspace, read_only=True) as workspace:
             if args.command == "evidence":

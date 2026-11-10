@@ -1523,11 +1523,50 @@ def test_ingest_command_stops_and_keeps_completed_stages_for_recovery(
     if failed_stage == "commit":
         assert "receipt" not in result and stages["verify"]["state"] == "pending"
         assert call("integrity")["revisions"] == 0
-        assert call("stage", "retry", "commit")["value"]["changed"]
     else:
         assert result["receipt"]["changed"] and stages["commit"]["state"] == "completed"
         assert call("integrity")["revisions"] == 1
-    assert call("stage", "retry", "verify")["value"]["revisions"] == 1
+    resumed = call("ingest", "--resume", "retry")
+    assert resumed["receipt"]["changed"] and resumed["integrity"]["revisions"] == 1
+    after = call("status", "retry")
+    assert after["state"] == "completed" and after["stages"][failed_stage]["attempts"] == 2
+    assert after["stages"]["normalize"]["attempts"] == after["stages"]["annotate"]["attempts"] == 1
+    assert call("ingest", "--resume", "retry") == resumed
+    assert call("status", "retry") == after
+
+
+def test_ingest_resume_checks_the_run_and_required_inputs(work):
+    directory, call = work
+    call("ingest", "--resume", "unknown", error="not_found")
+    assert not directory.exists()
+    call("start", "memory-provider-ingestion", "--run-id", "provider")
+    call("ingest", "--resume", "provider", error="invalid_pipeline")
+    call("start", "memory-ingestion", "--run-id", "pending")
+    before = call("status", "pending")
+    call("ingest", "--resume", "pending", "--run-id", "rename", error="invalid_input")
+    call("ingest", "--resume", "pending", error="missing_input")
+    assert call("status", "pending") == before
+    call("ingest", "--run-id", "removed", payload=text_input("removed", "Synthetic note."))
+    _delete_source(call, "erase", {"source": "text", "conversation_id": "removed"})
+    call("ingest", "--resume", "removed", error="invalidated_run")
+    assert call("integrity")["revisions"] == 0
+
+
+def test_ingest_resume_continues_after_an_interleaved_import(work):
+    _, call = work
+    call(
+        "start",
+        "memory-ingestion",
+        "--run-id",
+        "pending",
+        payload=text_input("pending", "Pending."),
+    )
+    call("stage", "pending", "normalize")
+    call("ingest", "--run-id", "other", payload=text_input("other", "Other."))
+    result = call("ingest", "--resume", "pending")
+    assert result["receipt"]["changed"] and result["integrity"]["revisions"] == 2
+    assert call("status", "pending")["stages"]["normalize"]["attempts"] == 1
+    call("ingest", "--resume", "other", error="stale_snapshot")
 
 
 def test_source_timestamps_preserve_offset_and_fraction(work):

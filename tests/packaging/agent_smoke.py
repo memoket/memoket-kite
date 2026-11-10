@@ -207,6 +207,7 @@ def main() -> None:
         )
         assert imported["receipt"]["changed"] and imported["integrity"]["facts"] == 1
         assert call("status", "scripted", workspace=scripted)["state"] == "completed"
+        assert call("ingest", "--resume", "scripted", workspace=scripted) == imported
         print(
             "Installed agent smoke passed: packaged workflows, backup recovery, citations, deletion."
         )

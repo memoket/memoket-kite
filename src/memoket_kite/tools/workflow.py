@@ -179,6 +179,11 @@ def _inputs(context: Context, definition: dict, supplied: dict) -> dict:
     return safe
 
 
+def _require_stage_sequence(definition: dict, expected: tuple[tuple[str, str], ...]) -> None:
+    if tuple((stage["id"], stage["tool"]) for stage in definition["stages"]) != expected:
+        raise ToolError("invalid_pipeline", "ingest requires the standard local ingestion stages")
+
+
 def start(
     context: Context,
     supplied: dict,
@@ -189,11 +194,8 @@ def start(
     definition, fingerprint, _ = load_pipeline(
         context.root, context.pipeline, extension_root=context.extension_root
     )
-    if (
-        expected_stages is not None
-        and tuple((stage["id"], stage["tool"]) for stage in definition["stages"]) != expected_stages
-    ):
-        raise ToolError("invalid_pipeline", "ingest requires the standard local ingestion stages")
+    if expected_stages is not None:
+        _require_stage_sequence(definition, expected_stages)
     supplied = _inputs(context, definition, supplied)
     run_id = run_id if run_id is not None else uuid4().hex
     validate(ID, run_id, "run ID")
@@ -427,6 +429,21 @@ def artifact(context: Context, run_id: str, stage_id: str) -> dict:
     run, checkpoint = _run(context.workspace, run_id)
     _bound_definition(context, run, checkpoint)
     return _artifact(context, checkpoint, stage_id)
+
+
+def resume_ingestion(
+    context: Context, run_id: str, expected_stages: tuple[tuple[str, str], ...]
+) -> dict:
+    row, checkpoint = _run(context.workspace, run_id)
+    if checkpoint["pipeline_id"] != "memory-ingestion":
+        raise ToolError("invalid_pipeline", "ingest can only resume a local ingestion run")
+    definition, _ = _bound_definition(context, row, checkpoint)
+    _require_stage_sequence(definition, expected_stages)
+    if _stored_inputs(row, checkpoint).keys() != {"source", "annotations"}:
+        raise ToolError(
+            "missing_input", "supply the missing source or annotations with kite-tool stage"
+        )
+    return checkpoint
 
 
 def transcript_page(
