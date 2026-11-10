@@ -24,6 +24,7 @@
   "case": {
     "pipeline": "topic-tracing",
     "query": {"topics": ["release review"]},
+    "expected_source_ids": ["8801"],
     "select": {"review_day": ["state", "review-day"]},
     "fields": {"review_day": "The confirmed release review day as an English weekday."},
     "expected": {

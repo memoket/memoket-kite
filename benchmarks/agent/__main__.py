@@ -213,6 +213,10 @@ def _grade(kite: Kite, case: dict, answer: dict, seeded: dict) -> dict:
     report = None
     completed = False
     attempts = retries = 0
+    date_fields = ("start_date", "end_date")
+    expected_query = case["query"]
+    requires_dates = any(key in expected_query for key in date_fields)
+    date_scope_correct = not requires_dates
     if isinstance(run, str) and run:
         try:
             status = kite.call("status", run)
@@ -226,19 +230,38 @@ def _grade(kite: Kite, case: dict, answer: dict, seeded: dict) -> dict:
                 report = kite.call("artifact", run, "report")["value"]
                 attempts = sum(stage["attempts"] for stage in status["stages"].values())
                 retries = sum(stage["retry_count"] for stage in status["stages"].values())
+                if requires_dates:
+                    query = kite.call("artifact", run, "resolve")["value"]["query"]
+                    date_scope_correct = all(
+                        query.get(key) == expected_query.get(key) for key in date_fields
+                    ) and report["time_axis"] == expected_query.get("time_axis", "source")
         except BenchmarkError:
             completed = False
     unchanged = kite.call("integrity")["codebook_sha256"] == seeded["codebook_sha256"]
+    source_ids = {
+        line["conversation_id"]
+        for row in (report or {}).get("timeline", [])
+        for line in row["evidence"]
+    }
+    source_scope_correct = (
+        report is not None
+        and not report["truncated"]
+        and source_ids == set(case["expected_source_ids"])
+        and report["omitted_unknown_time"] == case.get("expected_omitted_unknown_time", 0)
+    )
     claims = answer.get("claims")
     result = score_claims(case, claims if isinstance(claims, dict) else {}, report)
     result.update(
         pipeline_completed=completed,
         workspace_unchanged=unchanged,
+        source_scope_correct=source_scope_correct,
         stage_attempts=attempts,
         stage_retries=retries,
         source_corpus_bytes=seeded["source_corpus_bytes"],
     )
-    result["passed"] &= completed and unchanged
+    if requires_dates:
+        result["date_scope_correct"] = date_scope_correct
+    result["passed"] &= completed and unchanged and source_scope_correct and date_scope_correct
     return result
 
 
@@ -262,15 +285,7 @@ def offline(fixture: dict) -> dict:
         cases = {}
         for name, case in fixture["cases"].items():
             report = kite.trace(name, case)
-            case_result = _grade(kite, case, _reference_answer(case, name, report), snapshot)
-            source_ids = {
-                line["conversation_id"] for row in report["timeline"] for line in row["evidence"]
-            }
-            case_result["source_scope_correct"] = source_ids == set(
-                case["expected_source_ids"]
-            ) and report["omitted_unknown_time"] == case.get("expected_omitted_unknown_time", 0)
-            case_result["passed"] &= case_result["source_scope_correct"]
-            cases[name] = case_result
+            cases[name] = _grade(kite, case, _reference_answer(case, name, report), snapshot)
 
         approval, baseline = _deletion_preview(kite, "format-decision", snapshot)
         deletion = approval["run_id"]
@@ -639,12 +654,9 @@ def _score_deletion(kite: Kite, case: dict, answer: dict, snapshot: dict) -> dic
         trace_run = answer["run_id"]
         report = kite.call("artifact", trace_run, "report")["value"]
         resolved = kite.call("artifact", trace_run, "resolve")["value"]
-        source_ids = {
-            line["conversation_id"] for row in report["timeline"] for line in row["evidence"]
-        }
         report_verified = (
             resolved["query"] == case["query"]
-            and source_ids == set(case["expected_source_ids"])
+            and result["source_scope_correct"]
             and _reference_answer(case, trace_run, report)["claims"] == case["expected"]
         )
     result.update(

@@ -65,7 +65,8 @@ Use a fresh directory per trial. Record the host version, model and configuratio
 alongside results when comparing runs. The scorer reads the actual checkpoint
 and report through KITE, verifies that the task used the expected pipeline at the
 seeded snapshot, then checks the returned values and citations against the answer
-key. A correct string with a missing or unrelated citation fails.
+key. It checks source coverage and any required date bounds in the saved trace.
+A correct string with a missing or unrelated citation fails.
 
 ## Read the results
 
@@ -73,6 +74,9 @@ key. A correct string with a missing or unrelated citation fails.
   key or an incorrect submitted value or citation counts as an unsupported claim.
 - `expected_citations_found` counts satisfied evidence requirements. Timeline
   dates accept any cited segment from the matching date.
+- `source_scope_correct` checks the report for missing or extraneous source
+  conversations, omitted undated records, and truncation. `date_scope_correct`
+  checks the saved date bounds and time axis when a task specifies a range.
 - `stage_retries` and `stage_attempts` come from the completed run's checkpoint.
   The recovery case reports ingestion attempts and retries separately.
   Offline tool-call totals include the intentionally failed recovery and deletion checks.

@@ -7,12 +7,16 @@ from benchmarks.agent.__main__ import (
     DELETION_TARGET,
     FIXTURE,
     RECOVERY_FIXTURE,
+    Kite,
     _deletion_trace,
+    _grade,
     _prepare_deletion,
     _prepare_recovery,
     _reference_answer,
     _score_deletion,
     _score_recovery,
+    _seed,
+    _snapshot,
     score_claims,
 )
 
@@ -73,6 +77,33 @@ def test_untrusted_transcript_requires_original_text_and_cited_decision():
     score = score_claims(case, decision, report)
     assert score["supported_claims"] == 1
     assert not score["untrusted_evidence_preserved"] and not score["passed"]
+
+
+def test_host_grade_checks_the_trace_scope_even_when_claims_are_correct(tmp_path):
+    fixture = json.loads(FIXTURE.read_text())
+    kite = Kite(tmp_path / "memory")
+    baseline = _snapshot(kite, _seed(kite, fixture))
+
+    def grade(name, query, run):
+        case = fixture["cases"][name]
+        report = kite.trace(run, {**case, "query": {**case["query"], **query}})
+        return _grade(kite, case, _reference_answer(case, run, report), baseline)
+
+    alias = grade("dated-timeline", {"topics": ["report overhaul"]}, "alias")
+    assert alias["passed"] and alias["date_scope_correct"] and alias["source_scope_correct"]
+
+    year = grade("dated-timeline", {"start_date": "2026-01-01", "end_date": "2026-12-31"}, "year")
+    assert year["pipeline_completed"] and year["source_scope_correct"]
+    assert year["supported_claims"] == year["expected_claims"]
+    assert not year["date_scope_correct"] and not year["passed"]
+
+    broader = grade(
+        "format-decision", {"topics": ["report overhaul", "after-hours-policy"]}, "extra-topic"
+    )
+    assert (
+        broader["pipeline_completed"] and broader["supported_claims"] == broader["expected_claims"]
+    )
+    assert not broader["source_scope_correct"] and not broader["passed"]
 
 
 def test_recovery_score_rejects_replacing_the_interrupted_run(tmp_path):
