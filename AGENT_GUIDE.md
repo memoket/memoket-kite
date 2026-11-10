@@ -94,6 +94,10 @@ exceeds the target. Other response fields use additional bytes.
    creation order. Use `--limit` to show up to 100, and narrow the list with
    `--pipeline NAME` or `--unfinished`. If `next_before` is present and non-null,
    pass it as `--before RUN_ID` with the same filters to see older runs.
+   In initialized workspaces, `runs`, `status`, `artifact`, and `segments`
+   read committed state without taking a write lock. Recovering from an
+   interrupted database write or upgrading a legacy workspace may require
+   write access before checkpoint data can be shown.
 5. Use `kite-tool status RUN_ID` to inspect `resume.stages`. Each eligible
    stage lists its skill, the names and types of missing inputs, and any flags
    that require explicit user authorization. Repeating a completed stage

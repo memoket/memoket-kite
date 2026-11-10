@@ -202,6 +202,34 @@ class Workspace:
             db.close()
 
     @classmethod
+    @contextmanager
+    def inspect_workflows(cls, directory: Path, *, initialize: bool = False):
+        """Inspect committed checkpoints, recovering or upgrading when needed."""
+        with ExitStack() as reader:
+            try:
+                workspace = reader.enter_context(cls.open(directory, read_only=True))
+            except ToolError as exc:
+                if exc.code != "workspace_upgrade_required" and (
+                    exc.code != "not_found" or not initialize
+                ):
+                    raise
+            except sqlite3.OperationalError as exc:
+                # Opening a hot rollback journal requires write access. Python
+                # 3.10 exposes only the base SQLite diagnostic.
+                reason = getattr(exc, "sqlite_errorname", None)
+                if reason != "SQLITE_READONLY_ROLLBACK" and (
+                    reason is not None or str(exc) != "attempt to write a readonly database"
+                ):
+                    raise
+            else:
+                # Version zero may still hold artifacts for sources already deleted.
+                if workspace.db.execute("PRAGMA user_version").fetchone()[0] != 0:
+                    yield workspace
+                    return
+        with cls.open(directory) as workspace:
+            yield workspace
+
+    @classmethod
     def backup(
         cls,
         directory: Path,

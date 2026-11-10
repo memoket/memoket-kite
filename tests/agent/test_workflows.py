@@ -464,6 +464,62 @@ def test_run_listing_filters_before_paginating_in_creation_order(work):
     assert "private" not in json.dumps(call("runs"))
 
 
+def test_workflow_inspection_reads_committed_state_during_a_write(work, monkeypatch):
+    directory, call = work
+    payload = text_input("inspection", "Use the committed transcript.")
+    call("start", "memory-ingestion", "--run-id", "interrupted", payload=payload)
+    normalized = call("stage", "interrupted", "normalize")
+    checkpoint = call("status", "interrupted")
+    listing = call("runs", "--unfinished")
+
+    connect = sqlite3.connect
+
+    def quick_connect(*args, **kwargs):
+        kwargs["timeout"] = 0.1
+        return connect(*args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", quick_connect)
+    with closing(connect(directory / "kite.sqlite3")) as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("UPDATE runs SET checkpoint='{}' WHERE id='interrupted'")
+        assert call("runs", "--unfinished") == listing
+        assert call("status", "interrupted") == checkpoint
+        assert call("artifact", "interrupted", "normalize")["value"] == normalized["value"]
+        segments = call("segments", "interrupted", "normalize")["segments"]
+        assert segments[0]["text"] == "Use the committed transcript."
+        writer.rollback()
+
+
+def test_workflow_inspection_and_resume_recover_an_interrupted_sqlite_write(work):
+    directory, call = work
+    payload = text_input("inspection", "Use the committed transcript.")
+    call("start", "memory-ingestion", "--run-id", "interrupted", payload=payload)
+    call("stage", "interrupted", "normalize")
+    checkpoint = call("status", "interrupted")
+    crash = """
+import os
+import sqlite3
+import sys
+
+db = sqlite3.connect(sys.argv[1])
+db.execute("PRAGMA cache_size=4")
+db.execute("BEGIN IMMEDIATE")
+db.execute("UPDATE runs SET checkpoint=? WHERE id='interrupted'", ("x" * 500_000,))
+os._exit(0)
+"""
+    args = [sys.executable, "-c", crash, str(directory / "kite.sqlite3")]
+    subprocess.run(args, check=True, timeout=10)
+    assert (directory / "kite.sqlite3-journal").exists()
+    assert call("status", "interrupted") == checkpoint
+    assert not (directory / "kite.sqlite3-journal").exists()
+
+    subprocess.run(args, check=True, timeout=10)
+    assert (directory / "kite.sqlite3-journal").exists()
+    result = call("ingest", "--resume", "interrupted")
+    assert result["receipt"]["changed"] and result["integrity"]["revisions"] == 1
+    assert call("status", "interrupted")["state"] == "completed"
+
+
 def test_resume_failed_stage_and_preserve_exact_sources(work, tmp_path):
     _, call = work
     payload = fixture("first-meeting")
