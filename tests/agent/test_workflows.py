@@ -2181,13 +2181,15 @@ def test_direct_query_matches_staged_report_and_creates_no_workflow_data(work, m
 
     monkeypatch.setattr(workspace, "build_index", count_rebuilds)
 
-    direct = call("query", payload={"query": query})["value"]
+    flags = ("query", "--topic", "onboarding", "--limit", "1")
+    direct = call(*flags)["value"]
     assert direct == expected and direct["next_cursor"]
     assert rebuilt == 1
-    page = call("query", payload={"query": {**query, "cursor": direct["next_cursor"]}})["value"]
+    page = call(*flags, "--cursor", direct["next_cursor"])["value"]
     assert page["timeline"][0]["evidence"][0]["conversation_id"] == "first"
     assert page["next_cursor"] is None
     assert rebuilt == 2
+    call(*flags, "--source", "text", "--cursor", direct["next_cursor"], error="invalid_input")
     empty = call("query", "--pipeline", "timeline-reconstruction", payload={"query": {}})
     assert empty["value"]["matched_count"] == 2
     call("query", payload={"query": {"topics": []}}, error="invalid_input")
@@ -2196,8 +2198,9 @@ def test_direct_query_matches_staged_report_and_creates_no_workflow_data(work, m
     assert database.read_bytes() == before
     ingest(call, "third", text_input("third", "third", date="2026-06-03"))
     call(
-        "query",
-        payload={"query": {**query, "cursor": direct["next_cursor"]}},
+        *flags,
+        "--cursor",
+        direct["next_cursor"],
         error="stale_snapshot",
     )
     updated = call("query", payload={"query": query})["value"]
@@ -2218,6 +2221,48 @@ def test_direct_topic_arguments_match_json_without_writing_memory(work):
     assert report == call("query", payload={"query": {"topics": topics}})["value"]
     assert report["unresolved_topics"] == [topics[1]]
     call("query", "--topic", " ", error="invalid_input")
+    call("query", "--source", "text", payload={"query": {}}, error="invalid_arguments")
+    call("query", error="invalid_arguments")
+    call("query", "--topic", "first run", "--conversation-id", "184", error="invalid_input")
+    pipeline = ("query", "--pipeline", "timeline-reconstruction")
+    scoped = call(
+        *pipeline,
+        "--source",
+        "memoket",
+        "--conversation-id",
+        "184",
+        "--start-date",
+        "2026-09-04",
+        "--end-date",
+        "2026-09-04",
+        "--time-axis",
+        "source",
+        "--speaker",
+        "Maya",
+        "--entity",
+        "Ravi",
+        "--state-key",
+        "checklist-owner",
+        "--evidence-byte-budget",
+        "4096",
+    )["value"]
+    expected_query = {
+        "source": "memoket",
+        "conversation_id": "184",
+        "start_date": "2026-09-04",
+        "end_date": "2026-09-04",
+        "time_axis": "source",
+        "speakers": ["Maya"],
+        "entities": ["Ravi"],
+        "state_key": "checklist-owner",
+        "evidence_byte_budget": 4096,
+    }
+    assert scoped == call(*pipeline, payload={"query": expected_query})["value"]
+    assert scoped["matched_count"] == 1
+    assert scoped["timeline"][0]["evidence"][0]["segment_id"] == "line-b"
+    project = call(*pipeline, "--project", "onboarding")["value"]
+    assert project["matched_count"] == 1
+    assert project["timeline"][0]["evidence"][0]["conversation_id"] == "design-1"
     assert database.read_bytes() == before
 
 

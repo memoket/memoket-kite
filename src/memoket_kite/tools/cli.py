@@ -52,6 +52,25 @@ def _object(path: str | None) -> dict:
     return decode_object(raw)
 
 
+def _query_object(args: argparse.Namespace) -> dict:
+    filters = {
+        field: value
+        for field in SCHEMAS["query"]["properties"]
+        if (value := getattr(args, field, None)) is not None
+    }
+    if args.input is not None:
+        if filters:
+            raise ToolError(
+                "invalid_arguments", f"use either --input or query filter flags\n{args.query_usage}"
+            )
+        return _object(args.input)
+    if not filters:
+        raise ToolError(
+            "invalid_arguments", f"provide --input or query filter flags\n{args.query_usage}"
+        )
+    return {"query": filters}
+
+
 def _source_date_arguments(parser: argparse.ArgumentParser) -> None:
     date = parser.add_mutually_exclusive_group()
     date.add_argument("--source-date", help="known conversation day in YYYY-MM-DD format")
@@ -85,14 +104,32 @@ def _parser() -> argparse.ArgumentParser:
     )
     query = commands.add_parser("query", help="run a read-only trace without saving a checkpoint")
     query.add_argument("--pipeline", choices=TRACE_PIPELINES, default="topic-tracing")
-    query_input = query.add_mutually_exclusive_group(required=True)
+    query_input = query.add_mutually_exclusive_group()
     query_input.add_argument("--input", metavar="FILE", help="JSON input file or - for stdin")
     query_input.add_argument(
         "--topic",
+        dest="topics",
         action="append",
         metavar="NAME",
         help="topic name or alias, repeat for more topics",
     )
+    query.add_argument("--entity", dest="entities", action="append", help="entity name or alias")
+    query.add_argument("--speaker", dest="speakers", action="append", help="speaker ID")
+    query.add_argument("--project", dest="projects", action="append", help="source project")
+    query.add_argument("--state-key", help="task or decision state key")
+    query.add_argument("--source", help="source namespace, for example text or memoket")
+    query.add_argument("--conversation-id", help="original conversation ID, requires --source")
+    query.add_argument("--start-date", help="inclusive YYYY-MM-DD start date")
+    query.add_argument("--end-date", help="inclusive YYYY-MM-DD end date")
+    query.add_argument(
+        "--time-axis", choices=("source", "event"), help="date axis, defaults to source"
+    )
+    query.add_argument("--limit", type=int, help="maximum facts per page (1–1000)")
+    query.add_argument(
+        "--evidence-byte-budget", type=int, help="target bytes of cited evidence per page"
+    )
+    query.add_argument("--cursor", help="next_cursor from the previous page with the same filters")
+    query.set_defaults(query_usage=query.format_usage().strip())
     evidence = commands.add_parser(
         "evidence", help="read an original cited line and nearby context"
     )
@@ -435,7 +472,9 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 ), None
             return {"xml": workspace.export_codebook(**scope, active_only=args.active_only)}, None
 
-    supplied = _object(getattr(args, "input", None))
+    supplied = (
+        _query_object(args) if args.command == "query" else _object(getattr(args, "input", None))
+    )
     if args.command == "ingest":
         return _ingest(
             root,
@@ -455,8 +494,6 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                         workspace, args.source_line_id, args.context, byte_budget=args.byte_budget
                     )
                 }, None
-            if args.topic is not None:
-                supplied = {"query": {"topics": args.topic}}
             return {"value": query_report(Context(root, workspace, args.pipeline), supplied)}, None
     open_workspace = (
         Workspace.inspect(args.workspace, initialize=True)

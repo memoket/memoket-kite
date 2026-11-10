@@ -85,6 +85,19 @@ directly. This produces the same report without saving a run.
 kite-tool query --input examples/agent-workflows/topic-query.json
 ```
 
+Use flags for an ad hoc query. The example below reads only the Memoket
+conversation from September 4 and returns one fact per page.
+
+```sh
+kite-tool query --topic "first run" --source memoket --conversation-id 184 \
+  --start-date 2026-09-04 --end-date 2026-09-04 --limit 1
+```
+
+To continue, repeat the query with the same filters and pass `--cursor` with
+the report's `next_cursor` value. After the workspace changes, run the first
+page again. Use `--pipeline timeline-reconstruction` for date, speaker or project
+queries without a topic.
+
 ## Import with prepared annotations
 
 For a local script with a prepared `source` and `annotations`, run the same

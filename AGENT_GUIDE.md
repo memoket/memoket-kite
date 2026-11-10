@@ -44,9 +44,12 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
 ## Advance and recover
 
 For a direct read from an existing workspace, use `kite-tool query --topic "first run"`.
-Repeat `--topic` to supply several topic names or aliases. For filters and
-pagination, pass the `query` input object with `--input`. The command uses the
-built-in trace tools in one read transaction and saves no checkpoint or artifact.
+Repeat `--topic` to supply several topic names or aliases. Use `--source` and
+`--conversation-id` to scope a trace, `--start-date` and `--end-date` to set a
+date window, and `--limit` and `--cursor` to page. Run `kite-tool query --help`
+for the available flags. For the full query schema, pass the `query` input object
+with `--input` and omit the filter flags. The command uses the built-in trace
+tools in one read transaction and saves no checkpoint or artifact.
 
 ```sh
 kite-tool query --input - <<'JSON'
