@@ -4,7 +4,7 @@ Install KITE with the `agent` extra from a checkout and run the offline demo.
 
 ```sh
 python -m pip install '.[agent]'
-kite-tool demo
+kite-tool demo --text
 ```
 
 Use `kite-tool resources` to locate the workflow and example files in an installed package.
@@ -19,7 +19,7 @@ in a fresh virtual environment.
 python -m venv .venv
 . .venv/bin/activate
 python -m pip install './memoket_kite-0.1.0-py3-none-any.whl[agent]'
-kite-tool demo
+kite-tool demo --text
 ```
 
 In Windows PowerShell, use `.\.venv\Scripts\Activate.ps1` to activate the
@@ -30,6 +30,8 @@ builds for 14 days.
 The demo imports an early text proposal and a later Memoket transcript in
 separate processes, resumes from their checkpoints, and traces the topic by
 its alias. The report cites the line where the team chose a short checklist.
+Run `kite-tool demo` for the complete JSON report, or
+`kite-tool demo --metrics` for deterministic fixture metrics.
 
 ## Try the stages yourself
 

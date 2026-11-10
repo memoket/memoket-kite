@@ -104,3 +104,28 @@ def _run_demo(repo: Path, directory: Path, *, metrics: bool) -> dict:
 def run_demo(repo: Path, *, metrics: bool = False) -> dict:
     with TemporaryDirectory(prefix="kite-demo-") as path:
         return _run_demo(repo, Path(path), metrics=metrics)
+
+
+def render_demo(report: dict) -> str:
+    lines = ["KITE offline demo", "Two synthetic meetings. No model calls.", ""]
+    for key, label in (
+        ("onboarding-design", "Confirmed onboarding design"),
+        ("checklist-owner", "Implementation owner"),
+    ):
+        state = report["current_reported_states"].get(key)
+        if state and state["status"] == "confirmed":
+            lines.append(f"{label}  {state['value']}")
+    lines.extend(("", "Evidence across meetings"))
+    shown = set()
+    for row in report["timeline"]:
+        day = row["source_day"] or "Date unknown"
+        for evidence in row["evidence"]:
+            identity = (row["status"], evidence["source_line_id"])
+            if identity in shown:
+                continue
+            shown.add(identity)
+            source = f"{evidence['source']}/{evidence['conversation_id']}#{evidence['segment_id']}"
+            speaker = f"  {evidence['speaker_id']}" if "speaker_id" in evidence else ""
+            lines.append(f"{day}  {row['status'].upper()}  {source}{speaker}")
+            lines.extend(f"  > {line}" for line in evidence["text"].splitlines())
+    return "\n".join(lines)

@@ -11,7 +11,7 @@ from pathlib import Path
 from .audio import audio_source
 from .captions import CAPTION_FORMATS
 from .contracts import ToolError, decode_object, encode, read_utf8, validate
-from .demo import run_demo
+from .demo import render_demo, run_demo
 from .ingest import file_source
 from .operations import SCHEMAS, SOURCE_SCOPE, TOOLS, Context
 from .resources import resource_root
@@ -60,7 +60,11 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("pipelines", help="list validated pipelines")
     commands.add_parser("resources", help="show paths to agent instructions and workflows")
     demo = commands.add_parser("demo", help="run the offline text and Memoket quickstart")
-    demo.add_argument("--metrics", action="store_true", help="emit deterministic fixture metrics")
+    demo_output = demo.add_mutually_exclusive_group()
+    demo_output.add_argument(
+        "--metrics", action="store_true", help="emit deterministic fixture metrics"
+    )
+    demo_output.add_argument("--text", action="store_true", help="show the decision and citations")
     query = commands.add_parser("query", help="run a read-only trace without saving a checkpoint")
     query.add_argument("--pipeline", choices=TRACE_PIPELINES, default="topic-tracing")
     query.add_argument(
@@ -350,6 +354,8 @@ def main(argv=None) -> int:
         return 2
     if args.command == "codebook":
         sys.stdout.buffer.write(result["xml"] + b"\n")
+    elif args.command == "demo" and args.text:
+        print(render_demo(result["value"]))
     elif args.command in {"audio-source", "file-source"}:
         print(encode(result))
     else:

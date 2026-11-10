@@ -59,6 +59,19 @@ def main() -> None:
         metrics = call("demo", "--metrics")["value"]
         assert metrics["pipelines_completed"] == 3 and metrics["decision_state_correct"]
         assert metrics["expected_citations_found"] == metrics["expected_citations"] == 3
+        demo = subprocess.check_output(
+            [str(command), "--workspace", str(original), "demo", "--text"],
+            text=True,
+            cwd=directory,
+            timeout=45,
+        )
+        assert "Confirmed onboarding design  short checklist" in demo
+        assert "Implementation owner  Ravi" in demo
+        assert demo.index("text/design-1#text-1") < demo.index("memoket/184#line-a")
+        assert demo.index("memoket/184#line-a") < demo.index("memoket/184#line-b")
+        assert demo.count("memoket/184#line-b") == 1
+        assert "We decided to ship a short checklist. Ravi will implement it." in demo
+        assert not original.exists()
 
         (directory / "captions.vtt").write_text(
             "WEBVTT\n\ncue-1\n00:01.250 --> 00:03.500\n<v Ada>Let's ship it.</v>\n",

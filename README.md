@@ -30,11 +30,13 @@ From a KITE checkout, install the package and try the offline demo with two synt
 
 ```bash
 python -m pip install '.[agent]'
-kite-tool demo
+kite-tool demo --text
 ```
 
-The demo follows an early proposal through to a decision and shows the original
-lines behind it. The installed CLI carries its workflows, skills, and demo data.
+The demo follows an early proposal through to a confirmed decision. It prints
+the decision, owner, and original quotes with conversation and segment IDs.
+It runs without an API key. The installed CLI carries its workflows, skills,
+and demo data.
 See the [agent quickstart](examples/agent-workflows/README.md) for stage-by-stage
 commands and the [operating guide](AGENT_GUIDE.md) for integration details.
 
