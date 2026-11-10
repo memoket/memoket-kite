@@ -25,7 +25,7 @@ from memoket_kite import Memory
 from memoket_kite.pipeline import extract
 from memoket_kite.research import Codebook, SymbolicQuery
 from memoket_kite.tools import audio, cli, operations, workspace
-from memoket_kite.tools.contracts import encode
+from memoket_kite.tools.contracts import digest, encode
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES = ROOT / "examples" / "agent-workflows"
@@ -1826,7 +1826,7 @@ def test_related_trace_labels_are_ranked_and_bound_to_the_evidence_page(work):
 
 
 def test_trace_cursor_rejects_changes_to_filters_and_snapshot(work, tmp_path):
-    _, call = work
+    directory, call = work
     for identity in ("a", "b"):
         ingest(call, f"import-{identity}", text_input(identity, identity))
     query = {"topics": ["onboarding"], "limit": 1}
@@ -1844,6 +1844,11 @@ def test_trace_cursor_rejects_changes_to_filters_and_snapshot(work, tmp_path):
         )
         call("stage", name, "resolve", error=error, workspace_dir=destination)
 
+    with workspace.Workspace.open(directory, read_only=True) as current:
+        identity, version = current.snapshot_identity()
+    previous_scope = [identity, version, "topic-tracing", query]
+    legacy_cursor = f"{version}.1.{digest([previous_scope, 1])}"
+    reject("old-ordering", {**query, "cursor": legacy_cursor}, "invalid_input")
     reject("changed-filter", {**query, "cursor": cursor, "limit": 2}, "invalid_input")
     copy = tmp_path / "copy"
     call("backup", str(copy))
@@ -1989,6 +1994,38 @@ def test_source_state_orders_adjacent_segments_without_ordering_overlaps(work):
     assert overlapping["current_reported_states"]["owner"]["status"] == "ambiguous"
     assert adjacent["current_reported_states"]["owner"]["value"] == "Kim"
     assert overlapping["timeline"][0]["evidence"][0]["end_ms"] == 2000
+
+
+@pytest.mark.parametrize(
+    ("short_end_ms", "status", "owner"), [(1000, "confirmed", "Ada"), (4000, "ambiguous", None)]
+)
+def test_source_timeline_uses_cited_intervals_across_recordings(work, short_end_ms, status, owner):
+    _, call = work
+    for name, stamp, begin, end in (
+        ("Ada", "2026-11-01T23:59:00Z", 65_000, 66_000),
+        ("Rae", "2026-11-02T08:00:02+08:00", 0, short_end_ms),
+    ):
+        segment = {"segment_id": "text-1", "text": name, "start_ms": begin, "end_ms": end}
+        payload = text_input(name, name)
+        source = payload["source"]
+        source["format"] = "transcript"
+        del source["payload"]["text"]
+        source["payload"].update(started_at=stamp, segments=[segment])
+        ingest(call, f"recording-{name}", payload)
+
+    pipeline = "task-tracing"
+    query = {"state_key": "owner"}
+    report = trace(call, "owner", query, pipeline)
+    assert call("query", "--pipeline", pipeline, payload={"query": query})["value"] == report
+    assert [row["state"] for row in report["timeline"]] == ["Rae", "Ada"]
+    assert [row["source_day"] for row in report["timeline"]] == ["2026-11-02", "2026-11-01"]
+    state = report["current_reported_states"]["owner"]
+    assert (state["status"], state["value"]) == (status, owner)
+    assert state["fact_ids"] == [
+        row["fact_id"] for row in report["timeline"] if row["state"] == owner or owner is None
+    ]
+    first = trace(call, "recent-evidence", {**query, "limit": 1}, pipeline)
+    assert [row["state"] for row in first["timeline"]] == ["Ada"]
 
 
 def test_legacy_index_is_checked_once_and_integrity_still_rebuilds(work, monkeypatch):

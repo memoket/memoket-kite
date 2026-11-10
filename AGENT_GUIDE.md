@@ -134,7 +134,11 @@ the trace retains matching evidence and marks any reported states partial.
 Use `query.speakers` for the recorded speaker on an evidence segment.
 
 By default, timelines and reported states use source dates, timestamps, and
-available offsets within a single recording. Use `query.time_axis: event` to
+cited segment offsets. With a timestamped recording, KITE adds known offsets
+to its start time and compares evidence intervals across recordings. Overlapping
+intervals can leave competing values ambiguous. A recording without complete
+offsets uses its start time for comparisons across sources. Source-date filters
+still use the UTC day when the conversation began. Use `query.time_axis: event` to
 order and compare facts by explicit event dates. Mark a date derived from
 context with `event_date_basis: inferred`. Omit the date when it is unknown.
 Unbounded event timelines list inferred and unknown dates after explicitly
@@ -157,7 +161,8 @@ report's `next_cursor` in `query.cursor`. Continue until `next_cursor` is null.
 Each page orders its dated entries chronologically. Pages begin with the most
 recent dated window, then work backward and finish with any uncertain dates.
 A partial page leaves reported states tentative. If memory changes, restart
-from the first page.
+from the first page. If a KITE upgrade changes trace ordering, start from
+the first page to get a cursor for the new ordering.
 
 Set `query.evidence_byte_budget` to target 128–1,048,576 bytes for the JSON
 array of cited evidence lists on a page. This applies alongside `query.limit`.

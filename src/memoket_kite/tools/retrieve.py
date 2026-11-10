@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 
 from memoket_kite.core.vocab import norm_code
 
@@ -12,6 +13,9 @@ from .index import event_date_basis, revision_id
 from .ingest import source_day
 
 CURSOR = {"type": "string", "pattern": r"^[0-9]{1,16}\.[1-9][0-9]{0,15}\.[a-f0-9]{64}$"}
+_CLOCK_ORIGIN = datetime(1, 1, 1, tzinfo=timezone.utc)
+_MICROSECOND = timedelta(microseconds=1)
+_DAY_MICROS = timedelta(days=1) // _MICROSECOND
 
 QUERY = object_schema(
     {},
@@ -46,6 +50,7 @@ def _page_scope(context, query: dict) -> list:
         version,
         context.pipeline,
         {k: v for k, v in query.items() if k != "cursor"},
+        "source-time-v2",
     ]
 
 
@@ -58,7 +63,7 @@ def _page_offset(scope: list, query: dict) -> int:
         raise ToolError("stale_snapshot", "memory changed; restart the trace without its cursor")
     offset = int(offset)
     if token != _cursor(scope, offset):
-        raise ToolError("invalid_input", "cursor belongs to another workspace or query")
+        raise ToolError("invalid_input", "cursor does not match this trace; restart without it")
     return offset
 
 
@@ -115,13 +120,36 @@ def resolve(context, query: dict) -> dict:
     }
 
 
-def _source_time(record: dict) -> tuple[str, str | None, str]:
+def _source_time(record: dict) -> tuple[str, str | None]:
     conversation = record["conversation"]
     day = source_day(conversation)
-    timestamp = conversation.get("started_at")
-    if timestamp:
-        return day, timestamp, utc_timestamp(timestamp).isoformat()
-    return day or "", day, day or ""
+    return day or "", conversation.get("started_at", day)
+
+
+def _timestamp_micros(timestamp: str) -> int:
+    return (utc_timestamp(timestamp) - _CLOCK_ORIGIN) // _MICROSECOND
+
+
+def _offset_bounds(segments: list[dict]) -> tuple[int, int] | None:
+    if any("start_ms" not in line for line in segments):
+        return None
+    return (
+        min(line["start_ms"] for line in segments),
+        max(line.get("end_ms", line["start_ms"]) for line in segments),
+    )
+
+
+def _source_bounds(
+    day: str | None, started_at: str | None, offsets: tuple[int, int] | None
+) -> tuple[int, int] | None:
+    if started_at:
+        origin = _timestamp_micros(started_at)
+        start, end = offsets or (0, 0)
+        return origin + start * 1000, origin + end * 1000
+    if day:
+        start = _timestamp_micros(f"{day}T00:00:00Z")
+        return start, start + _DAY_MICROS
+    return None
 
 
 def _citation(record: dict, line_id: str, segment: dict) -> dict:
@@ -229,11 +257,11 @@ def retrieve(context, resolved: dict) -> dict:
             for text in [fact.text, *(index.segments[sid]["text"] for sid in fact.src)]
         ):
             continue
-        day, _, sortable = _source_time(record)
+        day = source_day(conversation) or ""
         basis = "explicit" if day else "unknown"
         if time_axis == "event":
             annotation = index.facts[fid]
-            day = sortable = annotation.get("event_date", "")
+            day = annotation.get("event_date", "")
             basis = event_date_basis(annotation)
         if bounded:
             if basis == "inferred":
@@ -244,8 +272,14 @@ def retrieve(context, resolved: dict) -> dict:
                 continue
             if not query.get("start_date", "") <= day <= query.get("end_date", "9999-12-31"):
                 continue
-        offsets = [index.segments[sid].get("start_ms", -1) for sid in fact.src]
-        rows.append((time_order[basis], day, sortable, fact.unit, min(offsets), fid))
+        segments = [index.segments[sid] for sid in fact.src]
+        sortable = day
+        if time_axis == "source" and day:
+            sortable = _source_bounds(
+                day, conversation.get("started_at"), _offset_bounds(segments)
+            )[0]
+        first_offset = min(line.get("start_ms", -1) for line in segments)
+        rows.append((time_order[basis], sortable, fact.unit, first_offset, fid))
     rows.sort()
     # Select from newest dated to oldest, then from the uncertain tail.
     limit = query.get("limit", 100)
@@ -291,7 +325,7 @@ def _evidence(index, fid: str) -> dict:
     annotations = index.facts[fid]
     record = index.revisions[fact.unit]
     conversation = record["conversation"]
-    day, time, _ = _source_time(record)
+    day, time = _source_time(record)
     return {
         "fact_id": fid,
         "content": fact.text,
@@ -315,31 +349,27 @@ def _evidence(index, fid: str) -> dict:
     }
 
 
-def _precedes(first: dict, second: dict, time_axis: str) -> bool:
+def _state_time(row: dict, time_axis: str) -> tuple:
     if time_axis == "event":
-        left, right = first["event_date"], second["event_date"]
-        return (
-            first["event_date_basis"] == second["event_date_basis"] == "explicit" and left < right
-        )
-    if first["source_day"] and second["source_day"] and first["source_day"] != second["source_day"]:
-        return first["source_day"] < second["source_day"]
-    if first["time_precision"] == second["time_precision"] == "timestamp":
-        left, right = (utc_timestamp(row["source_time"]) for row in (first, second))
-        if left != right:
-            return left < right
-    checksum = first["evidence"][0]["revision_checksum"]
-    if all(
-        line["revision_checksum"] == checksum and "start_ms" in line
-        for row in (first, second)
-        for line in row["evidence"]
-    ):
-        left = first["evidence"]
-        right_start = min(line["start_ms"] for line in second["evidence"])
-        return (
-            max(line["start_ms"] for line in left) < right_start
-            and max(line.get("end_ms", line["start_ms"]) for line in left) <= right_start
-        )
-    return False
+        day = row["event_date"] if row["event_date_basis"] == "explicit" else None
+        return None, None, (day, day) if day else None
+    offsets = _offset_bounds(row["evidence"])
+    absolute = _source_bounds(
+        row["source_day"],
+        row["source_time"] if row["time_precision"] == "timestamp" else None,
+        offsets,
+    )
+    return row["evidence"][0]["revision_checksum"], offsets, absolute
+
+
+def _precedes(first: tuple, second: tuple) -> bool:
+    first_revision, first_offsets, first_absolute = first
+    second_revision, second_offsets, second_absolute = second
+    if first_revision is not None and first_revision == second_revision:
+        left, right = first_offsets, second_offsets
+    else:
+        left, right = first_absolute, second_absolute
+    return left is not None and right is not None and left[0] < right[0] and left[1] <= right[0]
 
 
 def _states(events: list[dict], complete: bool, time_axis: str) -> dict:
@@ -349,10 +379,11 @@ def _states(events: list[dict], complete: bool, time_axis: str) -> dict:
             groups[event["state_key"]].append(event)
     result = {}
     for key, group in sorted(groups.items()):
+        timings = [_state_time(row, time_axis) for row in group]
         latest = [
             row
-            for row in group
-            if not any(_precedes(row, other, time_axis) for other in group if other is not row)
+            for row, timing in zip(group, timings)
+            if not any(_precedes(timing, other) for other in timings)
         ]
         values = {row["state"] for row in latest}
         has_orderable_date = time_axis == "source" or any(
