@@ -35,6 +35,7 @@ QUERY = object_schema(
         "end_date": DATE,
         "time_axis": {"enum": ["source", "event"]},
         "source": TEXT,
+        "conversation_id": TEXT,
         "state_key": TEXT,
         "follow_states": {"type": "boolean"},
         "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
@@ -42,6 +43,7 @@ QUERY = object_schema(
         "cursor": CURSOR,
     },
 )
+QUERY["dependentRequired"] = {"conversation_id": ["source"]}
 
 
 def _page_scope(context, query: dict) -> list:
@@ -226,7 +228,11 @@ def _trace_rows(
         fact = index.store.facts[fid]
         record = index.revisions[fact.unit]
         conversation = record["conversation"]
-        if query.get("source", conversation["source"]) != conversation["source"]:
+        if (
+            query.get("source", conversation["source"]) != conversation["source"]
+            or query.get("conversation_id", conversation["conversation_id"])
+            != conversation["conversation_id"]
+        ):
             continue
         if "projects" in query and conversation["metadata"].get("project") not in query["projects"]:
             continue

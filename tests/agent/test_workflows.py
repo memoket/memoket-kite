@@ -2006,6 +2006,65 @@ def test_follow_state_history_preserves_scope_and_pagination(work):
     assert absent["timeline"] == absent["followed_state_keys"] == []
 
 
+def test_conversation_scope_keeps_state_following_and_citations_in_one_source(work):
+    _, call = work
+    selected = text_input("shared-id", "Ada owns the review.", date="2026-05-04")
+    selected["annotations"]["facts"][0].update(state="Ada")
+    first = ingest(call, "first", selected)
+    changed = text_input("shared-id", "Rae owns the review.", date="2026-05-05")
+    changed["source"]["expected_checksum"] = first["checksum"]
+    changed["annotations"]["facts"][0].update(state="Rae", supersedes=first["revision_id"] + "F1")
+    ingest(call, "update", changed, pipeline="memory-update")
+    unrelated = text_input("other-id", "Private other review.", date="2026-05-06")
+    ingest(call, "other", unrelated)
+    archive = text_input("shared-id", "Private archived review.", date="2026-05-06")
+    archive["source"]["format"] = "conversation"
+    raw = archive["source"]["payload"]
+    raw.update(source="archive", segments=[{"segment_id": "text-1", "text": raw.pop("text")}])
+    ingest(call, "archive", archive)
+
+    query = {
+        "source": "text",
+        "conversation_id": "shared-id",
+        "topics": ["onboarding"],
+        "text": "Ada owns",
+        "follow_states": True,
+    }
+    pipeline = "task-tracing"
+    report = trace(call, "scoped", query, pipeline)
+    assert call("query", "--pipeline", pipeline, payload={"query": query})["value"] == report
+    assert [row["state"] for row in report["timeline"]] == ["Ada", "Rae"]
+    assert report["current_reported_states"]["owner"]["value"] == "Rae"
+    assert {
+        (line["source"], line["conversation_id"])
+        for row in report["timeline"]
+        for line in row["evidence"]
+    } == {("text", "shared-id")}
+    assert "Private" not in json.dumps(report)
+    page = call("query", "--pipeline", pipeline, payload={"query": {**query, "limit": 1}})["value"]
+    assert page["next_cursor"]
+    next_query = {**query, "limit": 1, "cursor": page["next_cursor"]}
+    continuation = call("query", "--pipeline", pipeline, payload={"query": next_query})["value"]
+    assert [row["state"] for row in continuation["timeline"]] == ["Ada"]
+    call(
+        "query",
+        "--pipeline",
+        pipeline,
+        payload={"query": {**next_query, "conversation_id": "other-id"}},
+        error="invalid_input",
+    )
+    incomplete_scope = {key: value for key, value in query.items() if key != "source"}
+    call(
+        "start",
+        pipeline,
+        "--run-id",
+        "ambiguous",
+        payload={"query": incomplete_scope},
+        error="invalid_input",
+    )
+    call("status", "ambiguous", error="not_found")
+
+
 def test_trace_cursor_reads_all_windows_without_repeating_evidence(work):
     _, call = work
     for name, event in (

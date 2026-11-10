@@ -171,12 +171,20 @@ Use `query.speakers` for the recorded speaker on an evidence segment.
 Set `follow_states: true` to use a person, speaker, event or phrase as a clue
 to a task. KITE finds state keys in the initial matches and adds evidence
 with those same keys, even when a later meeting names a different owner.
-Topic, source, project, date and explicit `state_key` filters apply to both
+Topic, source, conversation, project, date and explicit `state_key` filters apply to both
 passes. The report lists the followed keys present on each evidence page.
 Give each evolving state a distinct key, such as `onboarding-checklist-owner`.
 
 ```json
 {"query":{"topics":["onboarding"],"entities":["David"],"follow_states":true}}
+```
+
+Set both `source` and `conversation_id` to limit the trace evidence to one
+conversation and its retained revisions. The workspace's topic aliases and
+corrections still apply to the selected evidence.
+
+```json
+{"query":{"topics":["onboarding"],"source":"memoket","conversation_id":"184"}}
 ```
 
 By default, timelines and reported states use source dates, timestamps, and
