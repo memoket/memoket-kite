@@ -436,6 +436,77 @@ def test_revision_correction_consolidation_and_query_scopes(work):
     assert trace(call, "unknown", {"topics": ["nonexistent"]})["matched_count"] == 0
 
 
+def test_bounded_history_applies_only_corrections_through_the_selected_day(work):
+    _, call = work
+    previous = None
+    for name, source_date, event_date, topic in (
+        ("Alice", "2026-03-20", "2026-03-10", "launch"),
+        ("Bob", "2026-06-05", "2026-04-10", "handover"),
+        ("Rae", "2026-07-01", "2026-06-20", "handover"),
+    ):
+        payload = text_input(name, name, date=source_date, topic=topic)
+        fact = payload["annotations"]["facts"][0]
+        fact["event_date"] = event_date
+        if previous:
+            fact["supersedes"] = previous
+        previous = ingest(call, f"import-{name}", payload)["revision_id"] + "F1"
+
+    pipeline = "timeline-reconstruction"
+    query = {"state_key": "owner", "end_date": "2026-04-30"}
+    old = trace(call, "reported-by-april", query, pipeline)
+    assert old["end_date"] == "2026-04-30"
+    assert old["current_reported_states"]["owner"]["value"] == "Alice"
+    assert old["timeline"][0]["effective"]
+    by_event = trace(call, "events-by-april", {**query, "time_axis": "event"}, pipeline)
+    assert by_event["current_reported_states"]["owner"]["value"] == "Bob"
+    assert [row["effective"] for row in by_event["timeline"]] == [False, True]
+    limited_scope = trace(
+        call, "through-june", {"topics": ["launch"], "end_date": "2026-06-05"}, pipeline
+    )
+    assert not limited_scope["timeline"][0]["effective"]
+    assert "owner" not in limited_scope["current_reported_states"]
+    now = trace(call, "current", {"state_key": "owner"}, pipeline)
+    assert now["current_reported_states"]["owner"]["value"] == "Rae"
+    assert [row["effective"] for row in now["timeline"]] == [False, False, True]
+
+
+def test_undated_correction_outside_the_filter_makes_only_its_state_partial(work):
+    _, call = work
+    original = text_input("initial", "Alice", date="2026-03-01", topic="launch")
+    original["annotations"]["facts"][0]["event_date"] = "2026-02-26"
+    original["annotations"]["facts"].append(
+        {
+            "content": "planning",
+            "segment_ids": ["text-1"],
+            "topics": ["launch"],
+            "state_key": "phase",
+            "state": "planning",
+            "status": "confirmed",
+            "event_date": "2026-02-26",
+        }
+    )
+    predecessor = ingest(call, "initial", original)["revision_id"] + "F1"
+    later = text_input("uncertain", "Bob", topic="handover")
+    later["annotations"]["facts"][0].update(
+        supersedes=predecessor, event_date="2026-04-30", event_date_basis="inferred"
+    )
+    ingest(call, "undated", later)
+
+    for axis in ("source", "event"):
+        query = {"topics": ["launch"], "end_date": "2026-03-31", "time_axis": axis}
+        report = trace(call, f"bounded-{axis}", query, "timeline-reconstruction")
+        assert report["omitted_unknown_time"] == report["omitted_inferred_time"] == 0
+        assert report["current_reported_states"]["phase"]["value"] == "planning"
+        assert report["current_reported_states"]["owner"]["status"] == "partial"
+        assert report["current_reported_states"]["owner"]["value"] is None
+        rows = {row["state_key"]: row for row in report["timeline"]}
+        assert rows["owner"]["supersession_uncertain"]
+        assert not rows["phase"]["supersession_uncertain"]
+
+    latest = trace(call, "current", {"topics": ["launch"]})
+    assert "owner" not in latest["current_reported_states"]
+
+
 def test_same_source_amendment_keeps_citations_and_is_idempotent(work):
     directory, call = work
     quote = "Maya will observe the launch. Rae owns it. Review happens on Tuesday."

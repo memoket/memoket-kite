@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .contracts import COUNT, HASH, TEXT, ToolError, array, object_schema
+from .contracts import COUNT, DATE, HASH, TEXT, ToolError, array, object_schema
 from .extract import MODEL, propose
 from .index import ANNOTATIONS, RECLASSIFY, annotate, reclassify
 from .ingest import SOURCE, normalize
@@ -63,7 +63,8 @@ SCHEMAS = {
             "topic_codes": array(TEXT),
             "event_codes": array(TEXT),
             "unresolved_events": array(TEXT),
-        }
+        },
+        {"end_date": DATE},
     ),
     "report": object_schema(
         {
@@ -84,7 +85,8 @@ SCHEMAS = {
             "resolved_events": array(TEXT),
             "unresolved_events": array(TEXT),
             "memory_version": COUNT,
-        }
+        },
+        {"end_date": DATE},
     ),
     "receipt": RECEIPT,
     "integrity": object_schema(
@@ -190,8 +192,8 @@ TOOLS = {
     "rebuild": Tool(_rebuild, {}, "receipt", "write"),
     "validate_commit": Tool(_validate, {"receipt": "receipt"}, "integrity"),
     "resolve": Tool(resolve, {"query": "query"}, "resolved", version=2),
-    "retrieve": Tool(retrieve, {"resolved": "resolved"}, "matches", version=4),
-    "report": Tool(report, {"matches": "matches"}, "report", version=4),
+    "retrieve": Tool(retrieve, {"resolved": "resolved"}, "matches", version=5),
+    "report": Tool(report, {"matches": "matches"}, "report", version=5),
     "reclassify": Tool(reclassify, {"merge": "reclassify"}, "receipt", "write"),
     "preview_delete": Tool(_preview, {"target": "deletion_target"}, "deletion_plan"),
     "delete": Tool(_delete, {"plan": "deletion_plan"}, "receipt", "delete"),

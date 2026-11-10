@@ -90,6 +90,13 @@ the same event day or known overlapping intervals can leave competing values
 ambiguous. Reports retain the source date for citation and separately mark
 results truncated by a limit.
 
+When a query supplies `end_date`, the report evaluates supersession through
+that day on the selected time axis. Only corrections dated on or before
+the cutoff can supersede evidence in that window. An uncertain correction
+date marks its affected state partial, even if the correction falls outside
+the topic filter. The report uses the current workspace's source revisions.
+Unbounded queries apply the latest known supersession links.
+
 ## Source and access
 
 Select a workspace via `--workspace DIR` or `KITE_DATA_DIR`. The default is

@@ -158,6 +158,7 @@ def retrieve(context, resolved: dict) -> dict:
         "topic_codes": resolved["topic_codes"],
         "event_codes": resolved["event_codes"],
         "unresolved_events": resolved["unresolved_events"],
+        **({"end_date": query["end_date"]} if "end_date" in query else {}),
     }
 
 
@@ -245,7 +246,11 @@ def _states(events: list[dict], complete: bool, time_axis: str) -> dict:
         has_orderable_date = time_axis == "source" or any(
             row["event_date_basis"] == "explicit" for row in latest
         )
-        if not complete or (len(values) == 1 and not has_orderable_date):
+        if (
+            not complete
+            or any(row["supersession_uncertain"] for row in group)
+            or (len(values) == 1 and not has_orderable_date)
+        ):
             status = "partial"
         else:
             status = "confirmed" if len(values) == 1 else "ambiguous"
@@ -257,24 +262,50 @@ def _states(events: list[dict], complete: bool, time_axis: str) -> dict:
     return result
 
 
+def _correction_targets(index, targets: list[str]) -> set[str]:
+    reached = set()
+    while targets:
+        target = targets.pop()
+        if target in reached:
+            continue
+        reached.add(target)
+        if predecessor := index.facts[target].get("supersedes"):
+            targets.append(predecessor)
+    return reached
+
+
+def _supersession(index, time_axis: str, end_date: str | None) -> tuple[set[str], set[str]]:
+    targets, uncertain = [], []
+    for fid, fact in index.facts.items():
+        target = fact.get("supersedes")
+        if not target:
+            continue
+        record = index.revisions[index.store.facts[fid].unit]
+        if not record["active"]:
+            continue
+        if end_date is not None:
+            if time_axis == "event":
+                day = fact["event_date"] if event_date_basis(fact) == "explicit" else None
+            else:
+                day = source_day(record["conversation"])
+            if day is None:
+                uncertain.append(target)
+                continue
+            if day > end_date:
+                continue
+        targets.append(target)
+    superseded = _correction_targets(index, targets)
+    return superseded, _correction_targets(index, uncertain) - superseded
+
+
 def report(context, matches: dict) -> dict:
     index = context.workspace.index()
     timeline = [_evidence(index, fid) for fid in matches["fact_ids"]]
-    superseded = set()
-    targets = [
-        fact["supersedes"]
-        for fid, fact in index.facts.items()
-        if "supersedes" in fact and index.revisions[index.store.facts[fid].unit]["active"]
-    ]
-    while targets:
-        target = targets.pop()
-        if target in superseded:
-            continue
-        superseded.add(target)
-        if predecessor := index.facts[target].get("supersedes"):
-            targets.append(predecessor)
+    end_date = matches.get("end_date")
+    superseded, uncertain = _supersession(index, matches["time_axis"], end_date)
     for row in timeline:
         row["effective"] = row["source_revision_active"] and row["fact_id"] not in superseded
+        row["supersession_uncertain"] = row["effective"] and row["fact_id"] in uncertain
     sections = {
         label: [row["fact_id"] for row in timeline if row["status"] == status]
         for label, status in (
@@ -293,6 +324,7 @@ def report(context, matches: dict) -> dict:
     return {
         "trace": context.pipeline,
         "time_axis": matches["time_axis"],
+        **({"end_date": end_date} if end_date is not None else {}),
         "timeline": timeline,
         **sections,
         "current_reported_states": _states(timeline, complete, matches["time_axis"]),
