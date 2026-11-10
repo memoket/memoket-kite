@@ -21,6 +21,30 @@ def encode(value) -> str:
     )
 
 
+def read_utf8(path: Path) -> str:
+    try:
+        return path.read_bytes().decode("utf-8")
+    except UnicodeError as exc:
+        raise ToolError("invalid_input", "input must be valid UTF-8") from exc
+
+
+def decode_object(raw: str) -> dict:
+    def pairs(items):
+        result = dict(items)
+        if len(items) != len(result):
+            raise ToolError("invalid_input", "duplicate JSON input keys")
+        return result
+
+    try:
+        result = json.loads(raw, object_pairs_hook=pairs)
+        encode(result)
+    except (ValueError, RecursionError) as exc:
+        raise ToolError("invalid_input", "input must be finite, valid JSON") from exc
+    if not isinstance(result, dict):
+        raise ToolError("invalid_input", "input must be a JSON object")
+    return result
+
+
 def digest(value) -> str:
     return hashlib.sha256(encode(value).encode()).hexdigest()
 

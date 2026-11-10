@@ -139,3 +139,8 @@ jobs:
           /tmp/wheelsmoke/bin/kite-tool resources
           /tmp/wheelsmoke/bin/kite-tool validate-pipeline memory-ingestion >/dev/null
           /tmp/wheelsmoke/bin/kite-tool demo --metrics
+          set -o pipefail
+          printf 'A synthetic note for the installed CLI.\n' > notes.txt
+          /tmp/wheelsmoke/bin/kite-tool file-source notes.txt --format text --source-id installed-note \
+            | /tmp/wheelsmoke/bin/kite-tool --workspace ./memory start memory-ingestion --run-id installed-note --input -
+          /tmp/wheelsmoke/bin/kite-tool --workspace ./memory stage installed-note normalize >/dev/null

@@ -55,6 +55,33 @@ For an authorized real transcript, start with only its `source` input, run
 Pass it via `kite-tool stage RUN_ID annotate --input FILE`.
 See the [agent guide](../../AGENT_GUIDE.md) for contracts, lifecycle and access.
 
+## Import local notes or a Memoket export
+
+Prepare an authorized file and pipe it directly into a new run.
+
+```sh
+set -o pipefail
+export KITE_DATA_DIR="$(mktemp -d)"
+kite-tool file-source notes.txt --format text --source-id planning-notes \
+  | kite-tool start memory-ingestion --run-id notes --input -
+kite-tool stage notes normalize
+```
+
+Finish the notes run with `annotate`, `commit`, and `verify`. Then start the
+Memoket export in the same workspace.
+
+```sh
+kite-tool file-source transcript.json --format memoket \
+  | kite-tool start memory-ingestion --run-id transcript --input -
+kite-tool stage transcript normalize
+```
+
+Finish the export run with `annotate`, `commit`, and `verify`.
+Keep the same text source ID for repeated imports. For a changed source, pass
+the previously committed checksum with `--expected-checksum` and use
+`memory-update`. Date and timestamp flags are optional for text files. Memoket
+exports retain the original record identity and any supplied dates.
+
 ## Import a local recording
 
 With FFmpeg, `whisper-cli`, and a local whisper.cpp model available, use this

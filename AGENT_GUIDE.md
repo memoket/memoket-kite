@@ -73,7 +73,8 @@ allow only owner access. The workspace uses one SQLite transaction for a
 successful stage, its artifacts and its memory changes. Use a local filesystem
 that supports SQLite locking.
 
-- **Text** uses an inline `payload.text` and becomes segment `text-1`.
+- **Text** uses an inline `payload.text` and becomes segment `text-1`. For a
+  local file, use `kite-tool file-source FILE --format text --source-id STABLE_ID`.
 - **Transcript** and **audio-transcript** accept source segments from the user or
   an authorized transcriber. For a local audio file, `kite-tool audio-source`
   prepares the input using FFmpeg and a local whisper.cpp model.
@@ -81,11 +82,13 @@ that supports SQLite locking.
 - **Memoket** accepts an authorized record transcription response with
   `data.id` and `data.segments[].sentences[]`, or the inner data object. The
   connector keeps source IDs, original text, available speaker and millisecond
-  offsets. The workspace discards response fields such as signed audio URLs.
+  offsets. Use `kite-tool file-source EXPORT.json --format memoket` to prepare a
+  local export. Preparation discards response fields such as signed audio URLs.
 - **Custom sources** use `format: conversation` and the
   [conversation schema](schemas/conversation.schema.json) with a stable source
-  name and `metadata.source_reference`. Keep credentials out of the source and
-  metadata. Missing dates and speakers stay unknown.
+  name and `metadata.source_reference`. Import a local canonical export with
+  `kite-tool file-source EXPORT.json --format conversation`. Keep credentials
+  out of the source and metadata. Missing dates and speakers stay unknown.
 
 The normal ingestion workflow expects host-prepared annotations. The optional
 provider stage uses KITE's existing extractor and reads its credentials from

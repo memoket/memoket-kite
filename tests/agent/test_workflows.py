@@ -40,7 +40,7 @@ def work(tmp_path, capsys, monkeypatch):
         if args[0] == "codebook" and not error:
             return output
         data = json.loads(output)
-        if args[0] == "audio-source" and not error:
+        if args[0] in {"audio-source", "file-source"} and not error:
             return data
         assert data["ok"] is (error is None)
         if error:
@@ -647,3 +647,112 @@ def test_cli_resources_are_independent_of_the_working_directory(tmp_path, monkey
     assert json.loads(capsys.readouterr().out)["definition"]["id"] == "memory-ingestion"
     assert cli.main(["--repo", str(cwd), "validate-pipeline", "memory-ingestion"]) == 2
     assert json.loads(capsys.readouterr().out)["error"]["code"] == "invalid_pipeline"
+
+
+def test_file_source_preserves_text_identity_and_revisions(work, tmp_path):
+    workspace, call = work
+    path = tmp_path / "first meeting.txt"
+    original = "  Réunion notes\r\nAda owns the work.\r\n"
+    path.write_bytes(original.encode())
+    source = call(
+        "file-source",
+        str(path),
+        "--format",
+        "text",
+        "--source-id",
+        "handoff",
+        "--source-date",
+        "2026-11-07",
+    )
+    assert not workspace.exists()
+    assert source["source"]["payload"]["segments"][0]["text"] == original
+    manual = text_input("handoff", original, date="2026-11-07")
+    committed = ingest(call, "manual", manual)
+    source["annotations"] = manual["annotations"]
+    duplicate = ingest(call, "duplicate", source)
+    assert not duplicate["changed"]
+    assert duplicate["checksum"] == committed["checksum"]
+
+    revised = "Ada handed the work to Rae.\n"
+    path.write_bytes(revised.encode())
+    source = call(
+        "file-source",
+        str(path),
+        "--format",
+        "text",
+        "--source-id",
+        "handoff",
+        "--source-date",
+        "2026-11-08",
+        "--expected-checksum",
+        committed["checksum"],
+    )
+    source["annotations"] = text_input("handoff", revised)["annotations"]
+    updated = ingest(call, "updated", source, pipeline="memory-update")
+    assert updated["changed"]
+    assert updated["checksum"] != committed["checksum"]
+    result = trace(call, "timeline", {"topics": ["onboarding"]})
+    assert [item["evidence"][0]["text"] for item in result["timeline"]] == [original, revised]
+
+
+def test_file_source_minimizes_memoket_export_before_output(work, tmp_path):
+    workspace, call = work
+    path = tmp_path / "export.json"
+    manual = fixture("second-meeting")
+    raw = manual["source"]["payload"]
+    raw["data"]["download_url"] = "https://example.invalid/secret-export"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    source = call("file-source", str(path), "--format", "memoket")
+    assert not workspace.exists()
+    assert "secret-export" not in json.dumps(source)
+    normalized = source["source"]["payload"]
+    assert normalized["conversation_id"] == "184"
+    assert normalized["source_date"] == "2026-09-04"
+    assert normalized["segments"][0]["speaker_id"] == "Maya"
+    assert normalized["segments"][0]["start_ms"] == 1200
+    path.write_text(json.dumps(raw["data"]), encoding="utf-8")
+    assert call("file-source", str(path), "--format", "memoket") == source
+    first = ingest(call, "manual", manual)
+    source["annotations"] = manual["annotations"]
+    second = ingest(call, "export", source)
+    assert not second["changed"]
+    assert first["checksum"] == second["checksum"]
+
+
+def test_file_source_accepts_custom_conversations_and_rejects_invalid_inputs(work, tmp_path):
+    workspace, call = work
+    path = tmp_path / "export"
+    conversation = {
+        "conversation_id": "record-1",
+        "source": "archive",
+        "metadata": {"source_reference": "export-123"},
+        "segments": [{"segment_id": "line-1", "text": "Decided to ship."}],
+    }
+    path.write_text(json.dumps(conversation), encoding="utf-8")
+    assert call("file-source", str(path), "--format", "conversation") == {
+        "source": {"format": "conversation", "payload": conversation},
+    }
+    call("file-source", str(path), "--format", "text", error="invalid_input")
+    call(
+        "file-source",
+        str(path),
+        "--format",
+        "conversation",
+        "--source-id",
+        "override",
+        error="invalid_input",
+    )
+    path.write_bytes(b'{"code":0,"code":1}')
+    call("file-source", str(path), "--format", "memoket", error="invalid_input")
+    path.write_bytes(b"\xff")
+    call(
+        "file-source",
+        str(path),
+        "--format",
+        "text",
+        "--source-id",
+        "malformed",
+        error="invalid_input",
+    )
+    call("file-source", str(tmp_path), "--format", "memoket", error="invalid_input")
+    assert not workspace.exists()

@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sqlite3
 import sys
 from pathlib import Path
 
 from .audio import audio_source
-from .contracts import ToolError, encode
+from .contracts import ToolError, decode_object, encode, read_utf8
 from .demo import run_demo
+from .ingest import file_source
 from .operations import SCHEMAS, TOOLS, Context
 from .resources import resource_root
 from .workflow import advance, artifact, load_pipeline, start, status
@@ -22,21 +22,11 @@ def _object(path: str | None) -> dict:
     if path is None:
         return {}
 
-    def pairs(items):
-        result = dict(items)
-        if len(items) != len(result):
-            raise ToolError("invalid_input", "duplicate JSON input keys")
-        return result
-
-    raw = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
     try:
-        result = json.loads(raw, object_pairs_hook=pairs)
-        encode(result)
-    except (ValueError, RecursionError) as exc:
-        raise ToolError("invalid_input", "input must be finite, valid JSON") from exc
-    if not isinstance(result, dict):
-        raise ToolError("invalid_input", "input must be a JSON object")
-    return result
+        raw = sys.stdin.read() if path == "-" else read_utf8(Path(path))
+    except UnicodeError as exc:
+        raise ToolError("invalid_input", "input must be valid UTF-8") from exc
+    return decode_object(raw)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -61,6 +51,16 @@ def _parser() -> argparse.ArgumentParser:
         "describe", help="show registered tools and their JSON contracts"
     )
     describe.add_argument("tool", nargs="?", choices=sorted(TOOLS))
+    source = commands.add_parser(
+        "file-source", help="prepare ingestion input from a local text or conversation export"
+    )
+    source.add_argument("path", type=Path)
+    source.add_argument("--format", choices=("text", "memoket", "conversation"), required=True)
+    source.add_argument("--source-id", help="stable identity for a text file")
+    date = source.add_mutually_exclusive_group()
+    date.add_argument("--source-date", help="known conversation day in YYYY-MM-DD format")
+    date.add_argument("--started-at", help="known conversation timestamp with UTC offset")
+    source.add_argument("--expected-checksum", help="current source checksum for a revision")
     audio = commands.add_parser(
         "audio-source", help="transcribe a local recording into a memory-ingestion input"
     )
@@ -140,6 +140,17 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             ]
         }, None
 
+    if args.command == "file-source":
+        return file_source(
+            root,
+            args.path,
+            args.format,
+            source_id=args.source_id,
+            source_date=args.source_date,
+            started_at=args.started_at,
+            expected_checksum=args.expected_checksum,
+        ), None
+
     if args.command == "audio-source":
         return audio_source(
             root,
@@ -218,7 +229,7 @@ def main(argv=None) -> int:
         return 2
     if args.command == "codebook":
         sys.stdout.buffer.write(result["xml"] + b"\n")
-    elif args.command == "audio-source":
+    elif args.command in {"audio-source", "file-source"}:
         print(encode(result))
     else:
         print(encode({"ok": True, **result}))

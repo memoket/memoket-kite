@@ -1,16 +1,19 @@
-"""Normalize authorized conversation exports without following links or reading files."""
+"""Prepare and normalize authorized conversation sources."""
 
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 from .contracts import (
     HASH,
     TEXT,
     XML_UNSAFE,
     ToolError,
+    decode_object,
     digest,
     object_schema,
+    read_utf8,
     schema_file,
     utc_timestamp,
     validate,
@@ -94,6 +97,10 @@ def minimize_source(source: dict) -> dict:
 
 
 def normalize(context, source: dict) -> dict:
+    return _normalize_source(context.root, source)
+
+
+def _normalize_source(root: Path, source: dict) -> dict:
     source = minimize_source(source)
     fmt, payload = source["format"], source["payload"]
     if not isinstance(payload, dict):
@@ -108,12 +115,52 @@ def normalize(context, source: dict) -> dict:
         conversation = payload
     else:
         conversation = {**payload, "source": fmt}
-    validate_conversation(context.root, conversation)
+    validate_conversation(root, conversation)
     return {
         "conversation": conversation,
         "checksum": digest(conversation),
         "expected_checksum": source.get("expected_checksum"),
     }
+
+
+def file_source(
+    root: Path,
+    path: Path,
+    source_format: str,
+    *,
+    source_id: str | None,
+    source_date: str | None,
+    started_at: str | None,
+    expected_checksum: str | None,
+) -> dict:
+    """Return a minimized source input without opening a memory workspace."""
+    if source_format == "text":
+        validate(TEXT, source_id, "text source ID")
+    elif any(value is not None for value in (source_id, source_date, started_at)):
+        raise ToolError("invalid_input", "JSON exports supply their own identity and dates")
+    if expected_checksum is not None:
+        validate(HASH, expected_checksum, "expected checksum")
+    path = path.expanduser()
+    if not path.is_file():
+        raise ToolError("invalid_input", "source must be a local file")
+    raw = read_utf8(path)
+    if source_format == "text":
+        payload = {
+            "conversation_id": source_id,
+            "metadata": {"source_reference": source_id},
+            "text": raw,
+        }
+        if source_date is not None:
+            payload["source_date"] = source_date
+        if started_at is not None:
+            payload["started_at"] = started_at
+    else:
+        payload = decode_object(raw)
+    normalized = _normalize_source(root, {"format": source_format, "payload": payload})
+    source = {"format": "conversation", "payload": normalized["conversation"]}
+    if expected_checksum is not None:
+        source["expected_checksum"] = expected_checksum
+    return {"source": source}
 
 
 def validate_conversation(root, conversation: dict) -> None:
