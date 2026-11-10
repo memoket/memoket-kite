@@ -208,6 +208,32 @@ def main() -> None:
         assert imported["receipt"]["changed"] and imported["integrity"]["facts"] == 1
         assert call("status", "scripted", workspace=scripted)["state"] == "completed"
         assert call("ingest", "--resume", "scripted", workspace=scripted) == imported
+        amended = call(
+            "ingest",
+            "--update",
+            "--run-id",
+            "amended",
+            workspace=scripted,
+            payload={
+                "source": {
+                    **source["source"],
+                    "expected_checksum": imported["receipt"]["checksum"],
+                },
+                "annotations": {
+                    "facts": [
+                        {
+                            "content": "Tuesday is the review day.",
+                            "segment_ids": ["text-line-3"],
+                            "topics": ["launch review"],
+                        }
+                    ]
+                },
+            },
+        )
+        assert amended["receipt"]["changed"]
+        assert amended["receipt"]["revision_id"] == imported["receipt"]["revision_id"]
+        assert amended["integrity"]["revisions"] == 1 and amended["integrity"]["facts"] == 2
+        assert call("ingest", "--resume", "amended", workspace=scripted) == amended
         print(
             "Installed agent smoke passed: packaged workflows, backup recovery, citations, deletion."
         )

@@ -24,6 +24,20 @@ from .operations import EXTERNAL, SCHEMAS, TOOLS, Context
 
 SNAPSHOT_KINDS = {"resolved", "matches", "report", "deletion_plan", "integrity"}
 LOCAL_IMPORT_TOOLS = {"normalize", "annotate", "commit", "validate_commit"}
+SCRIPTED_IMPORT_STAGES = {
+    "memory-ingestion": (
+        ("normalize", "normalize"),
+        ("annotate", "annotate"),
+        ("commit", "commit"),
+        ("verify", "validate_commit"),
+    ),
+    "memory-update": (
+        ("normalize", "normalize"),
+        ("annotate", "annotate"),
+        ("commit", "amend"),
+        ("verify", "validate_commit"),
+    ),
+}
 TRACE_PIPELINES = ("topic-tracing", "task-tracing", "timeline-reconstruction", "decision-evolution")
 
 
@@ -431,12 +445,13 @@ def artifact(context: Context, run_id: str, stage_id: str) -> dict:
     return _artifact(context, checkpoint, stage_id)
 
 
-def resume_ingestion(
-    context: Context, run_id: str, expected_stages: tuple[tuple[str, str], ...]
-) -> dict:
+def resume_ingestion(context: Context, run_id: str) -> dict:
     row, checkpoint = _run(context.workspace, run_id)
-    if checkpoint["pipeline_id"] != "memory-ingestion":
-        raise ToolError("invalid_pipeline", "ingest can only resume a local ingestion run")
+    expected_stages = SCRIPTED_IMPORT_STAGES.get(checkpoint["pipeline_id"])
+    if expected_stages is None:
+        raise ToolError(
+            "invalid_pipeline", "ingest can only resume a local ingestion or update run"
+        )
     definition, _ = _bound_definition(context, row, checkpoint)
     _require_stage_sequence(definition, expected_stages)
     if _stored_inputs(row, checkpoint).keys() != {"source", "annotations"}:

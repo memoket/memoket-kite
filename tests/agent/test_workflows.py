@@ -1569,6 +1569,63 @@ def test_ingest_resume_continues_after_an_interleaved_import(work):
     call("ingest", "--resume", "other", error="stale_snapshot")
 
 
+def test_ingest_update_uses_the_current_checksum_and_keeps_original_citations(work):
+    _, call = work
+    payload = text_input(
+        "review", "Ada initially owned the review. Rae owns it now.", date="2026-04-02"
+    )
+    payload["annotations"]["facts"][0].update(content="Ada owns the review.", state="Ada")
+    initial = call("ingest", "--run-id", "initial", payload=payload)["receipt"]
+    correction = copy.deepcopy(payload)
+    fact = correction["annotations"]["facts"][0]
+    fact.update(
+        content="Rae owns the review.", state="Rae", supersedes=initial["revision_id"] + "F1"
+    )
+    rejected = call("ingest", "--update", payload=correction, error="conflict")
+    assert rejected["stage_id"] == "commit"
+    correction["source"]["expected_checksum"] = "0" * 64
+    call("ingest", "--update", payload=correction, error="conflict")
+    correction["source"]["expected_checksum"] = initial["checksum"]
+    amended = call("ingest", "--update", "--run-id", "corrected", payload=correction)
+    assert (
+        amended["receipt"]["changed"]
+        and amended["receipt"]["revision_id"] == initial["revision_id"]
+    )
+    assert amended["integrity"]["revisions"] == 1 and amended["integrity"]["facts"] == 2
+    assert not call("ingest", "--update", payload=correction)["receipt"]["changed"]
+    report = call("query", "--pipeline", "task-tracing", payload={"query": {"state_key": "owner"}})[
+        "value"
+    ]
+    assert report["current_reported_states"]["owner"]["value"] == "Rae"
+    assert {row["state"]: row["effective"] for row in report["timeline"]} == {
+        "Ada": False,
+        "Rae": True,
+    }
+    assert all(
+        row["evidence"][0]["text"] == payload["source"]["payload"]["text"]
+        for row in report["timeline"]
+    )
+
+
+def test_ingest_resume_uses_the_saved_update_pipeline(work):
+    _, call = work
+    payload = text_input("review", "Ada owns the review.", date="2026-04-02")
+    original = call("ingest", "--run-id", "original", payload=payload)["receipt"]
+    revised = text_input("review", "Rae owns the review.", date="2026-04-03")
+    revised["source"]["expected_checksum"] = original["checksum"]
+    call("start", "memory-update", "--run-id", "revision", payload=revised)
+    for stage in ("normalize", "annotate"):
+        call("stage", "revision", stage)
+    call("ingest", "--resume", "revision", "--update", error="invalid_input")
+    resumed = call("ingest", "--resume", "revision")
+    assert resumed["receipt"]["changed"] and resumed["integrity"]["revisions"] == 2
+    assert call("status", "revision")["pipeline_id"] == "memory-update"
+    assert call("ingest", "--resume", "revision") == resumed
+    history = call("source-history", "text", "review")
+    assert history["current_checksum"] == resumed["receipt"]["checksum"]
+    assert history["revisions"][1]["checksum"] == original["checksum"]
+
+
 def test_source_timestamps_preserve_offset_and_fraction(work):
     _, call = work
     first = text_input("first", "Alice")

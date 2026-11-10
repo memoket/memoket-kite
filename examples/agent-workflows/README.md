@@ -166,6 +166,11 @@ Supply only the added facts or taxonomy in `additional-annotations.json`.
 Each fact cites an existing segment. To correct a confirmed state, use the
 same state key and put the previous fact ID in `supersedes`.
 
+If both the source and added annotations are already in one JSON file,
+use `kite-tool ingest --update --run-id amend-notes --input update.json`.
+Include the current checksum as `source.expected_checksum`. To resume this
+scripted update, use `kite-tool ingest --resume amend-notes`.
+
 ## Import a local recording
 
 With FFmpeg, `whisper-cli`, and a local whisper.cpp model available, use this

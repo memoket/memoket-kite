@@ -17,6 +17,7 @@ from .operations import SCHEMAS, SOURCE_SCOPE, TOOLS, Context
 from .resources import resource_root
 from .retrieve import evidence_context
 from .workflow import (
+    SCRIPTED_IMPORT_STAGES,
     TRACE_PIPELINES,
     advance,
     artifact,
@@ -31,13 +32,6 @@ from .workflow import (
     verify_run_storage,
 )
 from .workspace import Workspace
-
-_INGESTION_STAGES = (
-    ("normalize", "normalize"),
-    ("annotate", "annotate"),
-    ("commit", "commit"),
-    ("verify", "validate_commit"),
-)
 
 
 def _object(path: str | None) -> dict:
@@ -125,6 +119,9 @@ def _parser() -> argparse.ArgumentParser:
     audio.add_argument("--timeout", type=int, default=1800, help="seconds allowed per process")
     ingest = commands.add_parser("ingest", help="import a source with prepared annotations")
     ingest.add_argument("--run-id", help="stable identifier for this new ingestion run")
+    ingest.add_argument(
+        "--update", action="store_true", help="apply a source revision or add annotations"
+    )
     ingest_mode = ingest.add_mutually_exclusive_group(required=True)
     ingest_mode.add_argument("--input", metavar="FILE", help="JSON input file or - for stdin")
     ingest_mode.add_argument("--resume", metavar="RUN_ID", help="resume an existing local import")
@@ -235,21 +232,27 @@ def _ingest(
     extension_root: Path | None,
     *,
     resume_id: str | None = None,
+    update: bool = False,
 ) -> tuple[dict, ToolError | None]:
     if resume_id is not None and run_id is not None:
         raise ToolError("invalid_input", "--run-id is only valid when starting a new ingestion")
+    if resume_id is not None and update:
+        raise ToolError("invalid_input", "--resume uses the pipeline saved in the checkpoint")
     if resume_id is None and supplied.keys() != {"source", "annotations"}:
         raise ToolError("invalid_input", "ingest requires both source and annotations")
-    pipeline = "memory-ingestion"
+    pipeline = "memory-update" if update else "memory-ingestion"
     with Workspace.open(directory, read_only=resume_id is not None) as workspace:
         context = Context(root, workspace, pipeline, extension_root=extension_root)
         if resume_id is None:
-            checkpoint = start(context, supplied, run_id, expected_stages=_INGESTION_STAGES)
+            checkpoint = start(
+                context, supplied, run_id, expected_stages=SCRIPTED_IMPORT_STAGES[pipeline]
+            )
         else:
-            checkpoint = resume_ingestion(context, resume_id, _INGESTION_STAGES)
+            checkpoint = resume_ingestion(context, resume_id)
     run_id = checkpoint["run_id"]
+    pipeline = checkpoint["pipeline_id"]
     output = {"run_id": run_id}
-    for stage_id, _ in _INGESTION_STAGES:
+    for stage_id, _ in SCRIPTED_IMPORT_STAGES[pipeline]:
         try:
             # Each successful stage is durable before the next stage begins.
             with Workspace.open(directory) as workspace:
@@ -357,7 +360,13 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
     supplied = _object(getattr(args, "input", None))
     if args.command == "ingest":
         return _ingest(
-            root, args.workspace, supplied, args.run_id, extension_root, resume_id=args.resume
+            root,
+            args.workspace,
+            supplied,
+            args.run_id,
+            extension_root,
+            resume_id=args.resume,
+            update=args.update,
         )
     if args.command in {"query", "evidence"}:
         with Workspace.open(args.workspace, read_only=True) as workspace:
