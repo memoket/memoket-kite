@@ -368,8 +368,13 @@ already recorded as deleted. Only then pass its token via `--approve` to the `ap
 The CLI treats this flag as an attestation from the trusted local operator.
 The token binds the workspace, deletion run, target, memory version and
 workflow impact. The preview counts other runs to invalidate and artifacts
-to purge, excluding the current run's approval bookkeeping. If other
-workflow data changes before apply, `stale_preview` requires a fresh run and
+to purge, excluding the current run's approval bookkeeping. Use
+`kite-tool deletion-impact RUN_ID` to review that preview. The command shows
+the number of committed conversations and source lines across retained
+revisions, the first 100 committed conversation IDs in sorted order, and the
+staged IDs. The approval token is available in the preview artifact. For the
+complete committed inventory, page through `kite-tool sources --source SOURCE --limit 100`.
+If other workflow data changes before apply, `stale_preview` requires a fresh run and
 approval even when the memory version is unchanged. Deletion removes
 all target revisions and references, records tombstones, and conservatively
 purges prior run inputs and artifacts that could contain the target. When

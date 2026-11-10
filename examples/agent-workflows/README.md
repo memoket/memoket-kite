@@ -176,6 +176,23 @@ Use it with a source-only `--input` from `file-source` or `audio-source`. Once
 the run has a checkpoint, `kite-tool ingest --resume launch-notes` reads its
 saved inputs.
 
+## Review a deletion preview
+
+In the saved demo workspace, preview deletion of the synthetic Memoket
+conversation and read the affected IDs and counts.
+
+```sh
+kite-tool --workspace ./kite-demo start memory-deletion --run-id review-removal --input - <<'JSON'
+{"target":{"source":"memoket","conversation_id":"184"}}
+JSON
+kite-tool --workspace ./kite-demo stage review-removal preview --summary
+kite-tool --workspace ./kite-demo deletion-impact review-removal
+```
+
+The report shows one committed conversation, one revision, three facts, and
+two original lines. For approval and deletion, follow the
+[operating guide](../../AGENT_GUIDE.md#lifecycle).
+
 ## Give your agent a task
 
 > Run kite-tool resources and read the agent instructions it points to. Use the

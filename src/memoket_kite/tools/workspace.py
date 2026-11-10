@@ -27,6 +27,8 @@ from .index import Index, build_index, fact_entries, load_index, revision_id, so
 from .ingest import source_day, source_identity
 from .timing import precedes, source_timing
 
+_DELETION_IMPACT_ID_LIMIT = 100
+
 _DDL = """
 CREATE TABLE IF NOT EXISTS memory (
     singleton INTEGER PRIMARY KEY CHECK (singleton=1),
@@ -954,14 +956,31 @@ class Workspace:
         approval = digest([workspace_id, run_id, impact, runs, artifacts, tombstones])
         return {**impact, "approval_token": approval}, records, tombstones
 
+    def _deletion_scope(
+        self, plan: dict, *, run_id: str
+    ) -> tuple[list[dict], list[tuple[str, str]]]:
+        current, records, tombstones = self.deletion_plan(plan["target"], run_id=run_id)
+        if current["approval_token"] != plan["approval_token"]:
+            raise ToolError("stale_preview", "deletion impact changed; start a new deletion run")
+        return records, tombstones
+
+    def deletion_impact(self, plan: dict, *, run_id: str) -> dict:
+        """Describe the same snapshot and scope that the approval token binds."""
+        records, _ = self._deletion_scope(plan, run_id=run_id)
+        committed_ids = sorted({record["conversation"]["conversation_id"] for record in records})
+        return {
+            **{key: value for key, value in plan.items() if key != "approval_token"},
+            "committed_conversations": len(committed_ids),
+            "committed_conversation_ids": committed_ids[:_DELETION_IMPACT_ID_LIMIT],
+            "source_lines": sum(len(record["conversation"]["segments"]) for record in records),
+        }
+
     def delete(self, plan: dict, approval: str | None, *, run_id: str) -> dict:
         if approval is None:
             raise ToolError("awaiting_approval", "delete requires the user-approved preview token")
         if approval != plan["approval_token"]:
             raise ToolError("permission_denied", "approval does not match the deletion preview")
-        current, records, tombstones = self.deletion_plan(plan["target"], run_id=run_id)
-        if current["approval_token"] != approval:
-            raise ToolError("stale_preview", "deletion impact changed; start a new deletion run")
+        records, tombstones = self._deletion_scope(plan, run_id=run_id)
         self.db.executemany("INSERT OR IGNORE INTO tombstones VALUES(?, ?)", tombstones)
         deleted = {}
         for record in records:

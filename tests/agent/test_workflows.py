@@ -1060,6 +1060,18 @@ def test_deletion_approval_purge_and_replay(work):
     )
     plan = call("stage", "delete", "preview")["value"]
     assert (plan["revisions"], plan["facts"]) == (1, 1)
+    database = directory / "kite.sqlite3"
+    before = database.read_bytes()
+    impact = call("deletion-impact", "delete")["value"]
+    assert impact == {
+        **{key: value for key, value in plan.items() if key != "approval_token"},
+        "committed_conversations": 1,
+        "committed_conversation_ids": ["erase-me"],
+        "source_lines": 1,
+    }
+    assert plan["approval_token"] not in json.dumps(impact)
+    assert "private-celadon-body" not in json.dumps(impact)
+    assert database.read_bytes() == before
     assert (
         call("stage", "delete", "apply", error="awaiting_approval")["checkpoint"]["state"]
         == "awaiting_approval"
@@ -1082,6 +1094,7 @@ def test_deletion_approval_purge_and_replay(work):
     assert call("runs", "--unfinished")["runs"] == []
     call("artifact", "old-report", "report", error="invalidated_run")
     call("artifact", "delete", "preview", error="not_found")
+    call("deletion-impact", "delete", error="not_found")
     assert b"private-celadon-body" not in (directory / "kite.sqlite3").read_bytes()
     assert call("deletion-audit")["deletions"][0]["fact_count"] == 1
     assert trace(call, "after", {"topics": ["onboarding"]})["matched_count"] == 3
@@ -1224,6 +1237,7 @@ def test_deletion_covers_staged_sources_and_different_snapshot(work):
     call("start", "memory-deletion", "--run-id", "obsolete", payload=target)
     old = call("stage", "obsolete", "preview")["value"]["approval_token"]
     ingest(call, "other", fixture("second-meeting"))
+    call("deletion-impact", "obsolete", error="stale_snapshot")
     call("stage", "obsolete", "apply", "--approve", old, error="stale_snapshot")
     call("start", "memory-deletion", "--run-id", "fresh", payload=target)
     fresh = call("stage", "fresh", "preview")["value"]
@@ -1235,9 +1249,13 @@ def test_deletion_covers_staged_sources_and_different_snapshot(work):
     )
 
 
-def test_source_deletion_tombstones_uncommitted_ids_and_references(work):
+def test_source_deletion_tombstones_uncommitted_ids_and_references(work, monkeypatch):
     directory, call = work
-    ingest(call, "committed", text_input("committed", "stored target"))
+    first = ingest(call, "committed", text_input("committed", "stored target"))
+    revised = text_input("committed", "updated target")
+    revised["source"]["expected_checksum"] = first["checksum"]
+    ingest(call, "revised", revised, pipeline="memory-update")
+    ingest(call, "second", text_input("second", "second stored target"))
     pending = text_input("pending", "pending target")
     staged = text_input("staged", "staged target")
     staged["source"]["payload"]["metadata"]["source_reference"] = "separate-source-reference"
@@ -1265,8 +1283,16 @@ def test_source_deletion_tombstones_uncommitted_ids_and_references(work):
     )
     plan = call("stage", "delete-source", "preview")["value"]
     assert plan["staged_conversation_ids"] == ["pending", "staged"]
-    assert (plan["revisions"], plan["facts"]) == (1, 1)
+    assert (plan["revisions"], plan["facts"]) == (3, 3)
     assert "separate-source-reference" not in json.dumps(plan)
+    impact = call("deletion-impact", "delete-source")["value"]
+    assert impact["committed_conversations"] == 2 and impact["source_lines"] == 3
+    assert impact["committed_conversation_ids"] == ["committed", "second"]
+    assert impact["staged_conversation_ids"] == ["pending", "staged"]
+    assert "retained source" not in json.dumps(impact)
+    monkeypatch.setattr(workspace, "_DELETION_IMPACT_ID_LIMIT", 1)
+    limited = call("deletion-impact", "delete-source")["value"]
+    assert limited == {**impact, "committed_conversation_ids": ["committed"]}
     call("stage", "delete-source", "apply", "--approve", plan["approval_token"])
     assert not call("sources", "--source", "text")["sources"]
     assert call("sources", "--source", "archive")["sources"][0]["conversation_id"] == "staged"
@@ -1299,6 +1325,7 @@ def test_deletion_preview_rejects_changed_workflow_impact_without_memory_write(w
 
     unchanged = call("integrity")
     assert unchanged["memory_version"] == old["memory_version"]
+    call("deletion-impact", "old", error="stale_preview")
     call("stage", "old", "apply", "--approve", old["approval_token"], error="stale_preview")
     assert call("integrity") == unchanged
     assert call("deletion-audit")["deletions"] == []

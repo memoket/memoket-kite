@@ -306,6 +306,10 @@ def _parser() -> argparse.ArgumentParser:
         help="reject recovery copies missing deletions recorded in this workspace",
     )
     commands.add_parser("deletion-audit", help="show recent deletion receipts without source text")
+    deletion_impact = commands.add_parser(
+        "deletion-impact", help="review affected conversations and counts from a deletion preview"
+    )
+    deletion_impact.add_argument("run_id")
     sources = commands.add_parser(
         "sources", help="list conversation identities and current checksums"
     )
@@ -553,8 +557,16 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
     supplied = (
         _query_object(args) if args.command == "query" else _object(getattr(args, "input", None))
     )
-    if args.command in {"query", "evidence"}:
+    if args.command in {"query", "evidence", "deletion-impact"}:
         with Workspace.open(args.workspace, read_only=True) as workspace:
+            if args.command == "deletion-impact":
+                context = Context(root, workspace, "", extension_root=extension_root)
+                preview = artifact(context, args.run_id, "preview")
+                if preview["manifest"]["kind"] != "deletion_plan":
+                    raise ToolError("invalid_input", "select a deletion preview")
+                return {
+                    "value": workspace.deletion_impact(preview["value"], run_id=args.run_id)
+                }, None
             if args.command == "evidence":
                 return {
                     "value": evidence_context(

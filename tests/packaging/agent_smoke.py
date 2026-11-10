@@ -213,6 +213,10 @@ def main() -> None:
         removal = call("start", "memory-deletion", payload=target, workspace=recovered)["run_id"]
         plan = call("stage", removal, "preview", workspace=recovered)["value"]
         assert plan["revisions"] == plan["facts"] == 1
+        impact = call("deletion-impact", removal, workspace=recovered)["value"]
+        assert impact["committed_conversation_ids"] == ["note"]
+        assert impact["committed_conversations"] == 1 and impact["source_lines"] == 2
+        assert plan["approval_token"] not in json.dumps(impact) and quote not in json.dumps(impact)
         call("stage", removal, "apply", workspace=recovered, error="awaiting_approval")
         receipt = call(
             "stage", removal, "apply", "--approve", plan["approval_token"], workspace=recovered
