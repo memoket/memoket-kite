@@ -79,8 +79,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     query = commands.add_parser("query", help="run a read-only trace without saving a checkpoint")
     query.add_argument("--pipeline", choices=TRACE_PIPELINES, default="topic-tracing")
-    query.add_argument(
-        "--input", required=True, metavar="FILE", help="JSON input file or - for stdin"
+    query_input = query.add_mutually_exclusive_group(required=True)
+    query_input.add_argument("--input", metavar="FILE", help="JSON input file or - for stdin")
+    query_input.add_argument(
+        "--topic",
+        action="append",
+        metavar="NAME",
+        help="topic name or alias, repeat for more topics",
     )
     evidence = commands.add_parser(
         "evidence", help="read an original cited line and nearby context"
@@ -429,6 +434,8 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                         workspace, args.source_line_id, args.context, byte_budget=args.byte_budget
                     )
                 }, None
+            if args.topic is not None:
+                supplied = {"query": {"topics": args.topic}}
             return {"value": query_report(Context(root, workspace, args.pipeline), supplied)}, None
     open_workspace = (
         Workspace.inspect(args.workspace, initialize=True)

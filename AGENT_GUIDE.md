@@ -43,9 +43,10 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
 
 ## Advance and recover
 
-For a direct read from an existing workspace, pass the same `query` input
-object to `kite-tool query`. This command uses the built-in trace tools in
-one read transaction and saves no checkpoint or artifact.
+For a direct read from an existing workspace, use `kite-tool query --topic "first run"`.
+Repeat `--topic` to supply several topic names or aliases. For filters and
+pagination, pass the `query` input object with `--input`. The command uses the
+built-in trace tools in one read transaction and saves no checkpoint or artifact.
 
 ```sh
 kite-tool query --input - <<'JSON'

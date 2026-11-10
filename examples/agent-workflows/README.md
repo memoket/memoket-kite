@@ -38,8 +38,7 @@ without a checkout.
 
 ```sh
 kite-tool demo --text --save-workspace ./kite-demo
-printf '%s\n' '{"query":{"topics":["first run"]}}' \
-  | kite-tool --workspace ./kite-demo query --input -
+kite-tool --workspace ./kite-demo query --topic "first run"
 ```
 
 The save operation requires a new destination directory. Use

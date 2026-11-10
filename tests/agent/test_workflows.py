@@ -113,6 +113,7 @@ def trace(call, run_id, query, pipeline="topic-tracing"):
         (["private-command"], "kite-tool "),
         (["query", "--pipeline", "private-pipeline"], "kite-tool query "),
         (["query"], "kite-tool query "),
+        (["query", "--input", "private-path", "--topic", "private-topic"], "kite-tool query "),
         (["evidence", "private-line", "--context", "private-value"], "kite-tool evidence "),
         (["ingest", "--input", "private-path", "--resume", "private-run"], "kite-tool ingest "),
         (["pipelines", "--private-option"], "kite-tool "),
@@ -138,6 +139,7 @@ def test_cli_help_still_prints_usage(capsys):
     assert exc.value.code == 0
     captured = capsys.readouterr()
     assert "usage: kite-tool query " in captured.out and "--input FILE" in captured.out
+    assert "--topic NAME" in captured.out
     assert captured.err == ""
 
 
@@ -2081,6 +2083,22 @@ def test_direct_query_matches_staged_report_and_creates_no_workflow_data(work, m
     updated = call("query", payload={"query": query})["value"]
     assert updated["matched_count"] == 3
     assert updated["timeline"][0]["evidence"][0]["conversation_id"] == "third"
+
+
+def test_direct_topic_arguments_match_json_without_writing_memory(work):
+    directory, call = work
+    ingest(call, "first", fixture("first-meeting"))
+    ingest(call, "second", fixture("second-meeting"))
+    database = directory / "kite.sqlite3"
+    before = database.read_bytes()
+    topics = ["first run", "不存在的主题"]
+    single = call("query", "--topic", topics[0])["value"]
+    assert single["current_reported_states"]["onboarding-design"]["value"] == "short checklist"
+    report = call("query", "--topic", topics[0], "--topic", topics[1])["value"]
+    assert report == call("query", payload={"query": {"topics": topics}})["value"]
+    assert report["unresolved_topics"] == [topics[1]]
+    call("query", "--topic", " ", error="invalid_input")
+    assert database.read_bytes() == before
 
 
 def test_evidence_budget_pages_keep_exact_quotes_and_chronological_windows(work):

@@ -82,9 +82,7 @@ def main() -> None:
         assert "We decided to ship a short checklist. Ravi will implement it." in demo
         saved = call("integrity", "--include-workflows", workspace=demo_workspace)
         assert saved["revisions"] == 2 and saved["verified_runs"] == 3
-        report = call(
-            "query", workspace=demo_workspace, payload={"query": {"topics": ["first run"]}}
-        )["value"]
+        report = call("query", "--topic", "first run", workspace=demo_workspace)["value"]
         assert report == call("artifact", "trace", "report", workspace=demo_workspace)["value"]
         call("demo", "--save-workspace", str(demo_workspace), error="conflict")
         assert call("integrity", "--include-workflows", workspace=demo_workspace) == saved
