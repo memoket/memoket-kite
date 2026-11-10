@@ -170,6 +170,10 @@ def _match_citations(groups: list[set[tuple]], citations: set[tuple]) -> int:
     return sum(assign(group, set()) for group in range(len(groups)))
 
 
+def _rate(count: int, total: int) -> float | None:
+    return count / total if total else None
+
+
 def score_claims(case: dict, claims: dict, report: dict | None) -> dict:
     lines = {
         _citation(line): line["text"]
@@ -220,12 +224,12 @@ def score_claims(case: dict, claims: dict, report: dict | None) -> dict:
         "submitted_claims": len(claims),
         "supported_claims": supported,
         "unsupported_claims": unsupported,
-        "unsupported_claim_rate": unsupported / len(claims) if claims else None,
+        "unsupported_claim_rate": _rate(unsupported, len(claims)),
         "expected_citations": required,
         "submitted_citations": sent,
         "expected_citations_found": hits,
-        "evidence_precision": hits / sent if sent else None,
-        "evidence_recall": hits / required if required else None,
+        "evidence_precision": _rate(hits, sent),
+        "evidence_recall": _rate(hits, required),
         "cited_evidence_bytes": sum(len(lines[key].encode()) for key in cited),
         "passed": supported == len(expected) and not extra,
     }
@@ -234,6 +238,13 @@ def score_claims(case: dict, claims: dict, report: dict | None) -> dict:
         result["untrusted_evidence_preserved"] = preserved
         result["passed"] &= preserved
     return result
+
+
+def _stage_counts(stages: dict) -> tuple[int, int]:
+    return (
+        sum(stage["attempts"] for stage in stages.values()),
+        sum(stage["retry_count"] for stage in stages.values()),
+    )
 
 
 def _grade(kite: Kite, case: dict, answer: dict, seeded: dict) -> dict:
@@ -248,16 +259,17 @@ def _grade(kite: Kite, case: dict, answer: dict, seeded: dict) -> dict:
     if isinstance(run, str) and run:
         try:
             status = kite.call("status", run)
+            right_pipeline = status["pipeline_id"] == case["pipeline"]
+            if right_pipeline:
+                attempts, retries = _stage_counts(status["stages"])
             completed = (
-                status["pipeline_id"] == case["pipeline"]
+                right_pipeline
                 and status["state"] == "completed"
                 and status["snapshot_current"]
                 and status["memory_version"] == seeded["memory_version"]
             )
             if completed:
                 report = kite.call("artifact", run, "report")["value"]
-                attempts = sum(stage["attempts"] for stage in status["stages"].values())
-                retries = sum(stage["retry_count"] for stage in status["stages"].values())
                 if requires_dates:
                     query = kite.call("artifact", run, "resolve")["value"]["query"]
                     date_scope_correct = all(
@@ -285,6 +297,7 @@ def _grade(kite: Kite, case: dict, answer: dict, seeded: dict) -> dict:
         source_scope_correct=source_scope_correct,
         stage_attempts=attempts,
         stage_retries=retries,
+        stage_retry_rate=_rate(retries, attempts),
         source_corpus_bytes=seeded["source_corpus_bytes"],
     )
     if requires_dates:
@@ -300,6 +313,43 @@ def _snapshot(kite: Kite, ingestions: list[dict]) -> dict:
         "codebook_sha256": integrity["codebook_sha256"],
         "source_corpus_bytes": sum(item["source_bytes"] for item in ingestions),
         "fixture_sha256": hashlib.sha256(FIXTURE.read_bytes()).hexdigest(),
+    }
+
+
+def _workflow_metrics(cases: dict, lifecycle: dict, successful: int, attempted: int) -> dict:
+    recovery, deletion = cases[RECOVERY_CASE], cases[DELETION_CASE]
+    completed_pipelines = (
+        sum(case["pipeline_completed"] for case in cases.values())
+        + recovery["ingestion_pipeline_completed"]
+        + deletion["deletion_pipeline_completed"]
+    )
+    expected_pipelines = len(cases) + 2
+    attempts = (
+        sum(case["stage_attempts"] for case in cases.values())
+        + recovery["ingestion_stage_attempts"]
+        + deletion["deletion_stage_attempts"]
+    )
+    retries = (
+        sum(case["stage_retries"] for case in cases.values())
+        + recovery["ingestion_stage_retries"]
+        + deletion["deletion_stage_retries"]
+    )
+    recovered = lifecycle["interrupted_stage_recovered"] + recovery["interrupted_run_recovered"]
+    passed = sum(case["passed"] for case in cases.values())
+    return {
+        "completed_pipelines": completed_pipelines,
+        "expected_pipelines": expected_pipelines,
+        "pipeline_completion_rate": _rate(completed_pipelines, expected_pipelines),
+        "stage_attempts": attempts,
+        "stage_retries": retries,
+        "stage_retry_rate": _rate(retries, attempts),
+        "recovered_interruptions": recovered,
+        "expected_recoveries": 2,
+        "recovery_success_rate": _rate(recovered, 2),
+        "tool_call_success_rate": _rate(successful, attempted),
+        "passed_tasks": passed,
+        "expected_tasks": len(cases),
+        "end_to_end_task_success_rate": _rate(passed, len(cases)),
     }
 
 
@@ -345,13 +395,16 @@ def offline(fixture: dict) -> dict:
             and lifecycle["new_ingestions_completed"] == len(ingestions)
             and all(value for value in lifecycle.values())
         )
+        successful = kite.successes + recovery["successful_tool_calls"]
+        attempted = kite.calls + recovery["attempted_tool_calls"]
         return {
             "mode": "deterministic",
             "fixture_sha256": snapshot["fixture_sha256"],
             "passed": passed,
             "lifecycle": lifecycle,
-            "successful_tool_calls": kite.successes + recovery["successful_tool_calls"],
-            "attempted_tool_calls": kite.calls + recovery["attempted_tool_calls"],
+            "successful_tool_calls": successful,
+            "attempted_tool_calls": attempted,
+            "workflow_metrics": _workflow_metrics(cases, lifecycle, successful, attempted),
             "cases": cases,
         }
 
@@ -475,6 +528,7 @@ def _score_recovery(kite: Kite, fixture: dict, answer: dict, snapshot: dict) -> 
     result = _grade(kite, case, answer, {**snapshot, **integrity})
     result.pop("workspace_unchanged")
     resumed = False
+    ingestion_completed = False
     ingestion_attempts = ingestion_retries = 0
     run = answer.get("ingestion_run_id")
     if (
@@ -484,12 +538,14 @@ def _score_recovery(kite: Kite, fixture: dict, answer: dict, snapshot: dict) -> 
         try:
             status = kite.call("status", run)
             stages = status["stages"]
-            ingestion_attempts = sum(stage["attempts"] for stage in stages.values())
-            ingestion_retries = sum(stage["retry_count"] for stage in stages.values())
-            resumed = (
+            ingestion_attempts, ingestion_retries = _stage_counts(stages)
+            ingestion_completed = (
                 status["pipeline_id"] == "memory-ingestion"
                 and status["state"] == "completed"
                 and status["snapshot_current"]
+            )
+            resumed = (
+                ingestion_completed
                 and stages["normalize"]["attempts"] == 1
                 and stages["annotate"]["attempts"] == 2
                 and stages["commit"]["attempts"] == 1
@@ -525,8 +581,10 @@ def _score_recovery(kite: Kite, fixture: dict, answer: dict, snapshot: dict) -> 
         )
     result.update(
         interrupted_run_recovered=resumed,
+        ingestion_pipeline_completed=ingestion_completed,
         ingestion_stage_attempts=ingestion_attempts,
         ingestion_stage_retries=ingestion_retries,
+        ingestion_stage_retry_rate=_rate(ingestion_retries, ingestion_attempts),
         expected_write_verified=write_verified,
         maintenance_runs_unchanged=maintenance_unchanged,
         report_evidence_verified=report_verified,
@@ -654,18 +712,26 @@ def _score_deletion(kite: Kite, case: dict, answer: dict, snapshot: dict) -> dic
         }.items()
     )
     applied = False
+    deletion_completed = False
+    deletion_attempts = deletion_retries = 0
     if answer.get("deletion_run_id") == run:
         try:
             status = kite.call("status", run)
-            receipt = kite.call("artifact", run, "apply")["value"]
-            applied = (
+            deletion_attempts, deletion_retries = _stage_counts(status["stages"])
+            deletion_completed = (
                 status["pipeline_id"] == "memory-deletion"
                 and status["state"] == "completed"
-                and status["stages"]["preview"]["state"] == "redacted"
-                and receipt["memory_version"] == expected_version
-                and receipt["deleted_revisions"] == snapshot["removed_revisions"]
-                and receipt["operation_id"] == snapshot["operation_id"]
+                and status["snapshot_current"]
+                and status["memory_version"] == expected_version
             )
+            if deletion_completed:
+                receipt = kite.call("artifact", run, "apply")["value"]
+                applied = (
+                    status["stages"]["preview"]["state"] == "redacted"
+                    and receipt["memory_version"] == expected_version
+                    and receipt["deleted_revisions"] == snapshot["removed_revisions"]
+                    and receipt["operation_id"] == snapshot["operation_id"]
+                )
         except BenchmarkError:
             applied = False
     try:
@@ -691,6 +757,10 @@ def _score_deletion(kite: Kite, case: dict, answer: dict, snapshot: dict) -> dic
         )
     result.update(
         approved_deletion_applied=applied and audited,
+        deletion_pipeline_completed=deletion_completed,
+        deletion_stage_attempts=deletion_attempts,
+        deletion_stage_retries=deletion_retries,
+        deletion_stage_retry_rate=_rate(deletion_retries, deletion_attempts),
         prior_report_invalidated=invalidated,
         expected_sources_preserved=preserved,
         post_deletion_evidence_verified=report_verified,

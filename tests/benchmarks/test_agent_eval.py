@@ -149,6 +149,28 @@ def test_host_grade_checks_the_trace_scope_even_when_claims_are_correct(tmp_path
     assert not broader["source_scope_correct"] and not broader["passed"]
 
 
+def test_host_grade_counts_retries_in_an_unfinished_trace(tmp_path):
+    case = json.loads(FIXTURE.read_text())["cases"]["dated-timeline"]
+    kite = Kite(tmp_path / "memory")
+    kite.start(
+        case["pipeline"],
+        "invalid-range",
+        {"query": {"start_date": "2026-07-31", "end_date": "2026-07-01"}},
+    )
+    for _ in range(2):
+        kite.stage("invalid-range", "resolve", error="invalid_input")
+    baseline = _snapshot(kite, [])
+    answer = {"run_id": "invalid-range", "claims": {}}
+    score = _grade(kite, case, answer, baseline)
+    assert not score["pipeline_completed"] and not score["passed"]
+    assert score["stage_attempts"] == 2 and score["stage_retries"] == 1
+    assert score["stage_retry_rate"] == 0.5
+
+    other = _grade(kite, {**case, "pipeline": "topic-tracing"}, answer, baseline)
+    assert other["stage_attempts"] == other["stage_retries"] == 0
+    assert other["stage_retry_rate"] is None
+
+
 def test_recovery_score_rejects_replacing_the_interrupted_run(tmp_path):
     fixture = json.loads(RECOVERY_FIXTURE.read_text())
     directory = tmp_path / "task"

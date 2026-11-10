@@ -84,12 +84,21 @@ A correct string with a missing or unrelated citation fails.
 - `source_scope_correct` checks the report for missing or extraneous source
   conversations, omitted undated records, and truncation. `date_scope_correct`
   checks the saved date bounds and time axis when a task specifies a range.
-- `stage_retries` and `stage_attempts` come from the completed run's checkpoint.
-  The recovery case reports ingestion attempts and retries separately.
-  Offline tool-call totals include the intentionally failed recovery and deletion checks.
+- `stage_retries`, `stage_attempts` and `stage_retry_rate` come from the submitted
+  checkpoint for the expected pipeline. Failed or unfinished runs still count
+  their recorded attempts. Recovery and deletion report the write workflow's
+  attempts separately from its trace. The rate divides retries by stage attempts.
 - `cited_evidence_bytes` and `source_corpus_bytes` compare the bytes of distinct
   cited source texts against all source texts. They measure evidence volume in
   this fixture. Host prompts and model tokens use a separate accounting boundary.
+
+The offline `workflow_metrics` summary includes the raw counts and rates for
+pipeline completion, stage retries, recovery, tool calls and end-to-end task
+success. Pipeline and stage totals cover each case's trace, the original Memoket
+ingestion and the approved deletion. Recovery covers both deliberate
+interruptions. Task success covers all seven cases. The top-level tool-call
+counts include setup, grading, and intentionally failed calls, so they measure
+the complete offline runner's calls.
 
 Keep `deterministic` and `host-agent` results separate. The offline run provides
 repeatable tool and index checks. Host scores depend on the selected runtime and
