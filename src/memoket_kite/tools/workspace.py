@@ -106,15 +106,20 @@ def _input_sources(raw: str) -> Iterator[tuple]:
 
 
 class Workspace:
-    def __init__(self, db: sqlite3.Connection, directory: Path):
+    def __init__(self, db: sqlite3.Connection, directory: Path, *, read_only: bool = False):
         self.db = db
         self.directory = directory
+        self.read_only = read_only
 
     @classmethod
     @contextmanager
-    def open(cls, directory: Path):
+    def open(cls, directory: Path, *, read_only: bool = False):
         directory = directory.expanduser().resolve()
-        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if read_only:
+            if not directory.is_dir():
+                raise ToolError("not_found", "workspace directory was not found")
+        else:
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         if os.name == "posix" and (directory.stat().st_mode & 0o077):
             raise ToolError(
                 "permission_denied", "workspace directory must be owner-only (chmod 700)"
@@ -122,13 +127,35 @@ class Workspace:
         path = directory / "kite.sqlite3"
         if path.is_symlink():
             raise ToolError("permission_denied", "workspace database cannot be a symbolic link")
-        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
-        os.close(fd)
+        if read_only:
+            if not path.is_file():
+                raise ToolError("not_found", "workspace database was not found")
+        else:
+            fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+            os.close(fd)
         if os.name == "posix" and (path.stat().st_mode & 0o077):
             raise ToolError("permission_denied", "workspace database must be owner-only")
-        db = sqlite3.connect(path, timeout=15)
+        location = path.as_uri() + "?mode=ro" if read_only else path
+        db = sqlite3.connect(location, timeout=15, uri=read_only)
         db.row_factory = sqlite3.Row
         try:
+            if read_only:
+                db.execute("BEGIN")
+                tables = {
+                    row[0]
+                    for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                }
+                if not {"memory", "revisions"} <= tables:
+                    raise ToolError("integrity_error", "workspace is missing its memory tables")
+                if not db.execute("SELECT 1 FROM memory WHERE singleton=1").fetchone():
+                    raise ToolError("integrity_error", "workspace is missing its memory snapshot")
+                if not {"topic_hierarchy", "index_seal"} <= tables:
+                    raise ToolError(
+                        "workspace_upgrade_required",
+                        "run kite-tool integrity to upgrade the workspace",
+                    )
+                yield cls(db, directory, read_only=True)
+                return
             db.execute("PRAGMA foreign_keys=ON")
             db.execute("PRAGMA journal_mode=DELETE")
             db.execute("PRAGMA secure_delete=ON")
@@ -365,7 +392,7 @@ class Workspace:
         index = build_index(records, json.loads(current["merges"]), hierarchy)
         if index.xml != xml:
             raise ToolError("integrity_error", "Codebook snapshot differs from its sources")
-        if seal is None:
+        if seal is None and not self.read_only:
             self._seal_index(version, checksum)
         return index
 

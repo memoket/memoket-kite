@@ -8,12 +8,34 @@ from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from uuid import uuid4
 
-from .contracts import ID, ToolError, decode_object, digest, encode, now, schema_file, validate
+from .contracts import (
+    ID,
+    ToolError,
+    decode_object,
+    digest,
+    encode,
+    now,
+    object_schema,
+    schema_file,
+    validate,
+)
 from .ingest import minimize_source, source_identity
 from .operations import EXTERNAL, SCHEMAS, TOOLS, Context
 
 SNAPSHOT_KINDS = {"resolved", "matches", "report", "deletion_plan", "integrity"}
 LOCAL_IMPORT_TOOLS = {"normalize", "annotate", "commit", "validate_commit"}
+TRACE_PIPELINES = ("topic-tracing", "task-tracing", "timeline-reconstruction", "decision-evolution")
+
+
+def query_report(context: Context, supplied: dict) -> dict:
+    """Run the built-in trace tools without creating a checkpoint or artifacts."""
+    validate(object_schema({"query": SCHEMAS["query"]}), supplied, "query input")
+    result = supplied["query"]
+    for name, argument in (("resolve", "query"), ("retrieve", "resolved"), ("report", "matches")):
+        tool = TOOLS[name]
+        result = tool.function(context, **{argument: result})
+        validate(SCHEMAS[tool.output], result, "tool output")
+    return result
 
 
 def load_pipeline(

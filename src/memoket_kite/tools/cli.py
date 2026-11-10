@@ -15,10 +15,12 @@ from .ingest import file_source
 from .operations import SCHEMAS, SOURCE_SCOPE, TOOLS, Context
 from .resources import resource_root
 from .workflow import (
+    TRACE_PIPELINES,
     advance,
     artifact,
     discover_pipelines,
     load_pipeline,
+    query_report,
     recent_runs,
     start,
     status,
@@ -57,6 +59,11 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("resources", help="show paths to agent instructions and workflows")
     demo = commands.add_parser("demo", help="run the offline text and Memoket quickstart")
     demo.add_argument("--metrics", action="store_true", help="emit deterministic fixture metrics")
+    query = commands.add_parser("query", help="run a read-only trace without saving a checkpoint")
+    query.add_argument("--pipeline", choices=TRACE_PIPELINES, default="topic-tracing")
+    query.add_argument(
+        "--input", required=True, metavar="FILE", help="JSON input file or - for stdin"
+    )
     validate = commands.add_parser(
         "validate-pipeline", help="validate and show a pipeline definition"
     )
@@ -249,6 +256,9 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             return {"xml": workspace.export_codebook(**scope, active_only=args.active_only)}, None
 
     supplied = _object(getattr(args, "input", None))
+    if args.command == "query":
+        with Workspace.open(args.workspace, read_only=True) as workspace:
+            return {"value": query_report(Context(root, workspace, args.pipeline), supplied)}, None
     with Workspace.open(args.workspace) as workspace:
         context = Context(
             root,

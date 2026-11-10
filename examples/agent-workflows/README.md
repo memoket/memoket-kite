@@ -64,6 +64,13 @@ includes the matching facts and their evidence. Look at
 `current_reported_states.onboarding-design` and match its fact ID to the
 timeline and original evidence.
 
+For a quick read of the same workspace, pass the existing query file
+directly. This produces the same report without saving a run.
+
+```sh
+kite-tool query --input examples/agent-workflows/topic-query.json
+```
+
 ## Give your agent a task
 
 > Run kite-tool resources and read the agent instructions it points to. Use the

@@ -1511,6 +1511,46 @@ def test_trace_cursor_reads_all_windows_without_repeating_evidence(work):
     assert len({state for page in pages for state in page}) == 7
 
 
+def test_direct_query_matches_staged_report_and_creates_no_workflow_data(work):
+    directory, call = work
+    query = {"topics": ["onboarding"], "limit": 1}
+    call("query", payload={"query": query}, error="not_found")
+    assert not directory.exists()
+    for name, date in (("first", "2026-06-01"), ("second", "2026-06-02")):
+        ingest(call, name, text_input(name, name, date=date))
+    expected = trace(call, "staged", query)
+    database = directory / "kite.sqlite3"
+    with sqlite3.connect(database) as db:
+        db.execute("DELETE FROM index_seal")
+    before = database.read_bytes()
+
+    direct = call("query", payload={"query": query})["value"]
+    assert direct == expected and direct["next_cursor"]
+    page = call("query", payload={"query": {**query, "cursor": direct["next_cursor"]}})["value"]
+    assert page["timeline"][0]["evidence"][0]["conversation_id"] == "first"
+    assert page["next_cursor"] is None
+    empty = call("query", "--pipeline", "timeline-reconstruction", payload={"query": {}})
+    assert empty["value"]["matched_count"] == 2
+    call("query", payload={"query": {"topics": []}}, error="invalid_input")
+    call("query", payload={"query": {}, "source": {}}, error="invalid_input")
+    call("query", payload={"query": {}}, error="invalid_input")
+    assert database.read_bytes() == before
+
+
+def test_direct_query_leaves_legacy_schema_upgrade_to_workspace_commands(work):
+    directory, call = work
+    ingest(call, "initial", text_input("initial", "Original evidence"))
+    database = directory / "kite.sqlite3"
+    with sqlite3.connect(database) as db:
+        db.execute("DROP TABLE index_seal")
+    before = database.read_bytes()
+    query = {"query": {"topics": ["onboarding"]}}
+    call("query", payload=query, error="workspace_upgrade_required")
+    assert database.read_bytes() == before
+    call("integrity")
+    assert call("query", payload=query)["value"]["matched_count"] == 1
+
+
 def test_related_trace_labels_are_ranked_and_bound_to_the_evidence_page(work):
     _, call = work
     for number in range(1, 7):

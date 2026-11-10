@@ -43,6 +43,22 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
 
 ## Advance and recover
 
+For a direct read from an existing workspace, pass the same `query` input
+object to `kite-tool query`. This command uses the built-in trace tools in
+one read transaction and saves no checkpoint or artifact.
+
+```sh
+kite-tool query --input - <<'JSON'
+{"query":{"topics":["onboarding"],"limit":25}}
+JSON
+```
+
+The default is `topic-tracing`. Select `task-tracing`,
+`timeline-reconstruction` or `decision-evolution` with `--pipeline`.
+Read the report in `value` and use `next_cursor` for another page.
+If an older workspace needs a schema upgrade, run `kite-tool integrity`
+before querying it. For durable runs, use the stage-by-stage protocol below.
+
 1. Read the selected definition using `kite-tool validate-pipeline NAME`.
    Read the skill at each stage's `skill` path. Inspect the JSON contract with
    `kite-tool describe TOOL`.
