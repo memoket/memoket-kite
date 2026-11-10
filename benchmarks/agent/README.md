@@ -61,11 +61,12 @@ Use `approved-deletion` to test deletion in a disposable synthetic workspace.
 Its prepared task includes an authorization file for one exact preview. The
 host verifies that preview before applying it and then traces the surviving
 evidence. Each trial needs a fresh workspace.
-Use a fresh directory per trial. Record the host version, model and configuration
-alongside results when comparing runs. The scorer reads the actual checkpoint
-and report through KITE, verifies that the task used the expected pipeline at the
-seeded snapshot, then checks the returned values and citations against the answer
-key. It checks source coverage and any required date bounds in the saved trace.
+Use a fresh directory per trial. Record the benchmark commit, host version,
+model and configuration alongside results when comparing runs. The scorer reads
+the actual checkpoint and report through KITE, verifies that the task used the
+expected pipeline at the seeded snapshot, then checks the returned values and
+citations against the answer key. It checks source coverage and any required
+date bounds in the saved trace.
 A correct string with a missing or unrelated citation fails.
 
 ## Read the results

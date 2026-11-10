@@ -367,6 +367,8 @@ def prepare(directory: Path, name: str, case: dict, fixture: dict) -> None:
 Run `kite-tool resources` and read the project instructions it reports.
 Use the preloaded synthetic workspace with `kite-tool --workspace ./memory`.
 Use the appropriate KITE workflow, inspect its stage skills and complete the run.
+Apply the requested topic and filters in the saved workflow so its report has
+the requested scope. Use that report for the answer and citations.
 Read only from the seeded memory. Keep all writes within this task directory.
 
 {case["task"]}
