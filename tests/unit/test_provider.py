@@ -1,6 +1,9 @@
 import os
 import subprocess
 import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from queue import Queue
+from threading import Thread
 from urllib.error import HTTPError
 
 import pytest
@@ -62,6 +65,58 @@ def test_provider_retries_only_retryable_http_failures(monkeypatch, status, atte
         llm("synthetic prompt", retries=2)
     assert len(calls) == attempts
     assert sleeps == [2, 4][: attempts - 1]
+
+
+@pytest.mark.parametrize("status", [302, 307])
+def test_provider_does_not_follow_or_retry_model_redirects(status):
+    paths = Queue()
+
+    class Endpoint(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            paths.put(self.path)
+            self.send_response(status)
+            self.send_header("Location", "/unexpected-destination")
+            self.end_headers()
+
+        def do_GET(self):
+            paths.put(self.path)
+            self.send_error(404)
+
+        def log_message(self, *_):
+            pass
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Endpoint) as endpoint:
+        worker = Thread(target=endpoint.serve_forever, daemon=True)
+        worker.start()
+        try:
+            environment = {
+                **os.environ,
+                "OPENAI_API_KEY": "synthetic-test-key",
+                "OPENAI_BASE_URL": f"http://127.0.0.1:{endpoint.server_port}/v1",
+                "no_proxy": "127.0.0.1",
+            }
+            process = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "from memoket_kite.providers.llm import llm; llm('synthetic')",
+                ],
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=12,
+                check=False,
+            )
+            assert process.returncode == 1
+            assert f"HTTP {status}. Set OPENAI_BASE_URL" in process.stderr
+            assert "unexpected-destination" not in process.stderr
+            assert "synthetic-test-key" not in process.stderr
+            assert paths.get(timeout=1) == "/v1/chat/completions"
+            assert paths.empty()
+        finally:
+            endpoint.shutdown()
+            worker.join(timeout=5)
 
 
 def test_llm_json_retries_non_object_json(monkeypatch):

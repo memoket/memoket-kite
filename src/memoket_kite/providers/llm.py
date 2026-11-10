@@ -10,6 +10,14 @@ from urllib.error import HTTPError
 from memoket_kite.errors import ProviderError
 
 
+class _NoModelRedirects(urllib.request.HTTPRedirectHandler):
+    def http_error_302(self, request, response, code, message, headers):
+        # Leave redirects to the default HTTP error handler.
+        return None
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
+
 def ensure_configured(model: str = "gpt-4.1-mini") -> None:
     """Fail early with setup guidance before a public Memory call uses an LLM.
 
@@ -55,7 +63,8 @@ def _http_llm(
         data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    opener = urllib.request.build_opener(_NoModelRedirects())
+    with opener.open(req, timeout=timeout) as resp:
         data = json.loads(resp.read())
     msg = data["choices"][0]["message"]
     out = (msg.get("content") or "").strip()
@@ -81,6 +90,9 @@ def llm(
             status = error.code
             error.close()
             last = f"HTTP {status}"
+            if 300 <= status < 400:
+                last += ". Set OPENAI_BASE_URL to the final model endpoint"
+                break
             if 400 <= status < 500 and status not in (408, 409, 429):
                 break
         except Exception as e:  # Connection, timeout or response errors.

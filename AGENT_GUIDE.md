@@ -284,6 +284,8 @@ selected endpoint to receive the conversation. Provider extraction sends the
 selected transcript and its supplied context, using a fresh taxonomy. Workspace
 topics and entity labels stay local. Review the returned candidates before
 running subsequent stages. Provider-suggested event dates are labeled inferred.
+Configure `OPENAI_BASE_URL` with the final authorized model endpoint.
+KITE rejects HTTP redirects from model endpoints.
 To edit candidates, supply revised annotations
 through the regular ingestion pipeline.
 
