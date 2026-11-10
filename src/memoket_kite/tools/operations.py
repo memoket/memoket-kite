@@ -119,6 +119,7 @@ class Tool:
     inputs: dict[str, str]
     output: str
     effect: str = "read"
+    version: int = 1
 
 
 def _commit(context: Context, annotated: dict) -> dict:
@@ -170,8 +171,8 @@ TOOLS = {
     "rebuild": Tool(_rebuild, {}, "receipt", "write"),
     "validate_commit": Tool(_validate, {"receipt": "receipt"}, "integrity"),
     "resolve": Tool(resolve, {"query": "query"}, "resolved"),
-    "retrieve": Tool(retrieve, {"resolved": "resolved"}, "matches"),
-    "report": Tool(report, {"matches": "matches"}, "report"),
+    "retrieve": Tool(retrieve, {"resolved": "resolved"}, "matches", version=2),
+    "report": Tool(report, {"matches": "matches"}, "report", version=2),
     "reclassify": Tool(reclassify, {"merge": "reclassify"}, "receipt", "write"),
     "preview_delete": Tool(_preview, {"target": "deletion_target"}, "deletion_plan"),
     "delete": Tool(_delete, {"plan": "deletion_plan"}, "receipt", "delete"),

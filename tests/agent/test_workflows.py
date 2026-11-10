@@ -12,6 +12,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from queue import Queue
@@ -22,7 +23,7 @@ import pytest
 from memoket_kite import Memory
 from memoket_kite.pipeline import extract
 from memoket_kite.research import Codebook, SymbolicQuery
-from memoket_kite.tools import audio, cli
+from memoket_kite.tools import audio, cli, operations
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES = ROOT / "examples" / "agent-workflows"
@@ -379,6 +380,16 @@ def test_definition_digest_binds_skills(work, tmp_path):
     call("stage", "maintain", "verify", repo=repo, error="stale_definition")
 
 
+def test_tool_version_only_invalidates_workflows_that_use_it(work, monkeypatch):
+    _, call = work
+    call("start", "topic-tracing", "--run-id", "trace")
+    call("start", "memory-ingestion", "--run-id", "ingest")
+    tool = operations.TOOLS["report"]
+    monkeypatch.setitem(operations.TOOLS, "report", replace(tool, version=tool.version + 1))
+    assert call("status", "trace")["resume"]["reason"] == "stale_definition"
+    assert call("status", "ingest")["resume"]["state"] == "available"
+
+
 def test_revision_correction_consolidation_and_query_scopes(work):
     _, call = work
     original = text_input("task", "Alice", date="2026-01-01", topic="launch")
@@ -712,6 +723,88 @@ def test_entity_aliases_topic_dag_and_event_time(work):
     assert event["time_axis"] == "event"
     assert event["timeline"][0]["source_day"] == "2026-04-01"
     assert event["timeline"][0]["event_date"] == "2026-03-29"
+
+
+def test_event_state_uses_event_dates_and_preserves_unordered_evidence(work):
+    _, call = work
+    for name, day, event in (
+        ("Rae", "2026-04-01", "2026-03-28"),
+        ("Sam", "2026-04-02", "2026-03-10"),
+    ):
+        payload = text_input(name, name, date=day)
+        payload["annotations"]["facts"][0]["event_date"] = event
+        ingest(call, f"import-{name}", payload)
+
+    query = {"state_key": "owner"}
+    pipeline = "timeline-reconstruction"
+    by_source = trace(call, "by-source", query, pipeline)
+    by_event = trace(call, "by-event", {**query, "time_axis": "event"}, pipeline)
+    assert [row["state"] for row in by_event["timeline"]] == ["Sam", "Rae"]
+    assert by_event["timeline"][-1]["source_day"] == "2026-04-01"
+    assert by_source["current_reported_states"]["owner"]["value"] == "Sam"
+    assert by_event["current_reported_states"]["owner"]["value"] == "Rae"
+
+    tie = text_input("tie", "Kim", date="2026-04-03")
+    tie["annotations"]["facts"][0]["event_date"] = "2026-03-28"
+    ingest(call, "import-tie", tie)
+    report = trace(call, "tied-event", {**query, "time_axis": "event"}, pipeline)
+    states = report["current_reported_states"]["owner"]
+    assert states["status"] == "ambiguous" and states["value"] is None
+    assert {row["state"] for row in report["timeline"] if row["fact_id"] in states["fact_ids"]} == {
+        "Kim",
+        "Rae",
+    }
+
+    ingest(call, "unknown-event", text_input("no-date", "Noah", date="2026-04-04"))
+    dated = trace(
+        call,
+        "dated-events",
+        {**query, "time_axis": "event", "start_date": "2026-03-01"},
+        pipeline,
+    )
+    assert dated["matched_count"] == 3
+    assert dated["omitted_unknown_time"] == 1 and not dated["truncated"]
+    assert dated["current_reported_states"]["owner"]["status"] == "partial"
+
+
+def test_source_state_orders_adjacent_segments_without_ordering_overlaps(work):
+    _, call = work
+    segments = [
+        {"segment_id": "a", "text": "Rae", "start_ms": 0, "end_ms": 2000},
+        {"segment_id": "b", "text": "Sam", "start_ms": 1000, "end_ms": 2000},
+        {"segment_id": "c", "text": "Kim", "start_ms": 2000, "end_ms": 3000},
+    ]
+    payload = {
+        "source": {
+            "format": "transcript",
+            "payload": {
+                "conversation_id": "meeting",
+                "segments": segments,
+                "metadata": {"source_reference": "meeting"},
+            },
+        },
+        "annotations": {
+            "facts": [
+                {
+                    "content": line["text"],
+                    "segment_ids": [line["segment_id"]],
+                    "topics": topics,
+                    "state_key": "owner",
+                    "state": line["text"],
+                    "status": "confirmed",
+                }
+                for line, topics in zip(
+                    segments, (["overlap", "adjacent"], ["overlap"], ["adjacent"])
+                )
+            ]
+        },
+    }
+    ingest(call, "meeting", payload)
+    overlapping = trace(call, "overlap", {"topics": ["overlap"]})
+    adjacent = trace(call, "adjacent", {"topics": ["adjacent"]})
+    assert overlapping["current_reported_states"]["owner"]["status"] == "ambiguous"
+    assert adjacent["current_reported_states"]["owner"]["value"] == "Kim"
+    assert overlapping["timeline"][0]["evidence"][0]["end_ms"] == 2000
 
 
 def test_rebuild_uses_verified_source_records(work):

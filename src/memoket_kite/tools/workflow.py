@@ -95,8 +95,15 @@ def load_pipeline(
         )
     except CycleError as exc:
         raise ToolError("invalid_pipeline", "stage dependency graph contains a cycle") from exc
-    fingerprint = digest([definition, skills, SCHEMAS, schema_file(root, "conversation")])
-    return definition, fingerprint, workflow_root
+    tool_versions = {
+        name: TOOLS[name].version
+        for name in {stage["tool"] for stage in stages.values()}
+        if TOOLS[name].version != 1
+    }
+    parts = [definition, skills, SCHEMAS, schema_file(root, "conversation")]
+    if tool_versions:
+        parts.append(tool_versions)
+    return definition, digest(parts), workflow_root
 
 
 def _inputs(definition: dict, supplied: dict) -> dict:
@@ -254,7 +261,7 @@ def _bound_definition(context: Context, row, checkpoint: dict) -> tuple[dict, st
         context.root, checkpoint["pipeline_id"], extension_root=context.extension_root
     )
     if fingerprint != row["definition"]:
-        raise ToolError("stale_definition", "pipeline or skill changed; start a new run")
+        raise ToolError("stale_definition", "pipeline, skill or tool changed; start a new run")
     return definition, fingerprint
 
 

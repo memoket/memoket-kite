@@ -106,7 +106,7 @@ def retrieve(context, resolved: dict) -> dict:
             continue
         day, _, sortable = _source_time(record)
         if time_axis == "event":
-            day = index.facts[fid].get("event_date", "")
+            day = sortable = index.facts[fid].get("event_date", "")
         if not day:
             missing_time += 1
         if bounded:
@@ -171,7 +171,10 @@ def _evidence(index, fid: str) -> dict:
     }
 
 
-def _precedes(first: dict, second: dict) -> bool:
+def _precedes(first: dict, second: dict, time_axis: str) -> bool:
+    if time_axis == "event":
+        left, right = first["event_date"], second["event_date"]
+        return bool(left and right and left < right)
     if first["source_day"] and second["source_day"] and first["source_day"] != second["source_day"]:
         return first["source_day"] < second["source_day"]
     if first["time_precision"] == second["time_precision"] == "timestamp":
@@ -184,13 +187,16 @@ def _precedes(first: dict, second: dict) -> bool:
         for row in (first, second)
         for line in row["evidence"]
     ):
-        return max(line["start_ms"] for line in first["evidence"]) < min(
-            line["start_ms"] for line in second["evidence"]
+        left = first["evidence"]
+        right_start = min(line["start_ms"] for line in second["evidence"])
+        return (
+            max(line["start_ms"] for line in left) < right_start
+            and max(line.get("end_ms", line["start_ms"]) for line in left) <= right_start
         )
     return False
 
 
-def _states(events: list[dict], complete: bool) -> dict:
+def _states(events: list[dict], complete: bool, time_axis: str) -> dict:
     groups = defaultdict(list)
     for event in events:
         if event["state_key"] and event["status"] == "confirmed" and event["effective"]:
@@ -200,7 +206,7 @@ def _states(events: list[dict], complete: bool) -> dict:
         latest = [
             row
             for row in group
-            if not any(_precedes(row, other) for other in group if other is not row)
+            if not any(_precedes(row, other, time_axis) for other in group if other is not row)
         ]
         values = {row["state"] for row in latest}
         status = "confirmed" if len(values) == 1 else "ambiguous"
@@ -249,7 +255,7 @@ def report(context, matches: dict) -> dict:
         "time_axis": matches["time_axis"],
         "timeline": timeline,
         **sections,
-        "current_reported_states": _states(timeline, complete),
+        "current_reported_states": _states(timeline, complete, matches["time_axis"]),
         "matched_count": matches["matched"],
         "truncated": matches["matched"] > len(timeline),
         "omitted_unknown_time": matches["omitted_unknown_time"],

@@ -60,7 +60,8 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
    that require explicit user authorization. Repeating a completed stage
    returns its prior artifact on the same snapshot. Inspect a current artifact
    with `kite-tool artifact RUN_ID STAGE_ID`. Start a fresh run if `resume.reason`
-   is `stale_snapshot` or `stale_definition`.
+   is `stale_snapshot` or `stale_definition`. A change to a stage tool's
+   version can invalidate an existing run.
    For intermediate stages whose output you do not need to inspect, use
    `kite-tool stage RUN_ID STAGE_ID --summary`. The response includes stage and
    run status, retry count, and the manifest when successful. Use the full
@@ -71,6 +72,14 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
    the selected evidence, and describe ambiguous, partial or missing states
    explicitly. Semantic support is a host review task. KITE verifies provenance
    and index consistency deterministically.
+
+By default, timelines and reported states use source dates, timestamps, and
+available offsets within a single recording. Use `query.time_axis: event` to
+order and compare facts by annotated event dates. Reports retain the source
+date for citation. Two facts on the same event day do not establish an order.
+Known overlapping source intervals also leave their order unresolved. Reports
+mark competing values as ambiguous and distinguish missing dates excluded by
+date bounds from results truncated by a limit.
 
 ## Source and access
 
