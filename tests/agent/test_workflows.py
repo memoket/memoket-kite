@@ -123,6 +123,57 @@ def test_discovery_and_invalid_pipeline(work, tmp_path):
     call("validate-pipeline", "../topic-tracing", error="invalid_pipeline")
 
 
+def test_discover_interrupted_runs_and_resume_without_disclosing_inputs(work):
+    directory, call = work
+    assert call("runs")["runs"] == []
+    call("runs", "--limit", "0", error="invalid_input")
+    call("runs", "--limit", "101", error="invalid_input")
+    run_id = call("start", "memory-ingestion")["run_id"]
+    source = text_input("source-private-id", "private-text-marker")
+    assert call("status", run_id)["resume"]["stages"][0]["missing_inputs"] == {"source": "source"}
+    call("stage", run_id, "normalize", payload={"source": source["source"]})
+    call("stage", run_id, "annotate", error="missing_input")
+    call("start", "memory-maintenance", "--run-id", "newer")
+    runs = call("runs")["runs"]
+    assert [run["run_id"] for run in runs] == ["newer", run_id]
+    assert call("runs", "--limit", "1")["runs"] == runs[:1]
+    assert set(runs[1]) == {
+        "run_id",
+        "pipeline_id",
+        "state",
+        "current_stage",
+        "created_at",
+        "updated_at",
+        "snapshot_current",
+    }
+    status = call("status", run_id)
+    assert status["resume"] == {
+        "state": "available",
+        "stages": [
+            {
+                "id": "annotate",
+                "tool": "annotate",
+                "skill": "skills/memory/fact-extraction/SKILL.md",
+                "missing_inputs": {"annotations": "annotations"},
+                "required_flags": [],
+            }
+        ],
+    }
+    assert "private-text-marker" not in json.dumps([runs, status])
+    assert "source-private-id" not in json.dumps([runs, status])
+    call("stage", run_id, "annotate", payload={"annotations": source["annotations"]})
+    assert call("status", run_id)["resume"]["stages"][0]["id"] == "commit"
+    call("stage", run_id, "commit")
+    call("stage", run_id, "verify")
+    assert call("status", run_id)["resume"] == {"state": "complete", "stages": []}
+
+    with sqlite3.connect(directory / "kite.sqlite3") as db:
+        db.execute("UPDATE runs SET inputs = ? WHERE id = ?", ('{"private-marker":NaN}', run_id))
+    status = call("status", run_id)
+    assert status["resume"] == {"state": "blocked", "reason": "integrity_error", "stages": []}
+    assert "private-marker" not in json.dumps(status)
+
+
 def test_resume_failed_stage_and_preserve_exact_sources(work, tmp_path):
     _, call = work
     payload = fixture("first-meeting")
@@ -181,7 +232,9 @@ def test_inconsistent_taxonomy_rolls_back_and_stale_runs_are_detected(work):
     )
     call("stage", "stale", "resolve")
     ingest(call, "valid", text_input("good", "Confirmed fact"))
-    assert not call("status", "stale")["snapshot_current"]
+    status = call("status", "stale")
+    assert not status["snapshot_current"]
+    assert status["resume"] == {"state": "blocked", "reason": "stale_snapshot", "stages": []}
     call("stage", "stale", "retrieve", error="stale_snapshot")
     call("artifact", "stale", "resolve", error="stale_snapshot")
 
@@ -194,6 +247,7 @@ def test_definition_digest_binds_skills(work, tmp_path):
     call("start", "memory-maintenance", "--run-id", "maintain", repo=repo)
     path = repo / "skills" / "memory" / "index-building" / "SKILL.md"
     path.write_text(path.read_text() + "\nChanged instruction.\n")
+    assert call("status", "maintain", repo=repo)["resume"]["reason"] == "stale_definition"
     call("stage", "maintain", "verify", repo=repo, error="stale_definition")
 
 
@@ -268,11 +322,17 @@ def test_deletion_approval_purge_and_replay(work):
         call("stage", "delete", "apply", error="awaiting_approval")["checkpoint"]["state"]
         == "awaiting_approval"
     )
+    status = call("status", "delete")
+    assert status["resume"]["stages"][0]["required_flags"] == ["--approve"]
+    assert plan["approval_token"] not in json.dumps([status, call("runs")])
     call("stage", "delete", "apply", "--approve", "wrong", error="permission_denied")
     receipt = call("stage", "delete", "apply", "--approve", plan["approval_token"])
     assert receipt["value"]["deleted_revisions"] == 1
     assert call("stage", "delete", "apply") == receipt
-    assert call("status", "old-report")["state"] == "invalidated"
+    status = call("status", "old-report")
+    assert status["state"] == "invalidated"
+    assert status["resume"]["reason"] == "invalidated_run"
+    assert call("status", "delete")["resume"]["state"] == "complete"
     call("artifact", "old-report", "report", error="invalidated_run")
     call("artifact", "delete", "preview", error="not_found")
     assert b"private-celadon-body" not in (directory / "kite.sqlite3").read_bytes()
@@ -368,6 +428,11 @@ def test_provider_opt_in_and_candidate_mapping(work, monkeypatch):
     payload = {"source": fixture("first-meeting")["source"], "model": {"name": "test-model"}}
     call("start", "memory-provider-ingestion", "--run-id", "model", payload=payload)
     call("stage", "model", "normalize")
+    extract_stage = call("status", "model")["resume"]["stages"][0]
+    assert (extract_stage["id"], extract_stage["required_flags"]) == (
+        "extract",
+        ["--allow-provider"],
+    )
     call("stage", "model", "extract", error="permission_denied")
     call("stage", "model", "extract", "--allow-provider", error="configuration_error")
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-placeholder")

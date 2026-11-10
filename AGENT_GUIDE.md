@@ -52,12 +52,15 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
 4. Inspect the JSON response, including `value`, `manifest` and `checkpoint`.
    An exit code of 2 means the command failed and the JSON error provides a code.
    Retry a recoverable failed stage with the same ID. Stop downstream work until
-   the prerequisite succeeds. If a process was interrupted, use
-   `kite-tool status RUN_ID`, then rerun the interrupted stage. Repeating a
-   completed stage returns its prior artifact on the same snapshot.
-5. Start a fresh run on `stale_snapshot` or `stale_definition`. A stored run binds
-   its definition, referenced skills, validated inputs and memory version.
-   Inspect a current artifact with `kite-tool artifact RUN_ID STAGE_ID`.
+   the prerequisite succeeds. If the run ID was lost, use `kite-tool runs`
+   to find it in the same workspace. The list shows the latest 20 runs by
+   creation order. Use `--limit` to show up to 100.
+5. Use `kite-tool status RUN_ID` to inspect `resume.stages`. Each eligible
+   stage lists its skill, the names and types of missing inputs, and any flags
+   that require explicit user authorization. Repeating a completed stage
+   returns its prior artifact on the same snapshot. Inspect a current artifact
+   with `kite-tool artifact RUN_ID STAGE_ID`. Start a fresh run if `resume.reason`
+   is `stale_snapshot` or `stale_definition`.
 6. Present the user with source-backed conclusions. Cite the conversation ID and
    segment ID or the original quote. Treat a confirmed state as a report from
    the selected evidence, and describe ambiguous, partial or missing states

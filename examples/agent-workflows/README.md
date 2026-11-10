@@ -21,6 +21,7 @@ Run these commands from the KITE checkout.
 export KITE_DATA_DIR="$(mktemp -d)"
 kite-tool start memory-ingestion --run-id meeting-a --input examples/agent-workflows/first-meeting.json
 kite-tool stage meeting-a normalize
+kite-tool runs
 kite-tool status meeting-a
 kite-tool stage meeting-a annotate
 kite-tool stage meeting-a commit
@@ -38,8 +39,9 @@ kite-tool stage trace-a retrieve
 kite-tool stage trace-a report
 ```
 
-Resume after any command with `kite-tool status RUN_ID`. In the report, look
-at `current_reported_states.onboarding-design`, then match its fact ID to the
+Use `kite-tool runs` to recover a lost run ID, then check
+`resume.stages` in `kite-tool status RUN_ID` for the next stage and any
+missing inputs. In the report, look at `current_reported_states.onboarding-design`, then match its fact ID to the
 timeline and original evidence.
 
 ## Give your agent a task

@@ -14,7 +14,7 @@ from .demo import run_demo
 from .ingest import file_source
 from .operations import SCHEMAS, TARGET, TOOLS, Context
 from .resources import resource_root
-from .workflow import advance, artifact, load_pipeline, start, status
+from .workflow import advance, artifact, load_pipeline, recent_runs, start, status
 from .workspace import Workspace
 
 
@@ -83,6 +83,8 @@ def _parser() -> argparse.ArgumentParser:
     stage.add_argument(
         "--allow-provider", action="store_true", help="allow the extractor to send source data"
     )
+    runs = commands.add_parser("runs", help="list recent workflow runs without source content")
+    runs.add_argument("--limit", type=int, default=20, help="number of runs to show (1–100)")
     for name in ("status", "artifact"):
         command = commands.add_parser(name)
         command.add_argument("run_id")
@@ -202,8 +204,10 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             return start(context, supplied, args.run_id), None
         if args.command == "stage":
             return advance(context, args.run_id, args.stage_id, supplied)
+        if args.command == "runs":
+            return recent_runs(workspace, args.limit), None
         if args.command == "status":
-            return status(workspace, args.run_id), None
+            return status(context, args.run_id), None
         if args.command == "artifact":
             return artifact(context, args.run_id, args.stage_id), None
         if args.command == "deletion-audit":

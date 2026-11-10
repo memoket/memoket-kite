@@ -8,7 +8,7 @@ from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from uuid import uuid4
 
-from .contracts import ID, ToolError, digest, encode, now, schema_file, validate
+from .contracts import ID, ToolError, decode_object, digest, encode, now, schema_file, validate
 from .ingest import minimize_source
 from .operations import EXTERNAL, SCHEMAS, TOOLS, Context
 
@@ -139,9 +139,88 @@ def _run(workspace, run_id: str):
     return row, checkpoint
 
 
-def status(workspace, run_id: str) -> dict:
-    _, checkpoint = _run(workspace, run_id)
-    return {**checkpoint, "snapshot_current": checkpoint["memory_version"] == workspace.version()}
+def recent_runs(workspace, limit: int) -> dict:
+    if not 1 <= limit <= 100:
+        raise ToolError("invalid_input", "run limit must be between 1 and 100")
+    version = workspace.version()
+    rows = workspace.db.execute(
+        "SELECT checkpoint FROM runs ORDER BY rowid DESC LIMIT ?",
+        (limit,),
+    )
+    fields = ("run_id", "pipeline_id", "state", "current_stage", "created_at", "updated_at")
+    runs = []
+    for row in rows:
+        checkpoint = json.loads(row["checkpoint"])
+        runs.append(
+            {
+                **{field: checkpoint[field] for field in fields},
+                "snapshot_current": checkpoint["memory_version"] == version,
+            }
+        )
+    return {"runs": runs, "memory_version": version}
+
+
+def _stored_inputs(row, checkpoint: dict) -> dict:
+    try:
+        supplied = decode_object(row["inputs"])
+    except ToolError as exc:
+        raise ToolError("integrity_error", "run input is not a valid JSON object") from exc
+    if checkpoint["input_digest"] != digest(supplied):
+        raise ToolError("integrity_error", "run input differs from its digest")
+    return supplied
+
+
+def _stage_input_names(stage: dict) -> set[str]:
+    return {ref[6:] for ref in stage["inputs"].values() if ref.startswith("input.")}
+
+
+def _dependency_pending(checkpoint: dict, stage: dict) -> bool:
+    return any(checkpoint["stages"][dep]["state"] != "completed" for dep in stage["needs"])
+
+
+def _resume(context: Context, row, checkpoint: dict) -> dict:
+    try:
+        definition, _ = _bound_definition(context, row, checkpoint)
+        supplied = _stored_inputs(row, checkpoint)
+    except ToolError as error:
+        return {"state": "blocked", "reason": error.code, "stages": []}
+    except (OSError, ValueError):
+        return {"state": "blocked", "reason": "invalid_pipeline", "stages": []}
+
+    if checkpoint["state"] == "completed":
+        return {"state": "complete", "stages": []}
+    eligible = []
+    flags = {"provider": ["--allow-provider"], "delete": ["--approve"]}
+    for stage in definition["stages"]:
+        stage_id = stage["id"]
+        if checkpoint["stages"][stage_id]["state"] in {
+            "completed",
+            "invalidated",
+            "redacted",
+        } or _dependency_pending(checkpoint, stage):
+            continue
+        missing = _stage_input_names(stage) - supplied.keys()
+        eligible.append(
+            {
+                "id": stage_id,
+                "tool": stage["tool"],
+                "skill": stage["skill"],
+                "missing_inputs": {key: definition["inputs"][key] for key in sorted(missing)},
+                "required_flags": flags.get(TOOLS[stage["tool"]].effect, []),
+            }
+        )
+    if not eligible:
+        return {"state": "blocked", "reason": "dependency_pending", "stages": []}
+    return {"state": "available", "stages": eligible}
+
+
+def status(context: Context, run_id: str) -> dict:
+    row, checkpoint = _run(context.workspace, run_id)
+    return {
+        **checkpoint,
+        "snapshot_current": checkpoint["memory_version"] == context.workspace.version(),
+        "resume": _resume(context, row, checkpoint),
+    }
 
 
 def _check_snapshot(context, row, checkpoint):
@@ -155,12 +234,17 @@ def _check_snapshot(context, row, checkpoint):
         raise ToolError("integrity_error", "checkpoint definition digest differs from its record")
 
 
+def _bound_definition(context: Context, row, checkpoint: dict) -> tuple[dict, str]:
+    _check_snapshot(context, row, checkpoint)
+    definition, fingerprint = load_pipeline(context.root, checkpoint["pipeline_id"])
+    if fingerprint != row["definition"]:
+        raise ToolError("stale_definition", "pipeline or skill changed; start a new run")
+    return definition, fingerprint
+
+
 def artifact(context: Context, run_id: str, stage_id: str) -> dict:
     run, checkpoint = _run(context.workspace, run_id)
-    _check_snapshot(context, run, checkpoint)
-    _, fingerprint = load_pipeline(context.root, checkpoint["pipeline_id"])
-    if fingerprint != run["definition"]:
-        raise ToolError("stale_definition", "pipeline or skill changed; start a new run")
+    _bound_definition(context, run, checkpoint)
     return _artifact(context, checkpoint, stage_id)
 
 
@@ -221,10 +305,7 @@ def _provider_result(context, row, checkpoint, stage, tool, pending_inputs):
         # Check the current database and definition before attaching either a
         # result or a failure to a checkpoint. Never restore a changed run.
         current, current_checkpoint = _run(context.workspace, run_id)
-        _check_snapshot(context, current, current_checkpoint)
-        _, fingerprint = load_pipeline(context.root, checkpoint["pipeline_id"])
-        if fingerprint != row["definition"]:
-            raise ToolError("stale_definition", "pipeline or skill changed; start a new run")
+        _bound_definition(context, current, current_checkpoint)
         if current != row:
             raise ToolError(
                 "conflict", "run changed during extraction; retry from its current checkpoint"
@@ -236,11 +317,8 @@ def advance(
     context: Context, run_id: str, stage_id: str, extra: dict
 ) -> tuple[dict, ToolError | None]:
     row, checkpoint = _run(context.workspace, run_id)
-    _check_snapshot(context, row, checkpoint)
+    definition, fingerprint = _bound_definition(context, row, checkpoint)
     context.pipeline = checkpoint["pipeline_id"]
-    definition, fingerprint = load_pipeline(context.root, context.pipeline)
-    if fingerprint != row["definition"] or fingerprint != checkpoint["definition_digest"]:
-        raise ToolError("stale_definition", "pipeline or skill changed; start a new run")
     stages = {stage["id"]: stage for stage in definition["stages"]}
     if stage_id not in stages:
         raise ToolError("not_found", "pipeline has no stage with that ID")
@@ -249,9 +327,7 @@ def advance(
     if context.approval is not None and tool.effect != "delete":
         raise ToolError("invalid_input", "--approve is only valid for a deletion stage")
     state = checkpoint["stages"][stage_id]
-    supplied = json.loads(row["inputs"])
-    if checkpoint["input_digest"] != digest(supplied):
-        raise ToolError("integrity_error", "run input differs from its digest")
+    supplied = _stored_inputs(row, checkpoint)
     extra = _inputs(definition, extra)
     input_keys = {
         reference[6:] for reference in stage["inputs"].values() if reference.startswith("input.")
@@ -266,7 +342,7 @@ def advance(
         return {"checkpoint": checkpoint, **_artifact(context, checkpoint, stage_id)}, None
     if state["state"] in ("invalidated", "redacted"):
         raise ToolError("invalidated_run", "this stage's artifacts were redacted after deletion")
-    if any(checkpoint["stages"][dep]["state"] != "completed" for dep in stage["needs"]):
+    if _dependency_pending(checkpoint, stage):
         raise ToolError("dependency_pending", "finish prerequisite stages first")
 
     pending_inputs = {**supplied, **extra}
