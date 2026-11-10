@@ -94,3 +94,11 @@ coverage, citation recall and decision state against a fixed synthetic
 scenario. The annotations and expected outputs are checked into the example.
 This deterministic integration measurement is separate from model-dependent
 extraction and benchmark scores.
+
+
+## Agent task benchmark
+
+Run `python -m benchmarks.agent offline` for the four synthetic lifecycle and
+retrieval scenarios. Use `prepare` and `score` to evaluate a host's workflow
+selection, completed report, answer and evidence on the same corpus.
+See the [agent task benchmark guide](agent/README.md).

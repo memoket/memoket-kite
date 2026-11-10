@@ -58,6 +58,7 @@ jobs:
           python examples/inspect_codebook.py
           python examples/temporal_reasoning.py
           kite-tool demo --metrics
+          python -m benchmarks.agent offline
       # No licensed corpus is available here, so this asserts the gate reports
       # that rather than reporting clean. The audit itself runs at release
       # time, where `--require-corpus` makes an absent corpus an error.

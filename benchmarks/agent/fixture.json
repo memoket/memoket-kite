@@ -1,0 +1,412 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "source": {
+        "format": "text",
+        "payload": {
+          "conversation_id": "plan-alpha",
+          "metadata": {
+            "source_reference": "plan-alpha"
+          },
+          "text": "For the reporting refresh, I propose CSV. Nia will implement the export.",
+          "source_date": "2026-07-06"
+        }
+      },
+      "annotations": {
+        "facts": [
+          {
+            "content": "CSV was proposed.",
+            "segment_ids": [
+              "text-1"
+            ],
+            "topics": [
+              "reporting-refresh"
+            ],
+            "status": "proposal",
+            "state_key": "export-format",
+            "state": "CSV"
+          },
+          {
+            "content": "Nia will implement the export.",
+            "segment_ids": [
+              "text-1"
+            ],
+            "topics": [
+              "reporting-refresh"
+            ],
+            "status": "confirmed",
+            "state_key": "export-owner",
+            "state": "Nia"
+          }
+        ],
+        "taxonomy": [
+          {
+            "name": "reporting-refresh",
+            "aliases": [
+              "report overhaul"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "source": {
+        "format": "memoket",
+        "payload": {
+          "code": 0,
+          "data": {
+            "id": "21",
+            "date": "2026-07-10",
+            "segments": [
+              {
+                "sentences": [
+                  {
+                    "id": "1",
+                    "line_id": "reject-csv",
+                    "speaker": "Rae",
+                    "time": 0.8,
+                    "text": "We rejected CSV because it exposes internal IDs."
+                  },
+                  {
+                    "id": "2",
+                    "line_id": "choose-pdf",
+                    "speaker": "Rae",
+                    "time": 4.1,
+                    "text": "We confirmed PDF for the reporting refresh."
+                  },
+                  {
+                    "id": "3",
+                    "line_id": "new-owner",
+                    "speaker": "Omar",
+                    "time": 7.2,
+                    "text": "I am taking over the export task from Nia."
+                  },
+                  {
+                    "id": "4",
+                    "line_id": "email-open",
+                    "speaker": "Rae",
+                    "time": 9.0,
+                    "text": "We have not decided whether to enable automatic email."
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "annotations": {
+        "facts": [
+          {
+            "content": "CSV was rejected because it exposes internal IDs.",
+            "segment_ids": [
+              "reject-csv"
+            ],
+            "topics": [
+              "reporting-refresh"
+            ],
+            "status": "rejected",
+            "state_key": "export-format",
+            "state": "CSV"
+          },
+          {
+            "content": "PDF is the confirmed export format.",
+            "segment_ids": [
+              "choose-pdf"
+            ],
+            "topics": [
+              "reporting-refresh"
+            ],
+            "status": "confirmed",
+            "state_key": "export-format",
+            "state": "PDF"
+          },
+          {
+            "content": "Omar took over the export task from Nia.",
+            "segment_ids": [
+              "new-owner"
+            ],
+            "topics": [
+              "reporting-refresh"
+            ],
+            "status": "confirmed",
+            "state_key": "export-owner",
+            "state": "Omar"
+          },
+          {
+            "content": "Automatic email is undecided.",
+            "segment_ids": [
+              "email-open"
+            ],
+            "topics": [
+              "reporting-refresh"
+            ],
+            "status": "open",
+            "state_key": "automatic-email",
+            "state": "undecided"
+          }
+        ]
+      }
+    },
+    {
+      "source": {
+        "format": "text",
+        "payload": {
+          "conversation_id": "undated-note",
+          "metadata": {
+            "source_reference": "undated-note"
+          },
+          "text": "Maybe enable automatic email next quarter."
+        }
+      },
+      "annotations": {
+        "facts": [
+          {
+            "content": "Automatic email was proposed for next quarter.",
+            "segment_ids": [
+              "text-1"
+            ],
+            "topics": [
+              "reporting-refresh"
+            ],
+            "status": "proposal",
+            "state_key": "automatic-email",
+            "state": "enabled"
+          }
+        ]
+      }
+    },
+    {
+      "source": {
+        "format": "text",
+        "payload": {
+          "conversation_id": "catering",
+          "metadata": {
+            "source_reference": "catering"
+          },
+          "text": "We selected CSV for the catering spreadsheet.",
+          "source_date": "2026-07-11"
+        }
+      },
+      "annotations": {
+        "facts": [
+          {
+            "content": "Catering selected CSV.",
+            "segment_ids": [
+              "text-1"
+            ],
+            "topics": [
+              "catering"
+            ],
+            "status": "confirmed",
+            "state_key": "export-format",
+            "state": "CSV"
+          }
+        ]
+      }
+    }
+  ],
+  "cases": {
+    "format-decision": {
+      "pipeline": "topic-tracing",
+      "query": {
+        "topics": [
+          "report overhaul"
+        ]
+      },
+      "task": "Trace the report overhaul topic. Which export format was confirmed, and which was rejected?",
+      "fields": {
+        "confirmed_format": "The confirmed format, as its short uppercase name.",
+        "rejected_format": "The rejected format, as its short uppercase name."
+      },
+      "select": {
+        "confirmed_format": [
+          "state",
+          "export-format"
+        ],
+        "rejected_format": [
+          "rejected",
+          "export-format"
+        ]
+      },
+      "expected": {
+        "confirmed_format": {
+          "value": "PDF",
+          "citations": [
+            {
+              "conversation_id": "21",
+              "segment_id": "choose-pdf"
+            }
+          ]
+        },
+        "rejected_format": {
+          "value": "CSV",
+          "citations": [
+            {
+              "conversation_id": "21",
+              "segment_id": "reject-csv"
+            }
+          ]
+        }
+      },
+      "expected_source_ids": [
+        "plan-alpha",
+        "21",
+        "undated-note"
+      ]
+    },
+    "owner-handoff": {
+      "pipeline": "task-tracing",
+      "query": {
+        "topics": [
+          "reporting-refresh"
+        ],
+        "state_key": "export-owner"
+      },
+      "task": "Trace the reporting export task. Who originally owned it and who owns it now?",
+      "fields": {
+        "original_owner": "The original owner's first name.",
+        "current_owner": "The current owner's first name."
+      },
+      "select": {
+        "original_owner": [
+          "history",
+          "export-owner"
+        ],
+        "current_owner": [
+          "state",
+          "export-owner"
+        ]
+      },
+      "expected": {
+        "original_owner": {
+          "value": "Nia",
+          "citations": [
+            {
+              "conversation_id": "plan-alpha",
+              "segment_id": "text-1"
+            }
+          ]
+        },
+        "current_owner": {
+          "value": "Omar",
+          "citations": [
+            {
+              "conversation_id": "21",
+              "segment_id": "new-owner"
+            }
+          ]
+        }
+      },
+      "expected_source_ids": [
+        "plan-alpha",
+        "21"
+      ]
+    },
+    "dated-timeline": {
+      "pipeline": "timeline-reconstruction",
+      "query": {
+        "topics": [
+          "reporting-refresh"
+        ],
+        "start_date": "2026-07-01",
+        "end_date": "2026-07-31"
+      },
+      "task": "Build a July 2026 conversation timeline for the reporting refresh. List the distinct source dates in chronological order. Exclude records without a known date.",
+      "fields": {
+        "source_dates": "An array of distinct YYYY-MM-DD dates in chronological order. Cite one segment for each date."
+      },
+      "select": {
+        "source_dates": [
+          "dates",
+          null
+        ]
+      },
+      "expected": {
+        "source_dates": {
+          "value": [
+            "2026-07-06",
+            "2026-07-10"
+          ],
+          "citations": [
+            {
+              "conversation_id": "plan-alpha",
+              "segment_id": "text-1"
+            },
+            {
+              "conversation_id": "21",
+              "segment_id": "reject-csv"
+            }
+          ]
+        }
+      },
+      "allow_citations": {
+        "source_dates": [
+          [
+            [
+              "plan-alpha",
+              "text-1"
+            ]
+          ],
+          [
+            [
+              "21",
+              "reject-csv"
+            ],
+            [
+              "21",
+              "choose-pdf"
+            ],
+            [
+              "21",
+              "new-owner"
+            ],
+            [
+              "21",
+              "email-open"
+            ]
+          ]
+        ]
+      },
+      "expected_source_ids": [
+        "plan-alpha",
+        "21"
+      ],
+      "expected_omitted_unknown_time": 1
+    },
+    "unconfirmed-email": {
+      "pipeline": "decision-evolution",
+      "query": {
+        "topics": [
+          "reporting-refresh"
+        ],
+        "state_key": "automatic-email"
+      },
+      "task": "Trace the decision about automatic email for the reporting refresh. Was it actually confirmed?",
+      "fields": {
+        "confirmed_email": "The confirmed value, or JSON null if no decision was confirmed. Cite the explicit statement of the open question."
+      },
+      "select": {
+        "confirmed_email": [
+          "unconfirmed",
+          "automatic-email"
+        ]
+      },
+      "expected": {
+        "confirmed_email": {
+          "value": null,
+          "citations": [
+            {
+              "conversation_id": "21",
+              "segment_id": "email-open"
+            }
+          ]
+        }
+      },
+      "expected_source_ids": [
+        "21",
+        "undated-note"
+      ]
+    }
+  }
+}
