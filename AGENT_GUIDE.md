@@ -350,6 +350,12 @@ from an older workspace verifies the Codebook against a full rebuild.
 is damaged and the source records are intact, run `memory-rebuild`. Ordinary
 memory writes check the existing snapshot before changing it and report
 `integrity_error` on a mismatch.
+New snapshots also have a separate seal for source records, annotations, and
+taxonomy. `memory-rebuild` checks that seal before repairing a damaged Codebook.
+Run `kite-tool integrity` on a healthy older workspace to establish the seal
+without changing its memory version. Older snapshots without a source seal
+rely on the operator verifying the sources before a rebuild.
+Use the upgraded version for all writers once a workspace has a source seal.
 An `integrity_error` for an invalid stored source record requires a verified
 backup or an authorized original export for recovery.
 

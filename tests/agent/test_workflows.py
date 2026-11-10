@@ -2338,6 +2338,45 @@ def test_rebuild_uses_verified_source_records(work):
     assert not call("stage", "already-healthy", "rebuild")["value"]["changed"]
 
 
+@pytest.mark.parametrize("damage", ["annotation", "missing_seal"])
+def test_rebuild_requires_intact_source_seal(work, damage):
+    directory, call = work
+    receipt = ingest(call, "first", text_input("first", "Synthetic original evidence."))
+    database = directory / "kite.sqlite3"
+    with sqlite3.connect(database) as db:
+        if damage == "annotation":
+            record = json.loads(db.execute("SELECT payload FROM revisions").fetchone()[0])
+            record["facts"][0]["status"] = "proposal"
+            db.execute("UPDATE revisions SET payload=?", (json.dumps(record),))
+        else:
+            db.execute("DELETE FROM source_seal")
+    call("start", "memory-rebuild", "--run-id", "repair")
+    error = call("stage", "repair", "rebuild", error="integrity_error")
+    assert "source snapshot" in error["error"]["message"]
+    assert "Synthetic original evidence" not in json.dumps(error)
+    assert call("status", "repair")["memory_version"] == receipt["memory_version"]
+
+
+def test_integrity_establishes_source_seal_for_legacy_workspace(work):
+    directory, call = work
+    original = ingest(call, "first", text_input("first", "Synthetic original evidence."))
+    database = directory / "kite.sqlite3"
+    with sqlite3.connect(database) as db:
+        original_index_seal = db.execute("SELECT checksum FROM index_seal").fetchone()[0]
+        db.execute("DROP TABLE source_seal")
+        db.execute("PRAGMA user_version=1")
+    before = database.read_bytes()
+    report = call("query", payload={"query": {"topics": ["onboarding"]}})["value"]
+    assert report["matched_count"] == 1 and database.read_bytes() == before
+    assert call("integrity")["memory_version"] == original["memory_version"]
+    with sqlite3.connect(database) as db:
+        assert db.execute("PRAGMA user_version").fetchone() == (2,)
+        assert db.execute("SELECT version FROM source_seal").fetchone() == (
+            original["memory_version"],
+        )
+        assert db.execute("SELECT checksum FROM index_seal").fetchone() == (original_index_seal,)
+
+
 @pytest.mark.parametrize("damage", ["sealed_annotations", "legacy_index", "seal_version"])
 def test_ordinary_writes_do_not_reseal_damaged_snapshot(work, damage):
     directory, call = work

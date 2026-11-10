@@ -34,6 +34,11 @@ CREATE TABLE IF NOT EXISTS index_seal (
     version INTEGER NOT NULL,
     checksum TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS source_seal (
+    singleton INTEGER PRIMARY KEY CHECK (singleton=1),
+    version INTEGER NOT NULL,
+    checksum TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS revisions (
     checksum TEXT PRIMARY KEY,
     source_key TEXT NOT NULL,
@@ -60,28 +65,36 @@ CREATE TABLE IF NOT EXISTS deletion_audit (
 """
 
 
-def _snapshot_checksum(xml: bytes, merges: str, rows: list[sqlite3.Row], hierarchy: dict) -> str:
-    if not isinstance(xml, bytes) or not isinstance(merges, str):
+def _snapshot_checksums(
+    xml: bytes | None, merges: str, rows: list[sqlite3.Row], hierarchy: dict
+) -> tuple[str | None, str]:
+    if not isinstance(merges, str) or (xml is not None and not isinstance(xml, bytes)):
         raise ToolError("integrity_error", "invalid stored Codebook snapshot")
-    checksum = sha256()
+    combined = sha256() if xml is not None else None
+    sources = sha256()
 
-    def frame(value: bytes) -> None:
-        checksum.update(len(value).to_bytes(8, "big"))
-        checksum.update(value)
+    def frame(value: bytes, *checksums) -> None:
+        length = len(value).to_bytes(8, "big")
+        for checksum in checksums:
+            checksum.update(length)
+            checksum.update(value)
 
     # Change the seal format when the Codebook compiler's persisted output changes.
-    frame(b"kite-codebook-v1")
-    frame(xml)
-    frame(merges.encode("utf-8"))
+    if combined is not None:
+        frame(b"kite-codebook-v1", combined)
+        frame(xml, combined)
+    frame(b"kite-sources-v1", sources)
+    checksums = (combined, sources) if combined is not None else (sources,)
+    frame(merges.encode("utf-8"), *checksums)
     if hierarchy:
-        frame(b"topic-hierarchy")
-        frame(encode(hierarchy).encode("utf-8"))
+        frame(b"topic-hierarchy", *checksums)
+        frame(encode(hierarchy).encode("utf-8"), *checksums)
     try:
         for row in rows:
-            frame(encode(list(row)).encode("utf-8"))
+            frame(encode(list(row)).encode("utf-8"), *checksums)
     except (TypeError, ValueError) as exc:
         raise ToolError("integrity_error", "invalid stored source record") from exc
-    return checksum.hexdigest()
+    return combined.hexdigest() if combined is not None else None, sources.hexdigest()
 
 
 def _target_ids(target: dict) -> list[str]:
@@ -107,10 +120,18 @@ def _input_sources(raw: str) -> Iterator[tuple]:
 
 
 class Workspace:
-    def __init__(self, db: sqlite3.Connection, directory: Path, *, read_only: bool = False):
+    def __init__(
+        self,
+        db: sqlite3.Connection,
+        directory: Path,
+        *,
+        read_only: bool = False,
+        has_source_seal: bool = True,
+    ):
         self.db = db
         self.directory = directory
         self.read_only = read_only
+        self.has_source_seal = has_source_seal
         self._snapshot_index: Index | None = None
 
     @classmethod
@@ -156,7 +177,7 @@ class Workspace:
                         "workspace_upgrade_required",
                         "run kite-tool integrity to upgrade the workspace",
                     )
-                yield cls(db, directory, read_only=True)
+                yield cls(db, directory, read_only=True, has_source_seal="source_seal" in tables)
                 return
             db.execute("PRAGMA foreign_keys=ON")
             db.execute("PRAGMA journal_mode=DELETE")
@@ -433,25 +454,52 @@ class Workspace:
         ).fetchone()
         return row["checksum"] if row else None
 
-    def _seal_index(self, version: int, checksum: str) -> None:
+    def _seal_index(self, version: int, checksum: str, source_checksum: str) -> None:
         self.db.execute("INSERT OR REPLACE INTO index_seal VALUES(1, ?, ?)", (version, checksum))
+        self.db.execute(
+            "INSERT OR REPLACE INTO source_seal VALUES(1, ?, ?)", (version, source_checksum)
+        )
+        if self.db.execute("PRAGMA user_version").fetchone()[0] < 2:
+            self.db.execute("PRAGMA user_version=2")
+
+    def _check_source_seal(self, version: int, checksum: str) -> bool:
+        row = (
+            self.db.execute(
+                "SELECT version, checksum FROM source_seal WHERE singleton=1"
+            ).fetchone()
+            if self.has_source_seal
+            else None
+        )
+        if row is None:
+            if self.db.execute("PRAGMA user_version").fetchone()[0] >= 2:
+                raise ToolError("integrity_error", "workspace is missing its source snapshot seal")
+            return False
+        if (row["version"], row["checksum"]) != (version, checksum):
+            raise ToolError("integrity_error", "stored source snapshot differs from its seal")
+        return True
 
     def _checked_snapshot(
         self, current: sqlite3.Row, rows: list[sqlite3.Row], hierarchy: dict
-    ) -> tuple[str, str | None]:
-        checksum = _snapshot_checksum(current["xml"], current["merges"], rows, hierarchy)
-        seal = self._index_seal(current["version"])
+    ) -> tuple[str, str, bool, bool]:
+        if not isinstance(current["xml"], bytes):
+            raise ToolError("integrity_error", "invalid stored Codebook snapshot")
+        checksum, source_checksum = _snapshot_checksums(
+            current["xml"], current["merges"], rows, hierarchy
+        )
+        version = current["version"]
+        source_sealed = self._check_source_seal(version, source_checksum)
+        seal = self._index_seal(version)
         if seal is not None and seal != checksum:
             raise ToolError("integrity_error", "Codebook snapshot seal differs from its sources")
         if seal is None and self.db.execute("SELECT 1 FROM index_seal").fetchone():
             raise ToolError("integrity_error", "Codebook snapshot seal belongs to another version")
-        return checksum, seal
+        return checksum, source_checksum, seal is not None, source_sealed
 
     def _require_current_index(self) -> None:
-        _, seal = self._checked_snapshot(
+        _, _, sealed, _ = self._checked_snapshot(
             self._memory(), self._revision_rows(), self.topic_hierarchy()
         )
-        if seal is None:
+        if not sealed:
             # Legacy workspaces need a source comparison before their first seal.
             self.index()
 
@@ -469,15 +517,17 @@ class Workspace:
         xml = current["xml"]
         version = current["version"]
         hierarchy = self.topic_hierarchy()
-        checksum, seal = self._checked_snapshot(current, rows, hierarchy)
+        checksum, source_checksum, sealed, source_sealed = self._checked_snapshot(
+            current, rows, hierarchy
+        )
         records = self._records(rows)
-        if seal is not None and not verify:
+        if sealed and not verify:
             return load_index(xml, records)
         index = build_index(records, json.loads(current["merges"]), hierarchy)
         if index.xml != xml:
             raise ToolError("integrity_error", "Codebook snapshot differs from its sources")
-        if seal is None and not self.read_only:
-            self._seal_index(version, checksum)
+        if not self.read_only and (not sealed or not source_sealed):
+            self._seal_index(version, checksum, source_checksum)
         return index
 
     def list_sources(self, source: str | None = None) -> list[dict]:
@@ -566,17 +616,28 @@ class Workspace:
         return merges, hierarchy
 
     def replace_index(
-        self, merges: dict | None = None, *, hierarchy: dict | None = None, force: bool = False
+        self,
+        merges: dict | None = None,
+        *,
+        hierarchy: dict | None = None,
+        force: bool = False,
+        verify_sources: bool = False,
     ) -> dict:
         current = self._memory()
         previous_hierarchy = self.topic_hierarchy()
         hierarchy = previous_hierarchy if hierarchy is None else hierarchy
+        rows = self._revision_rows()
+        version = current["version"]
+        source_sealed = False
+        if verify_sources:
+            _, current_sources = _snapshot_checksums(
+                None, current["merges"], rows, previous_hierarchy
+            )
+            source_sealed = self._check_source_seal(version, current_sources)
         merges = json.loads(current["merges"]) if merges is None else merges
         encoded_merges = encode(merges)
-        rows = self._revision_rows()
         index = build_index(self._records(rows), merges, hierarchy)
-        version = current["version"]
-        checksum = _snapshot_checksum(index.xml, encoded_merges, rows, hierarchy)
+        checksum, source_checksum = _snapshot_checksums(index.xml, encoded_merges, rows, hierarchy)
         seal = self._index_seal(version)
         unchanged = (
             not force
@@ -586,8 +647,8 @@ class Workspace:
             and (seal is None or seal == checksum)
         )
         if unchanged:
-            if seal is None:
-                self._seal_index(version, checksum)
+            if seal is None or (verify_sources and not source_sealed):
+                self._seal_index(version, checksum, source_checksum)
             return {"changed": False, "memory_version": version}
         self.db.execute(
             "UPDATE memory SET version=version+1, merges=?, xml=? WHERE singleton=1",
@@ -599,7 +660,7 @@ class Workspace:
                 "INSERT INTO topic_hierarchy VALUES(?, ?)",
                 ((topic, encode(parents)) for topic, parents in hierarchy.items()),
             )
-        self._seal_index(version + 1, checksum)
+        self._seal_index(version + 1, checksum, source_checksum)
         return {"changed": True, "memory_version": version + 1}
 
     def require_source_allowed(self, source, conversation_id, reference) -> None:

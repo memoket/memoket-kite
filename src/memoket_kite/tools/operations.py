@@ -207,7 +207,7 @@ def _delete(context: Context, plan: dict) -> dict:
 
 
 def _rebuild(context: Context) -> dict:
-    return context.workspace.replace_index()
+    return context.workspace.replace_index(verify_sources=True)
 
 
 TOOLS = {
