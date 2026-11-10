@@ -86,6 +86,7 @@ SCHEMAS = {
             "evidence_budget": EVIDENCE_BUDGET,
             "followed_state_keys": array(TEXT),
             "uncertain_time_state_keys": array(TEXT),
+            "conversation_scope": object_schema({"source": TEXT, "conversation_id": TEXT}),
         },
     ),
     "report": object_schema(

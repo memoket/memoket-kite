@@ -2008,13 +2008,15 @@ def test_follow_state_history_preserves_scope_and_pagination(work):
 
 def test_conversation_scope_keeps_state_following_and_citations_in_one_source(work):
     _, call = work
+    earlier = text_input("earlier", "Private initial owner.", date="2026-05-03")
+    external_fact = ingest(call, "earlier", earlier)["revision_id"] + "F1"
     selected = text_input("shared-id", "Ada owns the review.", date="2026-05-04")
-    selected["annotations"]["facts"][0].update(state="Ada")
+    selected["annotations"]["facts"][0].update(state="Ada", supersedes=external_fact)
     first = ingest(call, "first", selected)
     changed = text_input("shared-id", "Rae owns the review.", date="2026-05-05")
     changed["source"]["expected_checksum"] = first["checksum"]
     changed["annotations"]["facts"][0].update(state="Rae", supersedes=first["revision_id"] + "F1")
-    ingest(call, "update", changed, pipeline="memory-update")
+    latest = ingest(call, "update", changed, pipeline="memory-update")
     unrelated = text_input("other-id", "Private other review.", date="2026-05-06")
     ingest(call, "other", unrelated)
     archive = text_input("shared-id", "Private archived review.", date="2026-05-06")
@@ -2034,18 +2036,21 @@ def test_conversation_scope_keeps_state_following_and_citations_in_one_source(wo
     report = trace(call, "scoped", query, pipeline)
     assert call("query", "--pipeline", pipeline, payload={"query": query})["value"] == report
     assert [row["state"] for row in report["timeline"]] == ["Ada", "Rae"]
+    assert [row["supersedes"] for row in report["timeline"]] == [None, first["revision_id"] + "F1"]
     assert report["current_reported_states"]["owner"]["value"] == "Rae"
     assert {
         (line["source"], line["conversation_id"])
         for row in report["timeline"]
         for line in row["evidence"]
     } == {("text", "shared-id")}
-    assert "Private" not in json.dumps(report)
+    assert "Private" not in json.dumps(report) and external_fact not in json.dumps(report)
     page = call("query", "--pipeline", pipeline, payload={"query": {**query, "limit": 1}})["value"]
     assert page["next_cursor"]
+    assert page["timeline"][0]["supersedes"] == first["revision_id"] + "F1"
     next_query = {**query, "limit": 1, "cursor": page["next_cursor"]}
     continuation = call("query", "--pipeline", pipeline, payload={"query": next_query})["value"]
     assert [row["state"] for row in continuation["timeline"]] == ["Ada"]
+    assert continuation["timeline"][0]["supersedes"] is None
     call(
         "query",
         "--pipeline",
@@ -2063,6 +2068,17 @@ def test_conversation_scope_keeps_state_following_and_citations_in_one_source(wo
         error="invalid_input",
     )
     call("status", "ambiguous", error="not_found")
+    namespace_scope = {key: value for key, value in query.items() if key != "conversation_id"}
+    broader = call("query", "--pipeline", pipeline, payload={"query": namespace_scope})["value"]
+    ada = next(row for row in broader["timeline"] if row["state"] == "Ada")
+    assert ada["supersedes"] == external_fact
+    correction = text_input("later", "Private subsequent owner.", date="2026-05-07")
+    correction["annotations"]["facts"][0]["supersedes"] = latest["revision_id"] + "F1"
+    correction_id = ingest(call, "later", correction)["revision_id"] + "F1"
+    scoped = call("query", "--pipeline", pipeline, payload={"query": query})["value"]
+    assert not scoped["timeline"][-1]["effective"]
+    assert "owner" not in scoped["current_reported_states"]
+    assert correction_id not in json.dumps(scoped) and "Private" not in json.dumps(scoped)
 
 
 def test_trace_cursor_reads_all_windows_without_repeating_evidence(work):

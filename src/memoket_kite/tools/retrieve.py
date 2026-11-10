@@ -347,6 +347,11 @@ def retrieve(context, resolved: dict) -> dict:
             affected = {index.facts[fid]["state_key"] for fid in relevant - superseded}
             if affected:
                 extras["uncertain_time_state_keys"] = sorted(affected)
+    if "conversation_id" in query:
+        extras["conversation_scope"] = {
+            "source": query["source"],
+            "conversation_id": query["conversation_id"],
+        }
     next_offset = offset + len(selected)
     return {
         "fact_ids": [row[-1] for row in selected],
@@ -495,10 +500,16 @@ def report(context, matches: dict) -> dict:
     index = context.workspace.index()
     timeline = [_evidence(index, fid) for fid in matches["fact_ids"]]
     end_date = matches.get("end_date")
+    scope = matches.get("conversation_scope")
     superseded, uncertain = _supersession(index, matches["time_axis"], end_date)
     for row in timeline:
         row["effective"] = row["source_revision_active"] and row["fact_id"] not in superseded
         row["supersession_uncertain"] = row["effective"] and row["fact_id"] in uncertain
+        if scope and row["supersedes"]:
+            predecessor = index.store.facts[row["supersedes"]]
+            conversation = index.revisions[predecessor.unit]["conversation"]
+            if any(conversation[key] != value for key, value in scope.items()):
+                row["supersedes"] = None
     sections = {
         label: [row["fact_id"] for row in timeline if row["status"] == status]
         for label, status in (

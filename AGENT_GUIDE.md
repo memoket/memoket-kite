@@ -181,7 +181,8 @@ Give each evolving state a distinct key, such as `onboarding-checklist-owner`.
 
 Set both `source` and `conversation_id` to limit the trace evidence to one
 conversation and its retained revisions. The workspace's topic aliases and
-corrections still apply to the selected evidence.
+corrections still apply to the selected evidence. A scoped report omits the
+target ID of a correction that points to another conversation.
 
 ```json
 {"query":{"topics":["onboarding"],"source":"memoket","conversation_id":"184"}}
