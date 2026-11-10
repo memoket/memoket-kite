@@ -61,8 +61,10 @@ def main() -> None:
         assert metrics["expected_citations_found"] == metrics["expected_citations"] == 3
 
         quote = "The launch review is Tuesday."
-        (directory / "notes.txt").write_text(quote, encoding="utf-8")
-        source = call("file-source", "notes.txt", "--format", "text", "--source-id", "note")
+        (directory / "notes.txt").write_text(f"Launch notes\n\n{quote}\n", encoding="utf-8")
+        source = call(
+            "file-source", "notes.txt", "--format", "text", "--source-id", "note", "--split-lines"
+        )
         run_id = call("start", "memory-ingestion", payload=source)["run_id"]
         call("stage", run_id, "normalize", "--summary")
         call("stage", run_id, "annotate", error="missing_input")
@@ -70,11 +72,15 @@ def main() -> None:
         assert call("backup", str(recovered))["revisions"] == 0
         status = call("status", run_id, workspace=recovered)
         assert status["resume"]["stages"][0]["missing_inputs"] == {"annotations": "annotations"}
-        page = call("segments", run_id, "normalize", "--limit", "1", workspace=recovered)
+        page = call(
+            "segments", run_id, "normalize", "--offset", "1", "--limit", "1", workspace=recovered
+        )
         assert page["next_offset"] is None and page["segments"][0]["text"] == quote
 
         annotations = {
-            "facts": [{"content": quote, "segment_ids": ["text-1"], "topics": ["launch review"]}]
+            "facts": [
+                {"content": quote, "segment_ids": ["text-line-3"], "topics": ["launch review"]}
+            ]
         }
         result = call(
             "stage",
@@ -96,7 +102,7 @@ def main() -> None:
         evidence = report["timeline"][0]["evidence"][0]
         assert (evidence["conversation_id"], evidence["segment_id"], evidence["text"]) == (
             "note",
-            "text-1",
+            "text-line-3",
             quote,
         )
 

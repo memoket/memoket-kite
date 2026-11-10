@@ -61,6 +61,11 @@ def _parser() -> argparse.ArgumentParser:
     source.add_argument("path", type=Path)
     source.add_argument("--format", choices=("text", "memoket", "conversation"), required=True)
     source.add_argument("--source-id", help="stable identity for a text file")
+    source.add_argument(
+        "--split-lines",
+        action="store_true",
+        help="cite nonblank text lines by their file line number",
+    )
     date = source.add_mutually_exclusive_group()
     date.add_argument("--source-date", help="known conversation day in YYYY-MM-DD format")
     date.add_argument("--started-at", help="known conversation timestamp with UTC offset")
@@ -209,6 +214,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             source_date=args.source_date,
             started_at=args.started_at,
             expected_checksum=args.expected_checksum,
+            split_lines=args.split_lines,
         ), None
 
     if args.command == "audio-source":

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import re
+from hashlib import sha256
 from pathlib import Path
 
 from .contracts import (
@@ -142,12 +144,16 @@ def file_source(
     source_date: str | None,
     started_at: str | None,
     expected_checksum: str | None,
+    split_lines: bool = False,
 ) -> dict:
     """Return a minimized source input without opening a memory workspace."""
     if source_format == "text":
         validate(TEXT, source_id, "text source ID")
-    elif any(value is not None for value in (source_id, source_date, started_at)):
-        raise ToolError("invalid_input", "JSON exports supply their own identity and dates")
+    else:
+        if split_lines:
+            raise ToolError("invalid_input", "--split-lines requires --format text")
+        if any(value is not None for value in (source_id, source_date, started_at)):
+            raise ToolError("invalid_input", "JSON exports supply their own identity and dates")
     if expected_checksum is not None:
         validate(HASH, expected_checksum, "expected checksum")
     path = path.expanduser()
@@ -158,12 +164,24 @@ def file_source(
         payload = {
             "conversation_id": source_id,
             "metadata": {"source_reference": source_id},
-            "text": raw,
         }
         if source_date is not None:
             payload["source_date"] = source_date
         if started_at is not None:
             payload["started_at"] = started_at
+        if split_lines:
+            if XML_UNSAFE.search(raw):
+                raise ToolError("invalid_input", "source contains characters XML cannot represent")
+            payload["metadata"]["source_sha256"] = sha256(raw.encode("utf-8")).hexdigest()
+            payload["source"] = "text"
+            payload["segments"] = [
+                {"segment_id": f"text-line-{number}", "text": line}
+                for number, line in enumerate(re.split(r"\r\n|\r|\n", raw), 1)
+                if line.strip()
+            ]
+            source_format = "conversation"
+        else:
+            payload["text"] = raw
     else:
         payload = decode_object(raw)
     normalized = _normalize_source(root, {"format": source_format, "payload": payload})

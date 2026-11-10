@@ -1807,6 +1807,64 @@ def test_file_source_preserves_text_identity_and_revisions(work, tmp_path):
     assert [item["evidence"][0]["text"] for item in result["timeline"]] == [original, revised]
 
 
+def test_file_source_split_lines_preserves_quotes_line_numbers_and_source_checksum(work, tmp_path):
+    workspace, call = work
+    path = tmp_path / "planning.txt"
+    quote = "  Ada will own the launch.  "
+    original = f"Launch planning\r\n\r\n{quote}\r\n\t\rUnrelated detail.\n".encode()
+    path.write_bytes(original)
+    command = (
+        "file-source",
+        str(path),
+        "--format",
+        "text",
+        "--source-id",
+        "launch",
+        "--split-lines",
+    )
+    prepared = call(*command)
+    assert not workspace.exists()
+    conversation = prepared["source"]["payload"]
+    assert conversation["metadata"]["source_sha256"] == hashlib.sha256(original).hexdigest()
+    assert conversation["segments"] == [
+        {"segment_id": "text-line-1", "text": "Launch planning"},
+        {"segment_id": "text-line-3", "text": quote},
+        {"segment_id": "text-line-5", "text": "Unrelated detail."},
+    ]
+    prepared["annotations"] = {
+        "facts": [
+            {
+                "content": "Ada will own the launch.",
+                "segment_ids": ["text-line-3"],
+                "topics": ["launch"],
+                "status": "confirmed",
+            }
+        ]
+    }
+    first = ingest(call, "first", prepared)
+    duplicate = ingest(call, "duplicate", prepared)
+    assert duplicate["checksum"] == first["checksum"] and not duplicate["changed"]
+    evidence = trace(call, "trace", {"topics": ["launch"]})["timeline"][0]["evidence"][0]
+    assert (evidence["source_reference"], evidence["segment_id"], evidence["text"]) == (
+        "launch",
+        "text-line-3",
+        quote,
+    )
+
+    path.write_bytes(original + b"\n")
+    updated = call(*command, "--expected-checksum", first["checksum"])
+    updated["annotations"] = prepared["annotations"]
+    assert updated["source"]["payload"]["segments"] == conversation["segments"]
+    receipt = ingest(call, "updated", updated, pipeline="memory-update")
+    assert receipt["changed"] and receipt["checksum"] != first["checksum"]
+
+    path.write_text(" \n\t", encoding="utf-8")
+    call(*command, error="invalid_input")
+    path.write_text("valid line\n\v", encoding="utf-8")
+    call(*command, error="invalid_input")
+    call("file-source", str(path), "--format", "memoket", "--split-lines", error="invalid_input")
+
+
 def test_file_source_minimizes_memoket_export_before_output(work, tmp_path):
     workspace, call = work
     path = tmp_path / "export.json"

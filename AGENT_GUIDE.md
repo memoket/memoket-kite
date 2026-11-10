@@ -137,6 +137,11 @@ that supports SQLite locking.
 
 - **Text** uses an inline `payload.text` and becomes segment `text-1`. For a
   local file, use `kite-tool file-source FILE --format text --source-id STABLE_ID`.
+  Add `--split-lines` for notes with one statement per line. Each nonblank
+  line becomes a segment such as `text-line-3`, using the original one-based
+  line number and preserving its text. The source checksum also tracks changes
+  to the original UTF-8 file bytes. Use the same segmentation option for
+  repeat imports.
 - **Transcript** and **audio-transcript** accept source segments from the user or
   an authorized transcriber. For a local audio file, `kite-tool audio-source`
   prepares the input using FFmpeg and a local whisper.cpp model.

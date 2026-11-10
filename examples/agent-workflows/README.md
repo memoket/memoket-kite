@@ -66,13 +66,15 @@ Prepare an authorized file and pipe it directly into a new run.
 ```sh
 set -o pipefail
 export KITE_DATA_DIR="$(mktemp -d)"
-kite-tool file-source notes.txt --format text --source-id planning-notes \
+kite-tool file-source notes.txt --format text --source-id planning-notes --split-lines \
   | kite-tool start memory-ingestion --run-id notes --input -
 kite-tool stage notes normalize
 ```
 
-Finish the notes run with `annotate`, `commit`, and `verify`. Then start the
-Memoket export in the same workspace.
+Finish the notes run with `annotate`, `commit`, and `verify`. Annotations can
+cite individual file lines by segment ID, such as `text-line-3`. For prose
+that should stay together as one segment, omit `--split-lines`. Then start
+the Memoket export in the same workspace.
 
 ```sh
 kite-tool file-source transcript.json --format memoket \
@@ -81,7 +83,7 @@ kite-tool stage transcript normalize
 ```
 
 Finish the export run with `annotate`, `commit`, and `verify`.
-Keep the same text source ID for repeated imports. For a changed source, pass
+Keep the same text source ID and segmentation option for repeated imports. For a changed source, pass
 the previously committed checksum with `--expected-checksum` and use
 `memory-update`. Date and timestamp flags are optional for text files. Memoket
 exports retain the original record identity and any supplied dates.
@@ -92,7 +94,7 @@ Use the exact same source file, identity, and any original date flags.
 Get the current checksum from `kite-tool sources`, then prepare an update.
 
 ```sh
-kite-tool file-source notes.txt --format text --source-id planning-notes \
+kite-tool file-source notes.txt --format text --source-id planning-notes --split-lines \
   --expected-checksum "$current_checksum" \
   | kite-tool start memory-update --run-id amend-notes --input -
 kite-tool stage amend-notes normalize
