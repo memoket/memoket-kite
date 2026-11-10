@@ -51,7 +51,7 @@ for the available flags. For the full query schema, pass the `query` input objec
 with `--input` and omit the filter flags. The command uses the built-in trace
 tools in one read transaction and saves no checkpoint or artifact.
 For a terminal view, add `--text` to read the timeline, reported states, and
-numbered quotations with source line IDs. JSON remains the default.
+numbered quotations with source line IDs.
 
 ```sh
 kite-tool query --input - <<'JSON'
@@ -281,6 +281,10 @@ that supports SQLite locking.
   name and `metadata.source_reference`. Import a local canonical export with
   `kite-tool file-source EXPORT.json --format conversation`. Keep credentials
   out of the source and metadata. Missing dates and speakers stay unknown.
+
+After reviewing annotations, pipe source-only JSON to
+`kite-tool ingest --input - --annotations FILE`. The file uses the same
+`{"annotations": ...}` object as the `annotate` stage.
 
 The normal ingestion workflow expects host-prepared annotations. The optional
 provider stage uses KITE's existing extractor and reads its credentials from

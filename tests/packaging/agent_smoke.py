@@ -230,12 +230,16 @@ def main() -> None:
         assert call("integrity")["revisions"] == 0
         assert call("status", run_id)["state"] == "failed"
         scripted = directory / "scripted"
+        reviewed = directory / "reviewed annotations.json"
+        reviewed.write_text(json.dumps({"annotations": annotations}), encoding="utf-8")
         imported = call(
             "ingest",
             "--run-id",
             "scripted",
+            "--annotations",
+            str(reviewed),
             workspace=scripted,
-            payload={**source, "annotations": annotations},
+            payload=source,
         )
         assert imported["receipt"]["changed"] and imported["integrity"]["facts"] == 1
         assert call("status", "scripted", workspace=scripted)["state"] == "completed"

@@ -134,6 +134,36 @@ corrected annotations or other input changes.
 Use the stage-by-stage workflow when the agent still needs to extract or review
 annotations.
 
+If you already reviewed the annotations, pass the source and the annotation
+file separately. For example, put `The launch review is Tuesday.` on line 3 of
+`notes.txt` and save the following as `annotations.json`.
+
+```json
+{
+  "annotations": {
+    "facts": [
+      {
+        "content": "The launch review is Tuesday.",
+        "topics": ["launch review"],
+        "segment_ids": ["text-line-3"]
+      }
+    ]
+  }
+}
+```
+
+```sh
+export KITE_DATA_DIR="$(mktemp -d)"
+kite-tool file-source notes.txt --format text --source-id launch-notes --split-lines \
+  | kite-tool ingest --input - --annotations annotations.json --run-id launch-notes --resume-existing
+kite-tool query --topic "launch review" --text
+```
+
+`--annotations` takes the same JSON object as `kite-tool stage RUN_ID annotate`.
+Use it with a source-only `--input` from `file-source` or `audio-source`. Once
+the run has a checkpoint, `kite-tool ingest --resume launch-notes` reads its
+saved inputs.
+
 ## Give your agent a task
 
 > Run kite-tool resources and read the agent instructions it points to. Use the

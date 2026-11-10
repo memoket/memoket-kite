@@ -1743,6 +1743,61 @@ def test_ingest_command_commits_and_verifies_prepared_annotations(work):
     assert duplicate["integrity"] == result["integrity"]
 
 
+def test_ingest_accepts_source_and_reviewed_annotations_separately(work, tmp_path):
+    _, call = work
+    quote = "The launch review is Tuesday."
+    notes = tmp_path / "meeting notes.txt"
+    notes.write_text(f"Launch notes\n\n{quote}\n", encoding="utf-8")
+    source = call(
+        "file-source", str(notes), "--format", "text", "--source-id", "review", "--split-lines"
+    )
+    annotations = {
+        "annotations": {
+            "facts": [
+                {"content": quote, "topics": ["launch review"], "segment_ids": ["text-line-3"]}
+            ]
+        }
+    }
+    input_path = tmp_path / "source.json"
+    input_path.write_text(json.dumps(source), encoding="utf-8")
+    annotations_path = tmp_path / "reviewed annotations.json"
+    annotations_path.write_text(json.dumps(annotations), encoding="utf-8")
+
+    retry = ("ingest", "--resume-existing", "--run-id", "review")
+    split = (*retry, "--annotations", str(annotations_path))
+    receipt = call(*split, payload=source)
+    assert receipt["receipt"]["changed"] and receipt["integrity"]["facts"] == 1
+    assert call(*split, "--input", str(input_path)) == receipt
+    assert call(*retry, payload={**source, **annotations}) == receipt
+    annotations_path.unlink()
+    assert call("ingest", "--resume", "review") == receipt
+
+    report = call("query", "--topic", "launch review")["value"]
+    (fact,) = report["timeline"]
+    (citation,) = fact["evidence"]
+    assert (citation["conversation_id"], citation["segment_id"], citation["text"]) == (
+        "review",
+        "text-line-3",
+        quote,
+    )
+    assert citation["revision_checksum"] == receipt["receipt"]["checksum"]
+
+
+def test_ingest_rejects_conflicting_or_malformed_annotations_files(work, tmp_path):
+    directory, call = work
+    payload = text_input("review", "Private source text")
+    path = tmp_path / "annotations.json"
+    path.write_text(json.dumps({"facts": payload["annotations"]["facts"]}), encoding="utf-8")
+    args = ("ingest", "--annotations", str(path))
+    call(*args, "--resume", "review", error="invalid_arguments")
+    conflict = call(*args, payload=payload, error="invalid_input")
+    assert "only a source field" in conflict["error"]["message"]
+    malformed = call(*args, payload={"source": payload["source"]}, error="invalid_input")
+    assert "only an annotations field" in malformed["error"]["message"]
+    assert "Private source text" not in json.dumps([conflict, malformed])
+    assert not directory.exists()
+
+
 def test_ingest_command_rejects_a_different_write_tool(work, tmp_path):
     _, call = work
     repo = tmp_path / "alternate-workflow"

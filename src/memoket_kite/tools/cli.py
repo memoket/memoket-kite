@@ -73,6 +73,24 @@ def _query_object(args: argparse.Namespace) -> dict:
     return {"query": filters}
 
 
+def _ingest_input(args: argparse.Namespace) -> dict:
+    if args.annotations is None:
+        return _object(args.input)
+    if args.input is None:
+        raise ToolError("invalid_arguments", "--annotations requires --input")
+    source = _object(args.input)
+    if source.keys() != {"source"}:
+        raise ToolError(
+            "invalid_input", "with --annotations, --input must contain only a source field"
+        )
+    annotations = decode_object(read_utf8(args.annotations))
+    if annotations.keys() != {"annotations"}:
+        raise ToolError(
+            "invalid_input", "--annotations expects an object with only an annotations field"
+        )
+    return {**source, **annotations}
+
+
 def _source_date_arguments(parser: argparse.ArgumentParser) -> None:
     date = parser.add_mutually_exclusive_group()
     date.add_argument("--source-date", help="known conversation day in YYYY-MM-DD format")
@@ -219,6 +237,12 @@ def _parser() -> argparse.ArgumentParser:
     ingest_mode = ingest.add_mutually_exclusive_group(required=True)
     ingest_mode.add_argument("--input", metavar="FILE", help="JSON input file or - for stdin")
     ingest_mode.add_argument("--resume", metavar="RUN_ID", help="resume an existing local import")
+    ingest.add_argument(
+        "--annotations",
+        type=Path,
+        metavar="FILE",
+        help="annotate stage JSON for a source-only input",
+    )
     begin = commands.add_parser("start", help="create a checkpoint for a pipeline run")
     begin.add_argument("pipeline")
     begin.add_argument("--run-id")
@@ -500,20 +524,20 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 ), None
             return {"xml": workspace.export_codebook(**scope, active_only=args.active_only)}, None
 
-    supplied = (
-        _query_object(args) if args.command == "query" else _object(getattr(args, "input", None))
-    )
     if args.command == "ingest":
         return _ingest(
             root,
             args.workspace,
-            supplied,
+            _ingest_input(args),
             args.run_id,
             extension_root,
             resume_id=args.resume,
             update=args.update,
             resume_existing=args.resume_existing,
         )
+    supplied = (
+        _query_object(args) if args.command == "query" else _object(getattr(args, "input", None))
+    )
     if args.command in {"query", "evidence"}:
         with Workspace.open(args.workspace, read_only=True) as workspace:
             if args.command == "evidence":
