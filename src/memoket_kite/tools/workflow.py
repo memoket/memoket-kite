@@ -100,7 +100,10 @@ def load_pipeline(
         for name in {stage["tool"] for stage in stages.values()}
         if TOOLS[name].version != 1
     }
-    parts = [definition, skills, SCHEMAS, schema_file(root, "conversation")]
+    kinds = set(inputs.values()) | {stage["output"] for stage in stages.values()}
+    parts = [definition, skills, {kind: SCHEMAS[kind] for kind in kinds}]
+    if "conversation" in kinds:
+        parts.append(schema_file(root, "conversation"))
     if tool_versions:
         parts.append(tool_versions)
     return definition, digest(parts), workflow_root

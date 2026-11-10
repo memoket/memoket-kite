@@ -4,6 +4,8 @@ description: Build a chronological timeline with explicit time precision.
 ---
 
 Use date bounds, people, project or topic filters as appropriate.
+Use `query.events` for known event labels and check `unresolved_events` before
+drawing conclusions.
 Ordering uses source timestamps or dates and then source offsets where available.
 Use `query.time_axis: event` to filter and order by explicit event dates instead.
 Report each `event_date_basis` as explicit, inferred or unknown. Unbounded event

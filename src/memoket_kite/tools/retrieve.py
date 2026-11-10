@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from memoket_kite.core.vocab import norm_code
+
 from .contracts import DATE, TEXT, ToolError, array, object_schema, utc_timestamp
 from .index import event_date_basis
 from .ingest import source_day
@@ -13,6 +15,7 @@ QUERY = object_schema(
     {
         "topics": array(TEXT, 1, 32),
         "entities": array(TEXT, 1, 32),
+        "events": array(TEXT, 1, 32),
         "speakers": array(TEXT, 1, 32),
         "projects": array(TEXT, 1, 32),
         "text": TEXT,
@@ -32,10 +35,11 @@ def resolve(context, query: dict) -> dict:
     if context.pipeline == "topic-tracing" and not query.get("topics"):
         raise ToolError("invalid_input", "topic-tracing requires one or more topic names")
     if context.pipeline in ("task-tracing", "decision-evolution") and not (
-        set(query) & {"topics", "entities", "text", "state_key"}
+        set(query) & {"topics", "entities", "events", "text", "state_key"}
     ):
         raise ToolError(
-            "invalid_input", "a task or decision trace requires a topic, entity, text or state key"
+            "invalid_input",
+            "a task or decision trace requires a topic, entity, event, text or state key",
         )
     index = context.workspace.index()
     codes, unknown = set(), []
@@ -51,7 +55,20 @@ def resolve(context, query: dict) -> dict:
                 max_width=len(index.vocab.topics),
             )
         )
-    return {"query": query, "topic_codes": sorted(codes), "unresolved_topics": unknown}
+    event_codes, unknown_events = set(), []
+    for event in query.get("events", []):
+        code = norm_code(event)
+        if code in index.store.by_event:
+            event_codes.add(code)
+        else:
+            unknown_events.append(event)
+    return {
+        "query": query,
+        "topic_codes": sorted(codes),
+        "unresolved_topics": unknown,
+        "event_codes": sorted(event_codes),
+        "unresolved_events": unknown_events,
+    }
 
 
 def _source_time(record: dict) -> tuple[str, str | None, str]:
@@ -76,6 +93,8 @@ def retrieve(context, resolved: dict) -> dict:
         candidates &= set().union(
             *(index.store.by_entity.get(code, set()) for code in entity_codes)
         )
+    if "events" in query:
+        candidates &= set().union(*(index.store.by_event[code] for code in resolved["event_codes"]))
     if "speakers" in query:
         speakers = {speaker.casefold() for speaker in query["speakers"]}
         candidates = {
@@ -137,6 +156,8 @@ def retrieve(context, resolved: dict) -> dict:
         "omitted_inferred_time": omitted_inferred,
         "unresolved_topics": resolved["unresolved_topics"],
         "topic_codes": resolved["topic_codes"],
+        "event_codes": resolved["event_codes"],
+        "unresolved_events": resolved["unresolved_events"],
     }
 
 
@@ -153,6 +174,7 @@ def _evidence(index, fid: str) -> dict:
         "content": fact.text,
         "topics": list(fact.topics),
         "entities": list(fact.entities),
+        "events": list(fact.event),
         "status": annotations.get("status", "statement"),
         "kind": fact.kind,
         "source_time": time,
@@ -266,6 +288,7 @@ def report(context, matches: dict) -> dict:
         matches["matched"] == len(timeline)
         and matches["omitted_unknown_time"] == matches["omitted_inferred_time"] == 0
         and not matches["unresolved_topics"]
+        and not matches["unresolved_events"]
     )
     return {
         "trace": context.pipeline,
@@ -279,5 +302,7 @@ def report(context, matches: dict) -> dict:
         "omitted_inferred_time": matches["omitted_inferred_time"],
         "resolved_topics": matches["topic_codes"],
         "unresolved_topics": matches["unresolved_topics"],
+        "resolved_events": matches["event_codes"],
+        "unresolved_events": matches["unresolved_events"],
         "memory_version": context.workspace.version(),
     }

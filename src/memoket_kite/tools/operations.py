@@ -44,7 +44,13 @@ SCHEMAS = {
     ),
     "query": QUERY,
     "resolved": object_schema(
-        {"query": QUERY, "topic_codes": array(TEXT), "unresolved_topics": array(TEXT)}
+        {
+            "query": QUERY,
+            "topic_codes": array(TEXT),
+            "unresolved_topics": array(TEXT),
+            "event_codes": array(TEXT),
+            "unresolved_events": array(TEXT),
+        }
     ),
     "matches": object_schema(
         {
@@ -55,6 +61,8 @@ SCHEMAS = {
             "omitted_inferred_time": COUNT,
             "unresolved_topics": array(TEXT),
             "topic_codes": array(TEXT),
+            "event_codes": array(TEXT),
+            "unresolved_events": array(TEXT),
         }
     ),
     "report": object_schema(
@@ -73,6 +81,8 @@ SCHEMAS = {
             "omitted_inferred_time": COUNT,
             "resolved_topics": array(TEXT),
             "unresolved_topics": array(TEXT),
+            "resolved_events": array(TEXT),
+            "unresolved_events": array(TEXT),
             "memory_version": COUNT,
         }
     ),
@@ -179,9 +189,9 @@ TOOLS = {
     "validate": Tool(_validate, {}, "integrity"),
     "rebuild": Tool(_rebuild, {}, "receipt", "write"),
     "validate_commit": Tool(_validate, {"receipt": "receipt"}, "integrity"),
-    "resolve": Tool(resolve, {"query": "query"}, "resolved"),
-    "retrieve": Tool(retrieve, {"resolved": "resolved"}, "matches", version=3),
-    "report": Tool(report, {"matches": "matches"}, "report", version=3),
+    "resolve": Tool(resolve, {"query": "query"}, "resolved", version=2),
+    "retrieve": Tool(retrieve, {"resolved": "resolved"}, "matches", version=4),
+    "report": Tool(report, {"matches": "matches"}, "report", version=4),
     "reclassify": Tool(reclassify, {"merge": "reclassify"}, "receipt", "write"),
     "preview_delete": Tool(_preview, {"target": "deletion_target"}, "deletion_plan"),
     "delete": Tool(_delete, {"plan": "deletion_plan"}, "receipt", "delete"),

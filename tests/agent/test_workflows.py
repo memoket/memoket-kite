@@ -391,6 +391,16 @@ def test_tool_version_only_invalidates_workflows_that_use_it(work, monkeypatch):
     assert call("status", "ingest")["resume"]["state"] == "available"
 
 
+def test_schema_changes_only_invalidate_workflows_that_bind_the_schema(work, monkeypatch):
+    _, call = work
+    call("start", "timeline-reconstruction", "--run-id", "timeline")
+    call("start", "memory-ingestion", "--run-id", "import")
+    schema = operations.SCHEMAS["source"]
+    monkeypatch.setitem(operations.SCHEMAS, "source", {**schema, "description": "new contract"})
+    assert call("status", "timeline")["resume"]["state"] == "available"
+    assert call("status", "import")["resume"]["reason"] == "stale_definition"
+
+
 def test_revision_correction_consolidation_and_query_scopes(work):
     _, call = work
     original = text_input("task", "Alice", date="2026-01-01", topic="launch")
@@ -727,6 +737,72 @@ def test_entity_aliases_topic_dag_and_event_time(work):
     assert event["time_axis"] == "event"
     assert event["timeline"][0]["source_day"] == "2026-04-01"
     assert event["timeline"][0]["event_date"] == "2026-03-29"
+
+
+def test_event_filter_intersects_project_speaker_and_dates(work):
+    _, call = work
+    for name, event, project, speaker, day in (
+        ("selected", "Release Review", "launch", "dave", "2026-03-10"),
+        ("other-event", "Incident Triage", "launch", "dave", "2026-03-11"),
+        ("other-speaker", "Release Review", "launch", "rae", "2026-03-12"),
+        ("other-project", "Release Review", "infra", "dave", "2026-03-13"),
+        ("other-date", "Release Review", "launch", "dave", "2026-04-14"),
+    ):
+        quote = "Release review was confirmed."
+        payload = {
+            "source": {
+                "format": "transcript",
+                "payload": {
+                    "conversation_id": name,
+                    "source_date": day,
+                    "metadata": {"source_reference": name, "project": project},
+                    "segments": [{"segment_id": "s1", "speaker_id": speaker, "text": quote}],
+                },
+            },
+            "annotations": {
+                "facts": [
+                    {
+                        "content": quote,
+                        "segment_ids": ["s1"],
+                        "topics": ["launch"],
+                        "events": [event],
+                        "state_key": "review",
+                        "state": "confirmed",
+                        "status": "confirmed",
+                    }
+                ]
+            },
+        }
+        ingest(call, f"import-{name}", payload)
+
+    pipeline = "timeline-reconstruction"
+    query = {
+        "events": ["RELEASE-REVIEW"],
+        "projects": ["launch"],
+        "speakers": ["DAVE"],
+        "start_date": "2026-03-01",
+        "end_date": "2026-03-31",
+    }
+    result = trace(call, "event-filter", query, pipeline)
+    assert result["resolved_events"] == ["release_review"] and not result["unresolved_events"]
+    assert result["matched_count"] == 1
+    row = result["timeline"][0]
+    assert row["events"] == ["release_review"]
+    assert row["evidence"][0]["conversation_id"] == "selected"
+    assert row["evidence"][0]["text"] == quote
+
+    report = trace(
+        call, "mixed-events", {**query, "events": ["release review", "missing"]}, pipeline
+    )
+    assert report["matched_count"] == 1 and report["unresolved_events"] == ["missing"]
+    assert report["current_reported_states"]["review"]["status"] == "partial"
+    empty = trace(call, "unknown-event", {"events": ["missing"]}, pipeline)
+    assert not empty["timeline"] and empty["unresolved_events"] == ["missing"]
+    alternative = trace(
+        call, "either-event", {**query, "events": ["release review", "incident triage"]}, pipeline
+    )
+    assert alternative["matched_count"] == 2
+    assert not alternative["unresolved_events"]
 
 
 def test_event_state_uses_event_dates_and_preserves_unordered_evidence(work):

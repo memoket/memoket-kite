@@ -60,8 +60,9 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
    that require explicit user authorization. Repeating a completed stage
    returns its prior artifact on the same snapshot. Inspect a current artifact
    with `kite-tool artifact RUN_ID STAGE_ID`. Start a fresh run if `resume.reason`
-   is `stale_snapshot` or `stale_definition`. A change to a stage tool's
-   version can invalidate an existing run.
+   is `stale_snapshot` or `stale_definition`. Checkpoints bind the schemas
+   and tool versions used by their pipeline. The upgrade to these scoped
+   fingerprints requires starting a new run for older checkpoints.
    For intermediate stages whose output you do not need to inspect, use
    `kite-tool stage RUN_ID STAGE_ID --summary`. The response includes stage and
    run status, retry count, and the manifest when successful. Use the full
@@ -72,6 +73,11 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
    the selected evidence, and describe ambiguous, partial or missing states
    explicitly. Semantic support is a host review task. KITE verifies provenance
    and index consistency deterministically.
+
+Filter a timeline by `query.events` to match normalized event labels from
+fact annotations. The query matches any listed event and intersects it with
+other filters such as `projects`, `speakers` and date bounds. Check
+`unresolved_events` in the report for labels absent from the workspace.
 
 By default, timelines and reported states use source dates, timestamps, and
 available offsets within a single recording. Use `query.time_axis: event` to
