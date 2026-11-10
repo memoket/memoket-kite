@@ -79,9 +79,10 @@ def working_diff() -> str:
 
 def untracked_files() -> tuple[str, ...]:
     """Non-ignored paths git is not tracking."""
-    return tuple(
-        line for line in _git("ls-files", "--others", "--exclude-standard").splitlines() if line
-    )
+    # Git starts in this module's directory. Include untracked files elsewhere
+    # in the repository and report their paths from the repository root.
+    listed = _git("ls-files", "--others", "--exclude-standard", "--full-name", "--", ":/")
+    return tuple(line for line in listed.splitlines() if line)
 
 
 class GitUnavailable(RuntimeError):

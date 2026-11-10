@@ -62,9 +62,12 @@ def test_a_tracked_edit_is_stored_as_the_patch_that_rebuilds_it(tree, tmp_path):
     assert "tracked.txt" in stored and stored.endswith("\n")
 
 
-def test_an_untracked_file_stops_the_run_before_a_question_is_paid_for(tree, tmp_path):
+def test_an_untracked_file_stops_the_run_before_a_question_is_paid_for(tree, tmp_path, monkeypatch):
+    nested = tree / "benchmarks" / "common"
+    nested.mkdir(parents=True)
+    monkeypatch.setattr(manifest, "_REPO", nested)
     (tree / "experiment.py").write_text("x = 1\n")
-    with pytest.raises(SystemExit, match="untracked"):
+    with pytest.raises(SystemExit, match=r"untracked file\(s\).*\(experiment\.py\)"):
         _write(tmp_path)
     # Nothing was written, so nothing claims a provenance the patch cannot hold.
     assert not (tmp_path / "run" / "manifest.json").exists()

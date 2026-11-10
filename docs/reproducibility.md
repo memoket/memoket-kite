@@ -22,6 +22,16 @@ run. Preparation and evaluation use the same directory.
 
 ## Run the benchmarks
 
+To exercise both benchmark pipelines without downloading datasets or using
+model credentials, install `.[dev,benchmark]` and run the integration test.
+It builds Codebooks, evaluates answers, and verifies sealed scores with a
+loopback model and synthetic conversations. Use the pinned datasets and a real
+model for quality measurements.
+
+```bash
+python -m pytest tests/benchmarks/test_reproduction_integration.py
+```
+
 With the datasets prepared, check the corpus hashes, retrieval profile, worker
 counts, and output locations without model credentials.
 
