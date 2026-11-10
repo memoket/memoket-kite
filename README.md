@@ -4,7 +4,7 @@
 
 ### Follow the thread, not the nearest match.
 
-Open-source and vector-free, KITE achieves **🥇 93.51% on LoCoMo and 🥇 85.60% on LongMemEval-S**, with *gpt-4.1-mini* used across all benchmark stages and an average reader context of only **~1.6K tokens per question**.
+Open-source, vector-free memory for conversations. Trace decisions back to the original lines.
 
 <a href="https://memoket.ai/"><img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/memoket-website-badge-navy.svg" alt="Memoket website"></a>
 <a href="https://discord.com/invite/tFh4nur4Vn"><img src="https://img.shields.io/badge/-Discord-232B3A?style=for-the-badge&logo=discord&logoColor=white" alt="Join Memoket on Discord"></a>
@@ -231,18 +231,18 @@ more runnable examples in
 
 <a id="benchmarks"></a>
 
-## 📊 Benchmark Results
+## 📊 Historical Benchmark Results
 
-KITE by Memoket posts the top overall score on both public long-conversation memory
-benchmarks. It is the only system up there that uses no vectors, and it reads less
-context than any capable rival.
+These figures come from the recorded reference runs. A corpus audit found an
+example in the LoCoMo answer prompt that matches a reference answer. A rerun with
+neutral examples is needed to measure the effect.
 
 <div align="center">
 
 | Benchmark | Overall Accuracy | Avg. Reader Context |
 |---|---:|---:|
-| **LoCoMo** | 🥇 **93.51%** | 1.51k tokens |
-| **LongMemEval-S** | 🥇 **85.60%** | 1.65k tokens |
+| **LoCoMo** | **93.51%** | 1.51k tokens |
+| **LongMemEval-S** | **85.60%** | 1.65k tokens |
 
 </div>
 

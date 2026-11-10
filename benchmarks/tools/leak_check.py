@@ -17,6 +17,8 @@ import importlib
 import inspect
 import json
 import re
+from collections import defaultdict
+from functools import lru_cache
 from pathlib import Path
 
 from benchmarks.common.paths import DATASETS_ROOT
@@ -135,19 +137,36 @@ def _library_text() -> dict[str, str]:
     return scanned
 
 
-def _scan(source: str, name: str, text: str, corpora: dict[str, list[str]]) -> list[tuple]:
-    findings = []
-    for term in sorted(_prompt_terms(text)):
-        pattern = re.compile(r"\b" + re.escape(term))
-        for corpus, documents in corpora.items():
-            matching = [document for document in documents if pattern.search(document)]
-            if not matching:
-                continue
+def _concentrated_terms(documents: list[str], terms: set[str]) -> dict[str, tuple[int, int]]:
+    if not terms:
+        return {}
+    # Prompt terms are ASCII letters with at least four characters. Matching
+    # prefixes of word starts preserves the original left-boundary-only rule.
+    buckets: dict[str, list[str]] = defaultdict(list)
+    for term in terms:
+        buckets[term[:4]].append(term)
+
+    @lru_cache(maxsize=65536)
+    def prefixes(word: str) -> tuple[str, ...]:
+        return tuple(term for term in buckets.get(word[:4], ()) if word.startswith(term))
+
+    matches: dict[str, list[str]] = defaultdict(list)
+    for document in documents:
+        found = set()
+        for word in set(re.findall(r"\b[a-z]+", document)):
+            found.update(prefixes(word))
+        for term in found:
+            matches[term].append(document)
+
+    concentrated = {}
+    for term, matching in matches.items():
+        if len(matching) / len(documents) <= MAX_DOCUMENT_FRACTION:
+            # Once a document qualifies, count all nonoverlapping occurrences
+            # in it, including occurrences without a left word boundary.
             count = sum(document.count(term) for document in matching)
-            fraction = len(matching) / len(documents)
-            if fraction <= MAX_DOCUMENT_FRACTION and count >= MIN_OCCURRENCES:
-                findings.append((source, name, term, corpus, len(matching), len(documents), count))
-    return findings
+            if count >= MIN_OCCURRENCES:
+                concentrated[term] = (len(matching), count)
+    return concentrated
 
 
 def audit() -> tuple[list[tuple], list[str]]:
@@ -163,12 +182,26 @@ def audit() -> tuple[list[tuple], list[str]]:
     if not corpora:
         return [], skipped
 
-    findings: list[tuple] = []
-    for benchmark in CORPORA:
-        for name, text in _binding_text(benchmark).items():
-            findings.extend(_scan(benchmark, name, text, corpora))
-    for name, text in _library_text().items():
-        findings.extend(_scan("library", name, text, corpora))
+    sources = [(name, _binding_text(name)) for name in CORPORA]
+    sources.append(("library", _library_text()))
+    scopes = [
+        (source, name, _prompt_terms(text))
+        for source, entries in sources
+        for name, text in entries.items()
+    ]
+    all_terms = set().union(*(terms for _, _, terms in scopes))
+    concentrations = {
+        corpus: _concentrated_terms(documents, all_terms) for corpus, documents in corpora.items()
+    }
+    findings = []
+    for source, name, terms in scopes:
+        for term in sorted(terms):
+            for corpus, stats in concentrations.items():
+                if term in stats:
+                    matching, count = stats[term]
+                    findings.append(
+                        (source, name, term, corpus, matching, len(corpora[corpus]), count)
+                    )
     return findings, skipped
 
 

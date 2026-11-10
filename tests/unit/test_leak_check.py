@@ -76,6 +76,43 @@ def test_a_term_spread_across_the_corpus_is_task_language_and_passes(tmp_path, m
     assert findings == []
 
 
+def test_word_prefixes_and_occurrences_follow_the_audit_rule():
+    documents = [
+        "zorbicular zorbicular9 zorbicular_suffix azorbicular azorbicular",
+        "zorbicaux zorbicaux zorbicaux zorbicaux zorbicaux",
+        "ézorbicular 9zorbicular _zorbicular azorbicular azorbicular",
+        "weather storm storm storm storm storm",
+        "weather cloudy",
+        "weather sunny",
+        "weather clear",
+        "weather snowy",
+        "weather windy",
+        "weather dry",
+    ]
+    terms = {"zorbic", "zorbicular", "zorbicaux", "weather", "storm", "cloudy"}
+    assert leak_check._concentrated_terms(documents, terms) == {
+        "zorbic": (2, 10),
+        "zorbicular": (1, 5),
+        "zorbicaux": (1, 5),
+        "storm": (1, 5),
+    }
+
+
+def test_concentrated_terms_are_reported_in_each_matching_source(tmp_path, monkeypatch):
+    documents = [{"turn": "zorbicular " * 5}, *[{"turn": "ordinary"}] * 5]
+    monkeypatch.setattr(leak_check, "CORPORA", {"fake": _corpus(tmp_path, "fake", documents)})
+    monkeypatch.setattr(leak_check, "_binding_text", lambda benchmark: {"PROMPT": "zorbicular"})
+    monkeypatch.setattr(leak_check, "_library_text", lambda: {"reader": "zorbicular"})
+
+    assert leak_check.audit() == (
+        [
+            ("fake", "PROMPT", "zorbicular", "fake", 1, 6, 5),
+            ("library", "reader", "zorbicular", "fake", 1, 6, 5),
+        ],
+        [],
+    )
+
+
 def test_the_real_bindings_and_library_are_in_scope():
     """The scan reaches the bindings and the library modules it names."""
     scanned = leak_check._binding_text("locomo")
