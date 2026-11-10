@@ -2654,6 +2654,8 @@ def test_index_seal_detects_annotation_drift_and_can_be_rebuilt(work):
         changed["facts"][0]["status"] = "open"
         db.execute("UPDATE revisions SET payload=?", (json.dumps(changed),))
     call("integrity", error="integrity_error")
+    result = call("codebook", "--source", "text", "--active-only", error="integrity_error")
+    assert "source snapshot" in result["error"]["message"]
     call(
         "start",
         "topic-tracing",
@@ -2714,6 +2716,8 @@ def test_integrity_establishes_source_seal_for_legacy_workspace(work):
     before = database.read_bytes()
     report = call("query", payload={"query": {"topics": ["onboarding"]}})["value"]
     assert report["matched_count"] == 1 and database.read_bytes() == before
+    assert "Synthetic original evidence." in call("codebook", "--source", "text")
+    assert database.read_bytes() == before
     assert call("integrity")["memory_version"] == original["memory_version"]
     with sqlite3.connect(database) as db:
         assert db.execute("PRAGMA user_version").fetchone() == (2,)
@@ -3722,6 +3726,33 @@ def test_scoped_codebook_rejects_missing_or_ambiguous_selectors(work):
     _delete_source(call, "erase-note", {"source": "text", "conversation_id": "note"})
     assert call("sources", "--source", "text")["sources"] == []
     call("codebook", "--source", "text", "--conversation-id", "note", error="not_found")
+
+
+def test_codebook_and_sources_read_committed_snapshot_during_a_write(work, monkeypatch):
+    directory, call = work
+    ingest(call, "selected", text_input("selected", "The selected transcript."))
+    ingest(call, "other", text_input("other", "The unrelated transcript."))
+    command = ("codebook", "--source", "text", "--conversation-id", "selected")
+    inventory, full, scoped = call("sources"), call("codebook"), call(*command)
+    assert "The selected transcript." in scoped and "The unrelated transcript." not in scoped
+    connect = sqlite3.connect
+
+    def quick_connect(*args, **kwargs):
+        kwargs["timeout"] = 0.1
+        return connect(*args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", quick_connect)
+    with closing(connect(directory / "kite.sqlite3")) as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("DELETE FROM revisions")
+        assert call("sources") == inventory
+        assert call("codebook") == full
+        assert call(*command) == scoped
+        writer.rollback()
+        writer.execute("UPDATE memory SET xml=?", (b"corrupt index",))
+        writer.commit()
+    call("codebook", error="integrity_error")
+    assert call(*command) == scoped
 
 
 @pytest.fixture

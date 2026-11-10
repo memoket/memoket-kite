@@ -283,7 +283,7 @@ def _ingest(
         raise ToolError("invalid_input", "ingest requires both source and annotations")
     pipeline = "memory-update" if update else "memory-ingestion"
     checkpoint_workspace = (
-        Workspace.open(directory) if resume_id is None else Workspace.inspect_workflows(directory)
+        Workspace.open(directory) if resume_id is None else Workspace.inspect(directory)
     )
     with checkpoint_workspace as workspace:
         context = Context(root, workspace, pipeline, extension_root=extension_root)
@@ -397,7 +397,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             scope["conversation_id"] = conversation_id
         if scope:
             validate(SOURCE_SCOPE, scope, "source scope")
-        with Workspace.open(args.workspace) as workspace:
+        with Workspace.inspect(args.workspace, initialize=True) as workspace:
             if args.command == "sources":
                 return {
                     "sources": workspace.list_sources(args.source),
@@ -426,7 +426,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 }, None
             return {"value": query_report(Context(root, workspace, args.pipeline), supplied)}, None
     open_workspace = (
-        Workspace.inspect_workflows(args.workspace, initialize=True)
+        Workspace.inspect(args.workspace, initialize=True)
         if args.command in {"runs", "status", "artifact", "segments"}
         else Workspace.open(args.workspace)
     )

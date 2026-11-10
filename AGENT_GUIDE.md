@@ -360,7 +360,9 @@ only the current revision of the selected record. Omit `--active-only` to
 include its history. Use `--source` alone to select a source namespace.
 Plain `kite-tool codebook` exports the full workspace snapshot.
 
-Scoped export rebuilds the Codebook from selected records and their supported
+In an initialized workspace, `sources` and `codebook` read one committed
+snapshot without taking a write lock. Scoped export verifies the source
+snapshot and rebuilds the Codebook from selected records and their supported
 taxonomy, preserving original source lines. Review the selected text and
 annotations before sharing, including names written in free text. The workspace
 retains the richer source metadata and lifecycle state. Use pipeline tools for

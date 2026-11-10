@@ -203,8 +203,8 @@ class Workspace:
 
     @classmethod
     @contextmanager
-    def inspect_workflows(cls, directory: Path, *, initialize: bool = False):
-        """Inspect committed checkpoints, recovering or upgrading when needed."""
+    def inspect(cls, directory: Path, *, initialize: bool = False):
+        """Inspect committed data, recovering or upgrading when needed."""
         with ExitStack() as reader:
             try:
                 workspace = reader.enter_context(cls.open(directory, read_only=True))
@@ -506,6 +506,12 @@ class Workspace:
             raise ToolError("integrity_error", "stored source snapshot differs from its seal")
         return True
 
+    def _verify_source_snapshot(
+        self, current: sqlite3.Row, rows: list[sqlite3.Row], hierarchy: dict
+    ) -> bool:
+        _, checksum = _snapshot_checksums(None, current["merges"], rows, hierarchy)
+        return self._check_source_seal(current["version"], checksum)
+
     def _checked_snapshot(
         self, current: sqlite3.Row, rows: list[sqlite3.Row], hierarchy: dict
     ) -> tuple[str, str, bool, bool]:
@@ -609,6 +615,10 @@ class Workspace:
             raise ToolError("invalid_input", "conversation scope requires a source namespace")
         if source is None and not active_only:
             return self.index().xml
+        if not self._verify_source_snapshot(
+            self._memory(), self._revision_rows(), self.topic_hierarchy()
+        ):
+            self.index()
         records = self.records(
             source=source,
             conversation_id=conversation_id,
@@ -658,10 +668,7 @@ class Workspace:
         version = current["version"]
         source_sealed = False
         if verify_sources:
-            _, current_sources = _snapshot_checksums(
-                None, current["merges"], rows, previous_hierarchy
-            )
-            source_sealed = self._check_source_seal(version, current_sources)
+            source_sealed = self._verify_source_snapshot(current, rows, previous_hierarchy)
         merges = json.loads(current["merges"]) if merges is None else merges
         encoded_merges = encode(merges)
         index = build_index(self._records(rows), merges, hierarchy)
