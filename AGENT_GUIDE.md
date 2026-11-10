@@ -351,6 +351,10 @@ Run `kite-tool sources` to find conversation IDs and current checksums without
 reading transcript text. Use the checksum for incremental source updates or the
 source and ID to select an export.
 
+For a large workspace, use `kite-tool sources --limit 50`. Pass the returned
+`next_cursor` as `--cursor` with the same limit and source filter for the next
+page. Start again without the cursor after the memory snapshot changes.
+
 ```sh
 umask 077
 kite-tool codebook --source memoket --conversation-id RECORD_ID --active-only > selected.xml

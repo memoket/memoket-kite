@@ -12,7 +12,17 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
-from .contracts import ToolError, decode_object, digest, encode, now
+from .contracts import (
+    CURSOR,
+    ToolError,
+    decode_object,
+    digest,
+    encode,
+    now,
+    page_cursor,
+    page_offset,
+    validate,
+)
 from .index import Index, build_index, fact_entries, load_index, revision_id, source_key
 from .ingest import source_day, source_identity
 from .timing import precedes, source_timing
@@ -564,7 +574,18 @@ class Workspace:
             self._seal_index(version, checksum, source_checksum)
         return index
 
-    def list_sources(self, source: str | None = None) -> list[dict]:
+    def source_inventory(
+        self, source: str | None, *, limit: int | None = None, cursor: str | None = None
+    ) -> dict:
+        if limit is not None and not 1 <= limit <= 1000:
+            raise ToolError("invalid_input", "source limit must be between 1 and 1000")
+        if cursor is not None:
+            if limit is None:
+                raise ToolError("invalid_input", "a source cursor requires --limit")
+            validate(CURSOR, cursor, "source cursor")
+        identity, version = self.snapshot_identity()
+        scope = [identity, version, "sources-v1", source, limit]
+        offset = page_offset(scope, cursor, name="source listing")
         rows = self.db.execute(
             """
             SELECT source, conversation_id, count(*) AS revisions,
@@ -573,10 +594,16 @@ class Workspace:
             WHERE (? IS NULL OR source=?)
             GROUP BY source, conversation_id
             ORDER BY source, conversation_id
+            LIMIT ? OFFSET ?
             """,
-            (source, source),
-        )
-        return [dict(row) for row in rows]
+            (source, source, -1 if limit is None else limit + 1, offset),
+        ).fetchall()
+        result = {"sources": [dict(row) for row in rows[:limit]], "memory_version": version}
+        if limit is not None:
+            result["next_cursor"] = (
+                page_cursor(scope, offset + limit) if len(rows) > limit else None
+            )
+        return result
 
     def source_history(self, source: str, conversation_id: str) -> dict:
         records = self.records(source=source, conversation_id=conversation_id)

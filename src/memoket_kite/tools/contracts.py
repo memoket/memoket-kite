@@ -49,6 +49,25 @@ def digest(value) -> str:
     return hashlib.sha256(encode(value).encode()).hexdigest()
 
 
+CURSOR = {"type": "string", "pattern": r"^[0-9]{1,16}\.[1-9][0-9]{0,15}\.[a-f0-9]{64}$"}
+
+
+def page_cursor(scope: list, offset: int) -> str:
+    return f"{scope[1]}.{offset}.{digest([scope, offset])}"
+
+
+def page_offset(scope: list, token: str | None, *, name: str = "trace") -> int:
+    if token is None:
+        return 0
+    version, offset, _ = token.split(".")
+    if int(version) != scope[1]:
+        raise ToolError("stale_snapshot", f"memory changed; restart the {name} without its cursor")
+    offset = int(offset)
+    if token != page_cursor(scope, offset):
+        raise ToolError("invalid_input", f"cursor does not match this {name}; restart without it")
+    return offset
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 

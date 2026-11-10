@@ -7,12 +7,20 @@ from collections import defaultdict
 
 from memoket_kite.core.vocab import norm_code
 
-from .contracts import DATE, TEXT, ToolError, array, digest, encode, object_schema
+from .contracts import (
+    CURSOR,
+    DATE,
+    TEXT,
+    ToolError,
+    array,
+    encode,
+    object_schema,
+    page_cursor,
+    page_offset,
+)
 from .index import event_date_basis, revision_id
 from .ingest import source_day
 from .timing import precedes, source_timing
-
-CURSOR = {"type": "string", "pattern": r"^[0-9]{1,16}\.[1-9][0-9]{0,15}\.[a-f0-9]{64}$"}
 
 QUERY = object_schema(
     {},
@@ -36,11 +44,6 @@ QUERY = object_schema(
 )
 
 
-def _cursor(scope: list, offset: int) -> str:
-    version = scope[1]
-    return f"{version}.{offset}.{digest([scope, offset])}"
-
-
 def _page_scope(context, query: dict) -> list:
     workspace_id, version = context.workspace.snapshot_identity()
     return [
@@ -50,19 +53,6 @@ def _page_scope(context, query: dict) -> list:
         {k: v for k, v in query.items() if k != "cursor"},
         "source-time-v2",
     ]
-
-
-def _page_offset(scope: list, query: dict) -> int:
-    token = query.get("cursor")
-    if token is None:
-        return 0
-    version, offset, _ = token.split(".")
-    if int(version) != scope[1]:
-        raise ToolError("stale_snapshot", "memory changed; restart the trace without its cursor")
-    offset = int(offset)
-    if token != _cursor(scope, offset):
-        raise ToolError("invalid_input", "cursor does not match this trace; restart without it")
-    return offset
 
 
 def resolve(context, query: dict) -> dict:
@@ -78,7 +68,7 @@ def resolve(context, query: dict) -> dict:
             "a task or decision trace requires a topic, entity, event, text or state key",
         )
     if "cursor" in query:
-        _page_offset(_page_scope(context, query), query)
+        page_offset(_page_scope(context, query), query["cursor"])
     index = context.workspace.index()
     codes, unknown = set(), []
     for topic in query.get("topics", []):
@@ -321,7 +311,7 @@ def retrieve(context, resolved: dict) -> dict:
     # Select from newest dated to oldest, then from the uncertain tail.
     limit = query.get("limit", 100)
     scope = _page_scope(context, query)
-    offset = _page_offset(scope, query)
+    offset = page_offset(scope, query.get("cursor"))
     known = [row for row in rows if not row[0]]
     uncertain = [row for row in rows if row[0]]
     end = max(0, len(known) - offset)
@@ -355,7 +345,7 @@ def retrieve(context, resolved: dict) -> dict:
     return {
         "fact_ids": [row[-1] for row in selected],
         "matched": len(rows),
-        "next_cursor": _cursor(scope, next_offset) if next_offset < len(rows) else None,
+        "next_cursor": page_cursor(scope, next_offset) if next_offset < len(rows) else None,
         "time_axis": time_axis,
         "omitted_unknown_time": omitted_unknown,
         "omitted_inferred_time": omitted_inferred,

@@ -3746,6 +3746,58 @@ def test_scoped_codebook_rejects_missing_or_ambiguous_selectors(work):
     call("codebook", "--source", "text", "--conversation-id", "note", error="not_found")
 
 
+def test_source_inventory_paginates_one_workspace_snapshot(work, tmp_path):
+    directory, call = work
+    ingest(call, "second", text_input("second", "Synthetic second source."))
+    ingest(call, "memoket", fixture("second-meeting"))
+    ingest(call, "first", text_input("first", "Synthetic first source."))
+    inventory = call("sources")
+    assert "next_cursor" not in inventory
+    before = (directory / "kite.sqlite3").read_bytes()
+    first = call("sources", "--limit", "1")
+    second = call("sources", "--limit", "1", "--cursor", first["next_cursor"])
+    last = call("sources", "--limit", "1", "--cursor", second["next_cursor"])
+    assert [item for page in (first, second, last) for item in page["sources"]] == inventory[
+        "sources"
+    ]
+    assert last["next_cursor"] is None
+    assert first["memory_version"] == second["memory_version"] == last["memory_version"]
+    assert "Synthetic" not in json.dumps([first, second, last])
+    assert (directory / "kite.sqlite3").read_bytes() == before
+    call("sources", "--limit", "0", error="invalid_input")
+    call("sources", "--limit", "1", "--cursor", "malformed", error="invalid_input")
+    call("sources", "--cursor", first["next_cursor"], error="invalid_input")
+    call("sources", "--limit", "2", "--cursor", first["next_cursor"], error="invalid_input")
+    call(
+        "sources",
+        "--source",
+        "text",
+        "--limit",
+        "1",
+        "--cursor",
+        first["next_cursor"],
+        error="invalid_input",
+    )
+    scoped = call("sources", "--source", "text", "--limit", "1")
+    scoped_next = call(
+        "sources", "--source", "text", "--limit", "1", "--cursor", scoped["next_cursor"]
+    )
+    assert scoped["sources"] + scoped_next["sources"] == inventory["sources"][1:]
+    backup = tmp_path / "copy"
+    call("backup", str(backup))
+    call(
+        "sources",
+        "--limit",
+        "1",
+        "--cursor",
+        first["next_cursor"],
+        workspace_dir=backup,
+        error="invalid_input",
+    )
+    _delete_source(call, "erase", {"source": "text", "conversation_id": "first"})
+    call("sources", "--limit", "1", "--cursor", first["next_cursor"], error="stale_snapshot")
+
+
 def test_codebook_and_sources_read_committed_snapshot_during_a_write(work, monkeypatch):
     directory, call = work
     ingest(call, "selected", text_input("selected", "The selected transcript."))

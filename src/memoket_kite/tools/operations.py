@@ -6,11 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .contracts import COUNT, DATE, HASH, TEXT, ToolError, array, object_schema
+from .contracts import COUNT, CURSOR, DATE, HASH, TEXT, ToolError, array, object_schema
 from .extract import MODEL, propose
 from .index import ANNOTATIONS, RECLASSIFY, TOPIC_MOVE, annotate, move_topic, reclassify
 from .ingest import SOURCE, normalize
-from .retrieve import CURSOR, QUERY, report, resolve, retrieve
+from .retrieve import QUERY, report, resolve, retrieve
 from .workspace import Workspace
 
 SOURCE_SCOPE = object_schema(
