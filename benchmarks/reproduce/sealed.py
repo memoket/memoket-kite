@@ -47,12 +47,19 @@ def verified_records(name: str, judged_path: Path, *, allow_legacy: bool = False
     is still checked, and a release that passes this flag is stating that
     weaker binding rather than hiding it.
     """
+    records, _seal = verified_run(name, judged_path, allow_legacy=allow_legacy)
+    return records
+
+
+def verified_run(
+    name: str, judged_path: Path, *, allow_legacy: bool = False
+) -> tuple[list[dict], dict]:
+    """Return checked verdicts with the seal used to verify them."""
     result_dir = judged_path.parent
+    recorded = judging.read_manifest(result_dir)
     _model, weak, payload = judging.check_offline(
         result_dir,
-        judging.read_manifest(result_dir)["judge_model"]
-        if judging.read_manifest(result_dir)
-        else "",
+        recorded["judge_model"] if recorded else "",
         source=_sources(name, result_dir),
         judged=judged_path,
         protocol=PROTOCOLS[name],
@@ -65,7 +72,10 @@ def verified_records(name: str, judged_path: Path, *, allow_legacy: bool = False
             f"{name}: {result_dir.name} carries only a legacy source binding; "
             f"re-judge it before release"
         )
-    return [json.loads(line) for line in payload.decode("utf-8").splitlines() if line.strip()]
+    if recorded is None or judging.read_manifest(result_dir) != recorded:
+        raise RuntimeError(f"{result_dir.name}: judge manifest changed during verification; retry")
+    records = [json.loads(line) for line in payload.decode("utf-8").splitlines() if line.strip()]
+    return records, _seal_fields(recorded)
 
 
 #: Which dataset and codebook folder each benchmark's corpus digest covers.
@@ -104,6 +114,10 @@ def seal(result_dir: Path) -> dict:
     recorded = judging.read_manifest(result_dir)
     if recorded is None:
         raise RuntimeError(f"{result_dir.name} has no judge manifest; it cannot be released")
+    return _seal_fields(recorded)
+
+
+def _seal_fields(recorded: dict) -> dict:
     return {
         key: recorded.get(key)
         for key in (

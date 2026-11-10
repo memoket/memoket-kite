@@ -118,6 +118,9 @@ python -m benchmarks.longmemeval.score --tag my-run --judge-model gpt-4.1-mini -
 ```
 
 Generated benchmark files remain under the Git-ignored `artifacts/` tree.
+Use the [offline comparison command](../benchmarks/reproduce/README.md#compare-two-runs)
+to locate per-question regressions between sealed runs made with the same
+questions and judge configuration.
 
 ## The corpus-leak gate
 

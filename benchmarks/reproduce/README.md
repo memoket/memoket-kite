@@ -49,6 +49,23 @@ python -m benchmarks.locomo.score --tag example-free-v1 --judge-model gpt-4.1-mi
 python -m benchmarks.longmemeval.score --tag my-run --judge-model gpt-4.1-mini --offline
 ```
 
+## Compare two runs
+
+```bash
+python -m benchmarks.reproduce.compare locomo \
+  artifacts/results/locomo-baseline artifacts/results/locomo-candidate
+python -m benchmarks.reproduce.compare longmemeval \
+  artifacts/results/longmemeval-baseline artifacts/results/longmemeval-candidate
+```
+
+Pass two sealed result directories with the same judge model, endpoint, rubric,
+and question set. The command checks both seals and reports overall and grouped
+metric changes, counts of improved and regressed verdicts, and the IDs whose
+verdicts changed. It reads the artifacts offline without writing to either run
+or including question and answer text in the report. Use the same selections and
+judge settings when rerunning the baseline and candidate, and keep their output
+tags distinct. An older score without a verifiable seal needs a fresh baseline run.
+
 See
 [`../../docs/reproducibility.md`](../../docs/reproducibility.md) for the complete
 workflow.

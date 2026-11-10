@@ -34,8 +34,8 @@ def _model_response(benchmark, model, prompt):
         }
     if model == "smoke-plan":
         return {"queries": [{"select": "facts", "where": {}, "pipe": []}], "intent": "factual"}
-    if model == "smoke-answer":
-        answer = "Basil"
+    if model in ("smoke-answer", "smoke-candidate"):
+        answer = "Synthetic wrong answer" if model == "smoke-candidate" else "Basil"
         if "When did Ada plant it?" in prompt:
             answer = "1 May 2023"
         elif "What should I plant next?" in prompt:
@@ -44,10 +44,11 @@ def _model_response(benchmark, model, prompt):
             answer = "I don't know."
         return {"answer": answer, "evidence": []}
     if model == "smoke-judge":
+        wrong = "Synthetic wrong answer" in prompt
         return (
-            {"label": "CORRECT", "reasoning": "Synthetic fixture."}
+            {"label": "WRONG" if wrong else "CORRECT", "reasoning": "Synthetic fixture."}
             if benchmark == "locomo"
-            else "yes"
+            else ("no" if wrong else "yes")
         )
     raise ValueError(f"unexpected synthetic model {model}")
 
@@ -103,9 +104,9 @@ def test_benchmark_reproduction_with_a_loopback_model(tmp_path, benchmark, selec
             "GIT_CONFIG_VALUE_0": str(excludes),
         }
 
-        def run(stage, *args, error=None):
+        def run_module(module, *args, error=None):
             process = subprocess.run(
-                [sys.executable, "-m", f"benchmarks.{benchmark}.{stage}", *args],
+                [sys.executable, "-m", module, *args],
                 cwd=ROOT,
                 env=environment,
                 capture_output=True,
@@ -118,6 +119,10 @@ def test_benchmark_reproduction_with_a_loopback_model(tmp_path, benchmark, selec
                 assert process.returncode == 0, output
             else:
                 assert process.returncode != 0 and error in output, output
+            return process.stdout
+
+        def run(stage, *args, error=None):
+            return run_module(f"benchmarks.{benchmark}.{stage}", *args, error=error)
 
         try:
             build = (*selection, "--model", "smoke-build")
@@ -140,11 +145,50 @@ def test_benchmark_reproduction_with_a_loopback_model(tmp_path, benchmark, selec
             run("evaluate", *evaluate, "--resume")
             assert requests.qsize() == count
             run("score", *judge)
+            run("evaluate", *evaluate, "--answer-model", "smoke-candidate", "--tag", "candidate")
+            run("score", *judge, "--tag", "candidate")
+            candidate = result.with_name(f"{benchmark}-candidate")
             count = requests.qsize()
             run("score", *judge, "--offline")
+            report = json.loads(
+                run_module("benchmarks.reproduce.compare", benchmark, str(result), str(candidate))
+            )
+            assert report["overall"]["n"] == len(answers)
+            assert report["overall"]["regressed"] == 1
+            assert report["overall"]["improved"] == 0
+            assert report["overall"]["unchanged"] == len(answers) - 1
+            assert report["overall"]["metrics"]["accuracy"] == pytest.approx(
+                {"before": 1.0, "after": 1.0 - 1 / len(answers), "delta": -1 / len(answers)}
+            )
+            assert len(report["changed"]) == 1
+            changed = report["changed"][0]
+            assert (changed["before"], changed["after"]) == (1, 0)
+            assert report["groups"][changed["group"]]["regressed"] == 1
+            assert report["baseline"]["results_sha"] != report["candidate"]["results_sha"]
+
+            judge_manifest = candidate / "judge_manifest.json"
+            original = judge_manifest.read_text(encoding="utf-8")
+            metadata = json.loads(original)
+            metadata["provider"] = "https://different-provider.example/v1"
+            judge_manifest.write_text(json.dumps(metadata), encoding="utf-8")
+            run_module(
+                "benchmarks.reproduce.compare",
+                benchmark,
+                str(result),
+                str(candidate),
+                error="provider differs or is missing",
+            )
+            judge_manifest.write_text(original, encoding="utf-8")
             sealed_verdicts = judged.read_bytes()
             judged.write_bytes(sealed_verdicts + b"\n")
             run("score", *judge, "--offline", error="judged_sha changed since judging")
+            run_module(
+                "benchmarks.reproduce.compare",
+                benchmark,
+                str(result),
+                str(candidate),
+                error="judged_sha changed since judging",
+            )
             assert requests.qsize() == count
         finally:
             endpoint.shutdown()
@@ -152,7 +196,7 @@ def test_benchmark_reproduction_with_a_loopback_model(tmp_path, benchmark, selec
 
     models = [requests.get_nowait() for _ in range(requests.qsize())]
     assert {"smoke-build", "smoke-plan", "smoke-answer", "smoke-judge"} <= set(models)
-    assert models.count("smoke-judge") == len(answers)
+    assert models.count("smoke-judge") == 2 * len(answers)
     assert [json.loads(line)["answer"] for line in sealed_verdicts.splitlines()] == answers
     score = json.loads((result / "score.json").read_text(encoding="utf-8"))
     assert score["overall"]["n"] == len(answers)
@@ -160,3 +204,35 @@ def test_benchmark_reproduction_with_a_loopback_model(tmp_path, benchmark, selec
     assert score["overall"]["evidence_recall"] == 1.0
     assert score["provenance"] == {"source_binding": "verified", "corpus_binding": "verified"}
     assert (result / "judge_manifest.json").is_file()
+
+
+@pytest.mark.parametrize(
+    ("update", "message"),
+    [
+        ({"question_id": "another-id"}, "question sets differ"),
+        ({"question_id": "control"}, "duplicate question ID"),
+        ({"gold": "a different answer"}, "different gold"),
+        ({"answer_session_ids": []}, "different answer_session_ids"),
+        ({"ok": 0.5}, "non-binary verdict"),
+    ],
+)
+def test_comparison_requires_the_same_questions_and_valid_verdicts(monkeypatch, update, message):
+    from benchmarks.reproduce import compare, sealed
+
+    question = {
+        "question_id": "original",
+        "question": "What did I plant?",
+        "question_type": "single-session-user",
+        "gold": "Basil",
+        "answer_session_ids": ["session-1"],
+        "ok": 1,
+    }
+    control = {**question, "question_id": "control"}
+    judge = {field: "synthetic" for field in compare.JUDGE_FIELDS}
+    runs = {
+        "baseline": [control, question],
+        "candidate": [control, {**question, **update}],
+    }
+    monkeypatch.setattr(sealed, "verified_run", lambda _, path: (runs[path.parent.name], judge))
+    with pytest.raises(ValueError, match=message):
+        compare.compare("longmemeval", Path("baseline"), Path("candidate"))
