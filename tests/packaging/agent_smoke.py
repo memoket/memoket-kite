@@ -197,6 +197,16 @@ def main() -> None:
         assert not rejected.exists()
         assert call("integrity")["revisions"] == 0
         assert call("status", run_id)["state"] == "failed"
+        scripted = directory / "scripted"
+        imported = call(
+            "ingest",
+            "--run-id",
+            "scripted",
+            workspace=scripted,
+            payload={**source, "annotations": annotations},
+        )
+        assert imported["receipt"]["changed"] and imported["integrity"]["facts"] == 1
+        assert call("status", "scripted", workspace=scripted)["state"] == "completed"
         print(
             "Installed agent smoke passed: packaged workflows, backup recovery, citations, deletion."
         )

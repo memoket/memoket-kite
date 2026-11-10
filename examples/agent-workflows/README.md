@@ -73,6 +73,23 @@ directly. This produces the same report without saving a run.
 kite-tool query --input examples/agent-workflows/topic-query.json
 ```
 
+## Import with prepared annotations
+
+For a local script with a prepared `source` and `annotations`, run the same
+ingestion stages with one command in a fresh workspace.
+
+```sh
+export KITE_DATA_DIR="$(mktemp -d)"
+kite-tool ingest --run-id meeting-a --input examples/agent-workflows/first-meeting.json
+kite-tool query --input examples/agent-workflows/topic-query.json
+```
+
+The command returns a commit receipt and integrity counts. It saves each stage
+before advancing. On an interruption, use `status` and `stage` to resume the
+saved run. Correct an invalid annotation in the input file and start a new run.
+Use the stage-by-stage workflow when the agent still needs to extract or review
+annotations.
+
 ## Give your agent a task
 
 > Run kite-tool resources and read the agent instructions it points to. Use the

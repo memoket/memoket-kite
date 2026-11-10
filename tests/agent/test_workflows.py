@@ -25,7 +25,7 @@ from memoket_kite import Memory
 from memoket_kite.pipeline import extract
 from memoket_kite.research import Codebook, SymbolicQuery
 from memoket_kite.tools import audio, cli, operations, workspace
-from memoket_kite.tools.contracts import digest, encode
+from memoket_kite.tools.contracts import ToolError, digest, encode
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES = ROOT / "examples" / "agent-workflows"
@@ -1461,6 +1461,73 @@ def test_late_source_validation_preserves_pending_checkpoint(work):
     conversation = accepted["value"]["conversation"]
     assert conversation["conversation_id"] == "51"
     assert conversation["segments"][0]["text"] == marker
+
+
+def test_ingest_command_commits_and_verifies_prepared_annotations(work):
+    _, call = work
+    payload = text_input("review", "Synthetic original evidence.")
+    call("ingest", payload={"source": payload["source"]}, error="invalid_input")
+    result = call("ingest", "--run-id", "prepared", payload=payload)
+    assert result["run_id"] == "prepared" and result["receipt"]["changed"]
+    assert result["integrity"]["revisions"] == result["integrity"]["facts"] == 1
+    assert "Synthetic original evidence" not in json.dumps(result)
+    assert call("status", "prepared")["state"] == "completed"
+    call("ingest", "--run-id", "prepared", payload=payload, error="conflict")
+    duplicate = call("ingest", payload=payload)
+    assert not duplicate["receipt"]["changed"]
+    assert duplicate["integrity"] == result["integrity"]
+
+
+def test_ingest_command_rejects_a_different_write_tool(work, tmp_path):
+    _, call = work
+    repo = tmp_path / "alternate-workflow"
+    for name in ("schemas", "skills", "pipeline_defs"):
+        shutil.copytree(ROOT / name, repo / name)
+    definition = repo / "pipeline_defs" / "memory-ingestion.yaml"
+    definition.write_text(definition.read_text().replace("tool: commit", "tool: amend"))
+    call("validate-pipeline", "memory-ingestion", repo=repo)
+    call(
+        "ingest",
+        "--run-id",
+        "override",
+        repo=repo,
+        error="invalid_pipeline",
+        payload=text_input("review", "Synthetic original evidence."),
+    )
+    call("status", "override", error="not_found")
+
+
+@pytest.mark.parametrize(
+    ("failed_stage", "tool_name"), [("commit", "commit"), ("verify", "validate_commit")]
+)
+def test_ingest_command_stops_and_keeps_completed_stages_for_recovery(
+    work, monkeypatch, failed_stage, tool_name
+):
+    _, call = work
+    payload = text_input("review", "Synthetic original evidence.")
+    tool = operations.TOOLS[tool_name]
+
+    def fail_stage(context, **kwargs):
+        raise ToolError("integrity_error", "synthetic stage failure")
+
+    with monkeypatch.context() as patch:
+        patch.setitem(operations.TOOLS, tool_name, replace(tool, function=fail_stage))
+        result = call("ingest", "--run-id", "retry", payload=payload, error="integrity_error")
+    assert (result["run_id"], result["stage_id"], result["stage_state"]) == (
+        "retry",
+        failed_stage,
+        "failed",
+    )
+    stages = call("status", "retry")["stages"]
+    assert stages["normalize"]["state"] == stages["annotate"]["state"] == "completed"
+    if failed_stage == "commit":
+        assert "receipt" not in result and stages["verify"]["state"] == "pending"
+        assert call("integrity")["revisions"] == 0
+        assert call("stage", "retry", "commit")["value"]["changed"]
+    else:
+        assert result["receipt"]["changed"] and stages["commit"]["state"] == "completed"
+        assert call("integrity")["revisions"] == 1
+    assert call("stage", "retry", "verify")["value"]["revisions"] == 1
 
 
 def test_source_timestamps_preserve_offset_and_fraction(work):

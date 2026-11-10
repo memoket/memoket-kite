@@ -179,10 +179,21 @@ def _inputs(context: Context, definition: dict, supplied: dict) -> dict:
     return safe
 
 
-def start(context: Context, supplied: dict, run_id: str | None = None) -> dict:
+def start(
+    context: Context,
+    supplied: dict,
+    run_id: str | None = None,
+    *,
+    expected_stages: tuple[tuple[str, str], ...] | None = None,
+) -> dict:
     definition, fingerprint, _ = load_pipeline(
         context.root, context.pipeline, extension_root=context.extension_root
     )
+    if (
+        expected_stages is not None
+        and tuple((stage["id"], stage["tool"]) for stage in definition["stages"]) != expected_stages
+    ):
+        raise ToolError("invalid_pipeline", "ingest requires the standard local ingestion stages")
     supplied = _inputs(context, definition, supplied)
     run_id = run_id if run_id is not None else uuid4().hex
     validate(ID, run_id, "run ID")

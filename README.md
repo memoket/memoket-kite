@@ -36,7 +36,8 @@ kite-tool demo --text
 The demo follows an early proposal through to a confirmed decision. It prints
 the decision, owner, and original quotes with conversation and segment IDs.
 It runs without an API key. The installed CLI carries its workflows, skills,
-and demo data.
+and demo data. Use `kite-tool ingest --input FILE` to import a prepared source
+and its annotations in one command.
 See the [agent quickstart](examples/agent-workflows/README.md) for stage-by-stage
 commands and the [operating guide](AGENT_GUIDE.md) for integration details.
 

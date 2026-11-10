@@ -31,6 +31,13 @@ from .workflow import (
 )
 from .workspace import Workspace
 
+_INGESTION_STAGES = (
+    ("normalize", "normalize"),
+    ("annotate", "annotate"),
+    ("commit", "commit"),
+    ("verify", "validate_commit"),
+)
+
 
 def _object(path: str | None) -> dict:
     if path is None:
@@ -115,6 +122,11 @@ def _parser() -> argparse.ArgumentParser:
     audio.add_argument("--whisper-cli", default="whisper-cli", help="trusted executable")
     audio.add_argument("--ffmpeg", default="ffmpeg", help="trusted executable")
     audio.add_argument("--timeout", type=int, default=1800, help="seconds allowed per process")
+    ingest = commands.add_parser("ingest", help="import a source with prepared annotations")
+    ingest.add_argument("--run-id", help="stable identifier for this new ingestion run")
+    ingest.add_argument(
+        "--input", required=True, metavar="FILE", help="JSON input file or - for stdin"
+    )
     begin = commands.add_parser("start", help="create a checkpoint for a pipeline run")
     begin.add_argument("pipeline")
     begin.add_argument("--run-id")
@@ -214,6 +226,32 @@ def _stage_summary(result: dict, stage_id: str) -> dict:
     return summary
 
 
+def _ingest(
+    root: Path, directory: Path, supplied: dict, run_id: str | None, extension_root: Path | None
+) -> tuple[dict, ToolError | None]:
+    if supplied.keys() != {"source", "annotations"}:
+        raise ToolError("invalid_input", "ingest requires both source and annotations")
+    pipeline = "memory-ingestion"
+    with Workspace.open(directory) as workspace:
+        context = Context(root, workspace, pipeline, extension_root=extension_root)
+        checkpoint = start(context, supplied, run_id, expected_stages=_INGESTION_STAGES)
+    run_id = checkpoint["run_id"]
+    output = {"run_id": run_id}
+    for stage_id, _ in _INGESTION_STAGES:
+        try:
+            # Each successful stage is durable before the next stage begins.
+            with Workspace.open(directory) as workspace:
+                context = Context(root, workspace, pipeline, extension_root=extension_root)
+                result, error = advance(context, run_id, stage_id, {})
+        except ToolError as exc:
+            return {**output, "stage_id": stage_id}, exc
+        if error:
+            return {**output, **_stage_summary(result, stage_id)}, error
+        if stage_id == "commit":
+            output["receipt"] = result["value"]
+    return {**output, "integrity": result["value"]}, None
+
+
 def _dispatch(args) -> tuple[dict, ToolError | None]:
     if args.command == "describe":
         return _describe(args.tool), None
@@ -305,6 +343,8 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             return {"xml": workspace.export_codebook(**scope, active_only=args.active_only)}, None
 
     supplied = _object(getattr(args, "input", None))
+    if args.command == "ingest":
+        return _ingest(root, args.workspace, supplied, args.run_id, extension_root)
     if args.command in {"query", "evidence"}:
         with Workspace.open(args.workspace, read_only=True) as workspace:
             if args.command == "evidence":
