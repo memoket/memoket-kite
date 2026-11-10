@@ -3,7 +3,7 @@
 ## Setup and checks
 
 ```bash
-python -m pip install -e ".[dev,benchmark]"
+python -m pip install -e ".[dev,benchmark,mcp,agent]"
 ruff check src tests benchmarks examples
 ruff format --check src tests benchmarks examples
 pytest --cov=memoket_kite --cov-fail-under=75
