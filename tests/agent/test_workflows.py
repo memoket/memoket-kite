@@ -11,7 +11,11 @@ import sqlite3
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from queue import Queue
+from threading import Event, Thread
 
 import pytest
 
@@ -307,6 +311,8 @@ def test_concurrent_retry_and_crash_rollback(work):
             """
 import os, sys
 from pathlib import Path
+from queue import Queue
+from threading import Event, Thread
 from memoket_kite.tools.operations import Context
 from memoket_kite.tools.workflow import advance
 from memoket_kite.tools.workspace import Workspace
@@ -954,3 +960,187 @@ def test_scoped_codebook_rejects_missing_or_ambiguous_selectors(work):
     _delete_source(call, "erase-note", {"source": "text", "conversation_id": "note"})
     assert call("sources", "--source", "text")["sources"] == []
     call("codebook", "--source", "text", "--conversation-id", "note", error="not_found")
+
+
+@pytest.fixture
+def blocked_provider(monkeypatch):
+    release = Event()
+    requests = Queue()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.put(payload)
+            if not release.wait(timeout=20):
+                self.send_error(503)
+                return
+            candidate = {
+                "facts": [
+                    {
+                        "content": "Candidate from the approved transcript",
+                        "kind": "event",
+                        "topics": ["general"],
+                        "src": ["S1"],
+                    },
+                ]
+            }
+            data = json.dumps(
+                {"choices": [{"message": {"content": json.dumps(candidate)}}]}
+            ).encode()
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    monkeypatch.setenv("OPENAI_BASE_URL", f"http://127.0.0.1:{server.server_port}/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-placeholder")
+    monkeypatch.setenv("no_proxy", "127.0.0.1")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield release, requests
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _begin_provider(call, repo=ROOT):
+    payload = {"source": fixture("first-meeting")["source"], "model": {"name": "test-model"}}
+    call("start", "memory-provider-ingestion", "--run-id", "provider", payload=payload, repo=repo)
+    call("stage", "provider", "normalize", repo=repo)
+
+
+def _cli_process(directory, *args, repo=ROOT):
+    return [
+        sys.executable,
+        "-m",
+        "memoket_kite.tools.cli",
+        "--repo",
+        str(repo),
+        "--workspace",
+        str(directory),
+        *args,
+    ]
+
+
+@contextmanager
+def _provider_process(directory, repo=ROOT):
+    command = _cli_process(directory, "stage", "provider", "extract", "--allow-provider", repo=repo)
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        yield process, command
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.communicate(timeout=10)
+
+
+def test_provider_request_releases_workspace_and_keeps_other_labels_local(work, blocked_provider):
+    directory, call = work
+    release, requests = blocked_provider
+    secret = text_input("unrelated", "privatequasar transcript", topic="privatequasar")
+    secret["annotations"]["facts"][0]["entities"] = ["privatequasar"]
+    ingest(call, "unrelated", secret)
+    _begin_provider(call)
+
+    with _provider_process(directory) as (process, command):
+        request = requests.get(timeout=10)
+        prompt = request["messages"][0]["content"]
+        assert "We proposed a guided tour." in prompt
+        assert "privatequasar" not in prompt
+
+        status = subprocess.run(
+            _cli_process(directory, "status", "provider"),
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        )
+        assert json.loads(status.stdout)["stages"]["extract"]["state"] == "pending"
+        duplicate = subprocess.run(command, capture_output=True, text=True, timeout=5)
+        assert duplicate.returncode == 2
+        assert json.loads(duplicate.stdout)["error"]["code"] == "provider_busy"
+        assert requests.empty()
+        release.set()
+        output, errors = process.communicate(timeout=10)
+        assert process.returncode == 0, errors or output
+        candidate = json.loads(output)
+        assert candidate["checkpoint"]["stages"]["extract"]["attempts"] == 1
+        assert candidate["value"]["facts"][0]["segment_ids"] == ["text-1"]
+    assert call("stage", "provider", "extract")["manifest"] == candidate["manifest"]
+
+
+@pytest.mark.parametrize("mutation", ["commit", "delete"])
+def test_provider_response_cannot_restore_a_stale_or_deleted_run(work, blocked_provider, mutation):
+    directory, call = work
+    release, requests = blocked_provider
+    _begin_provider(call)
+    with _provider_process(directory) as (process, _):
+        requests.get(timeout=10)
+        if mutation == "commit":
+            ingest(call, "new-source", text_input("new-source", "New memory"))
+        else:
+            _delete_source(call, "erase", {"source": "text", "conversation_id": "design-1"})
+        release.set()
+        output, errors = process.communicate(timeout=10)
+        assert process.returncode == 2, errors or output
+        outcome = json.loads(output)
+        assert outcome["error"]["code"] == (
+            "stale_snapshot" if mutation == "commit" else "invalidated_run"
+        )
+        assert "value" not in outcome and "manifest" not in outcome
+    status = call("status", "provider")
+    assert status["stages"]["extract"]["attempts"] == 0
+    assert not status["snapshot_current"]
+    db = (directory / "kite.sqlite3").read_bytes()
+    assert b"Candidate from the approved transcript" not in db
+    if mutation == "delete":
+        assert status["state"] == "invalidated"
+        assert b"We proposed a guided tour." not in db
+
+
+def test_killed_provider_process_does_not_strand_the_stage(work, blocked_provider):
+    directory, call = work
+    release, requests = blocked_provider
+    _begin_provider(call)
+    with _provider_process(directory) as (process, _):
+        requests.get(timeout=10)
+        process.kill()
+        process.communicate(timeout=10)
+    assert call("status", "provider")["stages"]["extract"]["state"] == "pending"
+
+    with _provider_process(directory) as (retry, _):
+        requests.get(timeout=10)
+        release.set()
+        output, errors = retry.communicate(timeout=10)
+        assert retry.returncode == 0, errors or output
+        assert json.loads(output)["checkpoint"]["stages"]["extract"]["state"] == "completed"
+
+
+def test_provider_result_is_discarded_if_the_definition_changes(work, tmp_path, blocked_provider):
+    directory, call = work
+    release, requests = blocked_provider
+    repo = tmp_path / "definitions"
+    for folder in ("schemas", "skills", "pipeline_defs"):
+        shutil.copytree(ROOT / folder, repo / folder)
+    _begin_provider(call, repo)
+
+    with _provider_process(directory, repo) as (process, _):
+        requests.get(timeout=10)
+        path = repo / "skills" / "memory" / "fact-extraction" / "SKILL.md"
+        path.write_text(path.read_text() + "\nUpdated instructions.\n")
+        release.set()
+        output, errors = process.communicate(timeout=10)
+        assert process.returncode == 2, errors or output
+        assert json.loads(output)["error"]["code"] == "stale_definition"
+    assert call("status", "provider", repo=repo)["stages"]["extract"]["attempts"] == 0

@@ -192,6 +192,46 @@ def _save(context: Context, checkpoint: dict, supplied: dict, fingerprint: str) 
     )
 
 
+def _stage_args(context: Context, checkpoint: dict, stage: dict, pending_inputs: dict) -> dict:
+    args = {}
+    for argument, ref in stage["inputs"].items():
+        scope, key = ref.split(".")
+        if scope == "input":
+            if key not in pending_inputs:
+                raise ToolError("missing_input", f"stage requires input {key}")
+            args[argument] = pending_inputs[key]
+        else:
+            args[argument] = _artifact(context, checkpoint, key)["value"]
+    return args
+
+
+def _provider_result(context, row, checkpoint, stage, tool, pending_inputs):
+    run_id = checkpoint["run_id"]
+    with context.workspace.provider_slot(run_id, stage["id"]):
+        try:
+            args = _stage_args(context, checkpoint, stage, pending_inputs)
+        except ToolError as error:
+            return None, error
+        with context.workspace.unlocked_for_provider():
+            try:
+                value, error = tool.function(allow_provider=context.allow_provider, **args), None
+            except ToolError as failure:
+                value, error = None, failure
+
+        # Check the current database and definition before attaching either a
+        # result or a failure to a checkpoint. Never restore a changed run.
+        current, current_checkpoint = _run(context.workspace, run_id)
+        _check_snapshot(context, current, current_checkpoint)
+        _, fingerprint = load_pipeline(context.root, checkpoint["pipeline_id"])
+        if fingerprint != row["definition"]:
+            raise ToolError("stale_definition", "pipeline or skill changed; start a new run")
+        if current != row:
+            raise ToolError(
+                "conflict", "run changed during extraction; retry from its current checkpoint"
+            )
+        return value, error
+
+
 def advance(
     context: Context, run_id: str, stage_id: str, extra: dict
 ) -> tuple[dict, ToolError | None]:
@@ -230,22 +270,29 @@ def advance(
         raise ToolError("dependency_pending", "finish prerequisite stages first")
 
     pending_inputs = {**supplied, **extra}
+    if tool.effect == "provider":
+        candidate, provider_error = _provider_result(
+            context,
+            row,
+            checkpoint,
+            stage,
+            tool,
+            pending_inputs,
+        )
     db = context.workspace.db
     db.execute("SAVEPOINT stage_effect")
     state["attempts"] += 1
     state["retry_count"] = state["attempts"] - 1
     checkpoint["current_stage"] = stage_id
     try:
-        args = {}
-        for argument, ref in stage["inputs"].items():
-            scope, key = ref.split(".")
-            if scope == "input":
-                if key not in pending_inputs:
-                    raise ToolError("missing_input", f"stage requires input {key}")
-                args[argument] = pending_inputs[key]
-            else:
-                args[argument] = _artifact(context, checkpoint, key)["value"]
-        value = tool.function(context, **args)
+        if tool.effect == "provider":
+            if provider_error is not None:
+                raise provider_error
+            value = candidate
+        else:
+            value = tool.function(
+                context, **_stage_args(context, checkpoint, stage, pending_inputs)
+            )
         validate(SCHEMAS[tool.output], value, "tool output")
         if tool.effect == "delete" and value["changed"]:
             pending_inputs = {}

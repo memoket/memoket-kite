@@ -93,9 +93,16 @@ that supports SQLite locking.
 The normal ingestion workflow expects host-prepared annotations. The optional
 provider stage uses KITE's existing extractor and reads its credentials from
 the environment. Apply `--allow-provider` only when the user has authorized the
-selected endpoint to receive the conversation. Review the returned candidates
-before running subsequent stages. To edit candidates, supply revised annotations
+selected endpoint to receive the conversation. Provider extraction sends the
+selected transcript and its supplied context, using a fresh taxonomy. Workspace
+topics and entity labels stay local. Review the returned candidates before
+running subsequent stages. To edit candidates, supply revised annotations
 through the regular ingestion pipeline.
+
+Other workspace commands can run during extraction. A concurrent attempt at the
+same stage returns `provider_busy`. When a response arrives, KITE checks the
+workspace version and run again before saving it. An interrupted stage can be
+retried. Handle copies already sent to the endpoint under its retention policy.
 
 ## Lifecycle
 

@@ -48,8 +48,9 @@ CREATE TABLE IF NOT EXISTS deletion_audit (
 
 
 class Workspace:
-    def __init__(self, db: sqlite3.Connection):
+    def __init__(self, db: sqlite3.Connection, directory: Path):
         self.db = db
+        self.directory = directory
 
     @classmethod
     @contextmanager
@@ -81,10 +82,51 @@ class Workspace:
                     "INSERT INTO memory VALUES(1, ?, 0, '{}', ?)",
                     (uuid4().hex, build_index([], {}).xml),
                 )
-            yield cls(db)
+            yield cls(db, directory)
             db.commit()
         finally:
             db.close()
+
+    @contextmanager
+    def provider_slot(self, run_id: str, stage_id: str):
+        """Reserve one external attempt without locking the memory database."""
+        directory = self.directory / ".provider-locks"
+        if directory.is_symlink():
+            raise ToolError(
+                "permission_denied", "provider lock directory cannot be a symbolic link"
+            )
+        directory.mkdir(mode=0o700, exist_ok=True)
+        path = directory / digest([run_id, stage_id])
+        if path.is_symlink():
+            raise ToolError("permission_denied", "provider lock cannot be a symbolic link")
+        # This separate SQLite file stores no request data. Its lock also
+        # releases if the process is interrupted or killed.
+        lock = sqlite3.connect(path, timeout=0)
+        try:
+            try:
+                lock.execute("BEGIN EXCLUSIVE")
+            except sqlite3.OperationalError as exc:
+                if (
+                    getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_BUSY
+                    or str(exc) == "database is locked"
+                ):
+                    raise ToolError(
+                        "provider_busy",
+                        "an extraction request is already in progress for this stage",
+                    ) from exc
+                raise
+            yield
+        finally:
+            lock.close()
+
+    @contextmanager
+    def unlocked_for_provider(self):
+        """End the read phase before a provider call and start a fresh write phase."""
+        self.db.commit()
+        try:
+            yield
+        finally:
+            self.db.execute("BEGIN IMMEDIATE")
 
     def _memory(self):
         return self.db.execute("SELECT * FROM memory WHERE singleton=1").fetchone()
