@@ -34,6 +34,13 @@ from .workflow import (
 from .workspace import Workspace
 
 
+class _ArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        # argparse's diagnostic can quote raw arguments, including paths and tokens.
+        usage = self.format_usage().strip()
+        raise ToolError("invalid_arguments", f"invalid command arguments\n{usage}")
+
+
 def _object(path: str | None) -> dict:
     if path is None:
         return {}
@@ -46,7 +53,7 @@ def _object(path: str | None) -> dict:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="kite-tool", description=__doc__)
+    parser = _ArgumentParser(prog="kite-tool", description=__doc__)
     resources = parser.add_mutually_exclusive_group()
     resources.add_argument(
         "--repo", type=Path, help="override packaged resources with a trusted KITE checkout"
@@ -417,24 +424,13 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
 
 
 def main(argv=None) -> int:
-    args = _parser().parse_args(argv)
     try:
-        import jsonschema  # noqa: F401
-        import yaml  # noqa: F401
-    except ImportError:
-        print(
-            encode(
-                {
-                    "ok": False,
-                    "error": {
-                        "code": "missing_dependency",
-                        "message": "install memoket-kite[agent]",
-                    },
-                }
-            )
-        )
-        return 2
-    try:
+        args = _parser().parse_args(argv)
+        try:
+            import jsonschema  # noqa: F401
+            import yaml  # noqa: F401
+        except ImportError as exc:
+            raise ToolError("missing_dependency", "install memoket-kite[agent]") from exc
         result, error = _dispatch(args)
     except ToolError as exc:
         result, error = {}, exc

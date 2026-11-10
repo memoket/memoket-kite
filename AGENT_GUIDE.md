@@ -84,6 +84,8 @@ exceeds the target. Other response fields use additional bytes.
    confirmed.
 4. Inspect the JSON response, including `value`, `manifest` and `checkpoint`.
    An exit code of 2 means the command failed and the JSON error provides a code.
+   `invalid_arguments` includes CLI usage without echoing supplied arguments.
+   Use `kite-tool COMMAND --help` for the full command help.
    Schema errors identify the field path and failed rule, or name missing
    required fields. Paths show array positions and mask keys in open maps.
    Retry a recoverable failed stage with the same ID. Stop downstream work until

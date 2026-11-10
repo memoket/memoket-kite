@@ -106,6 +106,41 @@ def trace(call, run_id, query, pipeline="topic-tracing"):
     return output["value"]
 
 
+@pytest.mark.parametrize(
+    ("args", "usage"),
+    [
+        ([], "kite-tool "),
+        (["private-command"], "kite-tool "),
+        (["query", "--pipeline", "private-pipeline"], "kite-tool query "),
+        (["query"], "kite-tool query "),
+        (["evidence", "private-line", "--context", "private-value"], "kite-tool evidence "),
+        (["ingest", "--input", "private-path", "--resume", "private-run"], "kite-tool ingest "),
+        (["pipelines", "--private-option"], "kite-tool "),
+    ],
+)
+def test_cli_reports_argument_errors_as_json_without_echoing_arguments(
+    args, usage, tmp_path, capsys
+):
+    directory = tmp_path / "workspace"
+    assert cli.main(["--workspace", str(directory), *args]) == 2
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    result = json.loads(captured.out)
+    assert result["ok"] is False and result["error"]["code"] == "invalid_arguments"
+    assert f"usage: {usage}" in result["error"]["message"]
+    assert "private" not in captured.out
+    assert not directory.exists()
+
+
+def test_cli_help_still_prints_usage(capsys):
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["query", "--help"])
+    assert exc.value.code == 0
+    captured = capsys.readouterr()
+    assert "usage: kite-tool query " in captured.out and "--input FILE" in captured.out
+    assert captured.err == ""
+
+
 def test_discovery_and_invalid_pipeline(work, tmp_path):
     _, call = work
     assert len(call("pipelines")["pipelines"]) == 12
