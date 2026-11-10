@@ -10,7 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .contracts import ToolError, digest, encode, now, utc_timestamp
-from .index import build_index, revision_id, source_key
+from .index import build_index, fact_entries, revision_id, source_key
 from .ingest import source_day
 
 _DDL = """
@@ -245,7 +245,7 @@ class Workspace:
                 "INSERT OR IGNORE INTO tombstones VALUES('conversation', ?)",
                 (digest([target["source"], target["conversation_id"]]),),
             )
-        deleted = set()
+        deleted = {}
         for row in rows:
             checks = (
                 ("key", row["source_key"]),
@@ -253,19 +253,37 @@ class Workspace:
             )
             self.db.executemany("INSERT OR IGNORE INTO tombstones VALUES(?, ?)", checks)
             self.db.execute("DELETE FROM revisions WHERE checksum=?", (row["checksum"],))
-            deleted.add("c-" + row["checksum"])
-        for record in self.records():
+            deleted.update(
+                (fact_id, fact.get("supersedes"))
+                for fact_id, fact in fact_entries(json.loads(row["payload"]))
+            )
+        retained = self.records()
+        for record in retained:
             changed = False
             for fact in record["facts"]:
-                target = fact.get("supersedes", "")
-                if target.split("F", 1)[0] in deleted:
+                target = fact.get("supersedes")
+                if target not in deleted:
+                    continue
+                seen = set()
+                while target in deleted:
+                    if target in seen:
+                        raise ToolError(
+                            "integrity_error", "deleted correction references form a cycle"
+                        )
+                    seen.add(target)
+                    target = deleted[target]
+                # Retain the transitive relationship between surviving facts.
+                # No deleted ID is needed once the chain has been shortened.
+                if target is None:
                     del fact["supersedes"]
-                    changed = True
+                else:
+                    fact["supersedes"] = target
+                changed = True
             if changed:
-                record.pop("active")
+                payload = {key: value for key, value in record.items() if key != "active"}
                 self.db.execute(
                     "UPDATE revisions SET payload=? WHERE checksum=?",
-                    (encode(record), record["checksum"]),
+                    (encode(payload), record["checksum"]),
                 )
         # A global report can depend on several sources, including a source not
         # named in its request. Invalidate all prior artifacts conservatively.
@@ -282,10 +300,13 @@ class Workspace:
                 "UPDATE runs SET inputs='{}', definition='', checkpoint=? WHERE id=?",
                 (encode(checkpoint), row["id"]),
             )
-        retained = self.records()
         topics = {
             topic for record in retained for fact in record["facts"] for topic in fact["topics"]
-        } | {topic["name"] for record in retained for topic in record["taxonomy"]}
+        }
+        for record in retained:
+            for topic in record["taxonomy"]:
+                topics.add(topic["name"])
+                topics.update(topic["parents"])
         merges = {old: new for old, new in self.merges().items() if {old, new} <= topics}
         receipt = self.replace_index(merges, force=True)
         self.db.execute(

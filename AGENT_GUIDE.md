@@ -113,8 +113,10 @@ for that preview. Only then pass its token via `--approve` to the `apply` stage.
 The CLI treats this flag as an attestation from the trusted local operator.
 The token binds the workspace, target and memory version. Deletion removes
 all target revisions and references, records tombstones, and conservatively
-purges prior run inputs and artifacts that could contain the target. The
-workspace retains a redacted receipt available via `kite-tool deletion-audit`.
+purges prior run inputs and artifacts that could contain the target. When
+deleted revisions sit between surviving corrections, KITE reconnects the
+surviving facts so the prior owner or decision stays superseded. The workspace
+retains a redacted receipt available via `kite-tool deletion-audit`.
 Exports, host-agent transcripts and external backups are separate copies and
 follow the operator's retention policy. Handle all artifact and Codebook
 output as private data.

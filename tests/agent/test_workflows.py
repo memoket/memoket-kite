@@ -756,3 +756,95 @@ def test_file_source_accepts_custom_conversations_and_rejects_invalid_inputs(wor
     )
     call("file-source", str(tmp_path), "--format", "memoket", error="invalid_input")
     assert not workspace.exists()
+
+
+def _delete_source(call, run_id, target):
+    call("start", "memory-deletion", "--run-id", run_id, payload={"target": target})
+    token = call("stage", run_id, "preview")["value"]["approval_token"]
+    return call("stage", run_id, "apply", "--approve", token)["value"]
+
+
+def test_delete_middle_corrections_preserves_surviving_owner_history(work):
+    directory, call = work
+    previous = None
+    for name, source, state in [
+        ("initial", "text", "Ada"),
+        ("middle-first", "archive", "private-cedar-interim"),
+        ("middle-second", "archive", "private-cedar-followup"),
+        ("current", "text", "Rae"),
+    ]:
+        payload = text_input(name, state)
+        if source == "archive":
+            payload["source"] = {
+                "format": "conversation",
+                "payload": {
+                    "conversation_id": name,
+                    "source": source,
+                    "metadata": {"source_reference": name},
+                    "segments": [{"segment_id": "text-1", "text": state}],
+                },
+            }
+        if previous is not None:
+            payload["annotations"]["facts"][0]["supersedes"] = previous
+        receipt = ingest(call, name, payload)
+        previous = receipt["revision_id"] + "F1"
+
+    query = {"topics": ["onboarding"], "state_key": "owner"}
+    before = trace(call, "before-redaction", query, "task-tracing")
+    assert before["current_reported_states"]["owner"]["value"] == "Rae"
+    assert _delete_source(call, "erase-interim", {"source": "archive"})["deleted_revisions"] == 2
+
+    after = trace(call, "after-redaction", query, "task-tracing")
+    by_state = {row["state"]: row for row in after["timeline"]}
+    assert set(by_state) == {"Ada", "Rae"}
+    assert by_state["Rae"]["supersedes"] == by_state["Ada"]["fact_id"]
+    assert by_state["Rae"]["effective"] and not by_state["Ada"]["effective"]
+    assert after["current_reported_states"]["owner"]["value"] == "Rae"
+    call("artifact", "before-redaction", "report", error="invalidated_run")
+    assert b"private-cedar" not in (directory / "kite.sqlite3").read_bytes()
+
+    _delete_source(call, "erase-ancestor", {"source": "text", "conversation_id": "initial"})
+    remaining = trace(call, "after-ancestor", query, "task-tracing")
+    assert len(remaining["timeline"]) == 1
+    assert remaining["timeline"][0]["supersedes"] is None
+    assert remaining["current_reported_states"]["owner"]["value"] == "Rae"
+
+
+def test_deleting_unrelated_source_preserves_a_merge_into_parent_only_topic(work):
+    _, call = work
+    ingest(call, "call-notes", text_input("call-notes", "Call notes", topic="calls"))
+    review = text_input("review", "Review notes", topic="review")
+    review["annotations"]["taxonomy"] = [{"name": "review", "parents": ["follow-up"]}]
+    ingest(call, "review", review)
+    ingest(call, "unrelated", text_input("unrelated", "Unrelated", topic="unrelated"))
+
+    call(
+        "start",
+        "memory-consolidation",
+        "--run-id",
+        "merge-follow-up",
+        payload={"merge": {"from_topic": "calls", "to_topic": "follow-up"}},
+    )
+    call("stage", "merge-follow-up", "commit")
+    call("stage", "merge-follow-up", "verify")
+    before = trace(call, "before-unrelated-deletion", {"topics": ["calls"]})
+    assert before["matched_count"] == 2
+    _delete_source(call, "erase-unrelated", {"source": "text", "conversation_id": "unrelated"})
+    after = trace(call, "after-unrelated-deletion", {"topics": ["calls"]})
+    assert after["resolved_topics"] == before["resolved_topics"]
+    assert after["timeline"] == before["timeline"]
+
+
+@pytest.mark.parametrize("target", ["missing", "self"])
+def test_integrity_rejects_dangling_or_cyclic_correction_links(work, target):
+    directory, call = work
+    receipt = ingest(call, "original", text_input("original", "Ada"))
+    with sqlite3.connect(directory / "kite.sqlite3") as db:
+        (stored,) = db.execute("SELECT payload FROM revisions").fetchone()
+        record = json.loads(stored)
+        record["facts"][0]["supersedes"] = (
+            receipt["revision_id"] + "F1" if target == "self" else "missing-fact"
+        )
+        db.execute("UPDATE revisions SET payload=?", (json.dumps(record),))
+    call("integrity", error="integrity_error")
+    call("codebook", error="integrity_error")

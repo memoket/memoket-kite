@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import io
 import xml.etree.ElementTree as ET
+from collections.abc import Iterator
 from dataclasses import dataclass
+from graphlib import CycleError, TopologicalSorter
 
 from memoket_kite.core.algebra import Store
 from memoket_kite.core.vocab import Vocab, norm_code
@@ -93,6 +95,12 @@ def revision_id(normalized: dict) -> str:
     return "c-" + normalized["checksum"]
 
 
+def fact_entries(record: dict) -> Iterator[tuple[str, dict]]:
+    uid = revision_id(record)
+    for position, fact in enumerate(record["facts"], 1):
+        yield f"{uid}F{position}", fact
+
+
 def source_key(conversation: dict) -> str:
     return digest([conversation["source"], conversation["metadata"]["source_reference"]])
 
@@ -154,6 +162,31 @@ def _vocabulary(records: list[dict], merges: dict[str, str]) -> Vocab:
     return vocab
 
 
+def _validate_correction_links(facts: dict) -> None:
+    links = {}
+    replaced = set()
+    for fact_id, fact in facts.items():
+        if "supersedes" not in fact:
+            continue
+        target = fact["supersedes"]
+        predecessor = facts.get(target)
+        if (
+            predecessor is None
+            or target in replaced
+            or fact.get("status") != "confirmed"
+            or predecessor.get("status") != "confirmed"
+            or not fact.get("state_key")
+            or fact["state_key"] != predecessor.get("state_key")
+        ):
+            raise ToolError("integrity_error", "invalid correction reference in the index")
+        links[fact_id] = (target,)
+        replaced.add(target)
+    try:
+        TopologicalSorter(links).prepare()
+    except CycleError as exc:
+        raise ToolError("integrity_error", "correction references form a cycle") from exc
+
+
 def build_index(records: list[dict], merges: dict[str, str]) -> Index:
     try:
         vocab = _vocabulary(records, merges)
@@ -177,8 +210,8 @@ def build_index(records: list[dict], merges: dict[str, str]) -> Index:
                     speakers.add(speaker.lower())
                 utterances.append((line_id, speaker, segment.get("start_ms", ""), segment["text"]))
             encoded = []
-            for position, fact in enumerate(record["facts"], 1):
-                facts[f"{uid}F{position}"] = fact
+            for fact_id, fact in fact_entries(record):
+                facts[fact_id] = fact
                 encoded.append(
                     {
                         "content": fact["content"],
@@ -210,6 +243,7 @@ def build_index(records: list[dict], merges: dict[str, str]) -> Index:
             )
             if date is None:
                 session.set("date_unknown", "true")
+        _validate_correction_links(facts)
         root.set("speakers", " ".join(sorted(speakers)))
         # An explicit CR entity survives the XML parser’s newline normalization.
         xml = ET.tostring(root, encoding="utf-8", xml_declaration=True).replace(b"\r", b"&#13;")
