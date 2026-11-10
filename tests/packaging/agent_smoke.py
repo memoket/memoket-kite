@@ -92,7 +92,7 @@ def main() -> None:
         for stage in ("resolve", "retrieve"):
             call("stage", trace, stage, "--summary", workspace=recovered)
         report = call("stage", trace, "report", workspace=recovered)["value"]
-        assert report["matched_count"] == 1
+        assert report["matched_count"] == 1 and report["next_cursor"] is None
         evidence = report["timeline"][0]["evidence"][0]
         assert (evidence["conversation_id"], evidence["segment_id"], evidence["text"]) == (
             "note",

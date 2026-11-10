@@ -10,7 +10,7 @@ from .contracts import COUNT, DATE, HASH, TEXT, ToolError, array, object_schema
 from .extract import MODEL, propose
 from .index import ANNOTATIONS, RECLASSIFY, TOPIC_MOVE, annotate, move_topic, reclassify
 from .ingest import SOURCE, normalize
-from .retrieve import QUERY, report, resolve, retrieve
+from .retrieve import CURSOR, QUERY, report, resolve, retrieve
 from .workspace import Workspace
 
 SOURCE_SCOPE = object_schema(
@@ -64,6 +64,7 @@ SCHEMAS = {
         {
             "fact_ids": array(TEXT),
             "matched": COUNT,
+            "next_cursor": {"anyOf": [CURSOR, {"type": "null"}]},
             "time_axis": {"enum": ["source", "event"]},
             "omitted_unknown_time": COUNT,
             "omitted_inferred_time": COUNT,
@@ -85,6 +86,7 @@ SCHEMAS = {
             "open_questions": array(TEXT),
             "current_reported_states": JSON_OBJECT,
             "matched_count": COUNT,
+            "next_cursor": {"anyOf": [CURSOR, {"type": "null"}]},
             "truncated": BOOL,
             "omitted_unknown_time": COUNT,
             "omitted_inferred_time": COUNT,
@@ -203,9 +205,9 @@ TOOLS = {
     "validate": Tool(_validate, {}, "integrity"),
     "rebuild": Tool(_rebuild, {}, "receipt", "write"),
     "validate_commit": Tool(_validate, {"receipt": "receipt"}, "integrity"),
-    "resolve": Tool(resolve, {"query": "query"}, "resolved", version=2),
-    "retrieve": Tool(retrieve, {"resolved": "resolved"}, "matches", version=5),
-    "report": Tool(report, {"matches": "matches"}, "report", version=5),
+    "resolve": Tool(resolve, {"query": "query"}, "resolved", version=3),
+    "retrieve": Tool(retrieve, {"resolved": "resolved"}, "matches", version=6),
+    "report": Tool(report, {"matches": "matches"}, "report", version=6),
     "reclassify": Tool(reclassify, {"merge": "reclassify"}, "receipt", "write", version=2),
     "move_topic": Tool(move_topic, {"move": "topic_move"}, "receipt", "write"),
     "preview_delete": Tool(_preview, {"target": "deletion_target"}, "deletion_plan", version=2),

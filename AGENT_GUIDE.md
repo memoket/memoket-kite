@@ -111,6 +111,14 @@ date marks its affected state partial, even if the correction falls outside
 the topic filter. The report uses the current workspace's source revisions.
 Unbounded queries apply the latest known supersession links.
 
+For long histories, set `query.limit` to control the number of facts in a
+report. Start another run with the same pipeline and query and put the prior
+report's `next_cursor` in `query.cursor`. Continue until `next_cursor` is null.
+Each page orders its dated entries chronologically. Pages begin with the most
+recent dated window, then work backward and finish with any uncertain dates.
+A partial page leaves reported states tentative. If memory changes, restart
+from the first page.
+
 ## Source and access
 
 Select a workspace via `--workspace DIR` or `KITE_DATA_DIR`. The default is

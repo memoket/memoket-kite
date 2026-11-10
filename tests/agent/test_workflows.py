@@ -1247,6 +1247,66 @@ def test_event_filter_intersects_project_speaker_and_dates(work):
     assert not alternative["unresolved_events"]
 
 
+def test_trace_cursor_reads_all_windows_without_repeating_evidence(work):
+    _, call = work
+    for name, event in (
+        ("oldest", {"event_date": "2026-03-01"}),
+        ("early", {"event_date": "2026-03-02"}),
+        ("middle", {"event_date": "2026-03-02"}),
+        ("late", {"event_date": "2026-03-04"}),
+        ("latest", {"event_date": "2026-03-05"}),
+        ("inferred", {"event_date": "2026-03-06", "event_date_basis": "inferred"}),
+        ("unknown", {}),
+    ):
+        payload = text_input(name, name, date="2026-04-01")
+        payload["annotations"]["facts"][0].update(event)
+        ingest(call, f"import-{name}", payload)
+    query = {"topics": ["onboarding"], "time_axis": "event", "limit": 2}
+    cursor = None
+    pages = []
+    while True:
+        scoped = {**query, "cursor": cursor} if cursor else query
+        report = trace(call, f"page-{len(pages)}", scoped)
+        assert report["matched_count"] == 7 and report["truncated"]
+        assert report["current_reported_states"]["owner"]["status"] == "partial"
+        pages.append([row["state"] for row in report["timeline"]])
+        cursor = report["next_cursor"]
+        if cursor is None:
+            break
+        assert len(pages) < 4
+    assert pages[0] == ["late", "latest"]
+    assert set(pages[1]) == {"early", "middle"}
+    assert pages[2:] == [["oldest", "inferred"], ["unknown"]]
+    assert len({state for page in pages for state in page}) == 7
+
+
+def test_trace_cursor_rejects_changes_to_filters_and_snapshot(work, tmp_path):
+    _, call = work
+    for identity in ("a", "b"):
+        ingest(call, f"import-{identity}", text_input(identity, identity))
+    query = {"topics": ["onboarding"], "limit": 1}
+    cursor = trace(call, "first", query)["next_cursor"]
+    assert cursor
+
+    def reject(name, selection, error, *, destination=None):
+        call(
+            "start",
+            "topic-tracing",
+            "--run-id",
+            name,
+            payload={"query": selection},
+            workspace_dir=destination,
+        )
+        call("stage", name, "resolve", error=error, workspace_dir=destination)
+
+    reject("changed-filter", {**query, "cursor": cursor, "limit": 2}, "invalid_input")
+    copy = tmp_path / "copy"
+    call("backup", str(copy))
+    reject("other-workspace", {**query, "cursor": cursor}, "invalid_input", destination=copy)
+    ingest(call, "third", text_input("c", "c"))
+    reject("changed-memory", {**query, "cursor": cursor}, "stale_snapshot")
+
+
 def test_event_state_uses_event_dates_and_preserves_unordered_evidence(work):
     _, call = work
     for name, day, event in (

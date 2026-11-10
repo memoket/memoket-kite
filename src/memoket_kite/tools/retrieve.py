@@ -6,9 +6,11 @@ from collections import defaultdict
 
 from memoket_kite.core.vocab import norm_code
 
-from .contracts import DATE, TEXT, ToolError, array, object_schema, utc_timestamp
+from .contracts import DATE, TEXT, ToolError, array, digest, object_schema, utc_timestamp
 from .index import event_date_basis
 from .ingest import source_day
+
+CURSOR = {"type": "string", "pattern": r"^[0-9]{1,16}\.[1-9][0-9]{0,15}\.[a-f0-9]{64}$"}
 
 QUERY = object_schema(
     {},
@@ -25,8 +27,37 @@ QUERY = object_schema(
         "source": TEXT,
         "state_key": TEXT,
         "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "cursor": CURSOR,
     },
 )
+
+
+def _cursor(scope: list, offset: int) -> str:
+    version = scope[1]
+    return f"{version}.{offset}.{digest([scope, offset])}"
+
+
+def _page_scope(context, query: dict) -> list:
+    workspace_id, version = context.workspace.snapshot_identity()
+    return [
+        workspace_id,
+        version,
+        context.pipeline,
+        {k: v for k, v in query.items() if k != "cursor"},
+    ]
+
+
+def _page_offset(scope: list, query: dict) -> int:
+    token = query.get("cursor")
+    if token is None:
+        return 0
+    version, offset, _ = token.split(".")
+    if int(version) != scope[1]:
+        raise ToolError("stale_snapshot", "memory changed; restart the trace without its cursor")
+    offset = int(offset)
+    if token != _cursor(scope, offset):
+        raise ToolError("invalid_input", "cursor belongs to another workspace or query")
+    return offset
 
 
 def resolve(context, query: dict) -> dict:
@@ -41,6 +72,8 @@ def resolve(context, query: dict) -> dict:
             "invalid_input",
             "a task or decision trace requires a topic, entity, event, text or state key",
         )
+    if "cursor" in query:
+        _page_offset(_page_scope(context, query), query)
     index = context.workspace.index()
     codes, unknown = set(), []
     for topic in query.get("topics", []):
@@ -143,14 +176,21 @@ def retrieve(context, resolved: dict) -> dict:
         offsets = [index.segments[sid].get("start_ms", -1) for sid in fact.src]
         rows.append((time_order[basis], day, sortable, fact.unit, min(offsets), fid))
     rows.sort()
-    # Keep the latest matched window for traces while reporting the truncation.
+    # Return the most recent dated window first, in chronological order.
     limit = query.get("limit", 100)
+    scope = _page_scope(context, query)
+    offset = _page_offset(scope, query)
     known = [row for row in rows if not row[0]]
     uncertain = [row for row in rows if row[0]]
-    selected = (known[-limit:] + uncertain)[:limit]
+    end = max(0, len(known) - offset)
+    selected = known[max(0, end - limit) : end]
+    uncertain_start = max(0, offset - len(known))
+    selected += uncertain[uncertain_start : uncertain_start + limit - len(selected)]
+    next_offset = offset + len(selected)
     return {
         "fact_ids": [row[-1] for row in selected],
         "matched": len(rows),
+        "next_cursor": _cursor(scope, next_offset) if next_offset < len(rows) else None,
         "time_axis": time_axis,
         "omitted_unknown_time": omitted_unknown,
         "omitted_inferred_time": omitted_inferred,
@@ -329,6 +369,7 @@ def report(context, matches: dict) -> dict:
         **sections,
         "current_reported_states": _states(timeline, complete, matches["time_axis"]),
         "matched_count": matches["matched"],
+        "next_cursor": matches["next_cursor"],
         "truncated": matches["matched"] > len(timeline),
         "omitted_unknown_time": matches["omitted_unknown_time"],
         "omitted_inferred_time": matches["omitted_inferred_time"],
