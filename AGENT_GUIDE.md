@@ -153,9 +153,15 @@ marks the corrected fact as effective. Topic merges keep the old label as an
 alias. Annotate entity variants with `entity_aliases` when multiple names refer
 to the same entity.
 
-Deletion uses the source namespace and optionally a conversation ID. Run
+Deletion uses the source namespace. Set `conversation_id` for one conversation
+or `conversation_ids` for a set of up to 100 distinct IDs in that namespace.
+Omit both fields to select all existing conversations in the source. Run
 `preview`, show its selector and impact, and obtain explicit authorization
-for that preview. Only then pass its token via `--approve` to the `apply` stage.
+for that preview. The batch preview lists IDs that have no stored revision.
+Applying the approved batch also blocks reimport of those explicitly selected IDs.
+KITE checks the source identity before saving reimport inputs or artifacts.
+On upgrade, KITE also scrubs legacy run inputs and artifacts for identities
+already recorded as deleted. Only then pass its token via `--approve` to the `apply` stage.
 The CLI treats this flag as an attestation from the trusted local operator.
 The token binds the workspace, target and memory version. Deletion removes
 all target revisions and references, records tombstones, and conservatively

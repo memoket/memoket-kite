@@ -96,6 +96,16 @@ def minimize_source(source: dict) -> dict:
     return {**source, "format": "conversation", "payload": conversation}
 
 
+def source_identity(source: dict) -> tuple:
+    payload = source["payload"]
+    if not isinstance(payload, dict):
+        return None, None, None
+    name = payload.get("source") if source["format"] == "conversation" else source["format"]
+    metadata = payload.get("metadata")
+    reference = metadata.get("source_reference") if isinstance(metadata, dict) else None
+    return name, payload.get("conversation_id"), reference
+
+
 def normalize(context, source: dict) -> dict:
     return _normalize_source(context.root, source)
 

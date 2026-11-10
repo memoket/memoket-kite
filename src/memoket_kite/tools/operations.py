@@ -13,9 +13,17 @@ from .ingest import SOURCE, normalize
 from .retrieve import QUERY, report, resolve, retrieve
 from .workspace import Workspace
 
-TARGET = object_schema(
+SOURCE_SCOPE = object_schema(
     {"source": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"}}, {"conversation_id": TEXT}
 )
+TARGET = {
+    **SOURCE_SCOPE,
+    "properties": {
+        **SOURCE_SCOPE["properties"],
+        "conversation_ids": {**array(TEXT, 1, 100), "uniqueItems": True},
+    },
+    "not": {"required": ["conversation_id", "conversation_ids"]},
+}
 BOOL = {"type": "boolean"}
 JSON_OBJECT = {"type": "object"}
 RECEIPT = object_schema(
@@ -107,7 +115,8 @@ SCHEMAS = {
             "revisions": COUNT,
             "facts": COUNT,
             "run_artifacts_to_purge": COUNT,
-        }
+        },
+        {"conversation_ids_without_revisions": array(TEXT, maximum=100)},
     ),
     "reclassify": RECLASSIFY,
     "model": MODEL,
@@ -195,6 +204,6 @@ TOOLS = {
     "retrieve": Tool(retrieve, {"resolved": "resolved"}, "matches", version=5),
     "report": Tool(report, {"matches": "matches"}, "report", version=5),
     "reclassify": Tool(reclassify, {"merge": "reclassify"}, "receipt", "write"),
-    "preview_delete": Tool(_preview, {"target": "deletion_target"}, "deletion_plan"),
-    "delete": Tool(_delete, {"plan": "deletion_plan"}, "receipt", "delete"),
+    "preview_delete": Tool(_preview, {"target": "deletion_target"}, "deletion_plan", version=2),
+    "delete": Tool(_delete, {"plan": "deletion_plan"}, "receipt", "delete", version=2),
 }

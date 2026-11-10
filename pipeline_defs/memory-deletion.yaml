@@ -1,6 +1,6 @@
 id: memory-deletion
-version: 1
-description: Preview and delete a conversation or source with explicit approval.
+version: 2
+description: Preview and delete selected conversations or a source with explicit approval.
 inputs:
   target: deletion_target
 stages:

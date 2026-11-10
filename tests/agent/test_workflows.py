@@ -569,7 +569,14 @@ def test_same_source_amendment_keeps_citations_and_is_idempotent(work):
     assert receipt["deleted_revisions"] == 1
     assert call("integrity")["facts"] == 0
     assert quote.encode() not in (directory / "kite.sqlite3").read_bytes()
-    ingest(call, "deleted-amendment", amendment, pipeline="memory-update", error="deleted_source")
+    call(
+        "start",
+        "memory-update",
+        "--run-id",
+        "deleted-amendment",
+        payload=amendment,
+        error="deleted_source",
+    )
 
 
 def test_same_source_amendments_guard_competing_corrections(work):
@@ -645,7 +652,135 @@ def test_deletion_approval_purge_and_replay(work):
     assert b"private-celadon-body" not in (directory / "kite.sqlite3").read_bytes()
     assert call("deletion-audit")["deletions"][0]["fact_count"] == 1
     assert trace(call, "after", {"topics": ["onboarding"]})["matched_count"] == 3
-    ingest(call, "replayed", private, error="deleted_source")
+    call(
+        "start", "memory-ingestion", "--run-id", "replayed", payload=private, error="deleted_source"
+    )
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        {"source": "text", "conversation_ids": []},
+        {"source": "text", "conversation_ids": ["one", "one"]},
+        {"source": "text", "conversation_id": "one", "conversation_ids": ["two"]},
+        {"source": "text", "conversation_ids": [str(n) for n in range(101)]},
+    ],
+)
+def test_batch_deletion_rejects_invalid_selectors(work, target):
+    _, call = work
+    call("start", "memory-deletion", payload={"target": target}, error="invalid_input")
+
+
+def test_batch_deletion_targets_exact_ids_and_keeps_unrelated_records(work):
+    directory, call = work
+    first = text_input("remove-a", "private-marigold-a")
+    second = text_input("remove-b", "private-marigold-b")
+    staged = text_input("staged", "private-marigold-staged")
+    other = text_input("keep", "retained same source")
+    for name, payload in (("one", first), ("two", second), ("other", other)):
+        ingest(call, name, payload)
+    foreign = copy.deepcopy(first)
+    foreign["source"] = {
+        "format": "transcript",
+        "payload": {
+            "conversation_id": "remove-a",
+            "metadata": {"source_reference": "remove-a"},
+            "segments": [{"segment_id": "text-1", "text": "retained other source"}],
+        },
+    }
+    foreign["annotations"]["facts"][0].update(content="retained other source", state="foreign")
+    ingest(call, "foreign", foreign)
+    call("start", "memory-ingestion", "--run-id", "staged", payload=staged)
+    call("stage", "staged", "normalize")
+
+    selector = {"source": "text", "conversation_ids": ["staged", "remove-b", "remove-a"]}
+    call("start", "memory-deletion", "--run-id", "batch", payload={"target": selector})
+    plan = call("stage", "batch", "preview")["value"]
+    assert plan["target"]["conversation_ids"] == ["remove-a", "remove-b", "staged"]
+    assert plan["conversation_ids_without_revisions"] == ["staged"]
+    assert (plan["revisions"], plan["facts"]) == (2, 2)
+    call("stage", "batch", "apply", error="awaiting_approval")
+    call(
+        "start",
+        "memory-deletion",
+        "--run-id",
+        "single",
+        payload={
+            "target": {"source": "text", "conversation_id": "remove-a"},
+        },
+    )
+    single_token = call("stage", "single", "preview")["value"]["approval_token"]
+    call("stage", "batch", "apply", "--approve", single_token, error="permission_denied")
+
+    result = call("stage", "batch", "apply", "--approve", plan["approval_token"])
+    assert result["value"]["deleted_revisions"] == 2
+    assert call("stage", "batch", "apply") == result
+    call("artifact", "staged", "normalize", error="invalidated_run")
+    call("artifact", "batch", "preview", error="not_found")
+    for name, payload in (("one", first), ("two", second), ("staged", staged)):
+        call(
+            "start",
+            "memory-ingestion",
+            "--run-id",
+            f"replay-{name}",
+            payload=payload,
+            error="deleted_source",
+        )
+    alternate = copy.deepcopy(first)
+    alternate["source"]["payload"]["conversation_id"] = "renamed"
+    call(
+        "start",
+        "memory-ingestion",
+        "--run-id",
+        "renamed",
+        payload=alternate,
+        error="deleted_source",
+    )
+    call("start", "memory-ingestion", "--run-id", "late")
+    alternate["source"]["payload"]["conversation_id"] = "remove-a"
+    alternate["source"]["payload"]["metadata"]["source_reference"] = "other-reference"
+    call(
+        "stage",
+        "late",
+        "normalize",
+        payload={"source": alternate["source"]},
+        error="deleted_source",
+    )
+    assert call("status", "late")["stages"]["normalize"]["attempts"] == 0
+    expected = {("text", "keep"), ("transcript", "remove-a")}
+    sources = call("sources")["sources"]
+    assert {(row["source"], row["conversation_id"]) for row in sources} == expected
+    report = trace(call, "remaining", {"topics": ["onboarding"]})
+    assert {
+        (row["evidence"][0]["source"], row["evidence"][0]["conversation_id"])
+        for row in report["timeline"]
+    } == expected
+    assert b"private-marigold" not in (directory / "kite.sqlite3").read_bytes()
+    audit = call("deletion-audit")["deletions"]
+    assert len(audit) == 1 and (audit[0]["revision_count"], audit[0]["fact_count"]) == (2, 2)
+    assert "remove-a" not in json.dumps(audit)
+
+
+def test_upgrade_scrubs_legacy_reimport_artifacts_before_serving_them(work):
+    from memoket_kite.tools.contracts import digest
+
+    directory, call = work
+    for run_id, text in (("deleted", "legacy-private-ginger"), ("keep", "unrelated note")):
+        payload = text_input(run_id, text)
+        call("start", "memory-ingestion", "--run-id", run_id, payload=payload)
+        call("stage", run_id, "normalize")
+    path = directory / "kite.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "INSERT INTO tombstones VALUES('conversation', ?)", (digest(["text", "deleted"]),)
+        )
+        db.execute("PRAGMA user_version=0")
+    assert b"legacy-private-ginger" in path.read_bytes()
+    call("artifact", "deleted", "normalize", error="invalidated_run")
+    assert b"legacy-private-ginger" not in path.read_bytes()
+    assert (
+        call("artifact", "keep", "normalize")["value"]["conversation"]["conversation_id"] == "keep"
+    )
 
 
 def test_deletion_covers_staged_sources_and_different_snapshot(work):
@@ -663,7 +798,9 @@ def test_deletion_covers_staged_sources_and_different_snapshot(work):
     call("stage", "fresh", "apply", "--approve", old, error="permission_denied")
     call("stage", "fresh", "apply", "--approve", fresh["approval_token"])
     assert b"discard-staged-body" not in (directory / "kite.sqlite3").read_bytes()
-    ingest(call, "late-import", data, error="deleted_source")
+    call(
+        "start", "memory-ingestion", "--run-id", "late-import", payload=data, error="deleted_source"
+    )
 
 
 def test_concurrent_retry_and_crash_rollback(work):

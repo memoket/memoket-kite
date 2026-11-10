@@ -12,7 +12,7 @@ from .audio import audio_source
 from .contracts import ToolError, decode_object, encode, read_utf8, validate
 from .demo import run_demo
 from .ingest import file_source
-from .operations import SCHEMAS, TARGET, TOOLS, Context
+from .operations import SCHEMAS, SOURCE_SCOPE, TOOLS, Context
 from .resources import resource_root
 from .workflow import advance, artifact, load_pipeline, recent_runs, start, status
 from .workspace import Workspace
@@ -216,7 +216,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
         if conversation_id is not None:
             scope["conversation_id"] = conversation_id
         if scope:
-            validate(TARGET, scope, "source scope")
+            validate(SOURCE_SCOPE, scope, "source scope")
         with Workspace.open(args.workspace) as workspace:
             if args.command == "sources":
                 return {

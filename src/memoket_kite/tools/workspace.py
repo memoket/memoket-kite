@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from .contracts import ToolError, digest, encode, now, utc_timestamp
 from .index import build_index, fact_entries, load_index, revision_id, source_key
-from .ingest import source_day
+from .ingest import source_day, source_identity
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS memory (
@@ -74,6 +74,17 @@ def _snapshot_checksum(xml: bytes, merges: str, rows: list[sqlite3.Row]) -> str:
     return checksum.hexdigest()
 
 
+def _target_ids(target: dict) -> list[str]:
+    if "conversation_ids" in target:
+        ids = target["conversation_ids"]
+        if "conversation_id" in target or not isinstance(ids, list) or not ids:
+            raise ToolError("invalid_input", "select a non-empty list of conversation IDs")
+        return sorted(ids)
+    if "conversation_id" in target:
+        return [target["conversation_id"]]
+    return []
+
+
 class Workspace:
     def __init__(self, db: sqlite3.Connection, directory: Path):
         self.db = db
@@ -109,7 +120,13 @@ class Workspace:
                     "INSERT INTO memory VALUES(1, ?, 0, '{}', ?)",
                     (uuid4().hex, build_index([], {}).xml),
                 )
-            yield cls(db, directory)
+            workspace = cls(db, directory)
+            if db.execute("PRAGMA user_version").fetchone()[0] == 0:
+                workspace._scrub_deleted_runs()
+                db.execute("PRAGMA user_version=1")
+                db.commit()
+                db.execute("BEGIN IMMEDIATE")
+            yield workspace
             db.commit()
         finally:
             db.close()
@@ -319,16 +336,26 @@ class Workspace:
         self._seal_index(version + 1, checksum)
         return {"changed": True, "memory_version": version + 1}
 
+    def require_source_allowed(self, source, conversation_id, reference) -> None:
+        if not isinstance(source, str):
+            return
+        for scope, value in (("key", reference), ("conversation", conversation_id)):
+            if (
+                isinstance(value, str)
+                and self.db.execute(
+                    "SELECT 1 FROM tombstones WHERE scope=? AND key=?",
+                    (scope, digest([source, value])),
+                ).fetchone()
+            ):
+                raise ToolError("deleted_source", "this conversation was permanently deleted")
+
     def commit(self, record: dict, *, append_annotations: bool = False) -> dict:
         conversation = record["conversation"]
         key = source_key(conversation)
         uid = conversation["conversation_id"]
-        checks = (("key", key), ("conversation", digest([conversation["source"], uid])))
-        if any(
-            self.db.execute("SELECT 1 FROM tombstones WHERE scope=? AND key=?", item).fetchone()
-            for item in checks
-        ):
-            raise ToolError("deleted_source", "this conversation was permanently deleted")
+        self.require_source_allowed(
+            conversation["source"], uid, conversation["metadata"]["source_reference"]
+        )
         prior = self.db.execute(
             "SELECT * FROM revisions WHERE source_key=? AND active=1", (key,)
         ).fetchone()
@@ -419,30 +446,75 @@ class Workspace:
                 raise ToolError("conflict", "supersession evidence predates the target evidence")
             used.add(target)
 
+    def _redact_run(self, row: sqlite3.Row) -> None:
+        checkpoint = json.loads(row["checkpoint"])
+        checkpoint.update(
+            state="invalidated", current_stage=None, input_digest=digest({}), updated_at=now()
+        )
+        for state in checkpoint["stages"].values():
+            state.pop("artifact", None)
+            state.update(state="invalidated", error=None)
+        self.db.execute(
+            "UPDATE runs SET inputs='{}', definition='', checkpoint=? WHERE id=?",
+            (encode(checkpoint), row["id"]),
+        )
+
+    def _scrub_deleted_runs(self) -> None:
+        if not self.db.execute("SELECT 1 FROM tombstones LIMIT 1").fetchone():
+            return
+        rows = self.db.execute("SELECT id, inputs, checkpoint FROM runs WHERE inputs!='{}'")
+        affected = []
+        for row in rows:
+            try:
+                supplied = json.loads(row["inputs"])
+            except ValueError:
+                continue
+            if not isinstance(supplied, dict):
+                continue
+            try:
+                for value in supplied.values():
+                    if isinstance(value, dict) and {"format", "payload"} <= value.keys():
+                        self.require_source_allowed(*source_identity(value))
+            except ToolError as exc:
+                if exc.code != "deleted_source":
+                    raise
+                affected.append(row)
+        for row in affected:
+            self.db.execute("DELETE FROM artifacts WHERE run_id=?", (row["id"],))
+            self._redact_run(row)
+
     def deletion_plan(self, target: dict) -> dict:
-        field = "conversation_id" if "conversation_id" in target else "source"
-        # Identifiers in the selector are for the local preview only. Persist the
-        # operation digest and aggregate counts in the audit.
-        if field == "conversation_id":
-            rows = self.db.execute(
-                "SELECT * FROM revisions WHERE source=? AND conversation_id=?",
-                (target["source"], target[field]),
-            ).fetchall()
-        else:
-            rows = self.db.execute(
-                "SELECT * FROM revisions WHERE source=?", (target["source"],)
-            ).fetchall()
+        ids = _target_ids(target)
+        query = "SELECT * FROM revisions WHERE source=?"
+        if ids:
+            placeholders = ", ".join("?" for _ in ids)
+            query += f" AND conversation_id IN ({placeholders})"
+        rows = self.db.execute(query, (target["source"], *ids)).fetchall()
         fact_count = sum(len(json.loads(row["payload"])["facts"]) for row in rows)
-        operation = digest([self._memory()["workspace_id"], self.version(), target])
+        extras = {}
+        if "conversation_ids" in target:
+            target = {**target, "conversation_ids": ids}
+            stored = {row["conversation_id"] for row in rows}
+            extras["conversation_ids_without_revisions"] = [
+                item for item in ids if item not in stored
+            ]
+        # The selector stays local to the preview. The audit retains its
+        # operation digest and aggregate counts.
+        memory = self.db.execute(
+            "SELECT workspace_id, version FROM memory WHERE singleton=1"
+        ).fetchone()
+        version = memory["version"]
+        operation = digest([memory["workspace_id"], version, target])
         return {
             "target": target,
             "approval_token": operation,
-            "memory_version": self.version(),
+            "memory_version": version,
             "revisions": len(rows),
             "facts": fact_count,
             "run_artifacts_to_purge": self.db.execute("SELECT count(*) FROM artifacts").fetchone()[
                 0
             ],
+            **extras,
         }, rows
 
     def delete(self, plan: dict, approval: str | None) -> dict:
@@ -454,11 +526,10 @@ class Workspace:
         if current["approval_token"] != approval:
             raise ToolError("stale_snapshot", "memory changed; preview the deletion again")
         target = plan["target"]
-        if "conversation_id" in target:
-            self.db.execute(
-                "INSERT OR IGNORE INTO tombstones VALUES('conversation', ?)",
-                (digest([target["source"], target["conversation_id"]]),),
-            )
+        self.db.executemany(
+            "INSERT OR IGNORE INTO tombstones VALUES('conversation', ?)",
+            ((digest([target["source"], item]),) for item in _target_ids(target)),
+        )
         deleted = {}
         for row in rows:
             checks = (
@@ -503,17 +574,7 @@ class Workspace:
         # named in its request. Invalidate all prior artifacts conservatively.
         self.db.execute("DELETE FROM artifacts")
         for row in self.db.execute("SELECT id, checkpoint FROM runs").fetchall():
-            checkpoint = json.loads(row["checkpoint"])
-            checkpoint.update(
-                state="invalidated", current_stage=None, input_digest=digest({}), updated_at=now()
-            )
-            for state in checkpoint["stages"].values():
-                state.pop("artifact", None)
-                state.update(state="invalidated", error=None)
-            self.db.execute(
-                "UPDATE runs SET inputs='{}', definition='', checkpoint=? WHERE id=?",
-                (encode(checkpoint), row["id"]),
-            )
+            self._redact_run(row)
         receipt = self.replace_index(self._supported_merges(retained), force=True)
         self.db.execute(
             "INSERT INTO deletion_audit VALUES(?, ?, ?, ?, ?)",

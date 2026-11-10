@@ -9,7 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .contracts import ID, ToolError, decode_object, digest, encode, now, schema_file, validate
-from .ingest import minimize_source
+from .ingest import minimize_source, source_identity
 from .operations import EXTERNAL, SCHEMAS, TOOLS, Context
 
 SNAPSHOT_KINDS = {"resolved", "matches", "report", "deletion_plan", "integrity"}
@@ -109,14 +109,17 @@ def load_pipeline(
     return definition, digest(parts), workflow_root
 
 
-def _inputs(definition: dict, supplied: dict) -> dict:
+def _inputs(context: Context, definition: dict, supplied: dict) -> dict:
     if not isinstance(supplied, dict) or not supplied.keys() <= definition["inputs"].keys():
         raise ToolError("invalid_input", "use the pipeline's declared input names")
     safe = {}
     for key, value in supplied.items():
         kind = definition["inputs"][key]
         validate(SCHEMAS[kind], value, f"input {key}")
-        safe[key] = minimize_source(value) if kind == "source" else value
+        if kind == "source":
+            value = minimize_source(value)
+            context.workspace.require_source_allowed(*source_identity(value))
+        safe[key] = value
     return safe
 
 
@@ -124,7 +127,7 @@ def start(context: Context, supplied: dict, run_id: str | None = None) -> dict:
     definition, fingerprint, _ = load_pipeline(
         context.root, context.pipeline, extension_root=context.extension_root
     )
-    supplied = _inputs(definition, supplied)
+    supplied = _inputs(context, definition, supplied)
     run_id = run_id if run_id is not None else uuid4().hex
     validate(ID, run_id, "run ID")
     if context.workspace.db.execute("SELECT 1 FROM runs WHERE id=?", (run_id,)).fetchone():
@@ -354,7 +357,7 @@ def advance(
         raise ToolError("invalid_input", "--approve is only valid for a deletion stage")
     state = checkpoint["stages"][stage_id]
     supplied = _stored_inputs(row, checkpoint)
-    extra = _inputs(definition, extra)
+    extra = _inputs(context, definition, extra)
     if not extra.keys() <= _stage_input_names(stage) or any(
         key in supplied and supplied[key] != value for key, value in extra.items()
     ):
