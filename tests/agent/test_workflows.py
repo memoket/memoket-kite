@@ -1406,17 +1406,42 @@ def test_dates_input_and_artifact_integrity(work):
     directory, call = work
     bad = text_input("bad-date", "body")
     bad["source"]["payload"]["started_at"] = "2026-01-01T13:00:00"
-    call("start", "memory-ingestion", "--run-id", "bad", payload=bad)
-    call("stage", "bad", "normalize", error="invalid_input")
+    call("start", "memory-ingestion", "--run-id", "bad", payload=bad, error="invalid_input")
+    call("status", "bad", error="not_found")
     good = text_input("good", "body")
-    call("start", "memory-ingestion", "--run-id", "good", payload=good)
-    call("stage", "good", "normalize")
+    call("start", "memory-ingestion", "--run-id", "bad", payload=good)
+    call("stage", "bad", "normalize")
     with sqlite3.connect(directory / "kite.sqlite3") as db:
         db.execute("UPDATE artifacts SET value='{}'")
-    call("artifact", "good", "normalize", error="integrity_error")
+    call("artifact", "bad", "normalize", error="integrity_error")
     if os.name == "posix":
         directory.chmod(0o755)
         call("integrity", error="permission_denied")
+
+
+def test_late_source_validation_preserves_pending_checkpoint(work):
+    directory, call = work
+    marker = "synthetic-rejected-source-text"
+    raw = {
+        "id": 51,
+        "segments": [{"sentences": [{"line_id": "line-a", "text": marker, "time": 1}]}],
+    }
+    source = {"format": "memoket", "payload": raw}
+    call("start", "memory-ingestion", "--run-id", "pending")
+    before = call("status", "pending")
+    raw["date"] = "2026-02-30"
+    result = call(
+        "stage", "pending", "normalize", payload={"source": source}, error="invalid_input"
+    )
+    assert marker not in json.dumps(result)
+    assert call("status", "pending") == before
+    assert marker.encode() not in (directory / "kite.sqlite3").read_bytes()
+    raw["date"] = "2026-02-28"
+    accepted = call("stage", "pending", "normalize", payload={"source": source})
+    assert accepted["checkpoint"]["stages"]["normalize"]["attempts"] == 1
+    conversation = accepted["value"]["conversation"]
+    assert conversation["conversation_id"] == "51"
+    assert conversation["segments"][0]["text"] == marker
 
 
 def test_source_timestamps_preserve_offset_and_fraction(work):

@@ -19,7 +19,7 @@ from .contracts import (
     schema_file,
     validate,
 )
-from .ingest import minimize_source, source_identity
+from .ingest import prepare_source, source_identity
 from .operations import EXTERNAL, SCHEMAS, TOOLS, Context
 
 SNAPSHOT_KINDS = {"resolved", "matches", "report", "deletion_plan", "integrity"}
@@ -173,7 +173,7 @@ def _inputs(context: Context, definition: dict, supplied: dict) -> dict:
         kind = definition["inputs"][key]
         validate(SCHEMAS[kind], value, f"input {key}")
         if kind == "source":
-            value = minimize_source(value)
+            value, _ = prepare_source(context.root, value)
             context.workspace.require_source_allowed(*source_identity(value))
         safe[key] = value
     return safe

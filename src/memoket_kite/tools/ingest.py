@@ -86,7 +86,7 @@ def _memoket(payload: dict) -> dict:
     return result
 
 
-def minimize_source(source: dict) -> dict:
+def _minimize_source(source: dict) -> dict:
     if source["format"] != "memoket":
         return source
     if not isinstance(source["payload"], dict):
@@ -110,11 +110,17 @@ def source_identity(source: dict) -> tuple:
 
 
 def normalize(context, source: dict) -> dict:
-    return _normalize_source(context.root, source)
+    _, conversation = prepare_source(context.root, source)
+    return {
+        "conversation": conversation,
+        "checksum": digest(conversation),
+        "expected_checksum": source.get("expected_checksum"),
+    }
 
 
-def _normalize_source(root: Path, source: dict) -> dict:
-    source = minimize_source(source)
+def prepare_source(root: Path, source: dict) -> tuple[dict, dict]:
+    """Validate a source and return its checkpoint input and canonical conversation."""
+    source = _minimize_source(source)
     fmt, payload = source["format"], source["payload"]
     if not isinstance(payload, dict):
         raise ToolError("invalid_input", "source payload must be an object")
@@ -129,11 +135,7 @@ def _normalize_source(root: Path, source: dict) -> dict:
     else:
         conversation = {**payload, "source": fmt}
     validate_conversation(root, conversation)
-    return {
-        "conversation": conversation,
-        "checksum": digest(conversation),
-        "expected_checksum": source.get("expected_checksum"),
-    }
+    return source, conversation
 
 
 def file_source(
@@ -190,8 +192,8 @@ def file_source(
             payload["text"] = raw
     else:
         payload = decode_object(raw)
-    normalized = _normalize_source(root, {"format": source_format, "payload": payload})
-    source = {"format": "conversation", "payload": normalized["conversation"]}
+    _, conversation = prepare_source(root, {"format": source_format, "payload": payload})
+    source = {"format": "conversation", "payload": conversation}
     if expected_checksum is not None:
         source["expected_checksum"] = expected_checksum
     return {"source": source}

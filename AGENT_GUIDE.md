@@ -108,6 +108,11 @@ validates the source identity, revision and annotation references against the
 current memory. Source updates with an expected checksum still require a
 current snapshot. Deletion invalidates pending imports and clears their artifacts.
 
+KITE validates a source before storing it in a checkpoint. If a source
+supplied to `start` is invalid, correct the input and reuse the run ID.
+If you supply the source at `normalize`, a rejected input leaves the stage
+available for another attempt with the corrected source.
+
 For a long transcript, normalize with `--summary`, then read the source in
 pages using the same run and stage IDs.
 
