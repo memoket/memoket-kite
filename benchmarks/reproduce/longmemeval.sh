@@ -23,14 +23,16 @@ CHECK_ONLY=false
 CHECK_FLAGS=()
 if [[ "$MODE" == "resume" ]]; then
   RESUME=(--resume)
-elif [[ "$MODE" == "check" || "$MODE" == "check-offline" ]]; then
+elif [[ "$MODE" == "check" || "$MODE" == "check-offline" || "$MODE" == "check-provider" ]]; then
   CHECK_ONLY=true
   if [[ "$MODE" == "check-offline" ]]; then
     CHECK_FLAGS=(--offline)
+  elif [[ "$MODE" == "check-provider" ]]; then
+    CHECK_FLAGS=(--probe-provider)
   fi
   MODE=full
 elif [[ "$MODE" != "full" ]]; then
-  echo "usage: $0 [full|resume|check|check-offline]" >&2
+  echo "usage: $0 [full|resume|check|check-offline|check-provider]" >&2
   exit 2
 fi
 

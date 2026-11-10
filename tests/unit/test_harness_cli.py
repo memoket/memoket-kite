@@ -39,6 +39,13 @@ def test_reproduction_preflight_uses_the_prepared_artifact_root(
     }
     monkeypatch.setattr(preflight, "load_manifest", lambda: source_manifest)
     command = [name, "--tag", "unit", "--model", "local-test"]
+    probes = []
+
+    def probe(prompt, **kwargs):
+        probes.append((prompt, kwargs))
+        return "KITE_READY"
+
+    monkeypatch.setattr(preflight, "llm", probe)
 
     def fail(message, *flags):
         with pytest.raises(SystemExit) as error:
@@ -51,6 +58,10 @@ def test_reproduction_preflight_uses_the_prepared_artifact_root(
     fail("worker counts must be positive", "--offline", "--eval-workers", "0")
     fail("model cannot be empty", "--offline", "--model", " ")
     fail("missing or invalid pinned dataset", "--offline")
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-key")
+    fail("missing or invalid pinned dataset", "--probe-provider")
+    assert probes == []
+    monkeypatch.delenv("OPENAI_API_KEY")
     assert not root.exists()
 
     def download(url, destination, expected):
@@ -65,9 +76,26 @@ def test_reproduction_preflight_uses_the_prepared_artifact_root(
     assert "Offline check skipped model credentials." in capsys.readouterr().out
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-key")
     assert preflight.main(command) == 0
+    assert probes == []
+    assert preflight.main([*command, "--probe-provider"]) == 0
+    assert probes == [
+        (preflight.PROBE_PROMPT, {"model": "local-test", "timeout": 15, "retries": 0})
+    ]
+    success = capsys.readouterr().out
+    assert "Model provider accepted the synthetic probe." in success
+    assert "synthetic-test-key" not in success
+
+    def rejected(*args, **kwargs):
+        raise preflight.ProviderError("private provider diagnostic")
+
+    monkeypatch.setattr(preflight, "llm", rejected)
+    with pytest.raises(SystemExit) as failure:
+        preflight.main([*command, "--probe-provider"])
+    assert failure.value.code == 2
+    diagnostics = capsys.readouterr().err
+    assert "synthetic probe" in diagnostics and "private provider diagnostic" not in diagnostics
     assert not (root / "results").exists()
     assert not (root / "codebooks").exists()
-    assert "synthetic-test-key" not in capsys.readouterr().out
 
     codebooks = root / "codebooks" / name
     codebooks.mkdir(parents=True)

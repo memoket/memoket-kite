@@ -47,8 +47,9 @@ bash benchmarks/reproduce/longmemeval.sh
 The `check` commands validate a fresh run's pinned dataset, local model
 configuration, worker counts and output locations without sending model
 requests. Both full runs and resumes run these checks before building.
-Model credentials are checked for presence locally. The provider validates
-them on the first model request.
+To verify credentials and model access first, run `check-provider` in place
+of `check` for either script. It sends one synthetic chat completion with
+the selected model and exits before the build. It sends no dataset content.
 
 Current LoCoMo runs use the answer prompt without concrete answer examples and
 default to the `example-free-v1` result tag. A rerun can reuse existing

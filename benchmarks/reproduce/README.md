@@ -21,6 +21,8 @@ bash benchmarks/reproduce/longmemeval.sh
 ```
 
 The offline checks need the pinned datasets and do not contact a model provider.
+Use `bash .../locomo.sh check-provider` or `bash .../longmemeval.sh check-provider`
+to test a configured model with one synthetic request before starting a build.
 Use `bash .../locomo.sh resume` or `bash .../longmemeval.sh resume` after an
 interrupted run. Failures are never swallowed: the stage exits nonzero and
 records failed IDs beside its output.

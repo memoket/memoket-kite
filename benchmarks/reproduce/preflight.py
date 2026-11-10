@@ -1,4 +1,4 @@
-"""Check a benchmark run locally before issuing any model requests."""
+"""Check benchmark setup and optionally probe the model provider."""
 
 from __future__ import annotations
 
@@ -12,9 +12,10 @@ from benchmarks.longmemeval import profile as longmemeval_profile
 from benchmarks.reproduce.common import dataset_path, load_manifest, sha256
 from memoket_kite.errors import ConfigurationError, ProviderError
 from memoket_kite.pipeline.retrieve import RetrievalOptions
-from memoket_kite.providers.llm import ensure_configured
+from memoket_kite.providers.llm import ensure_configured, llm
 
 PROFILES = {"locomo": locomo_profile, "longmemeval": longmemeval_profile}
+PROBE_PROMPT = "This is a synthetic KITE connectivity check. Reply with KITE_READY."
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -25,7 +26,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--build-workers", type=int, default=1)
     parser.add_argument("--eval-workers", type=int, default=4)
     parser.add_argument("--mode", choices=("full", "resume"), default="full")
-    parser.add_argument("--offline", action="store_true", help="check without model credentials")
+    network = parser.add_mutually_exclusive_group()
+    network.add_argument("--offline", action="store_true", help="check without model credentials")
+    network.add_argument(
+        "--probe-provider", action="store_true", help="send one synthetic model request"
+    )
     args = parser.parse_args(argv)
     name = args.benchmark
     if args.build_workers < 1 or args.eval_workers < 1:
@@ -67,9 +72,19 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(
                 f"Codebooks already exist: {codebooks}. Use resume or a new artifact root."
             )
+    if args.probe_provider:
+        try:
+            llm(PROBE_PROMPT, model=args.model, timeout=15, retries=0)
+        except ProviderError:
+            parser.error(
+                "model provider rejected or did not answer the synthetic probe. "
+                "Check the configured endpoint, credentials and model access."
+            )
     print(f"Preflight passed for {name}: verified {path} and local configuration.")
     if args.offline:
         print("Offline check skipped model credentials.")
+    if args.probe_provider:
+        print("Model provider accepted the synthetic probe.")
     return 0
 
 
