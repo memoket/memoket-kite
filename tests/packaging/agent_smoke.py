@@ -151,6 +151,17 @@ def main() -> None:
         evidence = report["timeline"][0]["evidence"][0]
         detail = call("evidence", evidence["source_line_id"], workspace=recovered)["value"]
         assert detail["evidence"] == evidence and not detail["before"] and not detail["after"]
+        limited = call(
+            "evidence",
+            evidence["source_line_id"],
+            "--context",
+            "1",
+            "--byte-budget",
+            "128",
+            workspace=recovered,
+        )["value"]
+        assert limited["evidence"] == evidence and limited["context_budget"]["over_budget"]
+        assert limited["context_budget"]["omitted_before"] == 1 and not limited["before"]
         assert (evidence["conversation_id"], evidence["segment_id"], evidence["text"]) == (
             "note",
             "text-line-3",

@@ -158,10 +158,14 @@ def _budgeted_page(index, rows: list[tuple], budget: int) -> tuple[list[tuple], 
     }
 
 
-def evidence_context(workspace, line_id: str, radius: int) -> dict:
+def evidence_context(
+    workspace, line_id: str, radius: int, *, byte_budget: int | None = None
+) -> dict:
     match = re.fullmatch(r"c-([a-f0-9]{64})L([1-9][0-9]{0,4})", line_id)
     if match is None or not 0 <= radius <= 20:
         raise ToolError("invalid_input", "use a source_line_id and a context radius of 0–20")
+    if byte_budget is not None and not 128 <= byte_budget <= 1024 * 1024:
+        raise ToolError("invalid_input", "context byte budget must be 128–1048576")
     checksum, position = match.groups()
     record = workspace.record(checksum)
     segments = record["conversation"]["segments"]
@@ -173,16 +177,45 @@ def evidence_context(workspace, line_id: str, radius: int) -> dict:
     def cited(index: int) -> dict:
         return _citation(record, f"{revision}L{index + 1}", segments[index])
 
-    return {
-        "evidence": cited(offset),
-        "before": [cited(index) for index in range(max(0, offset - radius), offset)],
-        "after": [
-            cited(index) for index in range(offset + 1, min(len(segments), offset + radius + 1))
-        ],
+    before, after = [], []
+    available_before = min(radius, offset)
+    available_after = min(radius, len(segments) - offset - 1)
+    content = {"evidence": cited(offset), "before": before, "after": after}
+    size = len(encode(content)) if byte_budget is not None else 0
+    blocked = set()
+    for distance in range(1, max(available_before, available_after) + 1):
+        for direction, lines, available in (
+            (-1, before, available_before),
+            (1, after, available_after),
+        ):
+            if direction in blocked or distance > available:
+                continue
+            line = cited(offset + direction * distance)
+            if byte_budget is not None:
+                # The JSON arrays are compact and their existing brackets are counted.
+                next_size = size + len(encode(line)) + (1 if lines else 0)
+                if next_size > byte_budget:
+                    blocked.add(direction)
+                    continue
+                size = next_size
+            lines.append(line)
+    before.reverse()
+
+    result = {
+        **content,
         "source_revision_active": record["active"],
         "source_time": _source_time(record)[1],
         "memory_version": workspace.version(),
     }
+    if byte_budget is not None:
+        result["context_budget"] = {
+            "limit_bytes": byte_budget,
+            "payload_bytes": size,
+            "over_budget": size > byte_budget,
+            "omitted_before": available_before - len(before),
+            "omitted_after": available_after - len(after),
+        }
+    return result
 
 
 def _trace_rows(

@@ -75,6 +75,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     evidence.add_argument("source_line_id")
     evidence.add_argument("--context", type=int, default=0, help="lines on either side (0–20)")
+    evidence.add_argument(
+        "--byte-budget",
+        type=int,
+        help="target JSON evidence bytes (128–1048576); the cited line is kept whole",
+    )
     validate = commands.add_parser(
         "validate-pipeline", help="validate and show a pipeline definition"
     )
@@ -304,7 +309,9 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
         with Workspace.open(args.workspace, read_only=True) as workspace:
             if args.command == "evidence":
                 return {
-                    "value": evidence_context(workspace, args.source_line_id, args.context)
+                    "value": evidence_context(
+                        workspace, args.source_line_id, args.context, byte_budget=args.byte_budget
+                    )
                 }, None
             return {"value": query_report(Context(root, workspace, args.pipeline), supplied)}, None
     with Workspace.open(args.workspace) as workspace:

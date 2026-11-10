@@ -1878,6 +1878,49 @@ def test_evidence_context_reads_the_cited_revision_until_deletion(work):
     call("source-history", "transcript", "handoff", error="not_found")
 
 
+def test_evidence_byte_budget_keeps_the_cited_line_and_contiguous_neighbors(work):
+    directory, call = work
+    payload = text_input("context", "保留最终设计")
+    source = payload["source"]
+    source["format"] = "transcript"
+    del source["payload"]["text"]
+    source["payload"]["segments"] = [
+        {"segment_id": "far-before", "text": "Short."},
+        {"segment_id": "near-before", "text": "长" * 500},
+        {"segment_id": "text-1", "text": "保留最终设计"},
+        {"segment_id": "near-after", "text": "后续工作"},
+        {"segment_id": "far-after", "text": "下一段"},
+    ]
+    receipt = ingest(call, "context", payload)
+    line_id = f"{receipt['revision_id']}L3"
+    database = directory / "kite.sqlite3"
+    before = database.read_bytes()
+    full = call("evidence", line_id, "--context", "20")["value"]
+    assert [row["segment_id"] for row in full["before"]] == ["far-before", "near-before"]
+    expected = {"evidence": full["evidence"], "before": [], "after": full["after"]}
+    budget = len(encode(expected).encode("utf-8"))
+    result = call("evidence", line_id, "--context", "20", "--byte-budget", str(budget))["value"]
+    assert {key: result[key] for key in expected} == expected
+    assert result["context_budget"] == {
+        "limit_bytes": budget,
+        "payload_bytes": budget,
+        "over_budget": False,
+        "omitted_before": 2,
+        "omitted_after": 0,
+    }
+
+    small = call("evidence", line_id, "--context", "20", "--byte-budget", "128")["value"]
+    assert small["evidence"] == full["evidence"] and small["evidence"]["text"] == "保留最终设计"
+    assert small["before"] == small["after"] == []
+    assert small["context_budget"]["over_budget"]
+    assert (
+        small["context_budget"]["omitted_before"] == small["context_budget"]["omitted_after"] == 2
+    )
+    for invalid in ("127", "1048577"):
+        call("evidence", line_id, "--byte-budget", invalid, error="invalid_input")
+    assert database.read_bytes() == before
+
+
 def test_related_trace_labels_are_ranked_and_bound_to_the_evidence_page(work):
     _, call = work
     for number in range(1, 7):

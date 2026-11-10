@@ -66,6 +66,12 @@ referenced source revision and whether it is still active. Older source
 revisions remain readable by ID while retained. Deleted revisions are
 unavailable. Evidence reads save no checkpoint or artifact.
 
+Use `--byte-budget 4096` to limit the compact JSON for `evidence`, `before`,
+and `after`. KITE adds the closest neighbors first, alternating sides when
+both have room. Each side stays contiguous. `context_budget` reports the
+payload bytes and omitted neighbors. The cited line stays whole even if it
+exceeds the target. Other response fields use additional bytes.
+
 1. Read the selected definition using `kite-tool validate-pipeline NAME`.
    Read the skill at each stage's `skill` path. Inspect the JSON contract with
    `kite-tool describe TOOL`.
