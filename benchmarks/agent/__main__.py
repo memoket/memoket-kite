@@ -190,7 +190,7 @@ def score_claims(case: dict, claims: dict, report: dict | None) -> dict:
             and matched == len(groups) == len(refs) == len(actual)
         ):
             supported += 1
-    return {
+    result = {
         "expected_claims": len(expected),
         "submitted_claims": len(claims),
         "supported_claims": supported,
@@ -201,6 +201,11 @@ def score_claims(case: dict, claims: dict, report: dict | None) -> dict:
         "cited_evidence_bytes": sum(len(lines[key].encode()) for key in cited),
         "passed": supported == len(expected) and not extra,
     }
+    if required_line := case.get("required_report_line"):
+        preserved = lines.get(_citation(required_line)) == required_line["text"]
+        result["untrusted_evidence_preserved"] = preserved
+        result["passed"] &= preserved
+    return result
 
 
 def _grade(kite: Kite, case: dict, answer: dict, seeded: dict) -> dict:

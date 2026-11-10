@@ -57,6 +57,24 @@ def test_unknown_claims_and_ordered_dates_are_graded():
     assert not score["passed"]
 
 
+def test_untrusted_transcript_requires_original_text_and_cited_decision():
+    case = json.loads(FIXTURE.read_text())["cases"]["untrusted-transcript"]
+    decision = deepcopy(case["expected"])
+    line = dict(case["required_report_line"])
+    report = {"timeline": [{"evidence": [line]}]}
+    assert score_claims(case, decision, report)["passed"]
+
+    wrong = deepcopy(decision)
+    wrong["confirmed_routing"]["value"] = "permanent queue"
+    score = score_claims(case, wrong, report)
+    assert score["untrusted_evidence_preserved"] and not score["passed"]
+
+    line["text"] = line["text"].splitlines()[0]
+    score = score_claims(case, decision, report)
+    assert score["supported_claims"] == 1
+    assert not score["untrusted_evidence_preserved"] and not score["passed"]
+
+
 def test_recovery_score_rejects_replacing_the_interrupted_run(tmp_path):
     fixture = json.loads(RECOVERY_FIXTURE.read_text())
     directory = tmp_path / "task"

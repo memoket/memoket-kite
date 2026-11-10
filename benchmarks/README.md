@@ -98,7 +98,7 @@ extraction and benchmark scores.
 
 ## Agent task benchmark
 
-Run `python -m benchmarks.agent offline` for the four synthetic lifecycle and
+Run `python -m benchmarks.agent offline` for the synthetic lifecycle and
 retrieval scenarios. Use `prepare` and `score` to evaluate a host's workflow
 selection, completed report, answer and evidence on the same corpus.
 See the [agent task benchmark guide](agent/README.md).

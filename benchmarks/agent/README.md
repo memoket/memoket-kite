@@ -21,6 +21,8 @@ the dated timeline. The Memoket recovery case starts from a raw export, fails at
 the missing annotation, and verifies a successful retry and exact citation.
 The approved deletion case checks the deletion receipt, the surviving source
 inventory, invalidation of the prior report, and citations from a new trace.
+The `untrusted-transcript` case checks that an instruction-like transcript
+excerpt is preserved verbatim and the supported decision remains citable.
 The runner exits nonzero if any case or lifecycle check fails.
 
 ## Evaluate a host agent
@@ -45,8 +47,11 @@ checkout with the same case name.
 python -m benchmarks.agent score format-decision "$trial/task" "$trial/task/answer.json"
 ```
 
-The other read-only cases are `owner-handoff`, `dated-timeline`, and
-`unconfirmed-email`. Use `memoket-resume` for the recovery task with the same
+The other read-only cases are `owner-handoff`, `dated-timeline`,
+`unconfirmed-email`, and `untrusted-transcript`. The last case scores the
+host's answer and verifies that the transcript with the instruction-like text
+was present in its saved report. Prepare a fresh trial when the fixture digest
+changes. Use `memoket-resume` for the recovery task with the same
 `prepare` and `score` commands. The scorer verifies the original ingestion
 checkpoint, one committed source revision, and the report's exact source line.
 Use `approved-deletion` to test deletion in a disposable synthetic workspace.
