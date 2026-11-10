@@ -338,6 +338,18 @@ def _supersession(index, time_axis: str, end_date: str | None) -> tuple[set[str]
     return superseded, _correction_targets(index, uncertain) - superseded
 
 
+def _related_labels(timeline: list[dict], field: str, excluded: set[str]) -> list[dict]:
+    support = defaultdict(list)
+    for row in timeline:
+        for code in set(row[field]) - excluded:
+            support[code].append(row["fact_id"])
+    ranked = sorted(support, key=lambda code: (-len(support[code]), code))
+    return [
+        {"code": code, "fact_count": len(support[code]), "fact_ids": support[code][:3]}
+        for code in ranked[:10]
+    ]
+
+
 def report(context, matches: dict) -> dict:
     index = context.workspace.index()
     timeline = [_evidence(index, fid) for fid in matches["fact_ids"]]
@@ -361,6 +373,7 @@ def report(context, matches: dict) -> dict:
         and not matches["unresolved_topics"]
         and not matches["unresolved_events"]
     )
+    topic_codes = set(matches["topic_codes"])
     return {
         "trace": context.pipeline,
         "time_axis": matches["time_axis"],
@@ -375,6 +388,8 @@ def report(context, matches: dict) -> dict:
         "omitted_inferred_time": matches["omitted_inferred_time"],
         "resolved_topics": matches["topic_codes"],
         "unresolved_topics": matches["unresolved_topics"],
+        "related_topics": _related_labels(timeline, "topics", topic_codes) if topic_codes else [],
+        "related_entities": _related_labels(timeline, "entities", set()) if topic_codes else [],
         "resolved_events": matches["event_codes"],
         "unresolved_events": matches["unresolved_events"],
         "memory_version": context.workspace.version(),

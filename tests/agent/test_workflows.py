@@ -1353,6 +1353,48 @@ def test_trace_cursor_reads_all_windows_without_repeating_evidence(work):
     assert len({state for page in pages for state in page}) == 7
 
 
+def test_related_trace_labels_are_ranked_and_bound_to_the_evidence_page(work):
+    _, call = work
+    for number in range(1, 7):
+        payload = text_input(f"log-{number}", f"Evidence {number}", date=f"2026-06-0{number}")
+        payload["source"]["payload"]["metadata"]["project"] = "main" if number < 6 else "other"
+        fact = payload["annotations"]["facts"][0]
+        if number < 5:
+            fact.update(topics=["rollout", "checklist"], entities=["Rae"])
+        elif number == 5:
+            fact.update(topics=["launch", "security"], entities=["Ada"])
+        else:
+            fact.update(topics=["rollout", "restricted"], entities=["Other project"])
+        if number == 1:
+            payload["annotations"]["taxonomy"] = [
+                {"name": "launch", "aliases": ["launch program"]},
+                {"name": "rollout", "parents": ["launch"]},
+            ]
+        ingest(call, f"import-{number}", payload)
+
+    query = {"topics": ["launch program"], "projects": ["main"]}
+    full = trace(call, "full", query)
+    first_ids = [row["fact_id"] for row in full["timeline"][:3]]
+    last_id = full["timeline"][-1]["fact_id"]
+    assert full["resolved_topics"] == ["launch", "rollout"]
+    assert full["matched_count"] == 5
+    assert full["related_topics"] == [
+        {"code": "checklist", "fact_count": 4, "fact_ids": first_ids},
+        {"code": "security", "fact_count": 1, "fact_ids": [last_id]},
+    ]
+    assert full["related_entities"] == [
+        {"code": "rae", "fact_count": 4, "fact_ids": first_ids},
+        {"code": "ada", "fact_count": 1, "fact_ids": [last_id]},
+    ]
+    page = trace(call, "page", {**query, "limit": 1})
+    assert page["next_cursor"]
+    assert page["related_topics"] == [full["related_topics"][1]]
+    assert page["related_entities"] == [full["related_entities"][1]]
+    followup = trace(call, "followup", {"topics": ["checklist"], "entities": ["rae"]})
+    assert followup["matched_count"] == 4
+    assert [label["code"] for label in followup["related_topics"]] == ["rollout"]
+
+
 def test_trace_cursor_rejects_changes_to_filters_and_snapshot(work, tmp_path):
     _, call = work
     for identity in ("a", "b"):

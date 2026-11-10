@@ -129,6 +129,14 @@ recent dated window, then work backward and finish with any uncertain dates.
 A partial page leaves reported states tentative. If memory changes, restart
 from the first page.
 
+For topic-filtered traces, check `related_topics` and `related_entities`
+for labels that also appear in the current page's evidence. Each list contains
+up to ten labels ranked by matching fact count, with up to three supporting
+fact IDs per label. The selected topic and its descendants are excluded from
+the related topics. Use the codes in a follow-up query to explore another
+topic or narrow a trace by entity. The suggestions leave the original timeline
+and reported states unchanged.
+
 ## Source and access
 
 Select a workspace via `--workspace DIR` or `KITE_DATA_DIR`. The default is

@@ -26,6 +26,9 @@ TARGET = {
 }
 BOOL = {"type": "boolean"}
 JSON_OBJECT = {"type": "object"}
+RELATED_LABELS = array(
+    object_schema({"code": TEXT, "fact_count": COUNT, "fact_ids": array(TEXT, 1, 3)}), maximum=10
+)
 RECEIPT = object_schema(
     {"changed": BOOL, "memory_version": COUNT},
     {"revision_id": TEXT, "checksum": HASH, "deleted_revisions": COUNT, "operation_id": HASH},
@@ -92,6 +95,8 @@ SCHEMAS = {
             "omitted_inferred_time": COUNT,
             "resolved_topics": array(TEXT),
             "unresolved_topics": array(TEXT),
+            "related_topics": RELATED_LABELS,
+            "related_entities": RELATED_LABELS,
             "resolved_events": array(TEXT),
             "unresolved_events": array(TEXT),
             "memory_version": COUNT,
@@ -207,7 +212,7 @@ TOOLS = {
     "validate_commit": Tool(_validate, {"receipt": "receipt"}, "integrity"),
     "resolve": Tool(resolve, {"query": "query"}, "resolved", version=3),
     "retrieve": Tool(retrieve, {"resolved": "resolved"}, "matches", version=6),
-    "report": Tool(report, {"matches": "matches"}, "report", version=6),
+    "report": Tool(report, {"matches": "matches"}, "report", version=7),
     "reclassify": Tool(reclassify, {"merge": "reclassify"}, "receipt", "write", version=2),
     "move_topic": Tool(move_topic, {"move": "topic_move"}, "receipt", "write"),
     "preview_delete": Tool(_preview, {"target": "deletion_target"}, "deletion_plan", version=2),
