@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager, suppress
 from hashlib import sha256
 from pathlib import Path
@@ -92,6 +92,17 @@ def _target_ids(target: dict) -> list[str]:
     if "conversation_id" in target:
         return [target["conversation_id"]]
     return []
+
+
+def _input_sources(raw: str) -> Iterator[tuple]:
+    try:
+        supplied = json.loads(raw)
+    except (ValueError, RecursionError):
+        return
+    if isinstance(supplied, dict):
+        for value in supplied.values():
+            if isinstance(value, dict) and {"format", "payload"} <= value.keys():
+                yield source_identity(value)
 
 
 class Workspace:
@@ -584,15 +595,8 @@ class Workspace:
         affected = []
         for row in rows:
             try:
-                supplied = json.loads(row["inputs"])
-            except ValueError:
-                continue
-            if not isinstance(supplied, dict):
-                continue
-            try:
-                for value in supplied.values():
-                    if isinstance(value, dict) and {"format", "payload"} <= value.keys():
-                        self.require_source_allowed(*source_identity(value))
+                for identity in _input_sources(row["inputs"]):
+                    self.require_source_allowed(*identity)
             except ToolError as exc:
                 if exc.code != "deleted_source":
                     raise
@@ -601,33 +605,40 @@ class Workspace:
             self.db.execute("DELETE FROM artifacts WHERE run_id=?", (row["id"],))
             self._redact_run(row)
 
-    def deletion_plan(self, target: dict, *, run_id: str) -> tuple[dict, list[sqlite3.Row]]:
-        ids = _target_ids(target)
+    def deletion_plan(
+        self, target: dict, *, run_id: str
+    ) -> tuple[dict, list[sqlite3.Row], list[tuple[str, str]]]:
+        ids = set(_target_ids(target))
+        source = target["source"]
         query = "SELECT * FROM revisions WHERE source=?"
         if ids:
             placeholders = ", ".join("?" for _ in ids)
             query += f" AND conversation_id IN ({placeholders})"
-        rows = self.db.execute(query, (target["source"], *ids)).fetchall()
+        rows = self.db.execute(query, (source, *sorted(ids))).fetchall()
         fact_count = sum(len(json.loads(row["payload"])["facts"]) for row in rows)
+        stored = {row["conversation_id"] for row in rows}
         extras = {}
         if "conversation_ids" in target:
-            target = {**target, "conversation_ids": ids}
-            stored = {row["conversation_id"] for row in rows}
-            extras["conversation_ids_without_revisions"] = [
-                item for item in ids if item not in stored
-            ]
+            target = {**target, "conversation_ids": sorted(ids)}
+            extras["conversation_ids_without_revisions"] = sorted(ids - stored)
         # The selector stays local to the preview. The audit retains its
         # operation digest and aggregate counts.
         workspace_id, version = self.snapshot_identity()
         # Preparing and retrying the approval updates its own checkpoint.
         # Bind the other run inputs and the artifacts affected by the purge.
-        runs = [
-            (row["id"], digest(row["inputs"]))
-            for row in self.db.execute(
-                "SELECT id, inputs FROM runs WHERE id<>? AND definition<>'' ORDER BY id",
-                (run_id,),
-            )
-        ]
+        runs = []
+        staged = set()
+        keys = {row["source_key"] for row in rows}
+        for row in self.db.execute("SELECT id, inputs FROM runs WHERE definition<>'' ORDER BY id"):
+            if row["id"] != run_id:
+                runs.append((row["id"], digest(row["inputs"])))
+            for name, identity, reference in _input_sources(row["inputs"]):
+                if name != source or not isinstance(identity, str) or (ids and identity not in ids):
+                    continue
+                if identity.strip():
+                    staged.add(identity)
+                if isinstance(reference, str) and reference.strip():
+                    keys.add(digest([source, reference]))
         artifacts = [
             tuple(row)
             for row in self.db.execute(
@@ -643,33 +654,29 @@ class Workspace:
             "memory_version": version,
             "revisions": len(rows),
             "facts": fact_count,
+            "staged_conversation_ids": sorted(staged - stored),
             "runs_to_invalidate": len(runs),
             "run_artifacts_to_purge": len(artifacts),
             **extras,
         }
-        approval = digest([workspace_id, run_id, impact, runs, artifacts])
-        return {**impact, "approval_token": approval}, rows
+        tombstones = sorted(
+            {("key", key) for key in keys}
+            | {("conversation", digest([source, item])) for item in stored | staged | ids}
+        )
+        approval = digest([workspace_id, run_id, impact, runs, artifacts, tombstones])
+        return {**impact, "approval_token": approval}, rows, tombstones
 
     def delete(self, plan: dict, approval: str | None, *, run_id: str) -> dict:
         if approval is None:
             raise ToolError("awaiting_approval", "delete requires the user-approved preview token")
         if approval != plan["approval_token"]:
             raise ToolError("permission_denied", "approval does not match the deletion preview")
-        current, rows = self.deletion_plan(plan["target"], run_id=run_id)
+        current, rows, tombstones = self.deletion_plan(plan["target"], run_id=run_id)
         if current["approval_token"] != approval:
             raise ToolError("stale_preview", "deletion impact changed; start a new deletion run")
-        target = plan["target"]
-        self.db.executemany(
-            "INSERT OR IGNORE INTO tombstones VALUES('conversation', ?)",
-            ((digest([target["source"], item]),) for item in _target_ids(target)),
-        )
+        self.db.executemany("INSERT OR IGNORE INTO tombstones VALUES(?, ?)", tombstones)
         deleted = {}
         for row in rows:
-            checks = (
-                ("key", row["source_key"]),
-                ("conversation", digest([row["source"], row["conversation_id"]])),
-            )
-            self.db.executemany("INSERT OR IGNORE INTO tombstones VALUES(?, ?)", checks)
             self.db.execute("DELETE FROM revisions WHERE checksum=?", (row["checksum"],))
             deleted.update(
                 (fact_id, fact.get("supersedes"))

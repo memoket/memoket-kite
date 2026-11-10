@@ -926,6 +926,7 @@ def test_batch_deletion_targets_exact_ids_and_keeps_unrelated_records(work):
     plan = call("stage", "batch", "preview")["value"]
     assert plan["target"]["conversation_ids"] == ["remove-a", "remove-b", "staged"]
     assert plan["conversation_ids_without_revisions"] == ["staged"]
+    assert plan["staged_conversation_ids"] == ["staged"]
     assert (plan["revisions"], plan["facts"]) == (2, 2)
     call("stage", "batch", "apply", error="awaiting_approval")
     call("stage", "batch", "apply", "--approve", single_token, error="permission_denied")
@@ -1019,6 +1020,53 @@ def test_deletion_covers_staged_sources_and_different_snapshot(work):
     call(
         "start", "memory-ingestion", "--run-id", "late-import", payload=data, error="deleted_source"
     )
+
+
+def test_source_deletion_tombstones_uncommitted_ids_and_references(work):
+    directory, call = work
+    ingest(call, "committed", text_input("committed", "stored target"))
+    pending = text_input("pending", "pending target")
+    staged = text_input("staged", "staged target")
+    staged["source"]["payload"]["metadata"]["source_reference"] = "separate-source-reference"
+    for run, source in (("pending", pending), ("staged", staged)):
+        call("start", "memory-ingestion", "--run-id", run, payload=source)
+    call("stage", "staged", "normalize")
+
+    foreign = text_input("staged", "retained source")
+    foreign["source"] = {
+        "format": "conversation",
+        "payload": {
+            "source": "archive",
+            "conversation_id": "staged",
+            "metadata": {"source_reference": "separate-source-reference"},
+            "segments": [{"segment_id": "text-1", "text": "retained source"}],
+        },
+    }
+    ingest(call, "archive", foreign)
+    call(
+        "start",
+        "memory-deletion",
+        "--run-id",
+        "delete-source",
+        payload={"target": {"source": "text"}},
+    )
+    plan = call("stage", "delete-source", "preview")["value"]
+    assert plan["staged_conversation_ids"] == ["pending", "staged"]
+    assert (plan["revisions"], plan["facts"]) == (1, 1)
+    assert "separate-source-reference" not in json.dumps(plan)
+    call("stage", "delete-source", "apply", "--approve", plan["approval_token"])
+    assert not call("sources", "--source", "text")["sources"]
+    assert call("sources", "--source", "archive")["sources"][0]["conversation_id"] == "staged"
+    assert b"staged target" not in (directory / "kite.sqlite3").read_bytes()
+    for run, source in (("retry-pending", pending), ("retry-staged", staged)):
+        call("start", "memory-ingestion", "--run-id", run, payload=source, error="deleted_source")
+    staged["source"]["payload"]["conversation_id"] = "renamed"
+    call("start", "memory-ingestion", "--run-id", "renamed", payload=staged, error="deleted_source")
+    pending["source"]["payload"]["metadata"]["source_reference"] = "new-reference"
+    call(
+        "start", "memory-ingestion", "--run-id", "rebound", payload=pending, error="deleted_source"
+    )
+    assert ingest(call, "new", text_input("new", "new conversation"))["changed"]
 
 
 @pytest.mark.parametrize("change", ["new-run", "new-artifact"])

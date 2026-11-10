@@ -127,6 +127,7 @@ SCHEMAS = {
             "memory_version": COUNT,
             "revisions": COUNT,
             "facts": COUNT,
+            "staged_conversation_ids": {"type": "array", "items": TEXT},
             "runs_to_invalidate": COUNT,
             "run_artifacts_to_purge": COUNT,
         },
@@ -223,6 +224,6 @@ TOOLS = {
     "report": Tool(report, {"matches": "matches"}, "report", version=8),
     "reclassify": Tool(reclassify, {"merge": "reclassify"}, "receipt", "write", version=2),
     "move_topic": Tool(move_topic, {"move": "topic_move"}, "receipt", "write"),
-    "preview_delete": Tool(_preview, {"target": "deletion_target"}, "deletion_plan", version=3),
-    "delete": Tool(_delete, {"plan": "deletion_plan"}, "receipt", "delete", version=3),
+    "preview_delete": Tool(_preview, {"target": "deletion_target"}, "deletion_plan", version=4),
+    "delete": Tool(_delete, {"plan": "deletion_plan"}, "receipt", "delete", version=4),
 }

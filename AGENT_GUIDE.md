@@ -214,7 +214,10 @@ and its descendants, with the original fact and source IDs.
 
 Deletion uses the source namespace. Set `conversation_id` for one conversation
 or `conversation_ids` for a set of up to 100 distinct IDs in that namespace.
-Omit both fields to select all existing conversations in the source. Run
+Omit both fields to select committed and staged conversations in the source.
+The preview lists staged conversation IDs without stored revisions.
+Deletion records those IDs and their source references so reimports are blocked.
+New conversations with fresh IDs and references can still be imported. Run
 `preview`, show its selector and impact, and obtain explicit authorization
 for that preview. The batch preview lists IDs that have no stored revision.
 Applying the approved batch also blocks reimport of those explicitly selected IDs.
