@@ -3,14 +3,19 @@
 KITE exposes workflow definitions, stage skills, and deterministic tools.
 Codex reads [AGENTS.md](AGENTS.md). Claude Code imports the same file via
 [CLAUDE.md](CLAUDE.md). Keep the repository and its instructions trusted.
-Run commands from the checkout or pass `kite-tool --repo /path/to/memoket-kite`.
+The installed CLI uses the workflow resources shipped with the package. Run
+`kite-tool resources` to locate the instruction files and skills from any
+directory. To try edits or use custom workflows, pass
+`kite-tool --repo /path/to/trusted/checkout`. An editable installation uses
+the source checkout by default.
 
 ```sh
 python -m pip install -e '.[agent]'
+kite-tool resources
 kite-tool pipelines
 kite-tool validate-pipeline memory-ingestion
 kite-tool describe
-python examples/agent-workflows/demo.py
+kite-tool demo
 ```
 
 The demo uses synthetic data and a temporary workspace. It requires no model

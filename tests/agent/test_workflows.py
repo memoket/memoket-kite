@@ -630,3 +630,20 @@ def test_local_audio_reports_missing_executable_before_decoding(work, tmp_path, 
         error="missing_dependency",
     )
     assert not workspace.exists()
+
+
+def test_cli_resources_are_independent_of_the_working_directory(tmp_path, monkeypatch, capsys):
+    cwd = tmp_path / "consumer"
+    cwd.mkdir()
+    (cwd / "pipeline_defs").mkdir()
+    (cwd / "pipeline_defs" / "memory-ingestion.yaml").write_text("invalid: local definition\n")
+    monkeypatch.chdir(cwd)
+    assert cli.main(["resources"]) == 0
+    resources = json.loads(capsys.readouterr().out)
+    assert Path(resources["root"]) == ROOT
+    assert Path(resources["agent_instructions"]).name == "AGENTS.md"
+    assert Path(resources["agent_guide"]).is_file()
+    assert cli.main(["validate-pipeline", "memory-ingestion"]) == 0
+    assert json.loads(capsys.readouterr().out)["definition"]["id"] == "memory-ingestion"
+    assert cli.main(["--repo", str(cwd), "validate-pipeline", "memory-ingestion"]) == 2
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "invalid_pipeline"

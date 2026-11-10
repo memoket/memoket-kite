@@ -1,17 +1,21 @@
 # Conversation workflows in Codex or Claude Code
 
-Open the KITE checkout in your agent and run the offline demo.
+Install KITE with the `agent` extra from a checkout and run the offline demo.
 
 ```sh
-python -m pip install -e '.[agent]'
-python examples/agent-workflows/demo.py
+python -m pip install '.[agent]'
+kite-tool demo
 ```
+
+Use `kite-tool resources` to locate the workflow and example files in an installed package.
 
 The demo imports an early text proposal and a later Memoket transcript in
 separate processes, resumes from their checkpoints, and traces the topic by
 its alias. The report cites the line where the team chose a short checklist.
 
 ## Try the stages yourself
+
+Run these commands from the KITE checkout.
 
 ```sh
 export KITE_DATA_DIR="$(mktemp -d)"
@@ -40,7 +44,8 @@ timeline and original evidence.
 
 ## Give your agent a task
 
-> Read AGENTS.md. Use the synthetic meeting inputs in examples/agent-workflows.
+> Run kite-tool resources and read the agent instructions it points to. Use the
+> synthetic meeting inputs in the example directory.
 > Run memory-ingestion for both meetings and use topic-tracing to tell me what
 > was decided about first run, what the team rejected, and which original line
 > supports each conclusion. Use a new temporary KITE workspace.

@@ -26,17 +26,17 @@ KITE turns meeting notes, transcripts, and Memoket conversations into
 evidence-backed memory. Codex and Claude Code use the same YAML workflows and
 skills to trace decisions, recover task history, and resume interrupted imports.
 
-From a KITE checkout, try the offline demo with two synthetic meetings.
+From a KITE checkout, install the package and try the offline demo with two synthetic meetings.
 
 ```bash
-python -m pip install -e '.[agent]'
-python examples/agent-workflows/demo.py
+python -m pip install '.[agent]'
+kite-tool demo
 ```
 
 The demo follows an early proposal through to a decision and shows the original
-lines behind it. For the stage-by-stage commands, see the
-[agent quickstart](examples/agent-workflows/README.md) and
-[operating guide](AGENT_GUIDE.md).
+lines behind it. The installed CLI carries its workflows, skills, and demo data.
+See the [agent quickstart](examples/agent-workflows/README.md) for stage-by-stage
+commands and the [operating guide](AGENT_GUIDE.md) for integration details.
 
 <a id="news"></a>
 

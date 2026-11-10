@@ -88,7 +88,7 @@ and rebuilds the evaluation under the local `artifacts/` tree. See
 
 ## Agent workflow fixture
 
-Run `python examples/agent-workflows/demo.py --metrics` after installing the
+Run `kite-tool demo --metrics` after installing the
 `agent` extra. It reports pipeline completion, replay recovery, evidence
 coverage, citation recall and decision state against a fixed synthetic
 scenario. The annotations and expected outputs are checked into the example.

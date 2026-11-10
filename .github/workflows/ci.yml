@@ -57,7 +57,7 @@ jobs:
         run: |
           python examples/inspect_codebook.py
           python examples/temporal_reasoning.py
-          python examples/agent-workflows/demo.py
+          kite-tool demo --metrics
       # No licensed corpus is available here, so this asserts the gate reports
       # that rather than reporting clean. The audit itself runs at release
       # time, where `--require-corpus` makes an absent corpus an error.
@@ -84,6 +84,16 @@ jobs:
           wheel = glob.glob("dist/*.whl")[0]
           names = zipfile.ZipFile(wheel).namelist()
           assert any(name.startswith("memoket_kite/") for name in names)
+          resources = "memoket_kite/_agent_assets/"
+          for name in (
+              "AGENTS.md",
+              "AGENT_GUIDE.md",
+              "pipeline_defs/memory-ingestion.yaml",
+              "schemas/conversation.schema.json",
+              "skills/ingestion/memoket-connector/SKILL.md",
+              "examples/agent-workflows/second-meeting.json",
+          ):
+              assert resources + name in names, name
           forbidden = ("benchmarks/", "research/", "artifacts/", "examples/")
           assert not any(name.startswith(forbidden) for name in names)
           PY
@@ -94,8 +104,10 @@ jobs:
           # built artifact is installed into a clean venv, away from the
           # repo, and every subpackage is imported for real.
           python -m venv /tmp/wheelsmoke
-          /tmp/wheelsmoke/bin/pip install --quiet dist/*.whl
-          cd /tmp
+          wheel="$(echo dist/*.whl)"
+          /tmp/wheelsmoke/bin/pip install --quiet "$wheel"
+          consumer="$(mktemp -d)"
+          cd "$consumer"
           /tmp/wheelsmoke/bin/python - <<'PY'
           import importlib
           import pkgutil
@@ -118,3 +130,11 @@ jobs:
           assert memoket_kite.KiteError
           PY
           /tmp/wheelsmoke/bin/pip check
+          cd "$GITHUB_WORKSPACE"
+          /tmp/wheelsmoke/bin/pip install --quiet "${wheel}[agent]"
+          cd "$consumer"
+          mkdir pipeline_defs
+          printf 'invalid: local definition\n' > pipeline_defs/memory-ingestion.yaml
+          /tmp/wheelsmoke/bin/kite-tool resources
+          /tmp/wheelsmoke/bin/kite-tool validate-pipeline memory-ingestion >/dev/null
+          /tmp/wheelsmoke/bin/kite-tool demo --metrics

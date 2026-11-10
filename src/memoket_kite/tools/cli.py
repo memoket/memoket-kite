@@ -11,7 +11,9 @@ from pathlib import Path
 
 from .audio import audio_source
 from .contracts import ToolError, encode
+from .demo import run_demo
 from .operations import SCHEMAS, TOOLS, Context
+from .resources import resource_root
 from .workflow import advance, artifact, load_pipeline, start, status
 from .workspace import Workspace
 
@@ -40,7 +42,7 @@ def _object(path: str | None) -> dict:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="kite-tool", description=__doc__)
     parser.add_argument(
-        "--repo", type=Path, default=Path.cwd(), help="trusted KITE workflow checkout"
+        "--repo", type=Path, help="override packaged resources with a trusted KITE checkout"
     )
     default_dir = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local/share")) / "kite"
     parser.add_argument(
@@ -48,6 +50,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("pipelines", help="list validated pipelines")
+    commands.add_parser("resources", help="show paths to agent instructions and workflows")
+    demo = commands.add_parser("demo", help="run the offline text and Memoket quickstart")
+    demo.add_argument("--metrics", action="store_true", help="emit deterministic fixture metrics")
     validate = commands.add_parser(
         "validate-pipeline", help="validate and show a pipeline definition"
     )
@@ -104,9 +109,20 @@ def _describe(name: str | None) -> dict:
 
 
 def _dispatch(args) -> tuple[dict, ToolError | None]:
-    root = args.repo.resolve()
     if args.command == "describe":
         return _describe(args.tool), None
+    root = resource_root(args.repo)
+    if args.command == "resources":
+        return {
+            "root": str(root),
+            "agent_instructions": str(root / "AGENTS.md"),
+            "agent_guide": str(root / "AGENT_GUIDE.md"),
+            "pipeline_definitions": str(root / "pipeline_defs"),
+            "skills": str(root / "skills"),
+            "examples": str(root / "examples" / "agent-workflows"),
+        }, None
+    if args.command == "demo":
+        return {"value": run_demo(root, metrics=args.metrics)}, None
     if args.command == "validate-pipeline":
         definition, checksum = load_pipeline(root, args.pipeline)
         return {"definition": definition, "digest": checksum}, None
