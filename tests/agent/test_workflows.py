@@ -1987,6 +1987,48 @@ def test_inferred_dates_are_separate_from_explicit_and_unknown_dates(work):
     assert not exported["Inferred"] and not exported["Unknown"]
 
 
+@pytest.mark.parametrize(("axis", "unknown", "inferred"), [("source", 3, 0), ("event", 2, 1)])
+def test_date_omissions_affect_only_relevant_reported_states(work, axis, unknown, inferred):
+    _, call = work
+    obsolete = text_input("obsolete", "planning")
+    obsolete["annotations"]["facts"][0].update(state_key="phase")
+    predecessor = ingest(call, "obsolete", obsolete)["revision_id"] + "F1"
+
+    dated = text_input("dated", "Rae owns delivery, which is in progress.", date="2026-04-02")
+    owner = dated["annotations"]["facts"][0]
+    owner.update(state="Rae", event_date="2026-04-02")
+    dated["annotations"]["facts"].append(
+        {
+            **owner,
+            "content": "Delivery is in progress.",
+            "state_key": "phase",
+            "state": "in progress",
+            "supersedes": predecessor,
+        }
+    )
+    ingest(call, "dated", dated)
+
+    undated = text_input("undated", "Sam reports taking ownership.")
+    undated["annotations"]["facts"][0].update(
+        state="Sam", event_date="2026-04-03", event_date_basis="inferred"
+    )
+    ingest(call, "undated", undated)
+    proposal = text_input("proposal", "Pause delivery?", status="proposal")
+    proposal["annotations"]["facts"][0].update(state_key="phase", state="paused")
+    ingest(call, "proposal", proposal)
+
+    query = {"topics": ["onboarding"], "end_date": "2026-04-08", "time_axis": axis}
+    pipeline = "timeline-reconstruction"
+    report = trace(call, "bounded", query, pipeline)
+    assert call("query", "--pipeline", pipeline, payload={"query": query})["value"] == report
+    assert report["matched_count"] == 2 and not report["truncated"]
+    assert (report["omitted_unknown_time"], report["omitted_inferred_time"]) == (unknown, inferred)
+    assert report["uncertain_time_state_keys"] == ["owner"]
+    assert report["current_reported_states"]["owner"]["status"] == "partial"
+    assert report["current_reported_states"]["owner"]["value"] is None
+    assert report["current_reported_states"]["phase"]["value"] == "in progress"
+
+
 def test_event_date_provenance_is_validated_and_cannot_assert_recency_alone(work):
     _, call = work
     payload = text_input("incident", "Rae", date="2026-04-01")

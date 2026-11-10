@@ -187,9 +187,10 @@ def evidence_context(workspace, line_id: str, radius: int) -> dict:
 
 def _trace_rows(
     index, candidates: set[str], query: dict, time_axis: str, state_keys: set[str] | None = None
-) -> tuple[list[tuple], int, int]:
+) -> tuple[list[tuple], int, int, set[str]]:
     rows = []
-    omitted_unknown = omitted_inferred = 0
+    omitted_counts = {"unknown": 0, "inferred": 0}
+    omitted_states = set()
     bounded = "start_date" in query or "end_date" in query
     time_order = {"explicit": 0, "inferred": 1, "unknown": 2}
     for fid in candidates:
@@ -212,11 +213,10 @@ def _trace_rows(
             day = annotation.get("event_date", "")
             basis = event_date_basis(annotation)
         if bounded:
-            if basis == "inferred":
-                omitted_inferred += 1
-                continue
-            if not day:
-                omitted_unknown += 1
+            if basis != "explicit":
+                omitted_counts[basis] += 1
+                if key and annotation.get("status") == "confirmed" and record["active"]:
+                    omitted_states.add(fid)
                 continue
             if not query.get("start_date", "") <= day <= query.get("end_date", "9999-12-31"):
                 continue
@@ -227,7 +227,7 @@ def _trace_rows(
             sortable = absolute[0]
         first_offset = min(line.get("start_ms", -1) for line in segments)
         rows.append((time_order[basis], sortable, fact.unit, first_offset, fid))
-    return rows, omitted_unknown, omitted_inferred
+    return rows, omitted_counts["unknown"], omitted_counts["inferred"], omitted_states
 
 
 def retrieve(context, resolved: dict) -> dict:
@@ -268,19 +268,22 @@ def retrieve(context, resolved: dict) -> dict:
             )
         }
     time_axis = query.get("time_axis", "source")
-    rows, omitted_unknown, omitted_inferred = _trace_rows(index, candidates, query, time_axis)
+    rows, omitted_unknown, omitted_inferred, omitted_states = _trace_rows(
+        index, candidates, query, time_axis
+    )
     extras = {}
     if follow:
         keys = {
             index.facts[row[-1]]["state_key"] for row in rows if "state_key" in index.facts[row[-1]]
         }
         if keys:
-            additional, unknown, inferred = _trace_rows(
+            additional, unknown, inferred, related_omissions = _trace_rows(
                 index, topic_scope - candidates, query, time_axis, keys
             )
             rows.extend(additional)
             omitted_unknown += unknown
             omitted_inferred += inferred
+            omitted_states.update(related_omissions)
     rows.sort()
     # Select from newest dated to oldest, then from the uncertain tail.
     limit = query.get("limit", 100)
@@ -307,6 +310,14 @@ def retrieve(context, resolved: dict) -> dict:
                 if "state_key" in index.facts[row[-1]]
             }
         )
+    if omitted_states and selected:
+        page_keys = {index.facts[row[-1]].get("state_key") for row in selected}
+        relevant = {fid for fid in omitted_states if index.facts[fid]["state_key"] in page_keys}
+        if relevant:
+            superseded, _ = _supersession(index, time_axis, query.get("end_date"))
+            affected = {index.facts[fid]["state_key"] for fid in relevant - superseded}
+            if affected:
+                extras["uncertain_time_state_keys"] = sorted(affected)
     next_offset = offset + len(selected)
     return {
         "fact_ids": [row[-1] for row in selected],
@@ -369,7 +380,7 @@ def _state_time(row: dict, time_axis: str) -> tuple:
     )
 
 
-def _states(events: list[dict], complete: bool, time_axis: str) -> dict:
+def _states(events: list[dict], complete: bool, time_axis: str, omitted_states: set[str]) -> dict:
     groups = defaultdict(list)
     for event in events:
         if event["state_key"] and event["status"] == "confirmed" and event["effective"]:
@@ -388,6 +399,7 @@ def _states(events: list[dict], complete: bool, time_axis: str) -> dict:
         )
         if (
             not complete
+            or key in omitted_states
             or any(row["supersession_uncertain"] for row in group)
             or (len(values) == 1 and not has_orderable_date)
         ):
@@ -469,12 +481,14 @@ def report(context, matches: dict) -> dict:
     }
     complete = (
         matches["matched"] == len(timeline)
-        and matches["omitted_unknown_time"] == matches["omitted_inferred_time"] == 0
         and not matches["unresolved_topics"]
         and not matches["unresolved_events"]
         and not matches["unresolved_entities"]
     )
     topic_codes = set(matches["topic_codes"])
+    omitted_states = set(matches.get("uncertain_time_state_keys", []))
+    states = _states(timeline, complete, matches["time_axis"], omitted_states)
+    uncertain_time_keys = sorted(states.keys() & omitted_states)
     return {
         "trace": context.pipeline,
         "time_axis": matches["time_axis"],
@@ -487,7 +501,8 @@ def report(context, matches: dict) -> dict:
         ),
         "timeline": timeline,
         **sections,
-        "current_reported_states": _states(timeline, complete, matches["time_axis"]),
+        "current_reported_states": states,
+        **({"uncertain_time_state_keys": uncertain_time_keys} if uncertain_time_keys else {}),
         "matched_count": matches["matched"],
         "next_cursor": matches["next_cursor"],
         "truncated": matches["matched"] > len(timeline),

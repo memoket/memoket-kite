@@ -154,6 +154,9 @@ order and compare facts by explicit event dates. Mark a date derived from
 context with `event_date_basis: inferred`. Omit the date when it is unknown.
 Unbounded event timelines list inferred and unknown dates after explicitly
 dated evidence. Date bounds exclude them and report separate omission counts.
+`uncertain_time_state_keys` identifies reported states affected by omitted
+confirmed evidence on the selected time axis. Other states can still be
+confirmed from their dated evidence.
 Only explicit event dates establish precedence on the event axis. Two facts on
 the same event day or known overlapping intervals can leave competing values
 ambiguous. Reports retain the source date for citation and separately mark
