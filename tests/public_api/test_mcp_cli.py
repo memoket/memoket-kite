@@ -127,7 +127,8 @@ def test_check_missing_sdk_reports_install_hint(memory_path, monkeypatch, capsys
     assert error.value.code == 2
     output = capsys.readouterr()
     assert "MCP SDK: not installed" in output.out
-    assert 'pip install "memoket-kite[mcp]"' in output.err
+    assert 'pip install ".[mcp]" from the KITE checkout' in output.err
+    assert 'same KITE wheel with the "[mcp]" extra' in output.err
     assert "Configuration looks valid." not in output.out
 
 

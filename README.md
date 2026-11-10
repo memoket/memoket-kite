@@ -289,15 +289,16 @@ the benchmark corpora keep their own licences, spelled out in
 
 KITE by Memoket is a plain Python library: three calls take you from a raw conversation
 to a cited answer. The optional [local MCP server](docs/mcp.md) exposes those calls
-to Claude Code over stdio, with source IDs and dates attached to evidence:
+to Claude Code over stdio, with source IDs and dates attached to evidence. Install
+the MCP extra from this checkout and check it against the sample XML file.
 
 ```bash
-python -m pip install "memoket-kite[mcp]"
-kite-mcp --memory ./artifacts/memory.xml
+python -m pip install '.[mcp]'
+kite-mcp --memory examples/data/mcp_memory.xml --read-only --check
 ```
 
-Use an existing writable KITE XML file. Follow the [Claude Code example](docs/mcp.md)
-for setup and a two-conversation temporal update from Tokyo to Berlin.
+Follow the [Claude Code example](docs/mcp.md) to create a fresh sample memory,
+register the server, and trace a two-conversation update from Tokyo to Berlin.
 Normal library installation remains dependency-free.
 
 Want yours first? [Tell us on Discord](https://discord.com/invite/tFh4nur4Vn).

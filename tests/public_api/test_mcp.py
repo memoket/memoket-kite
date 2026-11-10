@@ -391,7 +391,7 @@ def test_missing_optional_sdk_has_an_actionable_error(memory_path, monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", without_sdk)
-    with pytest.raises(ConfigurationError, match=r"pip install.*memoket-kite\[mcp\]"):
+    with pytest.raises(ConfigurationError, match=r'pip install "\.\[mcp\]" from the KITE checkout'):
         create_server(memory_path)
 
 

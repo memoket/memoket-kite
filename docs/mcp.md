@@ -20,16 +20,16 @@ python -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[mcp]"
 mkdir -p artifacts
-cp examples/data/mcp_memory.xml artifacts/claude-memory.xml
+test -e artifacts/claude-memory.xml || cp examples/data/mcp_memory.xml artifacts/claude-memory.xml
 export OPENAI_API_KEY="your-provider-key"
 # Optional, for another OpenAI-compatible provider:
 # export OPENAI_BASE_URL="https://your-provider.example/v1"
 ```
 
-For a published version containing this integration, the package install is
-`python -m pip install "memoket-kite[mcp]"`. Normal `pip install memoket-kite`
-still has no mandatory runtime dependencies. The optional extra uses the
-[official Python MCP SDK](https://github.com/modelcontextprotocol/python-sdk),
+The published `memoket-kite==0.1.0` wheel predates `kite-mcp`. Use this checkout
+or install a [CI preview wheel](../examples/agent-workflows/README.md) with the
+`mcp` extra. The base library has no mandatory runtime dependencies. The optional
+extra uses the [official Python MCP SDK](https://github.com/modelcontextprotocol/python-sdk),
 `mcp>=2.3,<3`, which supports Python 3.10+, without its CLI extra.
 
 The synthetic seed has an empty timeline and root topics to support extraction.

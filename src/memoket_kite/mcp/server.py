@@ -17,7 +17,10 @@ from memoket_kite import ConfigurationError, Fact, KiteError, Memory
 if TYPE_CHECKING:
     from mcp.server import MCPServer
 
-_MCP_INSTALL_HINT = 'MCP support is not installed; run: python -m pip install "memoket-kite[mcp]"'
+_MCP_INSTALL_HINT = (
+    'MCP support is not installed. Run python -m pip install ".[mcp]" from the KITE checkout '
+    'or install the same KITE wheel with the "[mcp]" extra.'
+)
 
 
 def _serialize_fact(fact: Fact) -> dict[str, object]:
