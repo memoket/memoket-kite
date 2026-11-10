@@ -295,7 +295,8 @@ def offline(fixture: dict) -> dict:
             ]
             and cases[DELETION_CASE]["post_deletion_evidence_verified"],
         }
-        cases[RECOVERY_CASE] = _offline_recovery(Path(directory) / "recovery")
+        recovery = _offline_recovery(Path(directory) / "recovery")
+        cases[RECOVERY_CASE] = recovery
         passed = (
             all(case["passed"] for case in cases.values())
             and lifecycle["new_ingestions_completed"] == len(ingestions)
@@ -306,8 +307,8 @@ def offline(fixture: dict) -> dict:
             "fixture_sha256": snapshot["fixture_sha256"],
             "passed": passed,
             "lifecycle": lifecycle,
-            "successful_tool_calls": kite.successes,
-            "attempted_tool_calls": kite.calls,
+            "successful_tool_calls": kite.successes + recovery["successful_tool_calls"],
+            "attempted_tool_calls": kite.calls + recovery["attempted_tool_calls"],
             "cases": cases,
         }
 
@@ -367,6 +368,15 @@ Each claim is an object with `value` and `citations`. Each citation has
     )
 
 
+def _maintenance_run_digest(kite: Kite) -> str:
+    page = kite.call("runs", "--pipeline", "memory-maintenance", "--limit", "100")
+    for run in page["runs"]:
+        # A successful ingestion changes the workspace snapshot for every run.
+        run.pop("snapshot_current")
+    summaries = {"runs": page["runs"], "next_before": page["next_before"]}
+    return hashlib.sha256(json.dumps(summaries, sort_keys=True).encode()).hexdigest()
+
+
 def _prepare_recovery(directory: Path, fixture: dict) -> tuple[Kite, dict]:
     directory.mkdir(mode=0o700)
     kite = Kite(directory / "memory")
@@ -376,10 +386,13 @@ def _prepare_recovery(directory: Path, fixture: dict) -> tuple[Kite, dict]:
     run_id = kite.call("start", "memory-ingestion", payload=source)["run_id"]
     normalized = kite.stage(run_id, "normalize")["value"]
     kite.stage(run_id, "annotate", error="missing_input")
+    for index in range(fixture["newer_maintenance_runs"]):
+        kite.start("memory-maintenance", f"maintenance-{index + 1}", {})
     snapshot = {
         "case": RECOVERY_CASE,
         "fixture_sha256": hashlib.sha256(RECOVERY_FIXTURE.read_bytes()).hexdigest(),
         "ingestion_run_digest": hashlib.sha256(run_id.encode()).hexdigest(),
+        "maintenance_run_digest": _maintenance_run_digest(kite),
         "source_checksum": normalized["checksum"],
         "source_corpus_bytes": sum(
             len(line["text"].encode()) for line in normalized["conversation"]["segments"]
@@ -396,6 +409,7 @@ def _prepare_recovery(directory: Path, fixture: dict) -> tuple[Kite, dict]:
 Use the installed KITE CLI in `./memory` and read its packaged operating guide.
 `transcript.json` is the raw export. A prior process normalized it, then stopped
 when annotation input was missing. Discover and resume that ingestion run.
+Newer maintenance runs may appear in the workspace. Leave them untouched.
 Keep its original source and segment IDs. Add one confirmed fact under topic
 `release review` using `review-day` as the state key. Complete the import
 and trace that topic with `topic-tracing`. Keep writes within the task directory.
@@ -450,6 +464,7 @@ def _score_recovery(kite: Kite, fixture: dict, answer: dict, snapshot: dict) -> 
         and integrity["facts"] == 1
         and sources == [expected_source]
     )
+    maintenance_unchanged = _maintenance_run_digest(kite) == snapshot["maintenance_run_digest"]
     report_verified = False
     if result["pipeline_completed"]:
         report = kite.call("artifact", answer["run_id"], "report")["value"]
@@ -468,25 +483,35 @@ def _score_recovery(kite: Kite, fixture: dict, answer: dict, snapshot: dict) -> 
         ingestion_stage_attempts=ingestion_attempts,
         ingestion_stage_retries=ingestion_retries,
         expected_write_verified=write_verified,
+        maintenance_runs_unchanged=maintenance_unchanged,
         report_evidence_verified=report_verified,
     )
-    result["passed"] &= resumed and write_verified and report_verified
+    result["passed"] &= resumed and write_verified and maintenance_unchanged and report_verified
     return result
 
 
 def _offline_recovery(directory: Path) -> dict:
     fixture = json.loads(RECOVERY_FIXTURE.read_text(encoding="utf-8"))
     kite, snapshot = _prepare_recovery(directory, fixture)
-    run = kite.call("runs")["runs"][0]["run_id"]
+    recent = kite.call("runs")["runs"]
+    candidates = kite.call("runs", "--pipeline", "memory-ingestion", "--unfinished")["runs"]
+    if len(candidates) != 1:
+        raise BenchmarkError("recovery fixture must contain one unfinished ingestion")
+    run = candidates[0]["run_id"]
+    if any(item["run_id"] == run for item in recent):
+        raise BenchmarkError("recovery checkpoint must be outside the default recent run page")
     kite.stage(run, "annotate", payload={"annotations": fixture["annotations"]})
     kite.stage(run, "commit")
     kite.stage(run, "verify")
     report = kite.trace("recovered-trace", fixture["case"])
     answer = _reference_answer(fixture["case"], "recovered-trace", report)
     answer["ingestion_run_id"] = run
+    score = _score_recovery(kite, fixture, answer, snapshot)
     return {
         "fixture_sha256": snapshot["fixture_sha256"],
-        **_score_recovery(kite, fixture, answer, snapshot),
+        "successful_tool_calls": kite.successes,
+        "attempted_tool_calls": kite.calls,
+        **score,
     }
 
 

@@ -89,8 +89,27 @@ def test_recovery_score_rejects_replacing_the_interrupted_run(tmp_path):
 
     result = _score_recovery(kite, fixture, answer, baseline)
     assert result["expected_write_verified"] and result["report_evidence_verified"]
+    assert result["maintenance_runs_unchanged"]
     assert not result["interrupted_run_recovered"]
     assert not result["passed"]
+
+
+def test_recovery_score_rejects_changes_to_unrelated_runs(tmp_path):
+    fixture = json.loads(RECOVERY_FIXTURE.read_text())
+    kite, baseline = _prepare_recovery(tmp_path / "task", fixture)
+    (interrupted,) = kite.call("runs", "--pipeline", "memory-ingestion", "--unfinished")["runs"]
+    run = interrupted["run_id"]
+    assert run not in {item["run_id"] for item in kite.call("runs")["runs"]}
+    kite.stage("maintenance-1", "verify")
+    kite.stage(run, "annotate", payload={"annotations": fixture["annotations"]})
+    kite.stage(run, "commit")
+    kite.stage(run, "verify")
+    report = kite.trace("trace", fixture["case"])
+    answer = _reference_answer(fixture["case"], "trace", report)
+    answer["ingestion_run_id"] = run
+    result = _score_recovery(kite, fixture, answer, baseline)
+    assert result["interrupted_run_recovered"] and result["report_evidence_verified"]
+    assert not result["maintenance_runs_unchanged"] and not result["passed"]
 
 
 def test_deletion_score_requires_the_authorized_checkpoint(tmp_path):
