@@ -95,12 +95,21 @@ def resolve(context, query: dict) -> dict:
             event_codes.add(code)
         else:
             unknown_events.append(event)
+    entity_codes, unknown_entities = set(), []
+    for entity in query.get("entities", []):
+        code = index.vocab.resolve_entity(entity)
+        if code is None:
+            unknown_entities.append(entity)
+        else:
+            entity_codes.add(code)
     return {
         "query": query,
         "topic_codes": sorted(codes),
         "unresolved_topics": unknown,
         "event_codes": sorted(event_codes),
         "unresolved_events": unknown_events,
+        "entity_codes": sorted(entity_codes),
+        "unresolved_entities": unknown_entities,
     }
 
 
@@ -122,9 +131,8 @@ def retrieve(context, resolved: dict) -> dict:
             *(index.store.by_topic.get(code, set()) for code in resolved["topic_codes"])
         )
     if "entities" in query:
-        entity_codes = {index.vocab.resolve_entity(name) for name in query["entities"]}
         candidates &= set().union(
-            *(index.store.by_entity.get(code, set()) for code in entity_codes)
+            *(index.store.by_entity.get(code, set()) for code in resolved["entity_codes"])
         )
     if "events" in query:
         candidates &= set().union(*(index.store.by_event[code] for code in resolved["event_codes"]))
@@ -198,6 +206,8 @@ def retrieve(context, resolved: dict) -> dict:
         "topic_codes": resolved["topic_codes"],
         "event_codes": resolved["event_codes"],
         "unresolved_events": resolved["unresolved_events"],
+        "entity_codes": resolved["entity_codes"],
+        "unresolved_entities": resolved["unresolved_entities"],
         **({"end_date": query["end_date"]} if "end_date" in query else {}),
     }
 
@@ -372,6 +382,7 @@ def report(context, matches: dict) -> dict:
         and matches["omitted_unknown_time"] == matches["omitted_inferred_time"] == 0
         and not matches["unresolved_topics"]
         and not matches["unresolved_events"]
+        and not matches["unresolved_entities"]
     )
     topic_codes = set(matches["topic_codes"])
     return {
@@ -392,5 +403,7 @@ def report(context, matches: dict) -> dict:
         "related_entities": _related_labels(timeline, "entities", set()) if topic_codes else [],
         "resolved_events": matches["event_codes"],
         "unresolved_events": matches["unresolved_events"],
+        "resolved_entities": matches["entity_codes"],
+        "unresolved_entities": matches["unresolved_entities"],
         "memory_version": context.workspace.version(),
     }

@@ -103,6 +103,13 @@ fact annotations. The query matches any listed event and intersects it with
 other filters such as `projects`, `speakers` and date bounds. Check
 `unresolved_events` in the report for labels absent from the workspace.
 
+Use `query.entities` for people or other entities named in fact annotations.
+It resolves aliases to canonical codes and matches any of the requested
+entities. The report lists `resolved_entities`
+and `unresolved_entities`. When only some requested names are recognized,
+the trace retains matching evidence and marks any reported states partial.
+Use `query.speakers` for the recorded speaker on an evidence segment.
+
 By default, timelines and reported states use source dates, timestamps, and
 available offsets within a single recording. Use `query.time_axis: event` to
 order and compare facts by explicit event dates. Mark a date derived from

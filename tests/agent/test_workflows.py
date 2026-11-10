@@ -1320,6 +1320,44 @@ def test_event_filter_intersects_project_speaker_and_dates(work):
     assert not alternative["unresolved_events"]
 
 
+def test_task_trace_reports_unresolved_entities_without_claiming_complete_state(work):
+    _, call = work
+    dave = text_input("handoff", "David owns the checklist.", date="2026-05-04")
+    dave["annotations"]["facts"][0].update(entities=["Dave"], state="David")
+    dave["annotations"]["entity_aliases"] = [{"name": "David Huang", "aliases": ["Dave"]}]
+    ingest(call, "handoff", dave)
+    other = text_input("other", "Rae owns the checklist.", date="2026-05-05")
+    other["annotations"]["facts"][0].update(entities=["Rae"], state="Rae")
+    ingest(call, "other", other)
+
+    query = {"topics": ["onboarding"], "entities": ["Dave", "David Huang"]}
+    complete = trace(call, "complete", query, "task-tracing")
+    assert complete["resolved_entities"] == ["david_huang"]
+    assert complete["unresolved_entities"] == []
+    assert complete["current_reported_states"]["owner"]["value"] == "David"
+
+    either = trace(call, "either", {**query, "entities": ["Dave", "Rae"]}, "task-tracing")
+    assert either["matched_count"] == 2
+    assert either["resolved_entities"] == ["david_huang", "rae"]
+    assert either["current_reported_states"]["owner"]["value"] == "Rae"
+
+    mixed = trace(call, "mixed", {**query, "entities": ["Dave", "Unknown Person"]}, "task-tracing")
+    assert mixed["timeline"] == complete["timeline"]
+    assert mixed["matched_count"] == 1
+    assert mixed["resolved_entities"] == ["david_huang"]
+    assert mixed["unresolved_entities"] == ["Unknown Person"]
+    assert mixed["current_reported_states"]["owner"] == {
+        "status": "partial",
+        "value": None,
+        "fact_ids": [mixed["timeline"][0]["fact_id"]],
+    }
+
+    unknown = trace(call, "unknown", {"entities": ["Unknown Person"]}, "task-tracing")
+    assert unknown["resolved_entities"] == []
+    assert unknown["unresolved_entities"] == ["Unknown Person"]
+    assert unknown["timeline"] == [] and unknown["current_reported_states"] == {}
+
+
 def test_trace_cursor_reads_all_windows_without_repeating_evidence(work):
     _, call = work
     for name, event in (
