@@ -913,6 +913,14 @@ def test_batch_deletion_targets_exact_ids_and_keeps_unrelated_records(work):
     call("start", "memory-ingestion", "--run-id", "staged", payload=staged)
     call("stage", "staged", "normalize")
 
+    call(
+        "start",
+        "memory-deletion",
+        "--run-id",
+        "single",
+        payload={"target": {"source": "text", "conversation_id": "remove-a"}},
+    )
+    single_token = call("stage", "single", "preview")["value"]["approval_token"]
     selector = {"source": "text", "conversation_ids": ["staged", "remove-b", "remove-a"]}
     call("start", "memory-deletion", "--run-id", "batch", payload={"target": selector})
     plan = call("stage", "batch", "preview")["value"]
@@ -920,16 +928,6 @@ def test_batch_deletion_targets_exact_ids_and_keeps_unrelated_records(work):
     assert plan["conversation_ids_without_revisions"] == ["staged"]
     assert (plan["revisions"], plan["facts"]) == (2, 2)
     call("stage", "batch", "apply", error="awaiting_approval")
-    call(
-        "start",
-        "memory-deletion",
-        "--run-id",
-        "single",
-        payload={
-            "target": {"source": "text", "conversation_id": "remove-a"},
-        },
-    )
-    single_token = call("stage", "single", "preview")["value"]["approval_token"]
     call("stage", "batch", "apply", "--approve", single_token, error="permission_denied")
 
     result = call("stage", "batch", "apply", "--approve", plan["approval_token"])
@@ -1021,6 +1019,39 @@ def test_deletion_covers_staged_sources_and_different_snapshot(work):
     call(
         "start", "memory-ingestion", "--run-id", "late-import", payload=data, error="deleted_source"
     )
+
+
+@pytest.mark.parametrize("change", ["new-run", "new-artifact"])
+def test_deletion_preview_rejects_changed_workflow_impact_without_memory_write(work, change):
+    _, call = work
+    ingest(call, "remove", text_input("remove", "delete this"))
+    pending = text_input("pending", "work in progress")
+    if change == "new-artifact":
+        call("start", "memory-ingestion", "--run-id", "pending", payload=pending)
+    target = {"target": {"source": "text", "conversation_id": "remove"}}
+    call("start", "memory-deletion", "--run-id", "old", payload=target)
+    old = call("stage", "old", "preview")["value"]
+    if change == "new-artifact":
+        call("stage", "pending", "normalize")
+    else:
+        call("start", "memory-ingestion", "--run-id", "pending", payload=pending)
+
+    unchanged = call("integrity")
+    assert unchanged["memory_version"] == old["memory_version"]
+    call("stage", "old", "apply", "--approve", old["approval_token"], error="stale_preview")
+    assert call("integrity") == unchanged
+    assert call("deletion-audit")["deletions"] == []
+    assert call("status", "old")["resume"]["reason"] == "stale_preview"
+
+    call("start", "memory-deletion", "--run-id", "fresh")
+    fresh = call("stage", "fresh", "preview", payload=target)["value"]
+    assert fresh["runs_to_invalidate"] == old["runs_to_invalidate"] + 1 + (change == "new-run")
+    assert fresh["run_artifacts_to_purge"] == (
+        old["run_artifacts_to_purge"] + 1 + (change == "new-artifact")
+    )
+    call("stage", "fresh", "apply", "--approve", old["approval_token"], error="permission_denied")
+    receipt = call("stage", "fresh", "apply", "--approve", fresh["approval_token"])
+    assert receipt["value"]["deleted_revisions"] == 1
 
 
 def test_verified_backup_resumes_runs_and_preserves_deletions(work, tmp_path):

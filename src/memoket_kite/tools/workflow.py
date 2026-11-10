@@ -321,6 +321,8 @@ def _resume(context: Context, row, checkpoint: dict) -> dict:
 
     if checkpoint["state"] == "completed":
         return {"state": "complete", "stages": []}
+    if any(stage["error"] == "stale_preview" for stage in checkpoint["stages"].values()):
+        return {"state": "blocked", "reason": "stale_preview", "stages": []}
     eligible = []
     flags = {"provider": ["--allow-provider"], "delete": ["--approve"]}
     for stage in definition["stages"]:
@@ -509,6 +511,7 @@ def advance(
     row, checkpoint = _run(context.workspace, run_id)
     definition, fingerprint = _bound_definition(context, row, checkpoint)
     context.pipeline = checkpoint["pipeline_id"]
+    context.run_id = run_id
     stages = {stage["id"]: stage for stage in definition["stages"]}
     if stage_id not in stages:
         raise ToolError("not_found", "pipeline has no stage with that ID")

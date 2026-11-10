@@ -127,6 +127,7 @@ SCHEMAS = {
             "memory_version": COUNT,
             "revisions": COUNT,
             "facts": COUNT,
+            "runs_to_invalidate": COUNT,
             "run_artifacts_to_purge": COUNT,
         },
         {"conversation_ids_without_revisions": array(TEXT, maximum=100)},
@@ -150,6 +151,7 @@ class Context:
     approval: str | None = None
     allow_provider: bool = False
     extension_root: Path | None = None
+    run_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -185,11 +187,11 @@ def _validate(context: Context, receipt: dict | None = None) -> dict:
 
 
 def _preview(context: Context, target: dict) -> dict:
-    return context.workspace.deletion_plan(target)[0]
+    return context.workspace.deletion_plan(target, run_id=context.run_id)[0]
 
 
 def _delete(context: Context, plan: dict) -> dict:
-    return context.workspace.delete(plan, context.approval)
+    return context.workspace.delete(plan, context.approval, run_id=context.run_id)
 
 
 def _rebuild(context: Context) -> dict:
@@ -221,6 +223,6 @@ TOOLS = {
     "report": Tool(report, {"matches": "matches"}, "report", version=8),
     "reclassify": Tool(reclassify, {"merge": "reclassify"}, "receipt", "write", version=2),
     "move_topic": Tool(move_topic, {"move": "topic_move"}, "receipt", "write"),
-    "preview_delete": Tool(_preview, {"target": "deletion_target"}, "deletion_plan", version=2),
-    "delete": Tool(_delete, {"plan": "deletion_plan"}, "receipt", "delete", version=2),
+    "preview_delete": Tool(_preview, {"target": "deletion_target"}, "deletion_plan", version=3),
+    "delete": Tool(_delete, {"plan": "deletion_plan"}, "receipt", "delete", version=3),
 }

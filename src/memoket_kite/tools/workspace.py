@@ -601,7 +601,7 @@ class Workspace:
             self.db.execute("DELETE FROM artifacts WHERE run_id=?", (row["id"],))
             self._redact_run(row)
 
-    def deletion_plan(self, target: dict) -> dict:
+    def deletion_plan(self, target: dict, *, run_id: str) -> tuple[dict, list[sqlite3.Row]]:
         ids = _target_ids(target)
         query = "SELECT * FROM revisions WHERE source=?"
         if ids:
@@ -618,31 +618,46 @@ class Workspace:
             ]
         # The selector stays local to the preview. The audit retains its
         # operation digest and aggregate counts.
-        memory = self.db.execute(
-            "SELECT workspace_id, version FROM memory WHERE singleton=1"
-        ).fetchone()
-        version = memory["version"]
-        operation = digest([memory["workspace_id"], version, target])
-        return {
+        workspace_id, version = self.snapshot_identity()
+        # Preparing and retrying the approval updates its own checkpoint.
+        # Bind the other run inputs and the artifacts affected by the purge.
+        runs = [
+            (row["id"], digest(row["inputs"]))
+            for row in self.db.execute(
+                "SELECT id, inputs FROM runs WHERE id<>? AND definition<>'' ORDER BY id",
+                (run_id,),
+            )
+        ]
+        artifacts = [
+            tuple(row)
+            for row in self.db.execute(
+                """
+                SELECT run_id, stage, kind, digest FROM artifacts
+                WHERE run_id<>? OR kind<>'deletion_plan' ORDER BY run_id, stage
+                """,
+                (run_id,),
+            )
+        ]
+        impact = {
             "target": target,
-            "approval_token": operation,
             "memory_version": version,
             "revisions": len(rows),
             "facts": fact_count,
-            "run_artifacts_to_purge": self.db.execute("SELECT count(*) FROM artifacts").fetchone()[
-                0
-            ],
+            "runs_to_invalidate": len(runs),
+            "run_artifacts_to_purge": len(artifacts),
             **extras,
-        }, rows
+        }
+        approval = digest([workspace_id, run_id, impact, runs, artifacts])
+        return {**impact, "approval_token": approval}, rows
 
-    def delete(self, plan: dict, approval: str | None) -> dict:
+    def delete(self, plan: dict, approval: str | None, *, run_id: str) -> dict:
         if approval is None:
             raise ToolError("awaiting_approval", "delete requires the user-approved preview token")
         if approval != plan["approval_token"]:
             raise ToolError("permission_denied", "approval does not match the deletion preview")
-        current, rows = self.deletion_plan(plan["target"])
+        current, rows = self.deletion_plan(plan["target"], run_id=run_id)
         if current["approval_token"] != approval:
-            raise ToolError("stale_snapshot", "memory changed; preview the deletion again")
+            raise ToolError("stale_preview", "deletion impact changed; start a new deletion run")
         target = plan["target"]
         self.db.executemany(
             "INSERT OR IGNORE INTO tombstones VALUES('conversation', ?)",

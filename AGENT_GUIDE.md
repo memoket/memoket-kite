@@ -222,7 +222,11 @@ KITE checks the source identity before saving reimport inputs or artifacts.
 On upgrade, KITE also scrubs legacy run inputs and artifacts for identities
 already recorded as deleted. Only then pass its token via `--approve` to the `apply` stage.
 The CLI treats this flag as an attestation from the trusted local operator.
-The token binds the workspace, target and memory version. Deletion removes
+The token binds the workspace, deletion run, target, memory version and
+workflow impact. The preview counts other runs to invalidate and artifacts
+to purge, excluding the current run's approval bookkeeping. If other
+workflow data changes before apply, `stale_preview` requires a fresh run and
+approval even when the memory version is unchanged. Deletion removes
 all target revisions and references, records tombstones, and conservatively
 purges prior run inputs and artifacts that could contain the target. When
 deleted revisions sit between surviving corrections, KITE reconnects the
