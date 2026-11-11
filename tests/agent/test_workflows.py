@@ -636,6 +636,51 @@ def test_resumable_run_listing_checks_snapshots_and_artifacts_before_paging(work
     assert call("ingest", "--resume", "append") == receipt
 
 
+def test_resumable_listing_reuses_current_pipeline_validation_per_request(
+    work, tmp_path, monkeypatch
+):
+    directory, call = work
+    repo = tmp_path / "definitions"
+    for folder in ("schemas", "skills", "pipeline_defs"):
+        shutil.copytree(ROOT / folder, repo / folder)
+    for run in ("older-trace", "stale-trace"):
+        call("start", "topic-tracing", "--run-id", run, repo=repo)
+    skill = repo / "skills" / "retrieval" / "topic-tracing" / "SKILL.md"
+    skill.write_text(
+        skill.read_text(encoding="utf-8") + "\nUpdated instruction.\n", encoding="utf-8"
+    )
+    call("start", "topic-tracing", "--run-id", "current-trace", repo=repo)
+    for run in ("first-import", "second-import"):
+        call("start", "memory-ingestion", "--run-id", run, repo=repo)
+
+    loaded = []
+    original_load = workflow.load_pipeline
+
+    def load_pipeline(root, name, **options):
+        loaded.append(name)
+        return original_load(root, name, **options)
+
+    monkeypatch.setattr(workflow, "load_pipeline", load_pipeline)
+    path = directory / "kite.sqlite3"
+    before = path.read_bytes()
+    listing = call("runs", "--resumable", repo=repo)
+    assert [row["run_id"] for row in listing["runs"]] == [
+        "second-import",
+        "first-import",
+        "current-trace",
+    ]
+    assert loaded == ["memory-ingestion", "topic-tracing"]
+
+    (repo / "pipeline_defs" / "topic-tracing.yaml").write_text("invalid: [", encoding="utf-8")
+    loaded.clear()
+    listing = call("runs", "--resumable", repo=repo)
+    assert [row["run_id"] for row in listing["runs"]] == ["second-import", "first-import"]
+    assert loaded == ["memory-ingestion", "topic-tracing"]
+    assert path.read_bytes() == before
+    assert call("status", "current-trace", repo=repo)["resume"]["reason"] == "invalid_pipeline"
+    call("stage", "current-trace", "resolve", repo=repo, error="invalid_pipeline")
+
+
 def test_workflow_inspection_and_receipt_replay_read_committed_state_during_a_write(
     work, monkeypatch
 ):

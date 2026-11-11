@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
+from functools import cache
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from uuid import uuid4
@@ -45,6 +47,7 @@ _REPLACEABLE_STAGE_INPUTS = {
     "annotate": ("annotations", {"invalid_evidence", "invalid_input", "integrity_error"}),
     "resolve": ("query", {"invalid_input", "stale_snapshot"}),
 }
+DefinitionLookup = Callable[[str], tuple[dict, str] | ToolError]
 
 
 def query_report(context: Context, supplied: dict) -> dict:
@@ -302,6 +305,20 @@ def recent_runs(
     fields = ("run_id", "pipeline_id", "state", "current_stage", "created_at", "updated_at")
     runs = []
     next_before = None
+
+    # One definition per pipeline for this listing. Each run checks its own fingerprint.
+    @cache
+    def lookup_definition(name: str) -> tuple[dict, str] | ToolError:
+        try:
+            definition, fingerprint, _ = load_pipeline(
+                context.root, name, extension_root=context.extension_root
+            )
+            return definition, fingerprint
+        except ToolError as error:
+            return ToolError(error.code, str(error))
+        except (OSError, ValueError):
+            return ToolError("invalid_pipeline", "pipeline definition cannot be read")
+
     for row in rows:
         checkpoint = _checkpoint(row)
         try:
@@ -322,7 +339,7 @@ def recent_runs(
             stored = workspace.db.execute(
                 "SELECT definition, inputs FROM runs WHERE id=?", (row["id"],)
             ).fetchone()
-            resume = _resume(context, stored, checkpoint)
+            resume = _resume(context, stored, checkpoint, lookup_definition=lookup_definition)
             if resume["state"] != "available":
                 continue
             summary["resume"] = resume
@@ -453,9 +470,13 @@ def _check_stage_inputs(
         raise ToolError("conflict", "cannot change a completed stage")
 
 
-def _resume(context: Context, row, checkpoint: dict) -> dict:
+def _resume(
+    context: Context, row, checkpoint: dict, *, lookup_definition: DefinitionLookup | None = None
+) -> dict:
     try:
-        definition, _ = _bound_definition(context, row, checkpoint)
+        definition, _ = _bound_definition(
+            context, row, checkpoint, lookup_definition=lookup_definition
+        )
         supplied = _stored_inputs(row, checkpoint)
     except ToolError as error:
         return {"state": "blocked", "reason": error.code, "stages": []}
@@ -528,7 +549,9 @@ def _only_commit_verification_remains(definition: dict, checkpoint: dict) -> boo
     )
 
 
-def _bound_definition(context: Context, row, checkpoint: dict) -> tuple[dict, str]:
+def _bound_definition(
+    context: Context, row, checkpoint: dict, *, lookup_definition: DefinitionLookup | None = None
+) -> tuple[dict, str]:
     if checkpoint["state"] == "invalidated":
         raise ToolError("invalidated_run", "deletion invalidated this run")
     if row["definition"] != checkpoint["definition_digest"]:
@@ -547,9 +570,16 @@ def _bound_definition(context: Context, row, checkpoint: dict) -> tuple[dict, st
             for stage in checkpoint["stages"].values()
         ):
             raise stale_error
-    definition, fingerprint, _ = load_pipeline(
-        context.root, checkpoint["pipeline_id"], extension_root=context.extension_root
-    )
+    pipeline = checkpoint["pipeline_id"]
+    if lookup_definition is None:
+        definition, fingerprint, _ = load_pipeline(
+            context.root, pipeline, extension_root=context.extension_root
+        )
+    else:
+        loaded = lookup_definition(pipeline)
+        if isinstance(loaded, ToolError):
+            raise ToolError(loaded.code, str(loaded))
+        definition, fingerprint = loaded
     if fingerprint != row["definition"]:
         raise ToolError("stale_definition", "pipeline, skill or tool changed; start a new run")
     if stale and not _only_commit_verification_remains(definition, checkpoint):
