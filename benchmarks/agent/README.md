@@ -207,6 +207,51 @@ its citation headers.
 Use `--repeat 3` to run fresh paired sessions three times per case. Each
 repetition reverses the arm order and retains its own Codex usage record.
 
+For notes, pass `--source-format text` to read UTF-8 `.txt` and `.md` files.
+Their citations use `file-stem#text-line-N`. Pass `--recording-metadata DIR`
+to read the calendar dates from same-ID JSON files with `conversation_id`
+and `started_at`. A case can set inclusive `start_date` and `end_date`.
+Both arms use the same source subset for that case. The runner builds a
+separate index for the date range and puts the original file copies in date
+directories for the file arm. Undated sources are outside any bounded range.
+
+```sh
+python -m benchmarks.agent.context_eval /path/to/transcripts cases.json artifacts/dated-host-eval \
+  --retrieval question --recording-metadata /path/to/recordings \
+  --model YOUR_CODEX_MODEL --codex /path/to/codex
+```
+
+Under `--retrieval question`, a case can supply `questions` with exactly
+two questions. Both arms see those questions in the task prompt. The fixed
+KITE pack uses `--compare-with` and a single quote budget. For field-level
+grading, use `claims` in place of `answer_patterns` and `evidence`.
+With these case extensions, `./kite context --text` starts with the supplied
+task or two questions. Explicit `--question` or `--term` flags remain available
+for follow-up retrieval.
+
+```json
+{
+  "id": "deployment-owner",
+  "task": "Who owns the deployment after the handoff, and is there a deadline?",
+  "start_date": "2026-04-01",
+  "end_date": "2026-04-30",
+  "claims": {
+    "owner": {"pattern": "Rae", "refs": ["handoff#L14", "followup#L8"]},
+    "deadline": {"unknown": true}
+  }
+}
+```
+
+Each answer field needs its own expected citation. Use `all_refs: true` for
+claims requiring several lines and `reject` for a disallowed value pattern.
+The report counts cited lines outside the visible sources and records corpus,
+date, scope, case, and prompt hashes. `host_summary` compares token totals,
+uncached input, tool output, and wall time on completed pairs. It reports
+claims and completion counts across all recorded trials. A separate
+efficiency summary uses only pairs where both answers pass.
+Use `--record-tool-output` when diagnosing a retrieval miss. The private
+report then includes the commands and the exact output Codex received.
+
 The fixed retrieval result checks exact evidence coverage and the fraction
 of tasks where all expected evidence was retrieved. A labeled citation hit
 does not assess the relevance of every extra retrieved line. Review answer
