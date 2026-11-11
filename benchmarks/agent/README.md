@@ -241,6 +241,11 @@ Under `--retrieval question`, a case can supply `questions` with exactly
 two questions. Both arms see those questions in the task prompt. The fixed
 KITE pack uses `--compare-with` and a single quote budget. For field-level
 grading, use `claims` in place of `answer_patterns` and `evidence`.
+Add `compare_start_date` or `compare_end_date` when the second question has a
+different recording window. Both arms receive both effective ranges and the
+union of the original files in those ranges. The fixed KITE pack applies each
+range to its own question. Report these as date-anchored cases when comparing
+results with prompts that do not specify the dates.
 With these case extensions, `./kite context --text` starts with the supplied
 task or two questions. Explicit `--question` or `--term` flags remain available
 for follow-up retrieval.

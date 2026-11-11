@@ -6,6 +6,53 @@ import pytest
 from benchmarks.agent import context_eval
 
 
+def test_comparison_benchmark_uses_disjoint_recording_windows(tmp_path):
+    corpus = tmp_path / "transcripts"
+    corpus.mkdir()
+    metadata = tmp_path / "metadata"
+    metadata.mkdir()
+    for name, day in (
+        ("first", "2026-04-02"),
+        ("gap", "2026-04-12"),
+        ("second", "2026-04-20"),
+    ):
+        (corpus / f"{name}_transcript.txt").write_text(
+            f"00:00\nSpeaker A\nChecklist approval is marked {name}.\n", encoding="utf-8"
+        )
+        (metadata / f"{name}.json").write_text(
+            json.dumps({"conversation_id": name, "started_at": day}), encoding="utf-8"
+        )
+    case = {
+        "id": "approval",
+        "questions": ["Check checklist approval", "Check checklist approval again"],
+        "start_date": "2026-04-01",
+        "end_date": "2026-04-03",
+        "compare_start_date": "2026-04-19",
+        "compare_end_date": "2026-04-21",
+        "evidence": ["first#L3", "second#L3"],
+    }
+    output = tmp_path / "evaluation"
+    output.mkdir()
+    sources = context_eval.read_corpus(corpus, "transcript-text", metadata)
+    scope = context_eval.prepare_case_corpora(sources, [case], output, with_files=True)["approval"]
+    assert scope.citations == set(case["evidence"])
+    assert sorted(file.name for file in scope.files.rglob("*.txt")) == [
+        "first_transcript.txt",
+        "second_transcript.txt",
+    ]
+    row, rendered = context_eval.retrieval_case(scope.workspace, case, question=True)
+    assert row["complete"]
+    launcher = output / "kite"
+    context_eval.write_launcher(
+        launcher, scope.workspace, case["questions"], date_args=context_eval.recording_args(case)
+    )
+    result = subprocess.check_output([launcher, "context", "--text"], text=True)
+    assert result.rstrip("\n") == rendered.rstrip("\n")
+    first, second = result.split("Question 2")
+    assert "first#L3" in first and "second#L3" not in first
+    assert "second#L3" in second and "first#L3" not in second
+
+
 @pytest.mark.parametrize(
     ("matching_lines", "host_follow_up"), [(False, False), (True, False), (False, True)]
 )
