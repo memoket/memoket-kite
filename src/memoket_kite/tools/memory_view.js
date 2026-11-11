@@ -24,7 +24,7 @@
       sourceCatalog: 'Sources', noSources: 'No sources are available.', filterCatalog: 'Filter this list',
       noMatches: 'No matching items.', more: 'Show more', scanned: 'sources with entity or facet labels',
       compile: 'Compiled phrases', candidates: 'candidate spans', quoteBytes: 'quote bytes',
-      sharedQuotes: 'lines shared by both questions',
+      sharedQuotes: 'shared lines',
       candidateSources: 'candidate sources', compareRevision: 'Compare with current version',
       readRevision: 'Read this revision',
       anchorSources: 'sources matching the name',
@@ -34,6 +34,8 @@
       wordForms: 'English word forms',
       repeatedTerms: 'Repeated query terms', followupQuote: 'Follow-up quote', followupQuotes: 'follow-up quotes',
       firstLinesPrioritized: 'More passages from the leading source',
+      versionLinesPrioritized: 'Original lines first, then surrounding turns',
+      openVersionEvidence: 'Read differing line',
       packingSegments: 'Segments',
       corroboratingTerms: 'Multiple clues match this passage',
       recordingSelection: {
@@ -42,6 +44,7 @@
         dated_plan_followup: 'A later recording cites the earlier date and mentions a change',
         change_subquestion: 'Original evidence selected for this subquestion',
         change_phase: 'Original evidence selected for this phase of the question',
+        version_evidence: 'Original line is missing or differs in the other snapshot',
       },
       changePhases: 'Phases in the question',
       sameTextSources: 'Sources with the same transcript text',
@@ -90,7 +93,7 @@
       sourceCatalog: '来源', noSources: '当前工作区没有来源。', filterCatalog: '筛选当前列表',
       noMatches: '没有匹配项。', more: '显示更多', scanned: '份来源有实体或 Facet 标注',
       compile: '编译出的检索词', candidates: '个候选片段', quoteBytes: '字节原文',
-      sharedQuotes: '行引文由两问共享',
+      sharedQuotes: '行共用引文',
       candidateSources: '份候选来源', compareRevision: '与当前版本对照',
       readRevision: '查看此版本原文',
       anchorSources: '份来源命中名称',
@@ -99,6 +102,8 @@
       wordForms: '英文词形匹配',
       repeatedTerms: '问题中重复出现', followupQuote: '后续原文命中', followupQuotes: '行后续引文',
       firstLinesPrioritized: '先取同一来源的多个片段',
+      versionLinesPrioritized: '先保留引文，再补相邻原文',
+      openVersionEvidence: '查看差异原文',
       packingSegments: '原文段', sortCandidatesByDate: '按录制日期排列',
       corroboratingTerms: '同一片段命中多个线索',
       recordingSelection: {
@@ -107,6 +112,7 @@
         dated_plan_followup: '后续录制重提原日期并讨论改期',
         change_subquestion: '为这个子问题选取的原文',
         change_phase: '为问题中这个阶段选取的原文',
+        version_evidence: '该原文在对照版本中缺失或措辞不同',
       },
       changePhases: '问题中的阶段',
       sameTextSources: '原文相同的来源',
@@ -1026,6 +1032,11 @@
           if (history) {
             branch.append(element('p', new Date(history.committed_at).toLocaleString(language)));
             if (history.later_deletions) branch.append(element('p', t('historyDeletes')));
+            const changedLine = lines.get(part.version_evidence);
+            if (changedLine) {
+              branch.append(button(t('openVersionEvidence') + ' · ' + changedLine.segment_id,
+                () => choose(changedLine), 'citation-link'));
+            }
           }
           if (part.recording_bounds) {
             branch.append(element('p', recordingScope(part.recording_bounds) || t('allRecordingDates')));
@@ -1044,7 +1055,9 @@
           if (part.change_phases?.length) {
             branch.append(element('p', t('changePhases') + ' · ' + part.change_phases.join(' / ')));
           }
-          if (part.first_lines_prioritized) branch.append(element('p', t('firstLinesPrioritized')));
+          if (part.first_lines_prioritized) {
+            branch.append(element('p', t(history ? 'versionLinesPrioritized' : 'firstLinesPrioritized')));
+          }
           branches.append(branch);
         }
         trace.append(branches);

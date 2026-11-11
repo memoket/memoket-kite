@@ -44,6 +44,8 @@ historical revision checksums with their quotes.
 Add `--from-version BEFORE` to compare the same question with an earlier
 tracked version. Both sides search retained original text under the same
 filters. Use the version heading and revision checksum with each citation.
+Read a highlighted version difference in context before treating it as a
+confirmed decision.
 For questions about earlier or later discussions, check the recording dates
 and the quoted wording for each answer. Keep the sequence uncertain when
 the citations leave competing recordings or tied times.

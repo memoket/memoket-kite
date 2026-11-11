@@ -60,6 +60,11 @@ def _search_snapshot(
                     "key": key,
                     **part["compilation"],
                     **({"history": part["history"]} if version_comparison else {}),
+                    **(
+                        {"version_evidence": part["version_evidence"]}
+                        if part.get("version_evidence")
+                        else {}
+                    ),
                     "passages": len(part["spans"]),
                     "quote_bytes": part["quote_bytes"],
                     "quote_budget_bytes": part["quote_budget_bytes"],

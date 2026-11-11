@@ -133,6 +133,12 @@ the current version. Both sides search retained original text with the same
 recording and source filters and share the quote budget. The output labels
 each snapshot and cites its exact source revisions. In the graph, open a
 committed change under **Workflows** and choose **Compare search before and after**.
+When a small set of sources differs between the selected versions, the search
+can reserve a line whose wording differs and is relevant to the question.
+The graph links that line to its source. Read the quote to determine whether
+it confirms a change or records a proposal. In text output, an unchanged
+quote may refer to the same words in the earlier version while keeping its
+own source line and revision heading.
 A topic merge can affect current label lookup. Both sides of a workspace
 version comparison use original text.
 When a question refers to an earlier or later discussion, check the dates

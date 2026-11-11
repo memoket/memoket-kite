@@ -835,7 +835,7 @@ class Workspace:
             (version,),
         )
 
-    def records_at(self, version: int, plan: dict) -> list[dict]:
+    def records_at(self, version: int, plan: dict, *, reuse: dict | None = None) -> list[dict]:
         filters = ["v.opened_version<=?", "(v.closed_version IS NULL OR v.closed_version>?)"]
         args = [version, version]
         for field in ("source", "conversation_id"):
@@ -848,7 +848,16 @@ class Workspace:
             f"WHERE {where} ORDER BY r.checksum",
             args,
         ).fetchall()
-        return self._records(rows)
+        if reuse is None:
+            return self._records(rows)
+        # Both version reads use the same database transaction. Reuse only
+        # records already checked against this revision checksum in that read.
+        return [
+            reuse[row["checksum"]]
+            if row["checksum"] in reuse
+            else {**self._decode_revision(row), "active": bool(row["active"])}
+            for row in rows
+        ]
 
     def require_source_allowed(self, source, conversation_id, reference) -> None:
         if not isinstance(source, str):

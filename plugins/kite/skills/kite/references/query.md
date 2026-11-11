@@ -14,6 +14,9 @@ For the same question across a workspace change, run
 The target defaults to the current version. Both sides use retained original
 text and the same source and recording filters. Add `--save` to inspect both
 snapshots in the graph. A permanent deletion can remove evidence from both.
+The comparison can cite relevant original wording that appears in only one
+version. Check the quote for approval status. Text output can refer back to
+identical wording with the citation for the selected version.
 
 For a recording window such as “the last 30 days,” resolve the dates in the
 user's timezone and pass them as inclusive recording bounds. If there are no

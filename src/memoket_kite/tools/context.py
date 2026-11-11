@@ -11,8 +11,8 @@ from dataclasses import dataclass, replace
 from itertools import islice
 from math import log
 
-from .contracts import DATE, TEXT, ToolError, array, object_schema, utc_timestamp, validate
-from .index import SPAN_FACET_AXES, revision_id
+from .contracts import DATE, TEXT, ToolError, array, encode, object_schema, utc_timestamp, validate
+from .index import SPAN_FACET_AXES, revision_id, source_key
 from .ingest import RECORDING_CLOCK_FIELDS, source_day
 from .retrieve import _citation
 
@@ -25,6 +25,8 @@ _FOLLOWUP_LINES = 3
 _SELECTIVE_SPANS = 4
 _CLAUSE_MATCH_LIMIT = 300
 _CLAUSE_SPAN_LIMIT = 1200
+_VERSION_CHANGE_SOURCE_LIMIT = 32
+_VERSION_CHANGE_LINE_LIMIT = 16000
 _RECORDING_DATES = ("start_date", "end_date")
 _SEARCH_TERMS = re.compile(r"[\u3400-\u9fff]+|[^\W_]+", re.UNICODE)
 _HAN = re.compile(r"([\u3400-\u9fff])")
@@ -131,6 +133,11 @@ _CLAUSE_CHANGE_QUESTION = re.compile(
 _PHASE_STATE = re.compile(
     rf"{_CLAUSE_DECISION.pattern}|暂停|恢复|取消|停产|停线|"
     r"\b(?:paus\w*|resum\w*|cancel\w*|suspend\w*|halt\w*)\b",
+    re.I,
+)
+_DECISION_STATUS = re.compile(
+    rf"{_SCHEDULE_CHANGE.pattern}|确认|批准|通过|否决|暂停|恢复|取消|停产|停线|暂缓|终止|"
+    r"\b(?:approv\w*|confirm\w*|reject\w*|paus\w*|resum\w*|cancel\w*|suspend\w*|halt\w*|deferr\w*)\b",
     re.I,
 )
 _QUERY_FILLERS = re.compile(
@@ -545,6 +552,11 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
             word_forms=forms,
             change_phases=phases,
             reserve_change_phases=version_comparison,
+            other_records=(
+                (comparison if search_index is index else index).records
+                if version_comparison
+                else None
+            ),
         )
         if question is not None:
             result["compilation"] = {"question": question, "terms": terms}
@@ -739,14 +751,18 @@ def _history_snapshot(workspace, plan: dict) -> dict:
 
 
 @contextmanager
-def _search_index(workspace, plan: dict, *, recording_windows: tuple[dict, ...] = (), history=None):
+def _search_index(
+    workspace, plan: dict, *, recording_windows: tuple[dict, ...] = (), history=None, previous=None
+):
     if "at_version" not in plan and "known_at" not in plan:
         _require_context(workspace)
         yield _SearchIndex(workspace.db, plan)
         return
     _search_scope(plan)
     history = history if history is not None else _history_snapshot(workspace, plan)
-    visible = workspace.records_at(history["version"], plan)
+    visible = workspace.records_at(
+        history["version"], plan, reuse=previous.records if previous is not None else None
+    )
     windows = [
         (window.get("start_date"), window.get("end_date"))
         for window in recording_windows or (plan,)
@@ -764,13 +780,29 @@ def _search_index(workspace, plan: dict, *, recording_windows: tuple[dict, ...] 
     records = {record["checksum"]: record for record in visible}
     with closing(sqlite3.connect(":memory:")) as db:
         db.row_factory = sqlite3.Row
-        _create_context_table(db)
         # Historical queries admit only raw, tracked revisions. Current labels
         # and topic merges would introduce information unavailable at the cutoff.
+        removed = previous.records.keys() - records.keys() if previous is not None else ()
+        if previous is None or len(removed) > len(records):
+            _create_context_table(db)
+            added = records.values()
+        else:
+            # Start the second transient index from the first and replace only
+            # the rows whose visibility changed between the two snapshots.
+            previous.db.backup(db)
+            if removed:
+                db.execute(
+                    "DELETE FROM context_spans WHERE checksum IN (SELECT value FROM json_each(?))",
+                    (encode(sorted(removed)),),
+                )
+            added = (
+                record for checksum, record in records.items() if checksum not in previous.records
+            )
         db.executemany(
             "INSERT INTO context_spans VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-            _index_rows(records.values(), None),
+            _index_rows(added, None),
         )
+        db.commit()
         filters = {key: value for key, value in plan.items() if key != "conversation_id"}
         yield _SearchIndex(db, filters, history, records)
 
@@ -798,7 +830,7 @@ def _comparison_indexes(workspace, request: dict):
             )
         with (
             _search_index(workspace, before) as first,
-            _search_index(workspace, after, history=history) as second,
+            _search_index(workspace, after, history=history, previous=first) as second,
         ):
             yield first, second
         return
@@ -1257,6 +1289,8 @@ def _change_clause_candidates(workspace, index, clauses, slots, max_bytes, *, im
         ).fetchall()
         if not 0 < len(rows) <= _CLAUSE_MATCH_LIMIT:
             continue
+        if index.history is not None:
+            rows.sort(key=lambda row: (row["checksum"], row["start"]))
         phrase = term.split()
         length = len(phrase)
         positions = [
@@ -1380,6 +1414,8 @@ def _compact_sources(
         if not matches or len(matches) > max_sources:
             continue
         checksums = [row["checksum"] for row in matches]
+        if index.history is not None:
+            checksums.sort()
         if covered.intersection(checksums):
             continue
         checksum = checksums[0]
@@ -1720,6 +1756,80 @@ def _trace_sources(workspace, trace: dict) -> None:
         row.update(sources[row["revision_checksum"]])
 
 
+def _version_evidence(records, other_records, question, terms, max_bytes, compact):
+    changed = records.keys() - other_records.keys()
+    if not changed or len(changed) > _VERSION_CHANGE_SOURCE_LIMIT:
+        return None
+    sides = [records[checksum] for checksum in sorted(changed) if checksum not in compact]
+    if (
+        sum(len(record["conversation"]["segments"]) for record in sides)
+        > _VERSION_CHANGE_LINE_LIMIT
+    ):
+        return None
+    counterparts = {
+        source_key(record["conversation"]): record["conversation"]["segments"]
+        for checksum, record in other_records.items()
+        if checksum not in records
+    }
+    head, *clues = [f" {value} " for term in terms if (value := _tokens(term))]
+    phrases = (head, *clues)
+    needs_clue = bool(clues and len(head.split()) == 1)
+    asks_date = bool(_SCHEDULE_QUESTION.search(question))
+    # A name can be punctuated or expanded in another recording. A partial
+    # name only counts alongside a second clue in the selected line.
+    components = [
+        f" {word} "
+        for word in head.split()
+        if word not in _ENGLISH_FUNCTION_WORDS
+        and (_ENGLISH_WORD.fullmatch(word) or re.fullmatch(r"\d+[a-z]+", word))
+    ]
+    best = None
+    best_score = None
+    for record in sides:
+        conversation = record["conversation"]
+        segments = conversation["segments"]
+        previous = {
+            line["segment_id"]: line["text"]
+            for line in counterparts.get(source_key(conversation), ())
+        }
+        normalized = [f" {_tokens(line['text'])} " for line in segments]
+        for pos, (line, text) in enumerate(zip(segments, normalized, strict=True)):
+            if previous.get(line["segment_id"]) == line["text"]:
+                continue
+            matches = [phrase for phrase in phrases if phrase in text]
+            if not matches or len(line["text"].encode("utf-8")) > max_bytes // 3:
+                continue
+            secondary = any(clue in matches for clue in clues)
+            if needs_clue and not secondary:
+                continue
+            nearby = normalized[max(0, pos - 3) : pos + 4]
+            anchor_window = normalized[max(0, pos - 6) : pos + 7] if secondary else nearby
+            exact = any(head in neighbor for neighbor in anchor_window)
+            partial = any(word in neighbor for word in components for neighbor in nearby)
+            if not (exact or (partial and secondary)):
+                continue
+            score = (
+                asks_date
+                and bool(_CALENDAR_DAY.search(line["text"]) or _CLAUSE_TIME.search(line["text"])),
+                bool(_DECISION_STATUS.search(line["text"])),
+                head in matches,
+                exact,
+                len(matches),
+                max(map(len, matches)),
+            )
+            if best_score is None or score > best_score:
+                best_score = score
+                best = {
+                    "checksum": record["checksum"],
+                    "start": pos,
+                    "stop": pos + 1,
+                    "day": source_day(conversation),
+                    "direct_positions": [pos],
+                    "selection": {"reason": "version_evidence", "term": terms[0]},
+                }
+    return best
+
+
 def _context_evidence(
     workspace,
     plan,
@@ -1734,6 +1844,7 @@ def _context_evidence(
     word_forms=(),
     change_phases=(),
     reserve_change_phases=False,
+    other_records=None,
 ):
     validate(_CONTEXT_SCHEMA, plan, "context plan")
     if not any(map(_tokens, plan["terms"])):
@@ -1822,6 +1933,15 @@ def _context_evidence(
                     workspace, index, change_phases, phase_slots, max_bytes, implicit=True
                 )
             candidates[first:first] = reserved_clauses
+        selected_version = None
+        if other_records is not None and not (
+            reserved_clauses or matching_lines or plan.get("latest")
+        ):
+            selected_version = _version_evidence(
+                index.records, other_records, _question, plan["terms"], max_bytes, compact
+            )
+            if selected_version is not None:
+                candidates.insert(1 if limit > 1 else 0, selected_version)
         first_lines = (
             prioritize_first_lines
             and neighbors > 0
@@ -1835,7 +1955,11 @@ def _context_evidence(
             limit += 1
         # Compact version comparisons still give reserved original lines space
         # before expanding the leading candidate with its surrounding turns.
-        first_lines = first_lines or (reserve_change_phases and bool(reserved_clauses))
+        first_lines = (
+            first_lines
+            or (reserve_change_phases and bool(reserved_clauses))
+            or selected_version is not None
+        )
         spans, size, omitted = _pack(
             workspace,
             candidates,
@@ -1861,6 +1985,16 @@ def _context_evidence(
                     candidate["corroborating_terms"] = [
                         display_terms[term] for term in candidate["corroborating_terms"]
                     ]
+        version_quote = None
+        if selected_version is not None:
+            revision = revision_id(index.records[selected_version["checksum"]])
+            candidate_id = f"{revision}L{selected_version['start'] + 1}"
+            if any(
+                line["source_line_id"] == candidate_id
+                for span in spans
+                for line in span["evidence"]
+            ):
+                version_quote = candidate_id
     return {
         "memory_version": workspace.version(),
         "plan": plan,
@@ -1872,6 +2006,7 @@ def _context_evidence(
         "candidate_sources": len({row["checksum"] for row in candidates}),
         "span_limit": limit,
         **({"first_lines_prioritized": True} if first_lines else {}),
+        **({"version_evidence": version_quote} if version_quote else {}),
         **({"packing_trace": trace} if trace is not None else {}),
         **(
             {"term_coverage": _term_coverage(plan["terms"], term_candidates, spans)}
@@ -1973,13 +2108,13 @@ def render_context(pack: dict) -> str:
                 speaker = f" {line['speaker_id']}:" if "speaker_id" in line else ""
                 quote = f"{speaker} {line['text']}"
                 if len(parts) > 1:
-                    earlier = first_quote.setdefault(line["source_line_id"], number)
-                    label = (
-                        f"workspace v{parts[earlier - 1]['history']['version']}"
-                        if version_comparison
-                        else f"Question {earlier}"
-                    )
-                    reference = f" (quoted in {label})"
+                    if version_comparison:
+                        key = (line["source"], line["source_reference"], ref, quote)
+                        earlier = first_quote.setdefault(key, number)
+                        reference = f" (same text in v{parts[earlier - 1]['history']['version']})"
+                    else:
+                        earlier = first_quote.setdefault(line["source_line_id"], number)
+                        reference = f" (quoted in Question {earlier})"
                     if earlier < number and len(reference.encode()) < len(quote.encode()):
                         quote = reference
                 lines.append(f"[{ref}]{quote}")

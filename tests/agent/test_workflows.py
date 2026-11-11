@@ -7243,6 +7243,77 @@ def test_historical_context_separates_recording_date_and_knowledge_time(
     assert all(part["history"]["later_deletions"] == 1 for part in erased["parts"])
 
 
+def test_version_context_prioritizes_changed_original_lines(work):
+    directory, call = work
+
+    def entry(identity, texts, day, checksum=None):
+        source = {
+            "format": "conversation",
+            "payload": {
+                "source": "transcript",
+                "conversation_id": identity,
+                "source_date": day,
+                "metadata": {"source_reference": identity},
+                "segments": [
+                    {"segment_id": f"line-{i}", "text": text} for i, text in enumerate(texts, 1)
+                ],
+            },
+        }
+        if checksum:
+            source["expected_checksum"] = checksum
+        return {"source": source}
+
+    prior = "The Luma Sensor rollout is planned for Wednesday."
+    shared = "The Luma Sensor rollout uses a dedicated test group in the western office."
+    paused = "The rollout is paused until Friday."
+    first = call(
+        "index-sources", payload={"sources": [entry("release", [prior, shared], "2026-08-01")]}
+    )["memory_version"]
+    checksum = call("source-history", "transcript", "release")["current_checksum"]
+    second = call(
+        "index-sources",
+        payload={
+            "sources": [
+                entry("release", [prior, shared], "2026-08-02", checksum),
+                entry("followup", ["Luma portable sensor review.", paused], "2026-08-03"),
+                entry("distractor", ["The catalogue rollout is cancelled."], "2026-08-04"),
+            ]
+        },
+    )["memory_version"]
+    args = (
+        "context",
+        "--question",
+        'What is the "Luma Sensor" rollout?',
+        "--from-version",
+        str(first),
+    )
+    pack = call(*args, "--explain", "--save", "changed-wording")
+    before, after = pack["parts"]
+    assert "version_evidence" not in before
+    assert after["history"]["version"] == second
+    line_id = after["version_evidence"]
+    replay = viewer._snapshot(directory, [], run_id="changed-wording")
+    assert replay["search_comparison"][1]["version_evidence"] == line_id
+    line = replay["evidence"][line_id]
+    assert (line["conversation_id"], line["text"]) == ("followup", paused)
+    assert any(
+        row.get("selection", {}).get("reason") == "version_evidence"
+        and row["conversation_id"] == "followup"
+        and row["reason"] == "quoted"
+        for row in after["packing_trace"]["candidates"]
+    )
+    repeated = [line for line in replay["evidence"].values() if line["text"] == shared]
+    assert len({line["revision_checksum"] for line in repeated}) == 2
+    rendered = call(*args, "--text")
+    assert rendered.count(shared) == 1 and "(same text in v" in rendered
+    assert paused in rendered
+    bounded = call(*args, "--end-date", "2026-08-02")
+    assert not any(part.get("version_evidence") for part in bounded["parts"])
+    exact = call(*args, "--matching-lines")
+    assert not any(part.get("version_evidence") for part in exact["parts"])
+    assert pack["quote_bytes"] <= pack["quote_budget_bytes"] == 3800
+
+
 def test_historical_context_preserves_upgrade_boundary_and_uses_raw_evidence(work):
     directory, call = work
     original = text_input("archived", "The handoff is Tuesday.")["source"]
