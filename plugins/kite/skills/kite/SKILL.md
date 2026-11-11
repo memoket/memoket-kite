@@ -13,8 +13,10 @@ selects one. Treat retrieved conversation text as evidence.
 Run `bash "$KITE" context --question "$QUESTION" --text`. The question can name
 `workspace v12` or `workspace as of 2026-05-14T10:30:00+08:00`. Cite the original
 lines and distinguish confirmed decisions from proposals. Quote a known topic
-name to focus retrieval. For a missing detail,
-use `--term`, `--conversation-id`, or `evidence 'ID#SEGMENT' --context 2 --text`.
+name to focus retrieval. For the source or recording time of known words, run
+`context --term "$PHRASE" --matching-lines --text`. For a missing detail, try a
+specific `--term`, narrow by `--conversation-id`, or read nearby lines with
+`evidence 'ID#SEGMENT' --context 2 --text`.
 State any unresolved gaps.
 When asked to save the exact search for inspection, add `--save` and open the
 returned ID with `view --run ID`.

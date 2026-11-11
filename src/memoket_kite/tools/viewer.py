@@ -64,7 +64,11 @@ def _search_snapshot(
             (
                 term,
                 context_pack(
-                    workspace, {"terms": [term], **scope}, limit=4, max_bytes=3600, neighbors=1
+                    workspace,
+                    {"terms": [term], **scope},
+                    limit=4,
+                    max_bytes=3600,
+                    neighbors=0 if scope.get("matching_lines") else 1,
                 ),
             )
             for term in terms
@@ -141,6 +145,7 @@ def _search_snapshot(
         "search_question": question,
         "search_comparison": comparison,
         "search_history": history,
+        "search_matching_lines": packs[0][1]["plan"].get("matching_lines", False),
         "search_recording_bounds": {
             key: packs[0][1]["plan"][key]
             for key in ("start_date", "end_date")
@@ -172,6 +177,7 @@ def _snapshot(
     *,
     recording_bounds: dict | None = None,
     compare_with: str | None = None,
+    matching_lines: bool = False,
     run_id: str | None = None,
 ) -> dict:
     try:
@@ -206,6 +212,8 @@ def _snapshot(
                     scope["at_version"] = at_version
                 if compare_with is not None:
                     scope["compare_with"] = compare_with
+                if matching_lines:
+                    scope["matching_lines"] = True
                 return {
                     **_search_snapshot(workspace, terms, question, scope),
                     "history_origin": origin,
@@ -322,8 +330,10 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                 question = params.get("q", [None])[0]
                 compare_with = params.get("q2", [None])[0]
                 run_id = params.get("run", [None])[0]
+                matching_lines = params.get("matching_lines", ["0"])
                 if (
                     len(terms) > 3
+                    or matching_lines not in (["0"], ["1"])
                     or any(len(term) > 128 for term in terms)
                     or (question is not None and (len(question) > 512 or terms))
                     or (compare_with is not None and (question is None or len(compare_with) > 512))
@@ -332,7 +342,10 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                         and (
                             terms
                             or question is not None
-                            or any(key in params for key in ("at", "start_date", "end_date"))
+                            or any(
+                                key in params
+                                for key in ("at", "start_date", "end_date", "matching_lines")
+                            )
                         )
                     )
                 ):
@@ -384,6 +397,7 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                             at_version,
                             recording_bounds=bounds,
                             compare_with=compare_with,
+                            matching_lines=matching_lines == ["1"],
                             run_id=run_id,
                         ),
                     )

@@ -55,6 +55,7 @@ _CONTEXT_SCHEMA = object_schema(
         "start_date": DATE,
         "end_date": DATE,
         "latest": {"type": "boolean"},
+        "matching_lines": {"type": "boolean"},
         "at_version": {"type": "integer", "minimum": 0, "maximum": 2**63 - 1},
         "known_at": {"type": "string", "format": "date-time"},
     },
@@ -141,13 +142,16 @@ def _quoted_phrases(question: str) -> set[str]:
 def _compile_terms(db, plan: dict, question: str) -> list[str]:
     where, args = _search_scope(plan)
     quoted = _quoted_phrases(question)
+    if plan.get("matching_lines") and quoted:
+        return sorted(quoted)[:8]
     acronyms = {name.casefold() for name in _ACRONYMS.findall(question)}
     candidates = []
     for phrase in dict.fromkeys((*sorted(quoted), *_question_phrases(question))):
         expression = f'"{_tokens(phrase)}"'
+        text_expression = f"text : {expression}" if plan.get("matching_lines") else expression
         frequency = db.execute(
             f"SELECT count(*) FROM (SELECT rowid FROM context_spans WHERE {where} LIMIT 32)",
-            (expression, *args),
+            (text_expression, *args),
         ).fetchone()[0]
         if frequency:
             labeled = db.execute(
@@ -161,7 +165,7 @@ def _compile_terms(db, plan: dict, question: str) -> list[str]:
             elif phrase in acronyms:
                 sources = db.execute(
                     f"SELECT count(*) FROM (SELECT DISTINCT checksum FROM context_spans WHERE {where} LIMIT 32)",
-                    (expression, *args),
+                    (text_expression, *args),
                 ).fetchone()[0]
                 if sources < 32:
                     score += 4
@@ -286,7 +290,7 @@ def _search_questions(workspace, compiled: dict, index) -> dict:
             {"terms": terms, **filters},
             limit=span_limit,
             max_bytes=quote_budget,
-            neighbors=request.get("neighbors", 1),
+            neighbors=request.get("neighbors", 0 if request.get("matching_lines") else 1),
             focus=True,
             _index=index,
             _question=question,
@@ -559,18 +563,22 @@ def _candidates(
     order = "bm25(context_spans, 1.0, 0.35, 1.2), day DESC"
     if plan.get("latest"):
         order = "day DESC, bm25(context_spans, 1.0, 0.35, 1.2)"
-    coherent = focus and not plan.get("latest")
+    matching_lines = plan.get("matching_lines", False)
+    coherent = focus and not (plan.get("latest") or matching_lines)
     stream_limit = max(limit, min(limit * 6, 30)) if coherent else limit * 6
     matches = []
     exact = []
     for phrase in dict.fromkeys(map(_tokens, plan["terms"])):
         if not phrase:
             continue
+        expression = f'"{phrase}"'
+        if matching_lines:
+            expression = f"text : {expression}"
         matches.append(
             db.execute(
                 f"SELECT checksum, start, stop, day FROM context_spans WHERE {where} "
                 f"ORDER BY {order}, checksum, start LIMIT ?",
-                (f'"{phrase}"', *args, stream_limit),
+                (expression, *args, stream_limit),
             ).fetchall()
         )
         if phrase in anchors:
@@ -616,6 +624,7 @@ def _positions(
     neighbors: int,
     phrases: tuple,
     anchors: tuple[str, ...],
+    matching_lines: bool,
 ):
     window = range(max(0, start - neighbors), min(len(segments), stop + neighbors))
     if phrases:
@@ -627,6 +636,8 @@ def _positions(
                 hits.append(pos)
                 if any(anchor in text for anchor in anchors):
                     exact.add(pos)
+        if matching_lines:
+            return hits
         if hits:
             return sorted(
                 (pos for pos in window if any(abs(pos - hit) <= neighbors for hit in hits)),
@@ -692,6 +703,7 @@ def _pack(
     phrases: tuple,
     *,
     anchors: tuple[str, ...] = (),
+    matching_lines: bool = False,
     historical_records: dict | None = None,
     compact_sources: dict | None = None,
 ):
@@ -724,7 +736,7 @@ def _pack(
         positions = (
             range(start, stop)
             if checksum in compact_sources
-            else _positions(segments, start, stop, neighbors, phrases, anchored)
+            else _positions(segments, start, stop, neighbors, phrases, anchored, matching_lines)
         )
         for pos in positions:
             if pos in seen[checksum]:
@@ -792,8 +804,13 @@ def _context_evidence(workspace, plan, *, limit, max_bytes, neighbors, focus, _i
     validate(_CONTEXT_SCHEMA, plan, "context plan")
     if not any(map(_tokens, plan["terms"])):
         raise ToolError("invalid_input", "context needs an indexable term")
+    matching_lines = plan.get("matching_lines", False)
+    if matching_lines and neighbors:
+        raise ToolError("invalid_input", "matching lines cannot include neighboring lines")
     phrases = (
-        tuple(f" {tokens} " for term in plan["terms"] if (tokens := _tokens(term))) if focus else ()
+        tuple(f" {tokens} " for term in plan["terms"] if (tokens := _tokens(term)))
+        if focus or matching_lines
+        else ()
     )
     with nullcontext(_index) if _index is not None else _search_index(workspace, plan) as index:
         compact = (
@@ -803,7 +820,7 @@ def _context_evidence(workspace, plan, *, limit, max_bytes, neighbors, focus, _i
         )
         preferred = set(compact)
         anchors = ()
-        if _question and not plan.get("latest"):
+        if _question and not (plan.get("latest") or matching_lines):
             quoted_sources = _quoted_sources(index, _question, plan["terms"], limit)
             if quoted_sources:
                 preferred.update(quoted_sources)
@@ -826,6 +843,7 @@ def _context_evidence(workspace, plan, *, limit, max_bytes, neighbors, focus, _i
             neighbors,
             phrases,
             anchors=anchors,
+            matching_lines=matching_lines,
             historical_records=index.records,
             compact_sources=compact,
         )

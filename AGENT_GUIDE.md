@@ -60,6 +60,10 @@ It compiles the task and returns cited passages in one local call. Use
 `context-search` if you need separate, saved compile and search stages.
 Add `--save` to complete and save both stages in one command. Open the returned
 run ID with `kite-tool view --run RUN_ID`.
+For the recording time or location of a known quotation, use
+`kite-tool context --term "$QUOTATION" --matching-lines --text`. For a question
+with quoted phrases, `--matching-lines` compiles those phrases and returns
+their original matching lines. Use `evidence` when you need surrounding turns.
 For two independent questions, use `--question "$FIRST" --compare-with "$SECOND"`.
 The two searches share the snapshot, date filters and total quote budget. The
 pipeline accepts the second question as `request.compare_with`.

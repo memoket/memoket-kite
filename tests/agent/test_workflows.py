@@ -5860,6 +5860,53 @@ def test_context_keeps_an_explicit_quote_ahead_of_generic_matches(work):
     ]
 
 
+def test_context_matching_lines_checks_the_original_segment_and_saved_plan(work):
+    directory, call = work
+    sources = []
+    for identity, title, texts in (
+        ("recorded", "Planning", ["Start of the meeting.", "The amber needle is ready.", "Close."]),
+        ("label-only", "Amber needle", ["Only implementation notes here."]),
+        ("split", "Update", ["The label is amber", "Needle replacement is scheduled."]),
+    ):
+        sources.append(
+            {
+                "source": {
+                    "format": "conversation",
+                    "payload": {
+                        "source": "transcript",
+                        "conversation_id": identity,
+                        "title": title,
+                        "metadata": {"source_reference": identity},
+                        "segments": [
+                            {"segment_id": str(i), "text": text} for i, text in enumerate(texts)
+                        ],
+                    },
+                }
+            }
+        )
+    call("index-sources", payload={"sources": sources})
+    args = ("context", "--term", "amber needle", "--matching-lines")
+    pack = call(*args)
+    assert pack["candidate_sources"] == 2
+    assert len(pack["spans"]) == 1
+    assert [line["text"] for line in pack["spans"][0]["evidence"]] == ["The amber needle is ready."]
+    call(*args, "--neighbors", "1", error="invalid_input")
+    question = 'Find "amber needle" in the implementation notes.'
+    saved = call("context", "--question", question, "--matching-lines", "--save", "quote")
+    assert saved["compilation"]["terms"] == ["amber needle"]
+    live = viewer._snapshot(directory, ["amber needle"], matching_lines=True)
+    replay = viewer._snapshot(directory, [], run_id="quote")
+    assert live["search_matching_lines"] and replay["search_matching_lines"]
+    assert live["evidence"].keys() == replay["evidence"].keys()
+    missing = call(
+        "context",
+        "--question",
+        'Find "silver needle" in the implementation notes.',
+        "--matching-lines",
+    )
+    assert missing["spans"] == []
+
+
 def test_context_comparison_keeps_both_questions_in_one_budget_and_snapshot(work):
     _, call = work
     receipt = call(

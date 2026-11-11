@@ -9,6 +9,9 @@ Give each question the subject it refers to. Both use the same recording bounds
 and workspace snapshot. Each receives a share of the quote and span budget.
 Answer from the cited passages. For one missing detail, search with a specific
 `--term` or narrow to an identified meeting with `--conversation-id`.
+For an exact quotation or its recording time, add `--matching-lines` to
+`--term`. With a quoted question, this option searches the quoted phrases.
+The pipeline equivalent is `request.matching_lines: true`.
 Open nearby lines with `kite-tool evidence 'CONVERSATION#SEGMENT' --context 2 --text`.
 Use `--at-version VERSION` or `--known-at TIMESTAMP` for what the workspace
 knew at a historical point. Use recording dates for meeting windows. Keep

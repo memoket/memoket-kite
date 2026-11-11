@@ -162,6 +162,11 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
     ).stdout
     assert "[handoff#L4] Speaker A: Rollout depends on the checklist." in context, context
     assert "Recording started at: 2026-01-14 08:00:00 (timezone unknown)" in context, context
+    exact = run("context", "--term", "rollout depends", "--matching-lines", cwd=subdirectory).stdout
+    exact_pack = json.loads(exact)
+    assert [line["segment_id"] for span in exact_pack["spans"] for line in span["evidence"]] == [
+        "L4"
+    ], exact
     comparison = run(
         "context",
         "--question",

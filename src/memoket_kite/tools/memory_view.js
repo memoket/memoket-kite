@@ -27,7 +27,7 @@
       versionFilter: 'Version', versionFilterLabel: 'Search at a workspace version', history: 'Workspace snapshot',
       recordingDates: 'Recording dates', recordingFrom: 'From', recordingThrough: 'Through',
       recordingTimeline: 'Evidence by recording date', invalidDateRange: 'Start date must not follow end date.',
-      noDatedResults: 'No matching passages in this recording window.', timezoneUnknown: 'timezone unknown',
+      noDatedResults: 'No matching passages in this recording window.', timezoneUnknown: 'timezone unknown', matchingLines: 'Matching lines',
       compareQuestions: 'Compare', secondQuestion: 'Second question', firstQuestionRequired: 'Enter the first question.',
       savedSearch: 'Saved search', currentWorkspace: 'Current workspace',
       historyDeletes: 'Later deletions affected the evidence available for this snapshot.',
@@ -68,7 +68,7 @@
       versionFilter: '版本', versionFilterLabel: '按工作区版本检索', history: '工作区快照',
       recordingDates: '录制日期', recordingFrom: '起始日期', recordingThrough: '截止日期',
       recordingTimeline: '按录制日期查看原文', invalidDateRange: '起始日期应早于或等于截止日期。',
-      noDatedResults: '这个录制日期范围内没有命中的原文片段。', timezoneUnknown: '时区未知',
+      noDatedResults: '这个录制日期范围内没有命中的原文片段。', timezoneUnknown: '时区未知', matchingLines: '仅命中行',
       compareQuestions: '对比', secondQuestion: '第二个问题', firstQuestionRequired: '请输入第一个问题。',
       savedSearch: '已保存的检索', currentWorkspace: '当前工作区',
       historyDeletes: '后来执行的删除可能影响此快照可见的原文。',
@@ -847,6 +847,7 @@
     byId('recording-end-label').textContent = t('recordingThrough');
     byId('comparison-filter-label').textContent = t('compareQuestions');
     byId('comparison-question-label').textContent = t('secondQuestion');
+    byId('matching-lines-label').textContent = t('matchingLines');
     const versionFilter = byId('search-version');
     versionFilter.hidden = snapshot.history_origin == null;
     if (!versionFilter.hidden) {
@@ -880,6 +881,7 @@
           number.format(stats.quotes) + ' ' + t('quotes'),
           stats.shared_quotes ? number.format(stats.shared_quotes) + ' ' + t('sharedQuotes') : null,
           number.format(stats.quote_bytes) + ' ' + t('quoteBytes')].filter(Boolean).join(' · ')));
+      if (snapshot.search_matching_lines) trace.prepend(element('p', t('matchingLines')));
       if (snapshot.search_history) {
         const history = snapshot.search_history;
         trace.prepend(element('p', `${t('history')} v${history.version} · ${new Date(history.committed_at).toLocaleString(language)}`));
@@ -935,6 +937,8 @@
   recordingFilter.toggleAttribute('data-active', Boolean(recordingStart.value || recordingEnd.value));
   recordingFilter.addEventListener('input', () => recordingEnd.setCustomValidity(''));
   const secondQuestion = byId('comparison-question');
+  const matchingLines = byId('matching-lines');
+  matchingLines.checked = Boolean(snapshot.search_matching_lines);
   secondQuestion.value = comparison[1]?.question ?? query.get('q2') ?? '';
   byId('comparison-filter').toggleAttribute('data-active', Boolean(secondQuestion.value));
   secondQuestion.addEventListener('input', () => byId('search-terms').setCustomValidity(''));
@@ -966,6 +970,7 @@
     for (const term of terms) params.append('term', term);
     if (!terms.length && value) params.set('q', value);
     if (compareWith) params.set('q2', compareWith);
+    if (value && matchingLines.checked) params.set('matching_lines', '1');
     if (value && byId('search-version').value) params.set('at', byId('search-version').value);
     if (value && recordingStart.value) params.set('start_date', recordingStart.value);
     if (value && recordingEnd.value) params.set('end_date', recordingEnd.value);

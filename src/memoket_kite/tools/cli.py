@@ -204,6 +204,9 @@ def _parser() -> argparse.ArgumentParser:
     context.add_argument("--start-date", help="earliest source date, inclusive")
     context.add_argument("--end-date", help="latest source date, inclusive")
     context.add_argument("--latest", action="store_true", help="give newer dated sources priority")
+    context.add_argument(
+        "--matching-lines", action="store_true", help="return only original lines matching a phrase"
+    )
     history_scope = context.add_mutually_exclusive_group()
     history_scope.add_argument("--at-version", type=int, help="search a tracked workspace snapshot")
     history_scope.add_argument(
@@ -211,7 +214,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     context.add_argument("--limit", type=int, default=8, help="maximum matched spans")
     context.add_argument("--max-bytes", type=int, help="original quote byte budget")
-    context.add_argument("--neighbors", type=int, default=1, help="adjacent turns on either side")
+    context.add_argument("--neighbors", type=int, help="adjacent turns on either side (default 1)")
     context.add_argument(
         "--text", action="store_true", help="compact original quotes and citation IDs"
     )
@@ -795,6 +798,9 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
         plan = {}
         if args.latest:
             plan["latest"] = True
+        if args.matching_lines:
+            plan["matching_lines"] = True
+        neighbors = args.neighbors if args.neighbors is not None else int(not args.matching_lines)
         plan.update(
             {
                 key: value
@@ -814,7 +820,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 **plan,
                 "question": args.question,
                 "limit": args.limit,
-                "neighbors": args.neighbors,
+                "neighbors": neighbors,
             }
             if args.max_bytes is not None:
                 request["max_bytes"] = args.max_bytes
@@ -834,7 +840,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 {**plan, "terms": args.term},
                 limit=args.limit,
                 max_bytes=args.max_bytes if args.max_bytes is not None else 6000,
-                neighbors=args.neighbors,
+                neighbors=neighbors,
             ), None
 
     if args.command == "topics":

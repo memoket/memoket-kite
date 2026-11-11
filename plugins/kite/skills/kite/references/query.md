@@ -21,8 +21,9 @@ Use times marked timezone unknown for within-day ordering only when the
 sources are known to use the same local clock. Keep ties and unknown order
 explicit in the answer.
 When the user gives an exact quotation and asks for its recording time, use
-`context --term QUOTATION --neighbors 0 --text`. For a natural-language search,
-put exact words in quotes and include the surrounding question when relevant.
+`context --term QUOTATION --matching-lines --text`. Repeat `--term` to locate
+several quotations in one call. With `--question`, **Matching lines** uses its
+quoted phrases when present. Open `evidence` for any surrounding turns needed.
 Use `--latest` when the task needs newer recordings first. For two independent
 questions, run `context --question "$FIRST" --compare-with "$SECOND" --text`.
 Restate the subject where needed so each question can retrieve its own quotes.
