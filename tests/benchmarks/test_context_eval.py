@@ -6,9 +6,11 @@ import pytest
 from benchmarks.agent import context_eval
 
 
-@pytest.mark.parametrize("matching_lines", [False, True])
+@pytest.mark.parametrize(
+    ("matching_lines", "host_follow_up"), [(False, False), (True, False), (False, True)]
+)
 def test_bounded_context_benchmark_shares_the_same_originals_between_arms(
-    tmp_path, monkeypatch, matching_lines
+    tmp_path, monkeypatch, matching_lines, host_follow_up
 ):
     corpus = tmp_path / "originals"
     corpus.mkdir()
@@ -54,6 +56,7 @@ def test_bounded_context_benchmark_shares_the_same_originals_between_arms(
         assert "2026-04-01 至 2026-04-01" in prompt
         if (cwd / "kite").is_file():
             assert "./kite context --text" in prompt
+            assert ("--conversation-id" in prompt) == host_follow_up
             default = subprocess.check_output([cwd / "kite", "context", "--text"], text=True)
             assert "Question 2" in default and "inside#L3" in default and "inside#L4" in default
             if matching_lines:
@@ -66,6 +69,7 @@ def test_bounded_context_benchmark_shares_the_same_originals_between_arms(
             )
             assert "inside#L3" in found and "outside" not in found and "undated" not in found
         else:
+            assert "--conversation-id" not in prompt
             visible = list((cwd / "transcripts").rglob("*.txt"))
             assert [item.relative_to(cwd / "transcripts").as_posix() for item in visible] == [
                 "2026-04-01/inside_transcript.txt"
@@ -97,6 +101,7 @@ def test_bounded_context_benchmark_shares_the_same_originals_between_arms(
             question=True,
             scopes=scopes,
             matching_lines=matching_lines,
+            host_follow_up=host_follow_up,
         )
     )
     assert all(trial["score"]["full_pass"] for trial in trials)

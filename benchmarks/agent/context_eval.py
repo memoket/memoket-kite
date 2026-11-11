@@ -524,6 +524,7 @@ def run_host(
     source_format: str = "transcript-text",
     record_tool_output: bool = False,
     matching_lines: bool = False,
+    host_follow_up: bool = False,
 ):
     for index, case in enumerate(cases):
         if not (case.get("answer_patterns") or case.get("claims")):
@@ -575,6 +576,11 @@ def run_host(
             )
         elif question and scoped is not None:
             kite_context = "./kite context --text"
+            if host_follow_up:
+                kite_context += (
+                    "\n缺证据或只有条件说法时，用 ./kite context --matching-lines --text，"
+                    "重复 --term；已有来源加 --conversation-id。"
+                )
         elif question:
             kite_context = (
                 "./kite context --question '第一问' --compare-with '第二问' --text"
@@ -727,6 +733,9 @@ def main() -> None:
         help="benchmark question lookup using matching lines",
     )
     parser.add_argument(
+        "--host-follow-up", action="store_true", help="include one hint for batched evidence lookup"
+    )
+    parser.add_argument(
         "--repeat", type=int, default=1, help="number of fresh paired host runs per case"
     )
     parser.add_argument(
@@ -748,6 +757,8 @@ def main() -> None:
         parser.error("two-question cases require --retrieval question")
     if args.matching_lines and not question:
         parser.error("--matching-lines requires --retrieval question")
+    if args.host_follow_up and (not question or not args.model or args.host_context != "tool"):
+        parser.error("--host-follow-up requires --model and live question retrieval")
     if args.recording_metadata is not None and not args.recording_metadata.is_dir():
         parser.error("--recording-metadata requires a directory")
     sources = read_corpus(args.corpus, args.source_format, args.recording_metadata)
@@ -765,6 +776,7 @@ def main() -> None:
             for case in cases
         )
         or args.matching_lines
+        or args.host_follow_up
     )
     scopes = (
         prepare_case_corpora(sources, cases, args.output, with_files=bool(args.model))
@@ -821,6 +833,8 @@ def main() -> None:
         result["model"] = args.model
         result["host_context"] = args.host_context
         result["host_repetitions"] = args.repeat
+        if args.host_follow_up:
+            result["host_follow_up"] = True
         result["codex"] = []
         for repetition in range(args.repeat):
             for trial in run_host(
@@ -836,6 +850,7 @@ def main() -> None:
                 source_format=args.source_format,
                 record_tool_output=args.record_tool_output,
                 matching_lines=args.matching_lines,
+                host_follow_up=args.host_follow_up,
             ):
                 result["codex"].append(trial)
                 report.write_text(
