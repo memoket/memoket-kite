@@ -13,6 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 FIXTURE = Path(__file__).with_name("fixture.json")
+TRACE_EXPECTATIONS = Path(__file__).with_name("trace-expectations.json")
 RECOVERY_FIXTURE = Path(__file__).with_name("recovery.json")
 UPDATE_FIXTURE = Path(__file__).with_name("update.json")
 RECOVERY_CASE = "memoket-resume"
@@ -249,7 +250,15 @@ def _stage_counts(stages: dict) -> tuple[int, int]:
     )
 
 
-def _grade(kite: Kite, case: dict, answer: dict, seeded: dict) -> dict:
+def _grade(
+    kite: Kite,
+    case: dict,
+    answer: dict,
+    seeded: dict,
+    *,
+    expected_facts: Counter,
+    require_fact_text: bool = True,
+) -> dict:
     run = answer.get("run_id")
     report = None
     completed = False
@@ -293,10 +302,27 @@ def _grade(kite: Kite, case: dict, answer: dict, seeded: dict) -> dict:
     )
     claims = answer.get("claims")
     result = score_claims(case, claims if isinstance(claims, dict) else {}, report)
+    observed_facts = _report_facts(report)
+    if not require_fact_text:
+        expected_facts = _evidence_counts(expected_facts)
+        observed_facts = _evidence_counts(observed_facts)
+    matched = (expected_facts & observed_facts).total()
+    facts_exact = (
+        report is not None
+        and not report["truncated"]
+        and report["matched_count"] == observed_facts.total()
+        and observed_facts == expected_facts
+    )
     result.update(
         pipeline_completed=completed,
         workspace_unchanged=unchanged,
         source_scope_correct=source_scope_correct,
+        expected_trace_facts=expected_facts.total(),
+        returned_trace_facts=observed_facts.total(),
+        matched_trace_facts=matched,
+        trace_fact_recall=_rate(matched, expected_facts.total()),
+        trace_fact_precision=_rate(matched, observed_facts.total()),
+        trace_facts_exact=facts_exact,
         stage_attempts=attempts,
         stage_retries=retries,
         stage_retry_rate=_rate(retries, attempts),
@@ -304,7 +330,9 @@ def _grade(kite: Kite, case: dict, answer: dict, seeded: dict) -> dict:
     )
     if requires_dates:
         result["date_scope_correct"] = date_scope_correct
-    result["passed"] &= completed and unchanged and source_scope_correct and date_scope_correct
+    result["passed"] &= (
+        completed and unchanged and source_scope_correct and date_scope_correct and facts_exact
+    )
     return result
 
 
@@ -318,9 +346,16 @@ def _snapshot(kite: Kite, ingestions: list[dict]) -> dict:
     }
 
 
-def _fixture_facts(fixture: dict, *, exclude: dict | None = None) -> Counter:
+def _fixture_facts(
+    fixture: dict,
+    *,
+    exclude: dict | None = None,
+    refs: list[list] | None = None,
+) -> Counter:
     """Derive the expected fact and citation contents from the raw fixture."""
     facts = Counter()
+    selected = {tuple(ref) for ref in refs} if refs is not None else None
+    found = set()
     for item in fixture["sources"]:
         source = item["source"]
         name, raw = source["format"], source["payload"]
@@ -342,19 +377,40 @@ def _fixture_facts(fixture: dict, *, exclude: dict | None = None) -> Counter:
             )
         if exclude == {"source": name, "conversation_id": identity}:
             continue
-        for fact in item["annotations"]["facts"]:
+        for index, fact in enumerate(item["annotations"]["facts"], 1):
+            if selected is not None:
+                ref = (name, identity, index)
+                if ref not in selected:
+                    continue
+                if ref in found:
+                    raise BenchmarkError("trace expectation matches more than one fixture fact")
+                found.add(ref)
             evidence = tuple(
                 sorted((name, identity, reference, key, lines[key]) for key in fact["segment_ids"])
             )
             facts[fact["content"], evidence] += 1
+    if refs is not None and len(found) != len(refs):
+        raise BenchmarkError("trace expectation contains unknown or repeated fixture facts")
     return facts
 
 
-def _fact_provenance(kite: Kite, expected: Counter) -> dict:
-    report = kite.call(
-        "query", "--pipeline", "timeline-reconstruction", payload={"query": {"limit": 1000}}
-    )["value"]
-    observed = Counter(
+def _trace_expectations(fixture: dict) -> tuple[dict[str, Counter], str]:
+    raw = TRACE_EXPECTATIONS.read_bytes()
+    selections = json.loads(raw)
+    if selections.keys() != fixture["cases"].keys():
+        raise BenchmarkError("trace expectations must cover the fixed trace cases")
+    expected = {name: _fixture_facts(fixture, refs=refs) for name, refs in selections.items()}
+    retained = [
+        ref
+        for ref in selections["format-decision"]
+        if ref[:2] != [DELETION_TARGET["source"], DELETION_TARGET["conversation_id"]]
+    ]
+    expected[DELETION_CASE] = _fixture_facts(fixture, refs=retained)
+    return expected, hashlib.sha256(raw).hexdigest()
+
+
+def _report_facts(report: dict | None) -> Counter:
+    return Counter(
         (
             row["content"],
             tuple(
@@ -370,8 +426,23 @@ def _fact_provenance(kite: Kite, expected: Counter) -> dict:
                 )
             ),
         )
-        for row in report["timeline"]
+        for row in (report or {}).get("timeline", [])
     )
+
+
+def _evidence_counts(facts: Counter) -> Counter:
+    """Count fact citations when the host supplies the annotation wording."""
+    counts = Counter()
+    for (_, evidence), count in facts.items():
+        counts[evidence] += count
+    return counts
+
+
+def _fact_provenance(kite: Kite, expected: Counter) -> dict:
+    report = kite.call(
+        "query", "--pipeline", "timeline-reconstruction", payload={"query": {"limit": 1000}}
+    )["value"]
+    observed = _report_facts(report)
     matched = (expected & observed).total()
     return {
         "expected_facts": expected.total(),
@@ -512,6 +583,7 @@ def _workflow_metrics(cases: dict, lifecycle: dict, successful: int, attempted: 
 
 
 def offline(fixture: dict) -> dict:
+    expected_trace, trace_sha = _trace_expectations(fixture)
     with TemporaryDirectory(prefix="kite-agent-eval-") as directory:
         kite = Kite(Path(directory) / "memory")
         ingestions = _seed(kite, fixture)
@@ -522,7 +594,13 @@ def offline(fixture: dict) -> dict:
         cases = {}
         for name, case in fixture["cases"].items():
             report = kite.trace(name, case)
-            cases[name] = _grade(kite, case, _reference_answer(case, name, report), snapshot)
+            cases[name] = _grade(
+                kite,
+                case,
+                _reference_answer(case, name, report),
+                snapshot,
+                expected_facts=expected_trace[name],
+            )
 
         approval, baseline = _deletion_preview(kite, "format-decision", snapshot, fixture)
         deletion = approval["run_id"]
@@ -531,7 +609,9 @@ def offline(fixture: dict) -> dict:
         surviving = kite.trace("after-delete", case)
         answer = _reference_answer(case, "after-delete", surviving)
         answer["deletion_run_id"] = deletion
-        cases[DELETION_CASE] = _score_deletion(kite, case, answer, baseline, fixture)
+        cases[DELETION_CASE] = _score_deletion(
+            kite, case, answer, baseline, fixture, expected_facts=expected_trace[DELETION_CASE]
+        )
         update = _offline_update(Path(directory) / "update")
         lifecycle = {
             "new_ingestions_completed": sum(
@@ -564,6 +644,7 @@ def offline(fixture: dict) -> dict:
         return {
             "mode": "deterministic",
             "fixture_sha256": snapshot["fixture_sha256"],
+            "trace_expectations_sha256": trace_sha,
             "passed": passed,
             "lifecycle": lifecycle,
             "incremental_update": update,
@@ -691,7 +772,18 @@ conversation and segment IDs. Use `ANSWER.schema.json` for the response.
 def _score_recovery(kite: Kite, fixture: dict, answer: dict, snapshot: dict) -> dict:
     case = fixture["case"]
     integrity = kite.call("integrity")
-    result = _grade(kite, case, answer, {**snapshot, **integrity})
+    recovered_source = {
+        "source": {"format": "memoket", "payload": fixture["export"]},
+        "annotations": fixture["annotations"],
+    }
+    result = _grade(
+        kite,
+        case,
+        answer,
+        {**snapshot, **integrity},
+        expected_facts=_fixture_facts({"sources": [recovered_source]}),
+        require_fact_text=False,
+    )
     result.pop("workspace_unchanged")
     resumed = False
     ingestion_completed = False
@@ -868,9 +960,11 @@ Use `ANSWER.schema.json` for the response.
     return kite, baseline
 
 
-def _score_deletion(kite: Kite, case: dict, answer: dict, snapshot: dict, fixture: dict) -> dict:
+def _score_deletion(
+    kite: Kite, case: dict, answer: dict, snapshot: dict, fixture: dict, *, expected_facts: Counter
+) -> dict:
     integrity = kite.call("integrity")
-    result = _grade(kite, case, answer, {**snapshot, **integrity})
+    result = _grade(kite, case, answer, {**snapshot, **integrity}, expected_facts=expected_facts)
     result.pop("workspace_unchanged")
     run = snapshot["deletion_run_id"]
     audit = kite.call("deletion-audit")["deletions"]
@@ -992,10 +1086,23 @@ def main(argv=None) -> int:
             kite = Kite(args.directory / "memory")
             if recovery:
                 metrics = _score_recovery(kite, recovery_fixture, answer, snapshot)
-            elif deletion:
-                metrics = _score_deletion(kite, _deletion_trace(fixture), answer, snapshot, fixture)
             else:
-                metrics = _grade(kite, fixture["cases"][args.case], answer, snapshot)
+                expected_trace, trace_sha = _trace_expectations(fixture)
+                expected = expected_trace[args.case]
+                if deletion:
+                    metrics = _score_deletion(
+                        kite,
+                        _deletion_trace(fixture),
+                        answer,
+                        snapshot,
+                        fixture,
+                        expected_facts=expected,
+                    )
+                else:
+                    metrics = _grade(
+                        kite, fixture["cases"][args.case], answer, snapshot, expected_facts=expected
+                    )
+                metrics["trace_expectations_sha256"] = trace_sha
             result = {
                 "mode": "host-agent",
                 "case": args.case,

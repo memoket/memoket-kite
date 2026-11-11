@@ -4,6 +4,7 @@ import json
 from copy import deepcopy
 
 from benchmarks.agent.__main__ import (
+    DELETION_CASE,
     DELETION_TARGET,
     FIXTURE,
     RECOVERY_FIXTURE,
@@ -18,6 +19,7 @@ from benchmarks.agent.__main__ import (
     _score_recovery,
     _seed,
     _snapshot,
+    _trace_expectations,
     score_claims,
 )
 
@@ -127,11 +129,18 @@ def test_host_grade_checks_the_trace_scope_even_when_claims_are_correct(tmp_path
     fixture = json.loads(FIXTURE.read_text())
     kite = Kite(tmp_path / "memory")
     baseline = _snapshot(kite, _seed(kite, fixture))
+    expected, _ = _trace_expectations(fixture)
 
     def grade(name, query, run):
         case = fixture["cases"][name]
         report = kite.trace(run, {**case, "query": {**case["query"], **query}})
-        return _grade(kite, case, _reference_answer(case, run, report), baseline)
+        return _grade(
+            kite,
+            case,
+            _reference_answer(case, run, report),
+            baseline,
+            expected_facts=expected[name],
+        )
 
     alias = grade("dated-timeline", {"topics": ["report overhaul"]}, "alias")
     assert alias["passed"] and alias["date_scope_correct"] and alias["source_scope_correct"]
@@ -150,8 +159,64 @@ def test_host_grade_checks_the_trace_scope_even_when_claims_are_correct(tmp_path
     assert not broader["source_scope_correct"] and not broader["passed"]
 
 
+def test_trace_grade_checks_missing_and_extra_facts_in_the_same_sources(tmp_path, monkeypatch):
+    fixture = json.loads(FIXTURE.read_text())
+    kite = Kite(tmp_path / "memory")
+    baseline = _snapshot(kite, _seed(kite, fixture))
+    expected, _ = _trace_expectations(fixture)
+    cases = fixture["cases"]
+    format_report = kite.trace("format", cases["format-decision"])
+    owner_report = kite.trace("owner", cases["owner-handoff"])
+    proposal = next(row for row in format_report["timeline"] if row["status"] == "proposal")
+    original_call = kite.call
+
+    for name, run, report, timeline, recall, precision in (
+        (
+            "format-decision",
+            "format",
+            format_report,
+            [row for row in format_report["timeline"] if row != proposal],
+            6 / 7,
+            1,
+        ),
+        (
+            "format-decision",
+            "format",
+            format_report,
+            [*format_report["timeline"], proposal],
+            1,
+            7 / 8,
+        ),
+        ("owner-handoff", "owner", owner_report, [*owner_report["timeline"], proposal], 1, 2 / 3),
+    ):
+
+        def altered_call(*args, **kwargs):
+            result = original_call(*args, **kwargs)
+            if args == ("artifact", run, "report"):
+                result["value"]["timeline"] = timeline
+                result["value"]["matched_count"] = len(timeline)
+            return result
+
+        with monkeypatch.context() as patch:
+            patch.setattr(kite, "call", altered_call)
+            case = cases[name]
+            score = _grade(
+                kite,
+                case,
+                _reference_answer(case, run, report),
+                baseline,
+                expected_facts=expected[name],
+            )
+        assert score["source_scope_correct"] and score["pipeline_completed"]
+        assert score["supported_claims"] == score["expected_claims"]
+        assert score["trace_fact_recall"] == recall and score["trace_fact_precision"] == precision
+        assert not score["trace_facts_exact"] and not score["passed"]
+
+
 def test_host_grade_counts_retries_in_an_unfinished_trace(tmp_path):
-    case = json.loads(FIXTURE.read_text())["cases"]["dated-timeline"]
+    fixture = json.loads(FIXTURE.read_text())
+    case = fixture["cases"]["dated-timeline"]
+    expected, _ = _trace_expectations(fixture)
     kite = Kite(tmp_path / "memory")
     kite.start(
         case["pipeline"],
@@ -162,12 +227,18 @@ def test_host_grade_counts_retries_in_an_unfinished_trace(tmp_path):
         kite.stage("invalid-range", "resolve", error="invalid_input")
     baseline = _snapshot(kite, [])
     answer = {"run_id": "invalid-range", "claims": {}}
-    score = _grade(kite, case, answer, baseline)
+    score = _grade(kite, case, answer, baseline, expected_facts=expected["dated-timeline"])
     assert not score["pipeline_completed"] and not score["passed"]
     assert score["stage_attempts"] == 2 and score["stage_retries"] == 1
     assert score["stage_retry_rate"] == 0.5
 
-    other = _grade(kite, {**case, "pipeline": "topic-tracing"}, answer, baseline)
+    other = _grade(
+        kite,
+        {**case, "pipeline": "topic-tracing"},
+        answer,
+        baseline,
+        expected_facts=expected["dated-timeline"],
+    )
     assert other["stage_attempts"] == other["stage_retries"] == 0
     assert other["stage_retry_rate"] is None
 
@@ -198,7 +269,9 @@ def test_recovery_score_rejects_changes_to_unrelated_runs(tmp_path):
     run = interrupted["run_id"]
     assert run not in {item["run_id"] for item in kite.call("runs")["runs"]}
     kite.stage("maintenance-1", "verify")
-    kite.stage(run, "annotate", payload={"annotations": fixture["annotations"]})
+    paraphrased = deepcopy(fixture["annotations"])
+    paraphrased["facts"][0]["content"] = "The release review was confirmed for Thursday."
+    kite.stage(run, "annotate", payload={"annotations": paraphrased})
     kite.stage(run, "commit")
     kite.stage(run, "verify")
     report = kite.trace("trace", fixture["case"])
@@ -206,6 +279,7 @@ def test_recovery_score_rejects_changes_to_unrelated_runs(tmp_path):
     answer["ingestion_run_id"] = run
     result = _score_recovery(kite, fixture, answer, baseline)
     assert result["interrupted_run_recovered"] and result["report_evidence_verified"]
+    assert result["trace_facts_exact"]
     assert not result["maintenance_runs_unchanged"] and not result["passed"]
 
 
@@ -219,7 +293,10 @@ def test_deletion_score_requires_the_authorized_checkpoint(tmp_path):
     report = kite.trace("trace", case)
     answer = _reference_answer(case, "trace", report)
     answer["deletion_run_id"] = "replacement"
-    result = _score_deletion(kite, case, answer, baseline, fixture)
+    expected, _ = _trace_expectations(fixture)
+    result = _score_deletion(
+        kite, case, answer, baseline, fixture, expected_facts=expected[DELETION_CASE]
+    )
     assert result["expected_sources_preserved"] and result["post_deletion_evidence_verified"]
     assert result["prior_report_invalidated"]
     assert not result["approved_deletion_applied"] and not result["passed"]
@@ -242,7 +319,10 @@ def test_deletion_grade_checks_every_surviving_fact_even_if_counts_match(tmp_pat
     answer = _reference_answer(case, "trace", report)
     answer["deletion_run_id"] = run
 
-    result = _score_deletion(kite, case, answer, baseline, fixture)
+    expected, _ = _trace_expectations(fixture)
+    result = _score_deletion(
+        kite, case, answer, baseline, fixture, expected_facts=expected[DELETION_CASE]
+    )
     assert result["expected_sources_preserved"] and result["post_deletion_evidence_verified"]
     assert result["approved_deletion_applied"] and result["prior_report_invalidated"]
     provenance = result["surviving_fact_provenance"]

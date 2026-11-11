@@ -1,0 +1,30 @@
+{
+  "format-decision": [
+    ["text", "plan-alpha", 1],
+    ["text", "plan-alpha", 2],
+    ["memoket", "21", 1],
+    ["memoket", "21", 2],
+    ["memoket", "21", 3],
+    ["memoket", "21", 4],
+    ["text", "undated-note", 1]
+  ],
+  "owner-handoff": [
+    ["text", "plan-alpha", 2],
+    ["memoket", "21", 3]
+  ],
+  "dated-timeline": [
+    ["text", "plan-alpha", 1],
+    ["text", "plan-alpha", 2],
+    ["memoket", "21", 1],
+    ["memoket", "21", 2],
+    ["memoket", "21", 3],
+    ["memoket", "21", 4]
+  ],
+  "untrusted-transcript": [
+    ["transcript", "after-hours-review", 1]
+  ],
+  "unconfirmed-email": [
+    ["memoket", "21", 4],
+    ["text", "undated-note", 1]
+  ]
+}

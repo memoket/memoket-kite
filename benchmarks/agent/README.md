@@ -76,6 +76,13 @@ expected pipeline at the seeded snapshot, then checks the returned values and
 citations against the answer key. It checks source coverage and any required
 date bounds in the saved trace.
 A correct string with a missing or unrelated citation fails.
+The scorer also checks every returned timeline fact against the fixed
+[trace expectations](trace-expectations.json). Each entry selects an original
+annotation by source namespace, conversation ID and one-based position. The
+scorer uses the fixture's fact text and original cited lines for the comparison.
+`trace_expectations_sha256` identifies those selections in the score. Recovery
+checks original citations and the confirmed state against its own fixture and
+allows the host to phrase the annotation in its own words.
 
 ## Read the results
 
@@ -92,6 +99,11 @@ A correct string with a missing or unrelated citation fails.
 - `source_scope_correct` checks the report for missing or extraneous source
   conversations, omitted undated records, and truncation. `date_scope_correct`
   checks the saved date bounds and time axis when a task specifies a range.
+- `trace_fact_recall` divides matched timeline facts by expected facts.
+  `trace_fact_precision` divides them by returned facts. The comparison includes
+  the original source identities, segment IDs and quote text. A repeated row
+  adds to the returned count. `trace_facts_exact` requires the full expected set
+  with its original citations and the correct report count.
 - `fact_provenance` in the offline summary and `surviving_fact_provenance` in
   the deletion case compare stored facts with the fixture. A match requires the
   fact text and all original source identities, references, segment IDs and quotes.
