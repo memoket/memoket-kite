@@ -16,6 +16,7 @@ from .retrieve import _citation
 
 _SPAN_CHARS = 320
 _QUESTION_BYTES = 3800
+_TERM_BYTES = 6000
 _SEARCH_TERMS = re.compile(r"[\u3400-\u9fff]+|[^\W_]+", re.UNICODE)
 _HAN = re.compile(r"([\u3400-\u9fff])")
 _QUERY_WORDS = re.compile(r"[\u3400-\u9fff]+|[a-z0-9]+(?:\s+[a-z0-9]+)*", re.I)
@@ -60,18 +61,26 @@ _CONTEXT_SCHEMA = object_schema(
         "known_at": {"type": "string", "format": "date-time"},
     },
 )
-CONTEXT_REQUEST = object_schema(
-    {"question": {**TEXT, "maxLength": 512}},
-    {
-        **{key: value for key, value in _CONTEXT_SCHEMA["properties"].items() if key != "terms"},
-        "compare_with": {**TEXT, "maxLength": 512},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 50},
-        "max_bytes": {"type": "integer", "minimum": 512, "maximum": 65536},
-        "neighbors": {"type": "integer", "minimum": 0, "maximum": 5},
-    },
-)
+CONTEXT_REQUEST = {
+    **object_schema(
+        {},
+        {
+            **_CONTEXT_SCHEMA["properties"],
+            "question": {**TEXT, "maxLength": 512},
+            "compare_with": {**TEXT, "maxLength": 512},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+            "max_bytes": {"type": "integer", "minimum": 512, "maximum": 65536},
+            "neighbors": {"type": "integer", "minimum": 0, "maximum": 5},
+        },
+    ),
+    "oneOf": [{"required": ["question"]}, {"required": ["terms"]}],
+}
 CONTEXT_PLAN = object_schema(
-    {"request": CONTEXT_REQUEST, "terms": array(TEXT, 1, 8), "memory_version": {"type": "integer"}},
+    {
+        "request": CONTEXT_REQUEST,
+        "terms": _CONTEXT_SCHEMA["properties"]["terms"],
+        "memory_version": {"type": "integer"},
+    },
     {"comparison_terms": array(TEXT, 1, 8)},
 )
 
@@ -180,7 +189,6 @@ def _compile_terms(db, plan: dict, question: str) -> list[str]:
 
 
 def _question_scope(request: dict) -> tuple[dict, str]:
-    validate(CONTEXT_REQUEST, request, "context request")
     question = request["question"]
     quoted = [match.span() for match in _QUOTED_PHRASES.finditer(question)]
 
@@ -232,7 +240,12 @@ def _question_scope(request: dict) -> tuple[dict, str]:
     return prepared, search
 
 
-def _comparison_scope(request: dict) -> tuple[dict, str, str | None]:
+def _context_scope(request: dict) -> tuple[dict, str | None, str | None]:
+    validate(CONTEXT_REQUEST, request, "context request")
+    if "terms" in request:
+        if "compare_with" in request:
+            raise ToolError("invalid_input", "compare_with requires a question")
+        return request, None, None
     request, search = _question_scope(request)
     compare = request.get("compare_with")
     if compare is None:
@@ -246,7 +259,9 @@ def _comparison_scope(request: dict) -> tuple[dict, str, str | None]:
 def _compile_questions(workspace, index, request, search, compare_search):
     result = {
         "request": request,
-        "terms": _compile_terms(index.db, index.filters, search),
+        "terms": request["terms"]
+        if search is None
+        else _compile_terms(index.db, index.filters, search),
         "memory_version": workspace.version(),
     }
     if compare_search is not None:
@@ -255,13 +270,13 @@ def _compile_questions(workspace, index, request, search, compare_search):
 
 
 def compile_question(workspace, request: dict) -> dict:
-    request, search, compare_search = _comparison_scope(request)
+    request, search, compare_search = _context_scope(request)
     with _search_index(workspace, request) as index:
         return _compile_questions(workspace, index, request, search, compare_search)
 
 
 def question_pack(workspace, request: dict) -> dict:
-    request, search, compare_search = _comparison_scope(request)
+    request, search, compare_search = _context_scope(request)
     with _search_index(workspace, request) as index:
         compiled = _compile_questions(workspace, index, request, search, compare_search)
         return _search_questions(workspace, compiled, index)
@@ -279,7 +294,8 @@ def _search_questions(workspace, compiled: dict, index) -> dict:
     request = compiled["request"]
     filters = {key: request[key] for key in _CONTEXT_SCHEMA["properties"] if key in request}
     limit = request.get("limit", 8)
-    budget = request.get("max_bytes", _QUESTION_BYTES)
+    question = request.get("question")
+    budget = request.get("max_bytes", _QUESTION_BYTES if question is not None else _TERM_BYTES)
     compare_terms = compiled.get("comparison_terms")
     if (compare_terms is not None) != ("compare_with" in request):
         raise ToolError("invalid_input", "compile both comparison questions before searching")
@@ -287,21 +303,23 @@ def _search_questions(workspace, compiled: dict, index) -> dict:
     def search(question, terms, span_limit, quote_budget):
         result = _context_evidence(
             workspace,
-            {"terms": terms, **filters},
+            {**filters, "terms": terms},
             limit=span_limit,
             max_bytes=quote_budget,
             neighbors=request.get("neighbors", 0 if request.get("matching_lines") else 1),
-            focus=True,
+            focus=question is not None,
             _index=index,
             _question=question,
         )
-        return {**result, "compilation": {"question": question, "terms": terms}}
+        if question is not None:
+            result["compilation"] = {"question": question, "terms": terms}
+        return result
 
     if compare_terms is None:
-        return search(request["question"], compiled["terms"], limit, budget)
+        return search(question, compiled["terms"], limit, budget)
     first_limit, first_budget = (limit + 1) // 2, (budget + 1) // 2
     parts = [
-        search(request["question"], compiled["terms"], first_limit, first_budget),
+        search(question, compiled["terms"], first_limit, first_budget),
         search(request["compare_with"], compare_terms, limit - first_limit, budget - first_budget),
     ]
     return {
@@ -558,6 +576,7 @@ def _candidates(
     focus: bool = False,
     preferred_sources: set[str] | None = None,
     anchors: tuple[str, ...] = (),
+    term_candidates: dict[str, int] | None = None,
 ) -> list:
     where, args = _search_scope(plan)
     order = "bm25(context_spans, 1.0, 0.35, 1.2), day DESC"
@@ -574,13 +593,14 @@ def _candidates(
         expression = f'"{phrase}"'
         if matching_lines:
             expression = f"text : {expression}"
-        matches.append(
-            db.execute(
-                f"SELECT checksum, start, stop, day FROM context_spans WHERE {where} "
-                f"ORDER BY {order}, checksum, start LIMIT ?",
-                (expression, *args, stream_limit),
-            ).fetchall()
-        )
+        rows = db.execute(
+            f"SELECT checksum, start, stop, day FROM context_spans WHERE {where} "
+            f"ORDER BY {order}, checksum, start LIMIT ?",
+            (expression, *args, stream_limit),
+        ).fetchall()
+        matches.append(rows)
+        if term_candidates is not None:
+            term_candidates[phrase] = len(rows)
         if phrase in anchors:
             row = db.execute(
                 f"SELECT checksum, start, stop, day FROM context_spans WHERE {where} "
@@ -800,6 +820,20 @@ def context_pack(
     )
 
 
+def _term_coverage(terms: list[str], candidates: dict[str, int], spans: list[dict]) -> list[dict]:
+    quoted = [f" {_tokens(line['text'])} " for span in spans for line in span["evidence"]]
+    coverage = {}
+    for term in terms:
+        phrase = _tokens(term)
+        if phrase and phrase not in coverage:
+            coverage[phrase] = {
+                "term": term,
+                "candidate_spans": candidates.get(phrase, 0),
+                "quoted_lines": sum(f" {phrase} " in line for line in quoted),
+            }
+    return list(coverage.values())
+
+
 def _context_evidence(workspace, plan, *, limit, max_bytes, neighbors, focus, _index, _question):
     validate(_CONTEXT_SCHEMA, plan, "context plan")
     if not any(map(_tokens, plan["terms"])):
@@ -827,6 +861,7 @@ def _context_evidence(workspace, plan, *, limit, max_bytes, neighbors, focus, _i
                 anchors = tuple(
                     map(_tokens, _quoted_phrases(_question).intersection(plan["terms"]))
                 )
+        term_candidates = {} if matching_lines else None
         candidates = _candidates(
             index.db,
             {**index.filters, "terms": plan["terms"]},
@@ -834,6 +869,7 @@ def _context_evidence(workspace, plan, *, limit, max_bytes, neighbors, focus, _i
             focus=focus,
             preferred_sources=preferred,
             anchors=anchors,
+            term_candidates=term_candidates,
         )
         spans, size, omitted = _pack(
             workspace,
@@ -857,6 +893,11 @@ def _context_evidence(workspace, plan, *, limit, max_bytes, neighbors, focus, _i
         "candidate_spans": len(candidates),
         "candidate_sources": len({row["checksum"] for row in candidates}),
         "span_limit": limit,
+        **(
+            {"term_coverage": _term_coverage(plan["terms"], term_candidates, spans)}
+            if term_candidates is not None
+            else {}
+        ),
         **({"anchor_sources": len(preferred)} if preferred else {}),
         **({"compact_sources": min(len(compact), len(spans))} if compact else {}),
         **({"history": index.history} if index.history is not None else {}),
@@ -914,6 +955,11 @@ def render_context(pack: dict) -> str:
             lines.append("")
         if not part["spans"]:
             lines.append("No evidence matched.")
+        coverage = part.get("term_coverage", ())
+        if len(coverage) > 1:
+            missing = [" ".join(row["term"].split()) for row in coverage if not row["quoted_lines"]]
+            if missing:
+                lines.append("No cited lines for: " + ", ".join(missing))
     if run_id := pack.get("saved_run"):
         lines.extend(("", f"Saved search: {run_id}"))
     return "\n".join(lines).strip()

@@ -53,12 +53,23 @@ def _search_snapshot(
                     "passages": len(part["spans"]),
                     "quote_bytes": part["quote_bytes"],
                     "quote_budget_bytes": part["quote_budget_bytes"],
+                    "term_coverage": part.get("term_coverage", []),
                 }
                 for key, part in packs
             ]
         else:
             packs = [(question, result)]
         terms = [key for key, _ in packs]
+    elif saved is not None or scope.get("matching_lines"):
+        result = (
+            saved["value"]
+            if saved is not None
+            else context_pack(
+                workspace, {"terms": terms, **scope}, limit=8, max_bytes=6000, neighbors=0
+            )
+        )
+        terms = list(dict.fromkeys(result["plan"]["terms"]))
+        packs = [(None, result)]
     else:
         packs = [
             (
@@ -93,19 +104,23 @@ def _search_snapshot(
                 "active": span.get("source_revision_active", True),
             }
             ids = tuple(line["source_line_id"] for line in lines)
+            matched = set()
             for line in lines:
                 quote = evidence.setdefault(line["source_line_id"], {**line, "matched_terms": []})
                 text = f" {_tokens(line['text'])} "
-                quote["matched_terms"].extend(
-                    phrase
-                    for phrase, tokens in compiled
-                    if tokens in text and phrase not in quote["matched_terms"]
-                )
+                for phrase, tokens in compiled:
+                    if tokens in text:
+                        matched.add(phrase)
+                        if phrase not in quote["matched_terms"]:
+                            quote["matched_terms"].append(phrase)
             citation = f"{first['conversation_id']}#{first['segment_id']}"
             if len(lines) > 1:
                 citation += f"–{last['segment_id']}"
             passage = passages.setdefault(ids, {"label": citation, "evidence": ids, "terms": []})
-            passage["terms"].append(term)
+            branches = (
+                [term] if term is not None else [phrase for phrase in terms if phrase in matched]
+            )
+            passage["terms"].extend(branches or terms)
     history = packs[0][1].get("history")
     if saved is not None and sources:
         retained = {
@@ -146,6 +161,11 @@ def _search_snapshot(
         "search_comparison": comparison,
         "search_history": history,
         "search_matching_lines": packs[0][1]["plan"].get("matching_lines", False),
+        "search_source_scope": {
+            key: packs[0][1]["plan"][key]
+            for key in ("source", "conversation_id")
+            if key in packs[0][1]["plan"]
+        },
         "search_recording_bounds": {
             key: packs[0][1]["plan"][key]
             for key in ("start_date", "end_date")
@@ -153,6 +173,7 @@ def _search_snapshot(
         },
         "search_trace": {
             "terms": packs[0][1]["compilation"]["terms"] if question is not None else terms,
+            "term_coverage": packs[0][1].get("term_coverage", []) if not comparison else [],
             "candidate_spans": sum(pack["candidate_spans"] for _, pack in packs),
             "candidate_sources": packs[0][1]["candidate_sources"]
             if question and not comparison
@@ -176,6 +197,7 @@ def _snapshot(
     at_version: int | None = None,
     *,
     recording_bounds: dict | None = None,
+    source_scope: dict | None = None,
     compare_with: str | None = None,
     matching_lines: bool = False,
     run_id: str | None = None,
@@ -197,7 +219,7 @@ def _snapshot(
                 first = pack["parts"][0] if "parts" in pack else pack
                 return {
                     **_search_snapshot(
-                        workspace, [], first["compilation"]["question"], {}, saved=saved
+                        workspace, [], first.get("compilation", {}).get("question"), {}, saved=saved
                     ),
                     "history_origin": origin,
                     "saved_search": {
@@ -207,7 +229,7 @@ def _snapshot(
                 }
             historical_search = at_version is not None and origin is not None
             if (terms or question is not None) and (searchable or at_version is not None):
-                scope = {**(recording_bounds or {})}
+                scope = {**(recording_bounds or {}), **(source_scope or {})}
                 if at_version is not None:
                     scope["at_version"] = at_version
                 if compare_with is not None:
@@ -325,14 +347,14 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                 return
             last_access = monotonic()
             try:
-                params = parse_qs(query, max_num_fields=12)
+                params = parse_qs(query, max_num_fields=24)
                 terms = list(dict.fromkeys(params.get("term", ())))
                 question = params.get("q", [None])[0]
                 compare_with = params.get("q2", [None])[0]
                 run_id = params.get("run", [None])[0]
                 matching_lines = params.get("matching_lines", ["0"])
                 if (
-                    len(terms) > 3
+                    len(terms) > (12 if matching_lines == ["1"] else 3)
                     or matching_lines not in (["0"], ["1"])
                     or any(len(term) > 128 for term in terms)
                     or (question is not None and (len(question) > 512 or terms))
@@ -344,7 +366,14 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                             or question is not None
                             or any(
                                 key in params
-                                for key in ("at", "start_date", "end_date", "matching_lines")
+                                for key in (
+                                    "at",
+                                    "start_date",
+                                    "end_date",
+                                    "matching_lines",
+                                    "source",
+                                    "conversation_id",
+                                )
                             )
                         )
                     )
@@ -388,6 +417,11 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                     bounds = {
                         key: params[key][0] for key in ("start_date", "end_date") if key in params
                     }
+                    source_scope = {
+                        key: params[key][0]
+                        for key in ("source", "conversation_id")
+                        if key in params
+                    }
                     view, snapshot = (
                         "graph",
                         _snapshot(
@@ -396,6 +430,7 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                             question,
                             at_version,
                             recording_bounds=bounds,
+                            source_scope=source_scope,
                             compare_with=compare_with,
                             matching_lines=matching_lines == ["1"],
                             run_id=run_id,

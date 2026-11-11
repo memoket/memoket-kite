@@ -225,6 +225,10 @@ summary { color: var(--teal); cursor: pointer; font-size: 12px; }
 .activity-stage[data-state="completed"] { background: #e3efe8; color: #125c50; }
 .search-trace { display: grid; gap: 4px; margin-top: 10px; padding: 10px; background: var(--paper); border-radius: 7px; font-size: 12px; }
 .search-trace p { color: var(--muted); overflow-wrap: anywhere; }
+.term-coverage { display: flex; flex-wrap: wrap; gap: 4px 12px; list-style: none; padding: 0; margin: 0; }
+.term-coverage li { display: flex; flex-wrap: wrap; column-gap: 5px; overflow-wrap: anywhere; }
+.term-coverage span { color: var(--muted); }
+.term-coverage [data-empty] { color: var(--muted); }
 .recording-timeline > section { padding-left: 10px; border-left: 2px solid var(--line); }
 .recording-timeline > section h4 { margin: 0 0 6px; color: var(--muted); font-size: 12px; }
 .revision-change { margin-top: 16px; }

@@ -24,6 +24,8 @@ When the user gives an exact quotation and asks for its recording time, use
 `context --term QUOTATION --matching-lines --text`. Repeat `--term` to locate
 several quotations in one call. With `--question`, **Matching lines** uses its
 quoted phrases when present. Open `evidence` for any surrounding turns needed.
+Add `--save` to a phrase lookup and open the run in **Workflows** to see
+candidate spans and cited lines per phrase.
 Use `--latest` when the task needs newer recordings first. For two independent
 questions, run `context --question "$FIRST" --compare-with "$SECOND" --text`.
 Restate the subject where needed so each question can retrieve its own quotes.

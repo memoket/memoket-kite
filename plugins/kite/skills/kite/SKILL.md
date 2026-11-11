@@ -14,8 +14,9 @@ Run `bash "$KITE" context --question "$QUESTION" --text`. The question can name
 `workspace v12` or `workspace as of 2026-05-14T10:30:00+08:00`. Cite the original
 lines and distinguish confirmed decisions from proposals. Quote a known topic
 name to focus retrieval. For the source or recording time of known words, run
-`context --term "$PHRASE" --matching-lines --text`. For a missing detail, try a
-specific `--term`, narrow by `--conversation-id`, or read nearby lines with
+`context --term "$PHRASE" --matching-lines --text`. When evidence is missing
+or only covers a conditional case, repeat `--term` in one matching-line lookup.
+Add `--conversation-id` when you know the recording. Read nearby lines with
 `evidence 'ID#SEGMENT' --context 2 --text`.
 State any unresolved gaps.
 When asked to save the exact search for inspection, add `--save` and open the

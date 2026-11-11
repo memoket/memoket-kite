@@ -167,6 +167,20 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
     assert [line["segment_id"] for span in exact_pack["spans"] for line in span["evidence"]] == [
         "L4"
     ], exact
+    saved_terms = json.loads(
+        run(
+            "context",
+            "--term",
+            "rollout depends",
+            "--term",
+            "no matching words",
+            "--matching-lines",
+            "--save",
+            "installed-terms",
+        ).stdout
+    )
+    assert saved_terms["saved_run"] == "installed-terms"
+    assert [row["quoted_lines"] for row in saved_terms["term_coverage"]] == [1, 0]
     comparison = run(
         "context",
         "--question",

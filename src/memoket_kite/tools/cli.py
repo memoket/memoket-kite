@@ -793,8 +793,6 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
     if args.command == "context":
         if args.compare_with is not None and args.question is None:
             raise ToolError("invalid_input", "--compare-with requires --question")
-        if args.save is not None and args.question is None:
-            raise ToolError("invalid_input", "--save requires --question")
         plan = {}
         if args.latest:
             plan["latest"] = True
@@ -815,13 +813,16 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 if (value := getattr(args, key)) is not None
             }
         )
-        if args.question is not None:
+        if args.question is not None or args.save is not None:
             request = {
                 **plan,
-                "question": args.question,
                 "limit": args.limit,
                 "neighbors": neighbors,
             }
+            if args.question is None:
+                request["terms"] = args.term
+            else:
+                request["question"] = args.question
             if args.max_bytes is not None:
                 request["max_bytes"] = args.max_bytes
             if args.compare_with is not None:

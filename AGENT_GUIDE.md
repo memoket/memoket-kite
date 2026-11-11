@@ -64,6 +64,10 @@ For the recording time or location of a known quotation, use
 `kite-tool context --term "$QUOTATION" --matching-lines --text`. For a question
 with quoted phrases, `--matching-lines` compiles those phrases and returns
 their original matching lines. Use `evidence` when you need surrounding turns.
+For missing or conditional evidence, repeat `--term` in one matching-line
+lookup. Use `--conversation-id` when the relevant recording is already known.
+Add `--save` to inspect each phrase's candidate spans and cited lines in the
+graph. A phrase with zero cited lines may still have candidate spans.
 For two independent questions, use `--question "$FIRST" --compare-with "$SECOND"`.
 The two searches share the snapshot, date filters and total quote budget. The
 pipeline accepts the second question as `request.compare_with`.

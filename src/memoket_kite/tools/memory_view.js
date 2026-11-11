@@ -6,6 +6,8 @@
   const searching = Boolean(snapshot.search_terms?.length);
   const comparison = snapshot.search_comparison || [];
   const recordingBounds = snapshot.search_recording_bounds || {};
+  const sourceScope = snapshot.search_source_scope || {};
+  let searchAllSources = false;
   const copy = {
     en: {
       title: 'Memory Graph', searchTitle: 'Search Evidence', topics: 'Topics', terms: 'Search terms',
@@ -24,6 +26,8 @@
       readRevision: 'Read this revision',
       anchorSources: 'sources matching the name',
       matchedTerms: 'Terms in this quote',
+      sourceScope: 'Source scope', allSources: 'Search all sources',
+      invalidMatching: 'Enter up to twelve phrases of at most 128 characters.',
       versionFilter: 'Version', versionFilterLabel: 'Search at a workspace version', history: 'Workspace snapshot',
       recordingDates: 'Recording dates', recordingFrom: 'From', recordingThrough: 'Through',
       recordingTimeline: 'Evidence by recording date', invalidDateRange: 'Start date must not follow end date.',
@@ -65,6 +69,8 @@
       readRevision: '查看此版本原文',
       anchorSources: '份来源命中名称',
       matchedTerms: '原文命中',
+      sourceScope: '限定来源', allSources: '搜索全部来源',
+      invalidMatching: '请输入最多十二个检索词，每个不超过 128 字符。',
       versionFilter: '版本', versionFilterLabel: '按工作区版本检索', history: '工作区快照',
       recordingDates: '录制日期', recordingFrom: '起始日期', recordingThrough: '截止日期',
       recordingTimeline: '按录制日期查看原文', invalidDateRange: '起始日期应早于或等于截止日期。',
@@ -821,6 +827,20 @@
     byId('zoom-out').disabled = value <= .65;
   }
 
+  function termSummary(terms, coverage) {
+    if (!coverage?.length) return element('p', terms.join(' · '));
+    const list = element('ul', undefined, 'term-coverage');
+    for (const row of coverage) {
+      const counts = [number.format(row.candidate_spans) + ' ' + t('candidates'),
+        number.format(row.quoted_lines) + ' ' + t('quotes')];
+      const item = element('li');
+      item.toggleAttribute('data-empty', !row.quoted_lines);
+      item.append(element('strong', row.term), element('span', counts.join(' · ')));
+      list.append(item);
+    }
+    return list;
+  }
+
   function render() {
     displayed = mode === 'all' ? allTopicScene() : mode === 'topic' ? topicScene(currentTopic) : memoryScene(selected);
     document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en';
@@ -866,13 +886,13 @@
         for (const part of comparison) {
           const branch = element('div');
           branch.append(button(part.question, () => choose(topics.get(part.key)), 'citation-link'),
-            element('p', part.terms.join(' · ')),
+            termSummary(part.terms, part.term_coverage),
             element('p', `${number.format(part.passages)} ${t('record')} · ${number.format(part.quote_bytes)}/${number.format(part.quote_budget_bytes)} ${t('quoteBytes')}`));
           branches.append(branch);
         }
         trace.append(branches);
       } else {
-        trace.append(element('p', stats.terms.join(' · ')));
+        trace.append(termSummary(stats.terms, stats.term_coverage));
       }
       trace.append(element('p', [number.format(stats.candidate_spans) + ' ' + t('candidates'),
           stats.candidate_sources === null ? null : number.format(stats.candidate_sources) + ' ' + t('candidateSources'),
@@ -882,6 +902,15 @@
           stats.shared_quotes ? number.format(stats.shared_quotes) + ' ' + t('sharedQuotes') : null,
           number.format(stats.quote_bytes) + ' ' + t('quoteBytes')].filter(Boolean).join(' · ')));
       if (snapshot.search_matching_lines) trace.prepend(element('p', t('matchingLines')));
+      if (sourceScope.source || sourceScope.conversation_id) {
+        const scope = element('p', `${t('sourceScope')} · ${[sourceScope.source, sourceScope.conversation_id].filter(Boolean).join('/')}`);
+        scope.append(' · ', button(t('allSources'), () => {
+          searchAllSources = true;
+          byId('search').requestSubmit();
+          searchAllSources = false;
+        }, 'citation-link'));
+        trace.prepend(scope);
+      }
       if (snapshot.search_history) {
         const history = snapshot.search_history;
         trace.prepend(element('p', `${t('history')} v${history.version} · ${new Date(history.committed_at).toLocaleString(language)}`));
@@ -960,8 +989,8 @@
     }
     const terms = !compareWith && value !== snapshot.search_question && /[,，、]/u.test(value) && !/[?？。]/u.test(value)
       ? [...new Set(value.split(/[,，、]+/u).map(term => term.trim()).filter(Boolean))] : [];
-    if (terms.length > 3 || terms.some(term => term.length > 128)) {
-      input.setCustomValidity(t('invalid'));
+    if (terms.length > (matchingLines.checked ? 12 : 3) || terms.some(term => term.length > 128)) {
+      input.setCustomValidity(t(matchingLines.checked ? 'invalidMatching' : 'invalid'));
       input.reportValidity();
       return;
     }
@@ -974,6 +1003,9 @@
     if (value && byId('search-version').value) params.set('at', byId('search-version').value);
     if (value && recordingStart.value) params.set('start_date', recordingStart.value);
     if (value && recordingEnd.value) params.set('end_date', recordingEnd.value);
+    if (value && !searchAllSources) {
+      for (const [key, scope] of Object.entries(sourceScope)) params.set(key, scope);
+    }
     if (!value && currentTopic && !searching) params.set('topic', currentTopic.code);
     location.search = params.toString();
   });

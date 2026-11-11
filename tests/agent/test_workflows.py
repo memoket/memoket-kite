@@ -285,6 +285,9 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
             assert saved["search_trace"] == question["search_trace"]
             assert saved["evidence"] == question["evidence"]
             assert saved["saved_search"]["version"] == question["version"]
+            scoped = read("?view=graph&term=checklist&matching_lines=1&conversation_id=release")
+            assert scoped["search_source_scope"] == {"conversation_id": "release"}
+            assert {line["conversation_id"] for line in scoped["evidence"].values()} == {"release"}
             import_event = read(f"?view=activity&event={ingested['memory_version']}")["events"][0]
             assert import_event["source_changes"][0]["checksum"] == baseline
             assert import_event["source_changes"][0]["before"] is None
@@ -5906,6 +5909,50 @@ def test_context_matching_lines_checks_the_original_segment_and_saved_plan(work)
     )
     assert missing["spans"] == []
 
+    terms = ["amber needle", "implementation notes", "amber needle replacement", "silver needle"]
+    batch = ("context", "--matching-lines", *(arg for term in terms for arg in ("--term", term)))
+    direct = call(*batch)
+    assert direct["term_coverage"] == [
+        {"term": "amber needle", "candidate_spans": 2, "quoted_lines": 1},
+        {"term": "implementation notes", "candidate_spans": 1, "quoted_lines": 1},
+        {"term": "amber needle replacement", "candidate_spans": 1, "quoted_lines": 0},
+        {"term": "silver needle", "candidate_spans": 0, "quoted_lines": 0},
+    ]
+    assert "No cited lines for: amber needle replacement, silver needle" in call(*batch, "--text")
+    saved_batch = call(*batch, "--save", "batch")
+    assert saved_batch == {**direct, "saved_run": "batch"}
+    assert call(*batch, "--save", "batch") == saved_batch
+    plan = call("artifact", "batch", "compile")["value"]
+    assert plan["terms"] == terms
+    live_batch = viewer._snapshot(directory, terms, matching_lines=True)
+    replay_batch = viewer._snapshot(directory, [], run_id="batch")
+    assert live_batch["search_trace"] == replay_batch["search_trace"]
+    assert live_batch["search_trace"]["term_coverage"] == direct["term_coverage"]
+    assert {tuple(row["terms"]) for row in replay_batch["passages"]} == {
+        ("amber needle",),
+        ("implementation notes",),
+    }
+    scope = {"source": "transcript", "conversation_id": "recorded"}
+    call(
+        *batch,
+        "--source",
+        scope["source"],
+        "--conversation-id",
+        scope["conversation_id"],
+        "--save",
+        "scoped-batch",
+    )
+    scoped_replay = viewer._snapshot(directory, [], run_id="scoped-batch")
+    scoped_live = viewer._snapshot(directory, terms, matching_lines=True, source_scope=scope)
+    assert scoped_replay["search_source_scope"] == scope
+    assert scoped_replay["evidence"] == scoped_live["evidence"]
+    call(
+        "start",
+        "context-search",
+        payload={"request": {"question": "Needle?", "terms": ["amber needle"]}},
+        error="invalid_input",
+    )
+
 
 def test_context_comparison_keeps_both_questions_in_one_budget_and_snapshot(work):
     _, call = work
@@ -5978,7 +6025,6 @@ def test_context_comparison_keeps_both_questions_in_one_budget_and_snapshot(work
     call("context", "--question", "Loading?", "--save", "comparison-saved", error="conflict")
     call("context", *args, "--at-version", str(version + 1), error="invalid_input")
     call("context", "--term", "northwind", "--compare-with", "loading", error="invalid_input")
-    call("context", "--term", "northwind", "--save", error="invalid_input")
 
 
 def test_context_text_reuses_a_quote_across_questions(work):
