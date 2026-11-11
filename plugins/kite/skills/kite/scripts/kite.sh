@@ -6,6 +6,9 @@ umask 077
 runtime_revision=eecfef3308e7e2c0e305c1fc3c883aaa7721aa73
 runtime="memoket-kite[agent] @ git+https://github.com/memoket/memoket-kite.git@${runtime_revision}"
 uv_version=0.11.16
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/kite/codex"
+runtime_dir="$cache_dir/runtime-$runtime_revision"
+runtime_bin="$runtime_dir/bin/kite-tool"
 
 case "$(uname -s)" in
     Darwin|Linux) ;;
@@ -51,13 +54,18 @@ if [[ -z "${KITE_DATA_DIR:-}" ]]; then
     export KITE_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/kite/codex/${checksum%% *}"
 fi
 
-if ! uv_bin=$(find_uv); then
-    runtime_dir="${XDG_CACHE_HOME:-$HOME/.cache}/kite/codex/uv-$uv_version"
-    uv_bin="$runtime_dir/uv"
-    if [[ ! -x "$uv_bin" ]] && ! install_uv "$runtime_dir"; then
-        printf '%s\n' 'KITE could not install uv. Check network access or install uv from https://docs.astral.sh/uv/.' >&2
-        exit 1
+if [[ ! -x "$runtime_bin" ]]; then
+    if ! uv_bin=$(find_uv); then
+        uv_dir="$cache_dir/uv-$uv_version"
+        uv_bin="$uv_dir/uv"
+        if [[ ! -x "$uv_bin" ]] && ! install_uv "$uv_dir"; then
+            printf '%s\n' 'KITE could not install uv. Check network access or install uv from https://docs.astral.sh/uv/.' >&2
+            exit 1
+        fi
     fi
+    UV_TOOL_DIR="$runtime_dir/tools" UV_TOOL_BIN_DIR="$runtime_dir/bin" \
+        "$uv_bin" tool install --no-config --python 3.12 "$runtime" >&2
 fi
 
-exec "$uv_bin" tool run --no-config --python 3.12 --from "$runtime" kite-tool "$@"
+export PYTHONDONTWRITEBYTECODE=1
+exec "$runtime_bin" "$@"

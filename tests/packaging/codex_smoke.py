@@ -85,6 +85,9 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
     demo = run("demo", "--text").stdout
     assert "short checklist" in demo and "memoket/184#line-b" in demo, demo
     env["UV_OFFLINE"] = "1"
+    unavailable_uv_cache = scratch / "unavailable uv cache"
+    unavailable_uv_cache.touch()
+    env["UV_CACHE_DIR"] = str(unavailable_uv_cache)
 
     notes = scratch / "Launch review.md"
     quote = "We decided to ship a short checklist."
@@ -153,6 +156,7 @@ def main() -> None:
         env = {
             **os.environ,
             "CODEX_HOME": str(codex_home),
+            "XDG_CACHE_HOME": str(scratch / "cache"),
             "XDG_DATA_HOME": str(scratch / "data"),
         }
         env.pop("KITE_DATA_DIR", None)

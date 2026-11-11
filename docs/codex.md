@@ -23,10 +23,11 @@ use.
 
 The first run needs network access to fetch the pinned KITE runtime and, when
 needed, [uv](https://docs.astral.sh/uv/) and Python 3.12. The launcher reuses an
-existing uv installation or installs a private copy in the user cache. It keeps
-the runtime cached for subsequent use. The sample and local KITE commands need
-no separate model API key. If Codex prompts for permission to download the
-runtime or write to the local memory directory, allow the specific operation.
+existing uv installation or installs a private copy in the user cache. Later
+commands run the installed KITE runtime directly. The sample and local KITE
+commands need no separate model API key. If Codex prompts for permission to
+download the runtime or write to the local memory directory, allow the specific
+operation.
 
 ## Try it in a chat
 
