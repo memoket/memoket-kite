@@ -295,6 +295,14 @@ After reviewing annotations, pipe source-only JSON to
 `kite-tool ingest --input - --annotations FILE`. The file uses the same
 `{"annotations": ...}` object as the `annotate` stage.
 
+Use `--project NAME` with `file-source` or `audio-source` to set
+`metadata.project` on the prepared conversation. For a canonical export, the
+flag overrides its project label in the prepared copy. Run `kite-tool query`
+with `--project NAME` to restrict a trace to that label. Project labels are
+case-sensitive. Changing the project of a committed conversation creates a
+new source revision, so pass its current checksum with `--expected-checksum` and use
+`memory-update`.
+
 The normal ingestion workflow expects host-prepared annotations. The optional
 provider stage uses KITE's existing extractor and reads its credentials from
 the environment. Apply `--allow-provider` only when the user has authorized the

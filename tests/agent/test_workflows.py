@@ -3431,6 +3431,8 @@ def test_local_audio_command_builds_ingestion_input(
         str(model),
         "--source-id",
         "recording:planning",
+        "--project",
+        "Onboarding pilot",
         "--language",
         "en",
         "--timeout",
@@ -3442,6 +3444,7 @@ def test_local_audio_command_builds_ingestion_input(
     assert len(temporary) == 1 and not temporary[0].exists()
     payload = output["source"]["payload"]
     assert payload["language"] == "en"
+    assert payload["metadata"]["project"] == "Onboarding pilot"
     assert payload["metadata"]["audio_sha256"] == hashlib.sha256(recording.read_bytes()).hexdigest()
     assert "do-not-keep-this-path" not in json.dumps(output)
     assert payload.get("started_at") == (source_time if precision == "timestamp" else None)
@@ -3457,7 +3460,7 @@ def test_local_audio_command_builds_ingestion_input(
         ]
     }
     receipt = ingest(call, "audio", output)
-    report = trace(call, "trace", {"topics": ["onboarding"]})
+    report = trace(call, "trace", {"topics": ["onboarding"], "projects": ["Onboarding pilot"]})
     assert report["timeline"][0]["evidence"][0]["text"] == body
     assert report["timeline"][0]["evidence"][0]["end_ms"] == 2160
     assert report["timeline"][0]["source_time"] == source_time
@@ -3473,6 +3476,7 @@ def test_local_audio_command_builds_ingestion_input(
         (("--source-date", "2026-02-30"), "source_date fails date format"),
         (("--started-at", "2026-11-10T09:15:00"), "started_at fails date-time format"),
         (("--expected-checksum", "bad"), "expected checksum fails pattern"),
+        (("--project", "   "), "project fails pattern"),
     ],
 )
 def test_audio_rejects_invalid_metadata_before_transcribing(
@@ -3713,6 +3717,36 @@ def test_file_source_split_lines_preserves_quotes_line_numbers_and_source_checks
     call("file-source", str(path), "--format", "memoket", "--split-lines", error="invalid_input")
 
 
+def test_source_project_is_queryable_and_changes_with_the_revision(work, tmp_path):
+    workspace, call = work
+    path = tmp_path / "notes.txt"
+    path.write_text("Ada owns the launch.", encoding="utf-8")
+    command = ("file-source", str(path), "--format", "text", "--source-id", "notes")
+    call(*command, "--project", "  ", error="invalid_input")
+    prepared = call(*command, "--project", "Launch 计划")
+    assert not workspace.exists()
+    assert prepared["source"]["payload"]["metadata"]["project"] == "Launch 计划"
+    prepared["annotations"] = text_input("notes", "Ada owns the launch.")["annotations"]
+    original = ingest(call, "first", prepared)
+    assert not ingest(call, "repeat", prepared)["changed"]
+
+    query = ("query", "--topic", "onboarding", "--project")
+    first = call(*query, "Launch 计划")["value"]
+    assert first["timeline"][0]["effective"]
+    assert not call(*query, "launch 计划")["value"]["timeline"]
+
+    changed = call(*command, "--project", "Delivery", "--expected-checksum", original["checksum"])
+    changed["annotations"] = prepared["annotations"]
+    latest = ingest(call, "revise", changed, pipeline="memory-update")
+    assert latest["changed"] and latest["checksum"] != original["checksum"]
+    (old_row,) = call(*query, "Launch 计划")["value"]["timeline"]
+    (new_row,) = call(*query, "Delivery")["value"]["timeline"]
+    assert not old_row["effective"] and new_row["effective"]
+    assert old_row["evidence"][0]["text"] == new_row["evidence"][0]["text"]
+    assert old_row["evidence"][0]["revision_checksum"] == original["checksum"]
+    assert new_row["evidence"][0]["revision_checksum"] == latest["checksum"]
+
+
 def test_file_source_imports_subrip_cues_without_inferring_speakers(work, tmp_path):
     directory, call = work
     path = tmp_path / "captions.srt"
@@ -3826,6 +3860,11 @@ def test_file_source_minimizes_memoket_export_before_output(work, tmp_path):
     assert normalized["source_date"] == "2026-09-04"
     assert normalized["segments"][0]["speaker_id"] == "Maya"
     assert normalized["segments"][0]["start_ms"] == 1200
+    labeled = call("file-source", str(path), "--format", "memoket", "--project", "Review")
+    assert labeled["source"]["payload"] == {
+        **normalized,
+        "metadata": {**normalized["metadata"], "project": "Review"},
+    }
     path.write_text(json.dumps(raw["data"]), encoding="utf-8")
     assert call("file-source", str(path), "--format", "memoket") == source
     first = ingest(call, "manual", manual)
@@ -4099,6 +4138,18 @@ def test_file_source_accepts_custom_conversations_and_rejects_invalid_inputs(wor
     assert call("file-source", str(path), "--format", "conversation") == {
         "source": {"format": "conversation", "payload": conversation},
     }
+    conversation["metadata"]["project"] = "Original project"
+    path.write_text(json.dumps(conversation), encoding="utf-8")
+    assert (
+        call("file-source", str(path), "--format", "conversation")["source"]["payload"]
+        == conversation
+    )
+    relabeled = call("file-source", str(path), "--format", "conversation", "--project", "Pilot")
+    assert relabeled["source"]["payload"]["metadata"] == {
+        "source_reference": "export-123",
+        "project": "Pilot",
+    }
+    assert json.loads(path.read_text(encoding="utf-8")) == conversation
     call("file-source", str(path), "--format", "text", error="invalid_input")
     call(
         "file-source",

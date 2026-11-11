@@ -160,6 +160,7 @@ def file_source(
     split_lines: bool = False,
     pages: list[Path] | None = None,
     recording_metadata: Path | None = None,
+    project: str | None = None,
 ) -> dict:
     """Return a minimized source input without opening a memory workspace."""
     file_formats = ("text", *CAPTION_FORMATS)
@@ -173,6 +174,8 @@ def file_source(
         raise ToolError("invalid_input", "JSON exports supply their own identity and dates")
     if expected_checksum is not None:
         validate(HASH, expected_checksum, "expected checksum")
+    if project is not None:
+        validate(TEXT, project, "project")
     raw = _read_source_file(path)
     if source_format in file_formats:
         payload = {
@@ -214,6 +217,8 @@ def file_source(
                 raise ToolError("invalid_input", "supply Memoket recording metadata only once")
             payload["recording"] = decode_object(_read_source_file(recording_metadata))
     _, conversation = prepare_source(root, {"format": source_format, "payload": payload})
+    if project is not None:
+        conversation["metadata"]["project"] = project
     source = {"format": "conversation", "payload": conversation}
     if expected_checksum is not None:
         source["expected_checksum"] = expected_checksum

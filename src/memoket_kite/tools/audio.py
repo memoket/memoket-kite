@@ -81,6 +81,7 @@ def audio_source(
     source_date: str | None = None,
     started_at: str | None = None,
     expected_checksum: str | None = None,
+    project: str | None = None,
 ) -> dict:
     validate(TEXT, source_id, "recording identifier")
     if not re.fullmatch(r"auto|[a-z]{2,3}", language) or timeout < 1:
@@ -94,6 +95,8 @@ def audio_source(
             dates[field] = value
     if expected_checksum is not None:
         validate(HASH, expected_checksum, "expected checksum")
+    if project is not None:
+        validate(TEXT, project, "project")
     recording, model = recording.expanduser().resolve(), model.expanduser().resolve()
     if not recording.is_file() or not model.is_file():
         raise ToolError("invalid_input", "recording and model must both be local files")
@@ -173,6 +176,8 @@ def audio_source(
     }
     if detected:
         conversation["language"] = detected
+    if project is not None:
+        conversation["metadata"]["project"] = project
     validate_conversation(root, conversation)
     del conversation["source"]
     source = {"format": "audio-transcript", "payload": conversation}

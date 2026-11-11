@@ -214,6 +214,7 @@ Prepare an authorized file and pipe it directly into a new run.
 set -o pipefail
 export KITE_DATA_DIR="$(mktemp -d)"
 kite-tool file-source notes.txt --format text --source-id planning-notes --split-lines \
+  --project "Planning pilot" \
   | kite-tool start memory-ingestion --run-id notes --input -
 kite-tool stage notes normalize
 ```
@@ -224,7 +225,7 @@ that should stay together as one segment, omit `--split-lines`. Then start
 the Memoket export in the same workspace.
 
 ```sh
-kite-tool file-source transcript.json --format memoket \
+kite-tool file-source transcript.json --format memoket --project "Planning pilot" \
   | kite-tool start memory-ingestion --run-id transcript --input -
 kite-tool stage transcript normalize
 ```
@@ -234,6 +235,15 @@ Keep the same text source ID and segmentation option for repeated imports. For a
 the previously committed checksum with `--expected-checksum` and use
 `memory-update`. Date and timestamp flags are optional for text files. Memoket
 exports retain the original record identity and any supplied dates.
+Use the same project label on related sources to trace them together.
+
+```sh
+kite-tool query --pipeline timeline-reconstruction --project "Planning pilot" --text
+```
+
+To change a committed source's project, prepare it with the new label and
+its current checksum and run `memory-update`. The old label remains attached
+to its historical revision.
 
 Use the saved response directly for a complete single-page Memoket
 `get_transcripts` result. For a longer recording, follow the two paging
@@ -298,7 +308,7 @@ pipeline in a private workspace. Set a stable source ID for the recording.
 set -o pipefail
 export KITE_DATA_DIR="$(mktemp -d)"
 kite-tool audio-source meeting.m4a --source-id meeting-audio --model /path/to/model.bin \
-  --started-at 2026-11-10T09:00:00+08:00 \
+  --started-at 2026-11-10T09:00:00+08:00 --project "Planning pilot" \
   | kite-tool start memory-ingestion --run-id audio --input -
 kite-tool stage audio normalize
 ```

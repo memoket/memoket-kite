@@ -91,7 +91,8 @@ def _ingest_input(args: argparse.Namespace) -> dict:
     return {**source, **annotations}
 
 
-def _source_date_arguments(parser: argparse.ArgumentParser) -> None:
+def _source_metadata_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--project", help="project label for later trace queries")
     date = parser.add_mutually_exclusive_group()
     date.add_argument("--source-date", help="known conversation day in YYYY-MM-DD format")
     date.add_argument("--started-at", help="known conversation timestamp with UTC offset")
@@ -213,7 +214,7 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="cite nonblank text lines by their file line number",
     )
-    _source_date_arguments(source)
+    _source_metadata_arguments(source)
     source.add_argument("--expected-checksum", help="current source checksum for a revision")
     source.add_argument(
         "--page",
@@ -235,7 +236,7 @@ def _parser() -> argparse.ArgumentParser:
     audio.add_argument("recording", type=Path)
     audio.add_argument("--source-id", required=True, help="stable recording identifier")
     audio.add_argument("--model", type=Path, required=True, help="local whisper.cpp model")
-    _source_date_arguments(audio)
+    _source_metadata_arguments(audio)
     audio.add_argument("--expected-checksum", help="current source checksum for a revision")
     audio.add_argument("--language", default="auto", help="Whisper language code or auto")
     audio.add_argument("--whisper-cli", default="whisper-cli", help="trusted executable")
@@ -484,6 +485,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             source_id=args.source_id,
             source_date=args.source_date,
             started_at=args.started_at,
+            project=args.project,
             expected_checksum=args.expected_checksum,
             split_lines=args.split_lines,
             pages=args.page,
@@ -502,6 +504,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             timeout=args.timeout,
             source_date=args.source_date,
             started_at=args.started_at,
+            project=args.project,
             expected_checksum=args.expected_checksum,
         ), None
 

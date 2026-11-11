@@ -178,7 +178,15 @@ def main() -> None:
         quote = "The launch review is Tuesday."
         (directory / "notes.txt").write_text(f"Launch notes\n\n{quote}\n", encoding="utf-8")
         source = call(
-            "file-source", "notes.txt", "--format", "text", "--source-id", "note", "--split-lines"
+            "file-source",
+            "notes.txt",
+            "--format",
+            "text",
+            "--source-id",
+            "note",
+            "--split-lines",
+            "--project",
+            "Launch pilot",
         )
         run_id = call("start", "memory-ingestion", payload=source)["run_id"]
         call("stage", run_id, "normalize", "--summary")
@@ -226,7 +234,7 @@ def main() -> None:
         assert result["retry_count"] == 1
         for stage in ("commit", "verify"):
             call("stage", run_id, stage, "--summary", workspace=recovered)
-        query = {"query": {"topics": ["launch review"]}}
+        query = {"query": {"topics": ["launch review"], "projects": ["Launch pilot"]}}
         trace = call("start", "topic-tracing", payload=query, workspace=recovered)["run_id"]
         for stage in ("resolve", "retrieve"):
             call("stage", trace, stage, "--summary", workspace=recovered)
