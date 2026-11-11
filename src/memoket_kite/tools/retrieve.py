@@ -575,7 +575,7 @@ def memory_snapshot(workspace) -> dict:
             }
         ),
         "topics": [
-            {"code": topic.code, "aliases": sorted(topic.aliases)}
+            {"code": topic.code, "aliases": sorted(topic.aliases), "parents": sorted(topic.parents)}
             for topic in index.vocab.topics.values()
             if topic.status != "deprecated"
         ],

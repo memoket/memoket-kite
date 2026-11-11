@@ -98,10 +98,18 @@ def test_memory_viewer_reads_fresh_committed_state(work):
             assert not directory.exists()
 
             original = "Ravi owns the release. </script><p>literal transcript text</p>"
-            call("ingest", payload=text_input("kickoff", original, date="2026-11-03"))
+            kickoff = text_input("kickoff", original, date="2026-11-03")
+            kickoff["annotations"]["taxonomy"] = [
+                {"name": "release"},
+                {"name": "onboarding", "parents": ["release"]},
+            ]
+            call("ingest", payload=kickoff)
             first = snapshot()
             assert first["version"] == first["sources"] == 1
             assert first["states"]["owner"]["value"] == original
+            assert next(topic for topic in first["topics"] if topic["code"] == "onboarding")[
+                "parents"
+            ] == ["release"]
 
             handoff = "Maya owns the release now."
             call("ingest", payload=text_input("handoff", handoff, date="2026-11-05"))

@@ -37,6 +37,10 @@
     canvas:active { cursor: grabbing; }
     .legend { padding: 6px 15px 13px; gap: 8px 17px; color: #d0e5db; font-size: 12px; }
     .legend-item { display: inline-flex; align-items: center; gap: 6px; }
+    .legend-dash { width: 16px; border-top: 2px dashed currentColor; }
+    .zoom-controls { display: inline-flex; align-items: center; gap: 4px; }
+    .zoom-controls button { border-color: #3c5a54; color: #d8f3e7; background: #152e2a; padding: 2px 7px; font-size: 13px; }
+    .zoom-controls button:disabled { opacity: .45; cursor: default; }
     .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--node-color); }
     [data-kind="topic"] { --node-color: var(--topic); }
     [data-kind="fact"] { --node-color: var(--fact); }
@@ -52,6 +56,8 @@
     .connections { display: flex; flex-wrap: wrap; gap: 5px; }
     .connections button { display: flex; align-items: center; gap: 6px; font-size: 13px; text-align: start; overflow-wrap: anywhere; max-width: 100%; }
     .connections .dot { flex: 0 0 8px; box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 21%, transparent); }
+    .peer-list { display: grid; gap: 5px; }
+    .peer-list button { display: grid; gap: 2px; text-align: start; overflow-wrap: anywhere; }
     .citation { display: grid; gap: 4px; }
     .citation + .citation { border-top: 1px solid var(--line); padding-top: 8px; }
     blockquote { margin: 0; padding-inline-start: 9px; border-inline-start: 2px solid var(--line); white-space: pre-wrap; }
@@ -73,7 +79,14 @@
   </header>
   <main class="layout">
     <section class="stage" aria-labelledby="graph-title">
-      <div class="stage-heading"><strong id="graph-title"></strong><span id="gesture"></span></div>
+      <div class="stage-heading">
+        <strong id="graph-title"></strong><span id="gesture"></span>
+        <div class="zoom-controls" role="group" aria-label="Zoom" id="zoom-controls">
+          <button id="zoom-out" type="button" aria-label="Zoom out">−</button>
+          <button id="zoom-reset" type="button" aria-label="Reset zoom">100%</button>
+          <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
+        </div>
+      </div>
       <canvas id="graph" tabindex="0" aria-describedby="gesture" aria-label="Three-dimensional memory graph"></canvas>
       <div class="legend" id="legend"></div>
     </section>
@@ -91,9 +104,17 @@
       let language = (navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en';
       const t = key => languages[language][key];
       const relationships = {
-        en: { topic: 'Filed under', state: 'Tracks state', source: 'Cites revision' },
-        zh: { topic: '归入主题', state: '跟踪状态', source: '引用版本' },
+        en: { topic: 'Filed under', state: 'Tracks state', source: 'Cites revision', parent: 'Parent topic',
+          child: 'Child topic', sameFact: 'Shared memory', sameSource: 'Shared source revision',
+          sameQuote: 'Shared original line', sameState: 'Same state key', supersedes: 'Corrects',
+          correctedBy: 'Corrected by', related: 'Related nodes', derived: 'Shared evidence or state',
+          zoom: 'Zoom', zoomIn: 'Zoom in', zoomOut: 'Zoom out', resetZoom: 'Reset zoom' },
+        zh: { topic: '归入主题', state: '跟踪状态', source: '引用版本', parent: '上位主题',
+          child: '下位主题', sameFact: '共同记忆', sameSource: '同一来源版本', sameQuote: '引用同一句原文',
+          sameState: '同一状态键', supersedes: '修正了', correctedBy: '被这条修正', related: '关系依据',
+          derived: '共同证据或状态', zoom: '缩放', zoomIn: '放大', zoomOut: '缩小', resetZoom: '重置缩放' },
       };
+      const relationLabel = key => relationships[language][key];
       const make = (tag, text, className) => {
         const node = document.createElement(tag);
         if (text !== undefined) node.textContent = text;
@@ -112,14 +133,21 @@
       for (const [kind, group] of Object.entries(groups)) group.color = colors.getPropertyValue(`--${kind}`).trim();
       const nodes = new Map();
       const edges = [];
+      const storedEdges = [];
+      const citedBy = new Map();
       const states = new Map(Object.entries(memory.states));
       function add(kind, key, data) {
         const id = `${kind}:${key}`;
         if (nodes.has(id)) return nodes.get(id);
-        const node = { id, kind, key, data, neighbors: new Set() };
+        const node = { id, kind, key, data, neighbors: new Set(), declared: new Map() };
         nodes.set(id, node);
         groups[kind].entries.push(node);
         return node;
+      }
+      function declare(first, second, forward, reverse) {
+        first.declared.set(second, { type: forward, stored: true });
+        second.declared.set(first, { type: reverse, stored: true });
+        storedEdges.push([first, second]);
       }
       function link(first, second) {
         if (first.neighbors.has(second)) return;
@@ -135,8 +163,53 @@
         if (fact.state_key) link(node, add('state', fact.state_key, states.get(fact.state_key)));
         for (const id of fact.evidence) {
           const line = memory.evidence[id];
+          if (!citedBy.has(id)) citedBy.set(id, []);
+          citedBy.get(id).push(node);
           link(node, add('source', line.revision_checksum, { reference: line.source_reference }));
         }
+      }
+      for (const node of groups.topic.entries) {
+        for (const code of node.data.parents || []) {
+          const parent = nodes.get(`topic:${code}`);
+          if (parent) declare(node, parent, 'parent', 'child');
+        }
+      }
+      for (const node of groups.fact.entries) {
+        const predecessor = nodes.get(`fact:${node.data.supersedes}`);
+        if (predecessor) declare(node, predecessor, 'supersedes', 'correctedBy');
+      }
+
+      function relatedTo(node) {
+        const related = new Map(node?.declared);
+        const addPeer = (peer, type, via) => {
+          if (peer !== node && !related.has(peer)) related.set(peer, { type, via, stored: false });
+        };
+        if (node?.kind === 'fact') {
+          const state = nodes.get(`state:${node.data.state_key}`);
+          for (const peer of state?.neighbors || []) addPeer(peer, 'sameState', state.key);
+          for (const id of node.data.evidence) {
+            for (const peer of citedBy.get(id)) addPeer(peer, 'sameQuote', memory.evidence[id]);
+          }
+          for (const source of node.neighbors) {
+            if (source.kind !== 'source') continue;
+            for (const peer of source.neighbors) addPeer(peer, 'sameSource', source);
+          }
+        }
+        if (node?.kind === 'topic') {
+          const sources = new Set();
+          for (const fact of node.neighbors) {
+            for (const peer of fact.neighbors) {
+              if (peer.kind === 'topic') addPeer(peer, 'sameFact', fact);
+              if (peer.kind === 'source') sources.add(peer);
+            }
+          }
+          for (const source of sources) {
+            for (const fact of source.neighbors) {
+              for (const peer of fact.neighbors) if (peer.kind === 'topic') addPeer(peer, 'sameSource', source);
+            }
+          }
+        }
+        return related;
       }
       for (const group of Object.values(groups)) {
         const count = group.entries.length;
@@ -153,8 +226,12 @@
 
       let selected = groups.fact.entries.find(node => node.data.status === 'open' && node.data.evidence.length > 1)
         || groups.fact.entries[0];
+      let related = relatedTo(selected);
       let yaw = -.17;
       let pitch = .13;
+      let zoom = 1;
+      let offsetX = 0;
+      let offsetY = 0;
       let width = 0;
       let height = 0;
       let projected = [];
@@ -175,9 +252,9 @@
         const vertical = y * Math.cos(pitch) - depth * Math.sin(pitch);
         const toward = depth * Math.cos(pitch) + y * Math.sin(pitch);
         const perspective = 6 / (6 - toward);
-        const unit = Math.min(width / 6.0, height / 4.55);
-        return { x: width / 2 + horizontal * unit * perspective,
-          y: height / 2 - vertical * unit * perspective, toward, perspective };
+        const unit = Math.min(width / 6.0, height / 4.55) * zoom;
+        return { x: width / 2 + offsetX + horizontal * unit * perspective,
+          y: height / 2 + offsetY - vertical * unit * perspective, toward, perspective };
       }
 
       function line(a, b, color, alpha, weight = 1) {
@@ -190,17 +267,19 @@
         ctx.stroke();
       }
 
-      function arc(first, second, color) {
+      function arc(first, second, color, dashed = false) {
         const a = first.position, b = second.position;
         const through = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2 + .34, (a[2] + b[2]) / 2 + .4];
         const start = project(a), middle = project(through), end = project(b);
         ctx.globalAlpha = .93;
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
+        if (dashed) ctx.setLineDash([4, 4]);
         ctx.beginPath();
         ctx.moveTo(start.x, start.y);
         ctx.quadraticCurveTo(middle.x, middle.y, end.x, end.y);
         ctx.stroke();
+        if (dashed) ctx.setLineDash([]);
         return { x: (start.x + 2 * middle.x + end.x) / 4, y: (start.y + 2 * middle.y + end.y) / 4 };
       }
 
@@ -233,15 +312,19 @@
           if (first === selected || second === selected) continue;
           line(points.get(first), points.get(second), groups[second.kind].color, .08);
         }
+        for (const [first, second] of storedEdges) {
+          if (first !== selected && second !== selected) line(points.get(first), points.get(second), groups[first.kind].color, .26);
+        }
         const annotations = new Map();
         for (const neighbor of selected?.neighbors || []) {
           const point = arc(selected, neighbor, groups[neighbor.kind].color);
           if (selected.kind === 'fact' && !annotations.has(neighbor.kind)) annotations.set(neighbor.kind, point);
         }
+        for (const [peer, relation] of related) arc(selected, peer, groups[peer.kind].color, !relation.stored);
         projected = [...points].map(([node, point]) => ({ node, ...point })).sort((a,b) => a.toward - b.toward);
         for (const point of projected) {
           const focus = point.node === selected;
-          const neighbor = selected?.neighbors.has(point.node);
+          const neighbor = selected?.neighbors.has(point.node) || related.has(point.node);
           const radius = (focus ? 8.5 : neighbor ? 5.8 : 3.2) * point.perspective;
           ctx.beginPath();
           ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
@@ -355,13 +438,49 @@
           }
           panel.append(section);
         }
+        if (related.size) {
+          const section = make('section', undefined, 'detail-section');
+          const list = make('div', undefined, 'peer-list');
+          section.append(make('h3', relationLabel('related')), list);
+          for (const [node, relation] of related) {
+            const button = make('button');
+            button.type = 'button';
+            const via = relation.type === 'sameQuote' ? relation.via.segment_id
+              : typeof relation.via === 'string' ? relation.via
+                : relation.via?.kind ? label(relation.via) : '';
+            const basis = [relationLabel(relation.type), via].filter(Boolean).join(' · ');
+            button.append(make('span', basis, 'muted'), make('span', label(node)));
+            button.addEventListener('click', () => select(node));
+            list.append(button);
+          }
+          panel.append(section);
+        }
       }
 
       function select(node) {
         selected = node;
+        related = relatedTo(node);
         $('locate').value = node.kind === 'fact' ? node.id : '';
         draw();
         drawDetails();
+      }
+
+      function updateZoom() {
+        const percent = `${Math.round(zoom * 100)}%`;
+        $('zoom-reset').textContent = percent;
+        $('zoom-reset').setAttribute('aria-label', `${relationLabel('resetZoom')} · ${percent}`);
+        $('zoom-out').disabled = zoom <= .65;
+        $('zoom-in').disabled = zoom >= 2.5;
+        draw();
+      }
+
+      function setZoom(value, x = width / 2, y = height / 2) {
+        const next = Math.max(.65, Math.min(2.5, value));
+        const ratio = next / zoom;
+        offsetX = (offsetX + width / 2 - x) * ratio - width / 2 + x;
+        offsetY = (offsetY + height / 2 - y) * ratio - height / 2 + y;
+        zoom = next;
+        updateZoom();
       }
 
       let drag;
@@ -383,12 +502,23 @@
         if (drag && !drag.moved) {
           const bounds = canvas.getBoundingClientRect();
           const x = event.clientX - bounds.left, y = event.clientY - bounds.top;
-          const nearest = [...projected].reverse().find(point => Math.hypot(x - point.x, y - point.y) <= 11);
+          let nearest;
+          let distance = 11;
+          for (const point of projected) {
+            const hit = Math.hypot(x - point.x, y - point.y);
+            if (hit <= distance) { nearest = point; distance = hit; }
+          }
           if (nearest) select(nearest.node);
         }
         drag = undefined;
       });
       canvas.addEventListener('pointercancel', () => { drag = undefined; });
+      canvas.addEventListener('wheel', event => {
+        event.preventDefault();
+        const bounds = canvas.getBoundingClientRect();
+        const delta = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+        setZoom(zoom * Math.exp(-delta * .0015), event.clientX - bounds.left, event.clientY - bounds.top);
+      }, { passive: false });
       canvas.addEventListener('keydown', event => {
         const direction = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
         if (!direction) return;
@@ -402,6 +532,10 @@
         $('title').textContent = t('title');
         $('graph-title').textContent = `${number.format(memory.facts.length)} ${t('fact')} · ${number.format(memory.sources)} ${language === 'zh' ? '来源' : 'sources'}`;
         $('gesture').textContent = t('gesture');
+        $('zoom-controls').setAttribute('aria-label', relationLabel('zoom'));
+        for (const [id, key] of [['zoom-in', 'zoomIn'], ['zoom-out', 'zoomOut']]) {
+          $(id).setAttribute('aria-label', relationLabel(key));
+        }
         $('language').textContent = language === 'zh' ? 'English' : '中文';
         $('refresh').textContent = t('refresh');
         $('locate').setAttribute('aria-label', t('locate'));
@@ -415,7 +549,10 @@
           item.append(make('span', undefined, 'dot'), `${t(kind)} ${number.format(group.entries.length)}`);
           $('legend').append(item);
         }
-        draw();
+        const dashed = make('span', undefined, 'legend-item');
+        dashed.append(make('span', undefined, 'legend-dash'), relationLabel('derived'));
+        $('legend').append(dashed);
+        updateZoom();
         drawDetails();
       }
 
@@ -425,6 +562,9 @@
       });
       $('language').addEventListener('click', () => { language = language === 'zh' ? 'en' : 'zh'; drawLabels(); });
       $('refresh').addEventListener('click', () => location.reload());
+      $('zoom-in').addEventListener('click', () => setZoom(zoom * 1.2));
+      $('zoom-out').addEventListener('click', () => setZoom(zoom / 1.2));
+      $('zoom-reset').addEventListener('click', () => { zoom = 1; offsetX = 0; offsetY = 0; updateZoom(); });
       new ResizeObserver(resize).observe(canvas);
       drawLabels();
     })();
