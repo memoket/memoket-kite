@@ -1,5 +1,9 @@
 ## Query memory
 
+For changes to a single transcript, run `source-history SOURCE ID` to find
+the baseline checksum, then `source-compare BEFORE --text` for changed original
+lines. The two revision checksums identify the exact evidence versions.
+
 Use `bash "$KITE" topics --contains PHRASE` to find indexed topics, then
 `bash "$KITE" query --topic TOPIC --text` for a readable trace. Use
 `query --pipeline task-tracing` for assignments or `decision-evolution` for

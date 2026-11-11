@@ -140,9 +140,8 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
     ), citation
     transcripts = scratch / "Transcripts"
     transcripts.mkdir()
-    (transcripts / "handoff_transcript.txt").write_text(
-        "00:01\nSpeaker A\n\nRollout depends on the checklist.\n", encoding="utf-8"
-    )
+    handoff = transcripts / "handoff_transcript.txt"
+    handoff.write_text("00:01\nSpeaker A\n\nRollout depends on the checklist.\n", encoding="utf-8")
     (transcripts / "handoff.json").write_text(
         '{"conversation_id":"handoff","started_at":"2026-01-14 08:00:00"}', encoding="utf-8"
     )
@@ -167,6 +166,24 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
         json.loads(run("validate-pipeline", "context-search").stdout)["definition"]["id"]
         == "context-search"
     )
+    baseline = json.loads(run("source-history", "transcript", "handoff").stdout)["current_checksum"]
+    handoff.write_text("00:01\nSpeaker A\n\nRollout depends on QA signoff.\n", encoding="utf-8")
+    correction = json.loads(
+        run(
+            "file-source",
+            handoff,
+            "--format",
+            "transcript-text",
+            "--source-date",
+            "2026-01-14",
+            "--expected-checksum",
+            baseline,
+        ).stdout
+    )
+    run("index-sources", "--input", "-", data={"sources": [correction]})
+    difference = run("source-compare", baseline, "--text").stdout
+    assert "− [handoff#L4] Rollout depends on the checklist." in difference, difference
+    assert "+ [handoff#L4] Rollout depends on QA signoff." in difference, difference
     viewer = run("view", "--help").stdout
     assert "--compare" in viewer and "--term" in viewer, viewer
     other_project = scratch / "Other project"
