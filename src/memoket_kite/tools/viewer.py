@@ -210,6 +210,7 @@ def _search_snapshot(
             "terms": packs[0][1]["compilation"]["terms"] if question is not None else terms,
             "word_forms": packs[0][1].get("compilation", {}).get("word_forms", []),
             "repeated_terms": packs[0][1].get("compilation", {}).get("repeated_terms", []),
+            "change_phases": packs[0][1].get("compilation", {}).get("change_phases", []),
             "term_coverage": packs[0][1].get("term_coverage", []) if not comparison else [],
             "packing": [
                 {"label": pack.get("compilation", {}).get("question", key), **pack["packing_trace"]}

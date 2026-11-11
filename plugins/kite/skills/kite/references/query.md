@@ -22,7 +22,8 @@ alongside the topic in a later recording to surface the nearby change.
 Ask related subquestions about a decision's evolution together with
 `context --question`. The first search can reserve evidence for each part
 within a shared budget. The candidate trace links those selections to the
-original passages.
+original passages. A single request can describe the earlier plan and the
+later change together when the request states both phases.
 Use times marked timezone unknown for within-day ordering only when the
 sources are known to use the same local clock. Keep ties and unknown order
 explicit in the answer.

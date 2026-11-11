@@ -44,6 +44,9 @@ historical revision checksums with their quotes.
 For questions about earlier or later discussions, check the recording dates
 and the quoted wording for each answer. Keep the sequence uncertain when
 the citations leave competing recordings or tied times.
+Keep a single request intact when it names the earlier and later phases.
+The compiler can record those phases and the search trace links them to
+separately selected original lines.
 The question can supply the scope as `workspace v12`, `workspace as of TIMESTAMP`,
 `工作区 v12`, or `工作区截至 TIMESTAMP`. Include the timestamp's offset.
 Quote a topic or project name to search its full phrase first.

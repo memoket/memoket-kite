@@ -6432,6 +6432,36 @@ def test_change_questions_reserve_original_evidence_for_separate_subquestions(wo
         row["conversation_id"] != "production" for row in earlier["packing_trace"]["candidates"]
     )
 
+    single_question = (
+        "Trace the library wayfinding prototype from the original design to the later "
+        "accessibility review and whether the print quantity changed."
+    )
+    implicit_args = ("context", "--question", single_question, "--explain")
+    result = call(*implicit_args, "--save", "single-change-question")
+    lines = {line["text"] for span in result["spans"] for line in span["evidence"]}
+    assert {initial, approved + " " + retained} <= lines
+    assert result["quote_bytes"] <= result["quote_budget_bytes"] == 3800
+    phases = {
+        row["selection"]["term"]
+        for row in result["packing_trace"]["candidates"]
+        if row.get("selection", {}).get("reason") == "change_phase"
+    }
+    assert "the later accessibility review" in phases
+    assert "Trace the library wayfinding prototype from the original design" in phases
+    compiled = call("artifact", "single-change-question", "compile")["value"]
+    assert compiled["change_phases"] == result["compilation"]["change_phases"]
+    snapshot = viewer._snapshot(directory, [], run_id="single-change-question")
+    assert snapshot["search_trace"]["change_phases"] == compiled["change_phases"]
+    assert (
+        snapshot["search_trace"]["packing"][0]["candidates"]
+        == result["packing_trace"]["candidates"]
+    )
+    latest = call(*implicit_args, "--latest")
+    assert not any(
+        row.get("selection", {}).get("reason") == "change_phase"
+        for row in latest["packing_trace"]["candidates"]
+    )
+
 
 def test_context_quotes_identical_transcripts_once_and_retains_both_clocks(work):
     directory, call = work

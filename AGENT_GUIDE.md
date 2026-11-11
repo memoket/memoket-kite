@@ -79,6 +79,8 @@ The graph shows the repeated date and links to the original turns.
 For several subquestions about a decision's evolution, KITE can reserve
 original evidence for each subquestion within one quote budget. The saved
 candidate trace names the subquestion and links to the selected passage.
+A single question can also describe the earlier and later phases explicitly.
+The trace shows the original part of the question used for each phase.
 When an unquoted English word has no match, question compilation can select
 a common plural or verb form found in the scoped original text. The graph
 shows the search word and the indexed form. Use `--matching-lines` to look

@@ -75,6 +75,28 @@ _SCHEDULE_CHANGE = re.compile(
     re.I,
 )
 _CLAUSE_BREAK = re.compile(r"[?？。！!;；]")
+_EARLIER_PHASE = re.compile(
+    r"原定|原计划|原先|原本|原来|最初|早期|早先|"
+    r"\b(?:original(?:ly)?|initial(?:ly)?|earlier|previous(?:ly)?)\b",
+    re.I,
+)
+_LATER_PHASE = re.compile(
+    r"后来|后续|之后|随后|延期后|改期后|调整后|现在改|"
+    r"\b(?:later|subsequent(?:ly)?|afterwards?|revised|updated|now)\b",
+    re.I,
+)
+_PHASE_BREAK = re.compile(
+    r"[?？。！!;；]"
+    r"|[，,、]\s*(?:以及|并说明|和)?\s*(?=原先|原本|后来|后续|之后|随后|现在改|是否|有没有)"
+    r"|[，,、]\s*(?:以及|并说明)\s*"
+    r"|\s*(?:以及|和|到|而)(?=后来|后续|之后|随后|延期后|改期后|调整后|现在改|是否|有没有)"
+    r"|(?:,\s*|\s+)\b(?:and|then|to|through)\s+"
+    r"(?=(?:(?:the|a|an)\s+)?(?:later|subsequent|afterwards|revised|updated|whether|now)\b)",
+    re.I,
+)
+_PHASE_DATE_SUFFIX = re.compile(
+    r"(?:日|日期|时间|时段|节点|期限)$|\b(?:date|deadline|timing)$", re.I
+)
 _CLAUSE_FILLERS = re.compile(
     r"原定|原本|原先|之后|然后|团队|我们|何时|开始|准备|采用|打算|"
     r"怎么样|怎么|如何|什么时候|什么时间|最初|早先|此前|后来|后续|什么|哪个|哪天|哪种|"
@@ -104,6 +126,11 @@ _CLAUSE_DECISION = re.compile(
 )
 _CLAUSE_CHANGE_QUESTION = re.compile(
     rf"{_CLAUSE_DECISION.pattern}|变更|更改|改期|改锁|改用|切换|定了|选定|改为|批准|重新安排",
+    re.I,
+)
+_PHASE_STATE = re.compile(
+    rf"{_CLAUSE_DECISION.pattern}|暂停|恢复|取消|停产|停线|"
+    r"\b(?:paus\w*|resum\w*|cancel\w*|suspend\w*|halt\w*)\b",
     re.I,
 )
 _QUERY_FILLERS = re.compile(
@@ -146,6 +173,7 @@ CONTEXT_REQUEST = {
     "oneOf": [{"required": ["question"]}, {"required": ["terms"]}],
 }
 _WORD_FORMS = array(object_schema({"query_term": TEXT, "indexed_term": TEXT}), 1, 8)
+_CHANGE_PHASES = array(TEXT, 2, 4)
 CONTEXT_PLAN = object_schema(
     {
         "request": CONTEXT_REQUEST,
@@ -156,6 +184,8 @@ CONTEXT_PLAN = object_schema(
         "comparison_terms": array(TEXT, 1, 8),
         "word_forms": _WORD_FORMS,
         "comparison_word_forms": _WORD_FORMS,
+        "change_phases": _CHANGE_PHASES,
+        "comparison_change_phases": _CHANGE_PHASES,
     },
 )
 
@@ -444,11 +474,15 @@ def _compile_questions(workspace, indexes, request, search, compare_search):
     }
     if forms:
         result["word_forms"] = forms
+    if phases := _compiled_change_phases(request, search):
+        result["change_phases"] = phases
     if compare_search is not None:
         terms, forms = _compile_terms(comparison.db, comparison.filters, compare_search)
         result["comparison_terms"] = terms
         if forms:
             result["comparison_word_forms"] = forms
+        if phases := _compiled_change_phases(request, compare_search):
+            result["comparison_change_phases"] = phases
     return result
 
 
@@ -484,7 +518,9 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
     if (compare_terms is not None) != ("compare_with" in request):
         raise ToolError("invalid_input", "compile both comparison questions before searching")
 
-    def search(question, terms, span_limit, quote_budget, search_index, forms, date_overrides=None):
+    def search(
+        question, terms, span_limit, quote_budget, search_index, forms, phases, date_overrides=None
+    ):
         result = _context_evidence(
             workspace,
             {**filters, **(date_overrides or {}), "terms": terms},
@@ -496,11 +532,14 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
             _question=question,
             prioritize_first_lines=compare_terms is not None and "limit" not in request,
             word_forms=forms,
+            change_phases=phases,
         )
         if question is not None:
             result["compilation"] = {"question": question, "terms": terms}
             if forms:
                 result["compilation"]["word_forms"] = forms
+            if phases:
+                result["compilation"]["change_phases"] = phases
             if not (filters.get("matching_lines") or _quoted_phrases(question)):
                 repeats = _repeated_han_terms(question, terms)
                 if repeats:
@@ -510,12 +549,13 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
         return result
 
     forms = compiled.get("word_forms", ())
+    phases = compiled.get("change_phases", ())
     if compare_terms is None:
-        return search(question, compiled["terms"], limit, budget, index, forms)
+        return search(question, compiled["terms"], limit, budget, index, forms, phases)
     first_limit, first_budget = (limit + 1) // 2, (budget + 1) // 2
     date_overrides = _comparison_dates(request)
     parts = [
-        search(question, compiled["terms"], first_limit, first_budget, index, forms),
+        search(question, compiled["terms"], first_limit, first_budget, index, forms, phases),
         search(
             request["compare_with"],
             compare_terms,
@@ -523,6 +563,7 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
             budget - first_budget,
             comparison,
             compiled.get("comparison_word_forms", ()),
+            compiled.get("comparison_change_phases", ()),
             date_overrides,
         ),
     ]
@@ -1137,10 +1178,30 @@ def _schedule_followup(workspace, index, plan, rows, limit, max_bytes):
     return None
 
 
-def _change_clause_candidates(workspace, index, question, limit, max_bytes):
-    clauses = list(
-        dict.fromkeys(part.strip() for part in _CLAUSE_BREAK.split(question) if part.strip())
+def _compiled_change_phases(request, question):
+    if (
+        not question
+        or request.get("latest")
+        or request.get("matching_lines")
+        or question.count("?") + question.count("？") >= 2
+        or _quoted_phrases(question)
+    ):
+        return []
+    earlier = _EARLIER_PHASE.search(question)
+    if not earlier or not _LATER_PHASE.search(question, earlier.end()):
+        return []
+    phases = list(
+        dict.fromkeys(
+            stripped
+            for part in _PHASE_BREAK.split(question)
+            if (stripped := part.strip(" \t\r\n，,、"))
+        )
     )
+    return phases if 2 <= len(phases) <= 4 else []
+
+
+def _change_clause_candidates(workspace, index, clauses, limit, max_bytes, *, implicit=False):
+    clauses = list(dict.fromkeys(part.strip() for part in clauses if part.strip()))
     if not 2 <= len(clauses) <= min(4, limit - 3):
         return []
     cleaned = [_CLAUSE_FILLERS.sub(" ", part) for part in clauses]
@@ -1192,7 +1253,13 @@ def _change_clause_candidates(workspace, index, question, limit, max_bytes):
     records = {}
     line_terms = {}
     ranked = [[] for _ in clauses]
-    asks_date = [bool(_CLAUSE_DATE_QUESTION.search(clause)) for clause in clauses]
+    decision = _PHASE_STATE if implicit else _CLAUSE_DECISION
+    asks_date = [
+        bool(
+            _CLAUSE_DATE_QUESTION.search(clause) or (implicit and _PHASE_DATE_SUFFIX.search(clause))
+        )
+        for clause in clauses
+    ]
     for row in matches.values():
         checksum, start, stop = row["checksum"], row["start"], row["stop"]
         if checksum not in records:
@@ -1211,7 +1278,7 @@ def _change_clause_candidates(workspace, index, question, limit, max_bytes):
             if size > max_bytes // 4:
                 continue
             dates = min(2, len(set(_CLAUSE_DATE.findall(text))))
-            changes = min(2, len(set(_CLAUSE_DECISION.findall(text))))
+            changes = min(2, len(set(decision.findall(text))))
             if not (dates or changes or _CLAUSE_TIME.search(text)):
                 continue
             direct = line_terms[checksum, pos]
@@ -1243,7 +1310,10 @@ def _change_clause_candidates(workspace, index, question, limit, max_bytes):
                     "start": pos,
                     "stop": pos + 1,
                     "direct_positions": [pos],
-                    "selection": {"reason": "change_subquestion", "term": clause},
+                    "selection": {
+                        "reason": "change_phase" if implicit else "change_subquestion",
+                        "term": clause,
+                    },
                 }
             )
             seen.add(key)
@@ -1626,6 +1696,7 @@ def _context_evidence(
     _question,
     prioritize_first_lines=False,
     word_forms=(),
+    change_phases=(),
 ):
     validate(_CONTEXT_SCHEMA, plan, "context plan")
     if not any(map(_tokens, plan["terms"])):
@@ -1691,29 +1762,26 @@ def _context_evidence(
                 )
         if (
             _question
-            and not (preferred or anchors or matching_lines or plan.get("latest"))
-            and limit >= 2
             and neighbors
             and candidates
-            and _SCHEDULE_QUESTION.search(_question)
-            and _SCHEDULE_SEQUENCE.search(_question)
-            and (
-                followup := _schedule_followup(workspace, index, plan, candidates, limit, max_bytes)
-            )
-        ):
-            candidates.insert(1, followup)
-        elif (
-            _question
             and not (preferred or anchors or matching_lines or plan.get("latest"))
-            and candidates
-            and neighbors
-            and _SCHEDULE_SEQUENCE.search(_question)
-            and _CLAUSE_CHANGE_QUESTION.search(_question)
-            and _question.count("?") + _question.count("？") >= 2
         ):
-            candidates[1:1] = _change_clause_candidates(
-                workspace, index, _question, limit, max_bytes
-            )
+            sequence = _SCHEDULE_SEQUENCE.search(_question)
+            followup = None
+            if limit >= 2 and sequence and _SCHEDULE_QUESTION.search(_question):
+                followup = _schedule_followup(workspace, index, plan, candidates, limit, max_bytes)
+                if followup:
+                    candidates.insert(1, followup)
+            if _question.count("?") + _question.count("？") >= 2:
+                if not followup and sequence and _CLAUSE_CHANGE_QUESTION.search(_question):
+                    candidates[1:1] = _change_clause_candidates(
+                        workspace, index, _CLAUSE_BREAK.split(_question), limit, max_bytes
+                    )
+            elif change_phases:
+                first = 2 if followup else 1
+                candidates[first:first] = _change_clause_candidates(
+                    workspace, index, change_phases, limit, max_bytes, implicit=True
+                )
         first_lines = (
             prioritize_first_lines
             and neighbors > 0

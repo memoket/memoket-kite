@@ -40,7 +40,9 @@
         selective_original_clue: 'Rare query clue matches multiple original lines',
         dated_plan_followup: 'A later recording cites the earlier date and mentions a change',
         change_subquestion: 'Original evidence selected for this subquestion',
+        change_phase: 'Original evidence selected for this phase of the question',
       },
+      changePhases: 'Phases in the question',
       sameTextSources: 'Sources with the same transcript text',
       duplicateLines: 'duplicate lines reused',
       packingReasons: { quoted: 'Quoted', span_limit: 'Span limit reached', quote_budget: 'Quote budget', duplicate_text: 'Text already quoted from another source',
@@ -101,7 +103,9 @@
         selective_original_clue: '低频检索词命中多行原文',
         dated_plan_followup: '后续录制重提原日期并讨论改期',
         change_subquestion: '为这个子问题选取的原文',
+        change_phase: '为问题中这个阶段选取的原文',
       },
+      changePhases: '问题中的阶段',
       sameTextSources: '原文相同的来源',
       duplicateLines: '行重复原文已共用',
       packingReasons: { quoted: '已引用', span_limit: '片段数已达上限', quote_budget: '引文预算不足', duplicate_text: '已引用其他来源中的相同原文',
@@ -1019,6 +1023,9 @@
             element('p', `${number.format(part.passages)} ${t('record')} · ${number.format(part.quote_bytes)}/${number.format(part.quote_budget_bytes)} ${t('quoteBytes')}`));
           renderWordForms(branch, part.word_forms);
           renderRepeatedTerms(branch, part.repeated_terms);
+          if (part.change_phases?.length) {
+            branch.append(element('p', t('changePhases') + ' · ' + part.change_phases.join(' / ')));
+          }
           if (part.first_lines_prioritized) branch.append(element('p', t('firstLinesPrioritized')));
           branches.append(branch);
         }
@@ -1027,6 +1034,9 @@
         trace.append(termSummary(stats.terms, stats.term_coverage));
         renderWordForms(trace, stats.word_forms);
         renderRepeatedTerms(trace, stats.repeated_terms);
+        if (stats.change_phases?.length) {
+          trace.append(element('p', t('changePhases') + ' · ' + stats.change_phases.join(' / ')));
+        }
       }
       trace.append(element('p', [number.format(stats.candidate_spans) + ' ' + t('candidates'),
           stats.candidate_sources === null ? null : number.format(stats.candidate_sources) + ' ' + t('candidateSources'),
