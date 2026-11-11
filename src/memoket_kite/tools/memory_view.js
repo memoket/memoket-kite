@@ -29,6 +29,7 @@
       anchorSources: 'sources matching the name',
       matchedTerms: 'Terms in this quote',
       inspectCandidates: 'Rerun with candidate details', packingOrder: 'Packing order',
+      wordForms: 'English word forms',
       firstLinesPrioritized: 'More passages from the leading source',
       packingSegments: 'Segments',
       corroboratingTerms: 'Multiple clues match this passage',
@@ -82,6 +83,7 @@
       anchorSources: '份来源命中名称',
       matchedTerms: '原文命中',
       inspectCandidates: '重查并查看候选', packingOrder: '引文选取顺序',
+      wordForms: '英文词形匹配',
       firstLinesPrioritized: '先取同一来源的多个片段',
       packingSegments: '原文段',
       corroboratingTerms: '同一片段命中多个线索',
@@ -863,6 +865,12 @@
     byId('zoom-out').disabled = value <= .65;
   }
 
+  function renderWordForms(container, forms) {
+    if (!forms?.length) return;
+    const pairs = forms.map(({query_term, indexed_term}) => `${query_term} → ${indexed_term}`);
+    container.append(element('p', [t('wordForms'), ...pairs].join(' · ')));
+  }
+
   function termSummary(terms, coverage) {
     if (!coverage?.length) return element('p', terms.join(' · '));
     const list = element('ul', undefined, 'term-coverage');
@@ -966,12 +974,14 @@
           branch.append(
             termSummary(part.terms, part.term_coverage),
             element('p', `${number.format(part.passages)} ${t('record')} · ${number.format(part.quote_bytes)}/${number.format(part.quote_budget_bytes)} ${t('quoteBytes')}`));
+          renderWordForms(branch, part.word_forms);
           if (part.first_lines_prioritized) branch.append(element('p', t('firstLinesPrioritized')));
           branches.append(branch);
         }
         trace.append(branches);
       } else {
         trace.append(termSummary(stats.terms, stats.term_coverage));
+        renderWordForms(trace, stats.word_forms);
       }
       trace.append(element('p', [number.format(stats.candidate_spans) + ' ' + t('candidates'),
           stats.candidate_sources === null ? null : number.format(stats.candidate_sources) + ' ' + t('candidateSources'),

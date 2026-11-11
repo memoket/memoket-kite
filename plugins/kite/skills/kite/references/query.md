@@ -31,6 +31,8 @@ quotes. The graph shows the packing order and links to each original source,
 including candidates skipped by the quote budget or span limit. A passage
 from another recording can move up when it matches the leading clues plus
 an additional clue in its original text. The graph shows those matches.
+The compile trace also shows when a question word was matched through an
+English plural or verb form found in the original text.
 Question searches can share a quote across identical transcripts from the
 same recording day. The graph links each source and its clock. Identical
 transcripts keep their original segment IDs. Use `--matching-lines` for a

@@ -72,6 +72,10 @@ Use `--explain --save` to retain the first 80 packing candidates for each
 search. The viewer links each candidate to its original source position and
 shows whether it contributed quotes or met a packing limit. Without `--text`,
 the command also returns these details in JSON.
+When an unquoted English word has no match, question compilation can select
+a common plural or verb form found in the scoped original text. The graph
+shows the search word and the indexed form. Use `--matching-lines` to look
+up the original wording literally.
 Question searches can quote identical transcripts from the same recording
 day once. Undated copies can also share a quote. The evidence pack keeps the
 source references and recording clocks. The segment IDs apply to each listed source. Use

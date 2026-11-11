@@ -26,6 +26,9 @@ _QUERY_WORDS = re.compile(r"[\u3400-\u9fff]+|[a-z0-9]+(?:\s+[a-z0-9]+)*", re.I)
 _QUOTED_PHRASES = re.compile(r'「([^」]+)」|『([^』]+)』|“([^”]+)”|"([^"\n]+)"')
 _NAME_WORDS = re.compile(r"\b[A-Z][A-Za-z0-9_-]{3,}\b")
 _ACRONYMS = re.compile(r"\b[A-Z][A-Z0-9]{1,8}\b")
+_ENGLISH_WORD = re.compile(r"[a-z]{4,}")
+_VOWEL_GROUP = re.compile(r"[aeiou]+")
+_FINAL_CONSONANT = re.compile(r"[^aeiou][aeiou][^aeiouwxy]$")
 _QUESTION_TIME_PREFIX = (
     r"(?:\b(?:workspace|known)\s+(?:as of|at)\s+|工作区(?:记录)?\s*(?:在|截至)\s*)"
 )
@@ -81,13 +84,18 @@ CONTEXT_REQUEST = {
     ),
     "oneOf": [{"required": ["question"]}, {"required": ["terms"]}],
 }
+_WORD_FORMS = array(object_schema({"query_term": TEXT, "indexed_term": TEXT}), 1, 8)
 CONTEXT_PLAN = object_schema(
     {
         "request": CONTEXT_REQUEST,
         "terms": _CONTEXT_SCHEMA["properties"]["terms"],
         "memory_version": {"type": "integer"},
     },
-    {"comparison_terms": array(TEXT, 1, 8)},
+    {
+        "comparison_terms": array(TEXT, 1, 8),
+        "word_forms": _WORD_FORMS,
+        "comparison_word_forms": _WORD_FORMS,
+    },
 )
 
 
@@ -154,20 +162,81 @@ def _quoted_phrases(question: str) -> set[str]:
     }
 
 
-def _compile_terms(db, plan: dict, question: str) -> list[str]:
+def _english_word_forms(word: str) -> list[str]:
+    if not _ENGLISH_WORD.fullmatch(word):
+        return []
+    bases = {word}
+    if word.endswith(("ied", "ies")):
+        bases.add(word[:-3] + "y")
+    if word.endswith("es"):
+        bases.add(word[:-2])
+    if word.endswith("s") and not word.endswith(("ss", "us", "is")):
+        bases.add(word[:-1])
+    for suffix in ("ed", "ing"):
+        if word.endswith(suffix):
+            stem = word[: -len(suffix)]
+            bases.update((stem, stem + "e"))
+            if len(stem) > 2 and stem[-1] == stem[-2] and stem[-1] not in "aeiou":
+                bases.add(stem[:-1])
+
+    forms = set()
+    for base in bases:
+        if len(base) < 3:
+            continue
+        forms.add(base)
+        if base.endswith("y") and base[-2] not in "aeiou":
+            forms.update((base[:-1] + "ies", base[:-1] + "ied"))
+        else:
+            plural = "es" if base.endswith(("s", "x", "z", "ch", "sh")) else "s"
+            forms.update((base + plural, base + ("d" if base.endswith("e") else "ed")))
+        ing_base = (
+            base[:-1] if base.endswith("e") and not base.endswith(("ee", "ye", "oe")) else base
+        )
+        forms.add(ing_base + "ing")
+        if _FINAL_CONSONANT.search(base) and len(_VOWEL_GROUP.findall(base)) == 1:
+            forms.update((base + base[-1] + "ed", base + base[-1] + "ing"))
+    return sorted(forms - {word})
+
+
+def _indexed_word_form(db, where, args, word: str) -> tuple[int, str] | None:
+    # Confirm generated forms against the scoped original text before using them.
+    matches = []
+    for form in _english_word_forms(word):
+        if len(form) > 128:
+            continue
+        frequency = db.execute(
+            f"SELECT count(*) FROM (SELECT rowid FROM context_spans WHERE {where} LIMIT 32)",
+            (f'text : "{form}"', *args),
+        ).fetchone()[0]
+        if frequency:
+            matches.append((frequency, form))
+    return min(matches, default=None)
+
+
+def _compile_terms(db, plan: dict, question: str) -> tuple[list[str], list[dict]]:
     where, args = _search_scope(plan)
     quoted = _quoted_phrases(question)
     if plan.get("matching_lines") and quoted:
-        return sorted(quoted)[:8]
+        return sorted(quoted)[:8], []
     acronyms = {name.casefold() for name in _ACRONYMS.findall(question)}
+    literal_words = acronyms | {word for quote in quoted for word in _tokens(quote).split()}
     candidates = []
     for phrase in dict.fromkeys((*sorted(quoted), *_question_phrases(question))):
+        if len(phrase) > 128:
+            continue
         expression = f'"{_tokens(phrase)}"'
         text_expression = f"text : {expression}" if plan.get("matching_lines") else expression
         frequency = db.execute(
             f"SELECT count(*) FROM (SELECT rowid FROM context_spans WHERE {where} LIMIT 32)",
             (text_expression, *args),
         ).fetchone()[0]
+        query_term = None
+        if not frequency and not plan.get("matching_lines") and phrase not in literal_words:
+            alternative = _indexed_word_form(db, where, args, phrase)
+            if alternative:
+                query_term = phrase
+                frequency, phrase = alternative
+                expression = f'"{phrase}"'
         if frequency:
             labeled = db.execute(
                 f"SELECT 1 FROM context_spans WHERE {where} LIMIT 1",
@@ -184,14 +253,17 @@ def _compile_terms(db, plan: dict, question: str) -> list[str]:
                 ).fetchone()[0]
                 if sources < 32:
                     score += 4
-            candidates.append((score, phrase))
+            candidates.append((score, phrase, query_term))
     selected = []
-    for _, phrase in sorted(candidates, key=lambda row: -row[0]):
+    word_forms = []
+    for _, phrase, query_term in sorted(candidates, key=lambda row: (-row[0], row[2] is not None)):
         if not any(phrase in current or current in phrase for current in selected):
             selected.append(phrase)
+            if query_term is not None:
+                word_forms.append({"query_term": query_term, "indexed_term": phrase})
         if len(selected) == 8:
             break
-    return selected or [question[:128]]
+    return selected or [question[:128]], word_forms
 
 
 def _question_scope(request: dict) -> tuple[dict, str]:
@@ -266,17 +338,23 @@ def _context_scope(request: dict) -> tuple[dict, str | None, str | None]:
 
 def _compile_questions(workspace, indexes, request, search, compare_search):
     index, comparison = indexes
+    terms, forms = (
+        (request["terms"], [])
+        if search is None
+        else _compile_terms(index.db, index.filters, search)
+    )
     result = {
         "request": request,
-        "terms": request["terms"]
-        if search is None
-        else _compile_terms(index.db, index.filters, search),
+        "terms": terms,
         "memory_version": workspace.version(),
     }
+    if forms:
+        result["word_forms"] = forms
     if compare_search is not None:
-        result["comparison_terms"] = _compile_terms(
-            comparison.db, comparison.filters, compare_search
-        )
+        terms, forms = _compile_terms(comparison.db, comparison.filters, compare_search)
+        result["comparison_terms"] = terms
+        if forms:
+            result["comparison_word_forms"] = forms
     return result
 
 
@@ -312,7 +390,7 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
     if (compare_terms is not None) != ("compare_with" in request):
         raise ToolError("invalid_input", "compile both comparison questions before searching")
 
-    def search(question, terms, span_limit, quote_budget, search_index, date_overrides=None):
+    def search(question, terms, span_limit, quote_budget, search_index, forms, date_overrides=None):
         result = _context_evidence(
             workspace,
             {**filters, **(date_overrides or {}), "terms": terms},
@@ -323,23 +401,28 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
             _index=search_index,
             _question=question,
             prioritize_first_lines=compare_terms is not None and "limit" not in request,
+            word_forms=forms,
         )
         if question is not None:
             result["compilation"] = {"question": question, "terms": terms}
+            if forms:
+                result["compilation"]["word_forms"] = forms
         return result
 
+    forms = compiled.get("word_forms", ())
     if compare_terms is None:
-        return search(question, compiled["terms"], limit, budget, index)
+        return search(question, compiled["terms"], limit, budget, index, forms)
     first_limit, first_budget = (limit + 1) // 2, (budget + 1) // 2
     date_overrides = _comparison_dates(request)
     parts = [
-        search(question, compiled["terms"], first_limit, first_budget, index),
+        search(question, compiled["terms"], first_limit, first_budget, index, forms),
         search(
             request["compare_with"],
             compare_terms,
             limit - first_limit,
             budget - first_budget,
             comparison,
+            compiled.get("comparison_word_forms", ()),
             date_overrides,
         ),
     ]
@@ -1106,6 +1189,7 @@ def _context_evidence(
     _index,
     _question,
     prioritize_first_lines=False,
+    word_forms=(),
 ):
     validate(_CONTEXT_SCHEMA, plan, "context plan")
     if not any(map(_tokens, plan["terms"])):
@@ -1134,6 +1218,8 @@ def _context_evidence(
                 anchors = tuple(
                     map(_tokens, _quoted_phrases(_question).intersection(plan["terms"]))
                 )
+            if not preferred:
+                anchors = tuple(_tokens(form["indexed_term"]) for form in word_forms)
         term_candidates = {} if matching_lines else None
         candidates = _candidates(
             index.db,

@@ -203,6 +203,7 @@ def _search_snapshot(
         "search_comparison_recording_overrides": compare_date_overrides,
         "search_trace": {
             "terms": packs[0][1]["compilation"]["terms"] if question is not None else terms,
+            "word_forms": packs[0][1].get("compilation", {}).get("word_forms", []),
             "term_coverage": packs[0][1].get("term_coverage", []) if not comparison else [],
             "packing": [
                 {"label": pack.get("compilation", {}).get("question", key), **pack["packing_trace"]}

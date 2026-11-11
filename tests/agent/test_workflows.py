@@ -6106,6 +6106,53 @@ def test_context_comparison_can_cover_more_passages_from_a_dominant_source(work)
     assert fixed["parts"][0]["span_limit"] == 4
 
 
+def test_context_compiles_observed_english_word_forms_without_changing_literal_search(work):
+    directory, call = work
+    first = "Nia is bridging the incident queue."
+    second = "The backup policy requires an encrypted copy."
+    imported = call(
+        "index-sources",
+        payload={
+            "sources": [
+                {"source": text_input("handoff", first)["source"]},
+                {"source": text_input("backup", second)["source"]},
+            ]
+        },
+    )
+    bridge = {"query_term": "bridge", "indexed_term": "bridging"}
+    policy = {"query_term": "policies", "indexed_term": "policy"}
+    args = (
+        "context",
+        "--question",
+        "Who can bridge the incident queue?",
+        "--compare-with",
+        "Which backup policies were discussed?",
+    )
+    packed = call(*args, "--save", "word-forms")
+    assert [part["compilation"]["word_forms"] for part in packed["parts"]] == [[bridge], [policy]]
+    assert [part["spans"][0]["evidence"][0]["text"] for part in packed["parts"]] == [first, second]
+    compiled = call("artifact", "word-forms", "compile")["value"]
+    assert compiled["word_forms"] == [bridge] and compiled["comparison_word_forms"] == [policy]
+    assert viewer._snapshot(directory, [], run_id="word-forms")["search_comparison"][1][
+        "word_forms"
+    ] == [policy]
+    assert not call("context", "--term", "bridge", "--matching-lines")["spans"]
+    exact = call("context", "--question", 'Who can "bridge"?', "--matching-lines")
+    assert not exact["spans"] and "word_forms" not in exact["compilation"]
+    quoted = call("context", "--question", 'Who can "bridge" the incident queue?')
+    assert "word_forms" not in quoted["compilation"]
+    checksum = packed["parts"][0]["spans"][0]["evidence"][0]["revision_checksum"]
+    changed = text_input("handoff", "Sol will bridge the incident queue.")["source"]
+    call(
+        "index-sources",
+        payload={"sources": [{"source": {**changed, "expected_checksum": checksum}}]},
+    )
+    assert "word_forms" not in call(*args)["parts"][0]["compilation"]
+    prior = call(*args, "--at-version", str(imported["memory_version"]))
+    assert prior["parts"][0]["compilation"]["word_forms"] == [bridge]
+    assert prior["parts"][0]["spans"][0]["evidence"][0]["text"] == first
+
+
 def test_context_quotes_identical_transcripts_once_and_retains_both_clocks(work):
     directory, call = work
     quotes = ["The relay calibration is 3 volts.", "The relay calibration passed."]
