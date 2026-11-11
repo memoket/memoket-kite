@@ -9,6 +9,7 @@
       normalize: '整理来源', annotate: '关联原文', extract: '准备标注', commit: '写入',
       verify: '校验', preview: '预览', apply: '执行', compile: '编译检索', search: '搜索',
       compare: '原文版本对照',
+      searchVersion: '在此版本检索',
       completed: '完成', pending: '待执行', failed: '失败', running: '运行中', awaiting_approval: '待批准',
       redacted: '已隐去明细',
       changed: '已变更', sources: '来源', revisions: '来源版本', facts: '事实', refresh: '刷新',
@@ -20,6 +21,7 @@
       normalize: 'Normalize source', annotate: 'Link evidence', extract: 'Prepare annotations', commit: 'Commit',
       verify: 'Verify', preview: 'Preview', apply: 'Apply', compile: 'Compile query', search: 'Search',
       compare: 'Compare source revisions',
+      searchVersion: 'Search this version',
       completed: 'Completed', pending: 'Pending', failed: 'Failed', running: 'Running', awaiting_approval: 'Awaiting approval',
       redacted: 'Details redacted',
       changed: 'Changed', sources: 'sources', revisions: 'source revisions', facts: 'facts', refresh: 'Refresh',
@@ -55,6 +57,12 @@
         : event.kind === 'merge' ? '' : t('changed') + ' ' + event.changed_count + '/' + event.source_count + ' ' + t('sources');
       row.append(element('strong', t(event.kind) + ' · v' + event.version));
       row.append(element('p', [counts, date(event.committed_at)].filter(Boolean).join(' · ')));
+      if (event.can_search_version) {
+        const link = element('a', t('searchVersion'), 'citation-link');
+        const target = new URLSearchParams({ view: 'graph', lang: language, at: event.version });
+        link.href = '?' + target.toString();
+        row.append(link);
+      }
       events.append(row);
     }
     const runs = byId('activity-runs');

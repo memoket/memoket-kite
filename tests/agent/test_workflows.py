@@ -27,7 +27,7 @@ import pytest
 from memoket_kite import Memory
 from memoket_kite.pipeline import extract
 from memoket_kite.research import Codebook, SymbolicQuery
-from memoket_kite.tools import audio, cli, memoket_source, operations, workflow, workspace
+from memoket_kite.tools import audio, cli, memoket_source, operations, viewer, workflow, workspace
 from memoket_kite.tools.contracts import ToolError, digest, encode, validate
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -203,6 +203,7 @@ def test_memory_viewer_reads_fresh_committed_state(work):
 def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path):
     directory, call = work
     call("ingest", payload=text_input("release", "Review the release checklist."))
+    assert viewer._snapshot(directory, [], at_version=1)["search_available"]
     call("index-sources")
     before = {"version": 1, "topics": [], "passages": [], "revisions": [], "evidence": {}}
     comparison = tmp_path / "comparison.json"
@@ -261,6 +262,7 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
             assert searched["spans"][0]["evidence"][0]["conversation_id"] == "release"
             activity = read("?view=activity")
             assert activity["comparison_available"] and activity["events"][0]["kind"] == "ingest"
+            assert activity["events"][0]["can_search_version"]
             assert activity["runs"][0]["kind"] == "search"
             assert [stage["name"] for stage in activity["runs"][0]["stages"]] == [
                 "compile",
@@ -283,6 +285,8 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
                 == "Review the release checklist."
             )
             assert historical["revisions"][0]["active"] is False
+            inferred = read(f"?view=graph&q=checklist+in+workspace+v{question['version']}")
+            assert inferred["search_history"] == historical["search_history"]
         finally:
             process.terminate()
             process.wait(timeout=10)
@@ -5894,6 +5898,37 @@ def test_compiled_context_terms_are_grounded_in_requested_conversation(work, tmp
     assert pack["spans"][0]["evidence"][0]["conversation_id"] == "42"
 
 
+def test_question_with_unique_heading_keeps_relevant_short_note_together(work, tmp_path):
+    _, call = work
+    note = tmp_path / "weekly.md"
+    note.write_text(
+        "# Lunaris weekly update\n\n## Schedule\n\nA volunteer pilot is planned.\n\n"
+        "## Rehearsal\n\nTwenty-six readers checked out independently.\n\n"
+        "## Blocker\n\nReplace the unclear shelf labels next week.\n",
+        encoding="utf-8",
+    )
+    prepared = call(
+        "file-source", str(note), "--format", "text", "--source-id", "weekly", "--split-lines"
+    )
+    distractor = text_input("other", "团队复核独立结账的障碍。" * 30)["source"]
+    call("index-sources", payload={"sources": [prepared, {"source": distractor}]})
+    question = "Lunaris 的试演里独立结账情况如何，团队还要复核哪些障碍？"
+    result = call("context", "--question", question)
+    assert result["compact_sources"] == 1
+    assert result["quote_bytes"] <= result["quote_budget_bytes"]
+    assert [line["segment_id"] for line in result["spans"][0]["evidence"]] == [
+        "text-line-1",
+        "text-line-3",
+        "text-line-5",
+        "text-line-7",
+        "text-line-9",
+        "text-line-11",
+        "text-line-13",
+    ]
+    focused = call("context", "--question", question, "--neighbors", "0")
+    assert "compact_sources" not in focused
+
+
 @pytest.mark.parametrize(
     ("phrase", "original", "corrected", "late"),
     [
@@ -5950,6 +5985,32 @@ def test_historical_context_separates_recording_date_and_knowledge_time(
     assert past["history"]["version"] == version and past["history"]["later_deletions"] == 0
     assert past["spans"][0]["evidence"][0]["revision_checksum"] == baseline
     assert not past["spans"][0]["source_revision_active"]
+    inferred = call(
+        "context", "--question", f"工作区在 2026-07-02T12:59:59+08:00 能看到「{phrase}」吗？"
+    )
+    assert quotes(inferred) == {original}
+    assert inferred["history"]["version"] == version
+    assert inferred["compilation"]["terms"][0] == phrase.casefold()
+    as_version = call("context", "--question", f'Look for "{phrase}" in workspace v{version}.')
+    assert quotes(as_version) == {original}
+    current = call("context", "--question", f'When does "{phrase}" take effect on 2026-07-01?')
+    assert "history" not in current and corrected in quotes(current)
+    literal = call("context", "--question", f'Find the phrase "workspace v999" near "{phrase}".')
+    assert "history" not in literal
+    call(
+        "context",
+        "--question",
+        f"工作区截至 2026-07-02 的 {phrase} 是什么？",
+        error="invalid_input",
+    )
+    call(
+        "context",
+        "--question",
+        f"工作区 v{version} 的 {phrase}",
+        "--at-version",
+        str(update["memory_version"]),
+        error="invalid_input",
+    )
     assert quotes(
         call("context", "--term", phrase, "--at-version", str(update["memory_version"]))
     ) == {corrected}
@@ -5980,9 +6041,12 @@ def test_historical_context_separates_recording_date_and_knowledge_time(
         error="history_unavailable",
     )
 
-    request = {"question": phrase, "at_version": version}
+    request = {
+        "question": f'What did the workspace know? Search for "{phrase}" in workspace version v{version}.'
+    }
     call("start", "context-search", "--run-id", "historical", payload={"request": request})
-    call("stage", "historical", "compile")
+    compiled = call("stage", "historical", "compile")["value"]
+    assert compiled["request"]["at_version"] == version
     assert quotes(call("stage", "historical", "search")["value"]) == {original}
     _delete_source(call, "erase-history", {"source": "text", "conversation_id": "handoff"})
     remaining = call("context", "--term", phrase, "--at-version", str(version))

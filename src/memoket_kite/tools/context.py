@@ -19,6 +19,24 @@ _QUESTION_BYTES = 3800
 _SEARCH_TERMS = re.compile(r"[\u3400-\u9fff]+|[^\W_]+", re.UNICODE)
 _HAN = re.compile(r"([\u3400-\u9fff])")
 _QUERY_WORDS = re.compile(r"[\u3400-\u9fff]+|[a-z0-9]+(?:\s+[a-z0-9]+)*", re.I)
+_QUOTED_PHRASES = re.compile(r'「([^」]+)」|『([^』]+)』|“([^”]+)”|"([^"\n]+)"')
+_NAME_WORDS = re.compile(r"\b[A-Z][A-Za-z0-9_-]{3,}\b")
+_QUESTION_TIME_PREFIX = (
+    r"(?:\b(?:workspace|known)\s+(?:as of|at)\s+|工作区(?:记录)?\s*(?:在|截至)\s*)"
+)
+_ISO_DAY = r"[0-9]{4}-[0-9]{2}-[0-9]{2}"
+_QUESTION_TIME = re.compile(
+    _QUESTION_TIME_PREFIX + rf"(?P<known_at>{_ISO_DAY}T[0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}}"
+    r"(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-9]{2}))"
+    r"(?![a-z0-9:+-])(?:\s*(?:时)?(?:能看到|已知|可见))?",
+    re.I,
+)
+_QUESTION_DAY = re.compile(_QUESTION_TIME_PREFIX + _ISO_DAY, re.I)
+_QUESTION_VERSION = re.compile(
+    r"(?:\bworkspace\s+(?:(?:version|snapshot)\s+)?|工作区(?:版本|快照)?\s*)"
+    r"v(?P<at_version>[0-9]{1,19})(?![a-z0-9]|\.[0-9])",
+    re.I,
+)
 _QUERY_FILLERS = re.compile(
     r"(?:请问|根据|查找|查询|哪些|哪个|哪里|什么|如何|怎么|为什么|分别|"
     r"这场|那场|会上|那次|当时|原文|给出|引用|请|是否|有没有|的|了|吗|呢)"
@@ -88,6 +106,8 @@ def _question_phrases(question: str):
     for block in _QUERY_WORDS.findall(normalized):
         if _HAN.search(block):
             for fragment in _QUERY_FILLERS.split(block):
+                if 7 < len(fragment) <= 128:
+                    yield fragment
                 for start in range(len(fragment) - 1):
                     for width in range(2, min(7, len(fragment) - start) + 1):
                         yield fragment[start : start + width]
@@ -101,10 +121,20 @@ def _question_phrases(question: str):
                         yield " ".join(words[start : start + width])
 
 
+def _quoted_phrases(question: str) -> set[str]:
+    return {
+        phrase.strip().casefold()
+        for match in _QUOTED_PHRASES.finditer(question)
+        for phrase in match.groups()
+        if phrase is not None and len(phrase.strip()) <= 128 and _tokens(phrase)
+    }
+
+
 def _compile_terms(db, plan: dict, question: str) -> list[str]:
     where, args = _search_scope(plan)
+    quoted = _quoted_phrases(question)
     candidates = []
-    for phrase in dict.fromkeys(_question_phrases(question)):
+    for phrase in dict.fromkeys((*sorted(quoted), *_question_phrases(question))):
         expression = f'"{_tokens(phrase)}"'
         frequency = db.execute(
             f"SELECT count(*) FROM (SELECT rowid FROM context_spans WHERE {where} LIMIT 32)",
@@ -117,6 +147,8 @@ def _compile_terms(db, plan: dict, question: str) -> list[str]:
             ).fetchone()
             length = len(phrase.replace(" ", ""))
             score = min(length, 7) * (2 - frequency / 32) + (3 if labeled else 0)
+            if phrase in quoted:
+                score += 16
             candidates.append((score, phrase))
     selected = []
     for _, phrase in sorted(candidates, key=lambda row: -row[0]):
@@ -127,17 +159,70 @@ def _compile_terms(db, plan: dict, question: str) -> list[str]:
     return selected or [question[:128]]
 
 
-def compile_question(workspace, request: dict) -> dict:
+def _question_scope(request: dict) -> tuple[dict, str]:
     validate(CONTEXT_REQUEST, request, "context request")
+    question = request["question"]
+    quoted = [match.span() for match in _QUOTED_PHRASES.finditer(question)]
+
+    def unquoted(pattern):
+        return [
+            match
+            for match in pattern.finditer(question)
+            if not any(start <= match.start() < stop for start, stop in quoted)
+        ]
+
+    timestamps = unquoted(_QUESTION_TIME)
+    timestamp_starts = {match.start() for match in timestamps}
+    if any(match.start() not in timestamp_starts for match in unquoted(_QUESTION_DAY)):
+        raise ToolError("invalid_input", "use a workspace timestamp with a time and offset")
+    selectors = sorted(
+        [*timestamps, *unquoted(_QUESTION_VERSION)],
+        key=lambda match: match.start(),
+    )
+    if not selectors:
+        return request, question
+    scope = {key: request[key] for key in ("known_at", "at_version") if key in request}
+    parts = []
+    offset = 0
+    for match in selectors:
+        parts.append(question[offset : match.start()])
+        offset = match.end()
+        if (timestamp := match.groupdict().get("known_at")) is not None:
+            try:
+                value = utc_timestamp(timestamp).isoformat(timespec="microseconds")
+                existing = utc_timestamp(scope.get("known_at", value)).isoformat(
+                    timespec="microseconds"
+                )
+            except (ValueError, OverflowError) as exc:
+                raise ToolError("invalid_input", "invalid workspace snapshot timestamp") from exc
+            if "at_version" in scope or existing != value:
+                raise ToolError("invalid_input", "use one workspace snapshot per question")
+            scope["known_at"] = value
+        else:
+            value = int(match["at_version"])
+            if "known_at" in scope or scope.get("at_version", value) != value:
+                raise ToolError("invalid_input", "use one workspace snapshot per question")
+            scope["at_version"] = value
+    parts.append(question[offset:])
+    search = " ".join(parts).strip()
+    if not _tokens(search):
+        raise ToolError("invalid_input", "include a search question with the workspace snapshot")
+    prepared = {**request, **scope}
+    validate(CONTEXT_REQUEST, prepared, "context request")
+    return prepared, search
+
+
+def compile_question(workspace, request: dict) -> dict:
+    request, search = _question_scope(request)
     with _search_index(workspace, request) as index:
-        terms = _compile_terms(index.db, index.filters, request["question"])
+        terms = _compile_terms(index.db, index.filters, search)
     return {"request": request, "terms": terms, "memory_version": workspace.version()}
 
 
 def question_pack(workspace, request: dict) -> dict:
-    validate(CONTEXT_REQUEST, request, "context request")
+    request, search = _question_scope(request)
     with _search_index(workspace, request) as index:
-        terms = _compile_terms(index.db, index.filters, request["question"])
+        terms = _compile_terms(index.db, index.filters, search)
         return _search_question(workspace, request, terms, index=index)
 
 
@@ -157,6 +242,7 @@ def _search_question(workspace, request: dict, terms: list, *, index=None) -> di
         neighbors=request.get("neighbors", 1),
         focus=True,
         _index=index,
+        _question=request["question"],
     )
     return {**result, "compilation": {"question": request["question"], "terms": terms}}
 
@@ -434,6 +520,41 @@ def _positions(segments: list[dict], start: int, stop: int, neighbors: int, phra
     return [*range(start, stop), *(pos for pos in window if not start <= pos < stop)]
 
 
+def _compact_sources(
+    workspace, index: _SearchIndex, plan: dict, question: str, budget: int
+) -> dict:
+    quoted = {_tokens(phrase) for phrase in _quoted_phrases(question)}
+    named = {_tokens(name) for name in _NAME_WORDS.findall(question)}
+    where, args = _search_scope(index.filters)
+    compact = {}
+    for phrase in dict.fromkeys(map(_tokens, plan["terms"])):
+        if phrase not in quoted and phrase not in named:
+            continue
+        matches = index.db.execute(
+            f"SELECT DISTINCT checksum FROM context_spans WHERE {where} LIMIT 2",
+            (f'"{phrase}"', *args),
+        ).fetchall()
+        if len(matches) != 1 or (checksum := matches[0]["checksum"]) in compact:
+            continue
+        record = (
+            index.records[checksum] if index.records is not None else workspace.record(checksum)
+        )
+        conversation = record["conversation"]
+        segments = conversation["segments"]
+        if len(segments) > 12:
+            continue
+        title = conversation.get("title", "")
+        if segments[0]["text"].lstrip().startswith("# "):
+            title += " " + segments[0]["text"]
+        if phrase not in quoted and f" {phrase} " not in f" {_tokens(title)} ":
+            continue
+        size = sum(len(segment["text"].encode("utf-8")) for segment in segments)
+        if size <= budget:
+            compact[checksum] = record
+            budget -= size
+    return compact
+
+
 def _pack(
     workspace,
     rows: list,
@@ -443,8 +564,15 @@ def _pack(
     phrases: tuple,
     *,
     historical_records: dict | None = None,
+    compact_sources: dict | None = None,
 ):
-    records = historical_records if historical_records is not None else {}
+    compact_sources = compact_sources or {}
+    records = historical_records if historical_records is not None else dict(compact_sources)
+    if compact_sources:
+        rows = [
+            {"checksum": checksum, "start": 0, "stop": len(record["conversation"]["segments"])}
+            for checksum, record in compact_sources.items()
+        ] + [row for row in rows if row["checksum"] not in compact_sources]
     seen = defaultdict(set)
     packed = []
     size = omitted = 0
@@ -463,7 +591,12 @@ def _pack(
         if not 0 <= start < stop <= len(segments):
             raise ToolError("integrity_error", "context index does not match its source revision")
         chosen = []
-        for pos in _positions(segments, start, stop, neighbors, phrases):
+        positions = (
+            range(start, stop)
+            if checksum in compact_sources
+            else _positions(segments, start, stop, neighbors, phrases)
+        )
+        for pos in positions:
             if pos in seen[checksum]:
                 continue
             segment = segments[pos]
@@ -502,6 +635,7 @@ def context_pack(
     neighbors: int,
     focus: bool = False,
     _index: _SearchIndex | None = None,
+    _question: str | None = None,
 ) -> dict:
     validate(_CONTEXT_SCHEMA, plan, "context plan")
     if not 1 <= limit <= 50 or not 512 <= max_bytes <= 65536 or not 0 <= neighbors <= 5:
@@ -517,6 +651,11 @@ def context_pack(
         candidates = _candidates(
             index.db, {**index.filters, "terms": plan["terms"]}, limit, focus=focus
         )
+        compact = (
+            _compact_sources(workspace, index, plan, _question, max_bytes // 2)
+            if _question and neighbors and not plan.get("latest")
+            else {}
+        )
         spans, size, omitted = _pack(
             workspace,
             candidates,
@@ -525,6 +664,7 @@ def context_pack(
             neighbors,
             phrases,
             historical_records=index.records,
+            compact_sources=compact,
         )
     return {
         "memory_version": workspace.version(),
@@ -536,6 +676,7 @@ def context_pack(
         "candidate_spans": len(candidates),
         "candidate_sources": len({row["checksum"] for row in candidates}),
         "span_limit": limit,
+        **({"compact_sources": min(len(compact), len(spans))} if compact else {}),
         **({"history": index.history} if index.history is not None else {}),
     }
 

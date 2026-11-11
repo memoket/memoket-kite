@@ -107,6 +107,7 @@ def _snapshot(
                 if tracked
                 else None
             )
+            historical_search = at_version is not None and origin is not None
             if (terms or question is not None) and (searchable or at_version is not None):
                 return {
                     **_search_snapshot(workspace, terms, question, at_version),
@@ -114,7 +115,7 @@ def _snapshot(
                 }
             return {
                 **memory_snapshot(workspace),
-                "search_available": searchable,
+                "search_available": searchable or historical_search,
                 "history_origin": origin,
             }
     except ToolError as exc:
@@ -245,8 +246,10 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                 if comparison_data is not None:
                     snapshot = {**snapshot, "comparison_available": True}
             except (ValueError, ToolError) as exc:
-                if isinstance(exc, ValueError) or exc.code == "invalid_input":
+                if isinstance(exc, ValueError):
                     self.send_error(HTTPStatus.BAD_REQUEST, "Invalid memory view parameters")
+                elif exc.code == "invalid_input":
+                    self.send_error(HTTPStatus.BAD_REQUEST, explain=str(exc))
                 elif exc.code == "not_found":
                     self.send_error(HTTPStatus.NOT_FOUND, "Source revision was not found")
                 elif exc.code == "history_unavailable":

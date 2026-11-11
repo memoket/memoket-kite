@@ -62,6 +62,11 @@ It compiles the task and returns cited passages in one local call. Use
 Use `--at-version VERSION` or `--known-at 2026-05-14T10:30:00+08:00` to search
 the source revisions visible in a tracked workspace snapshot. `--start-date`
 and `--end-date` separately filter the dates of the recordings in that snapshot.
+In a question, use `workspace v12` or `workspace as of TIMESTAMP` to select a
+snapshot. Chinese questions can use `工作区 v12` or `工作区截至 TIMESTAMP`.
+Quote the full topic or project name to prioritize that phrase when it matches.
+For a short source with a unique matching title, the context pack can retain
+the whole note within its quote budget.
 Historical searches use the original text and titles of the selected revisions.
 Read any stated effective date and approval status from the quoted text. Use
 the revision checksum with `evidence` to read an exact historical quote.

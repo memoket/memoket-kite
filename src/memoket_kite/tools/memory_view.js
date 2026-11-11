@@ -879,4 +879,5 @@
   byId('zoom-in').addEventListener('click', () => view.scale(1.18));
   byId('zoom-reset').addEventListener('click', () => view.reset());
   render();
+  if (query.has('at') && !searching && snapshot.search_available) byId('search-terms').focus();
 })();

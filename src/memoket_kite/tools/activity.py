@@ -75,8 +75,20 @@ def memory_activity(workspace) -> dict:
     }
     for run in runs:
         run["stages"].sort(key=lambda stage: stage_order.get(stage["name"], len(stage_order)))
+    events = sorted(events, key=lambda event: event["version"], reverse=True)[:50]
+    if events and "memory_versions" in tables:
+        versions = [event["version"] for event in events]
+        tracked = {
+            row[0]
+            for row in db.execute(
+                f"SELECT version FROM memory_versions WHERE version IN ({','.join('?' for _ in versions)})",
+                versions,
+            )
+        }
+        for event in events:
+            event["can_search_version"] = event["version"] in tracked
     return {
         "version": workspace.version(),
-        "events": sorted(events, key=lambda event: event["version"], reverse=True)[:50],
+        "events": events,
         "runs": runs,
     }

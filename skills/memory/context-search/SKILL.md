@@ -10,6 +10,9 @@ Open nearby lines with `kite-tool evidence 'CONVERSATION#SEGMENT' --context 2 --
 Use `--at-version VERSION` or `--known-at TIMESTAMP` for what the workspace
 knew at a historical point. Use recording dates for meeting windows. Keep
 historical revision checksums with their quotes.
+The question can supply the scope as `workspace v12`, `workspace as of TIMESTAMP`,
+`工作区 v12`, or `工作区截至 TIMESTAMP`. Include the timestamp's offset.
+Quote a topic or project name to search its full phrase first.
 
 When the user wants a saved inspection of compilation and search, use the
 `context-search` pipeline with `{"request":{"question":"…"}}`. Inspect the
