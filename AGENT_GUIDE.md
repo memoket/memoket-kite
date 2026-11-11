@@ -80,6 +80,10 @@ When a Chinese question repeats a clue, compilation can keep it alongside a
 more specific phrase. For a task with several questions, KITE can also cite
 a nearby turn in the same recording that mentions the repeated clue. The
 graph marks that follow-up quote and links it to the original line.
+When the leading passages come from one recording, another recording with
+a matching follow-up can get an earlier place in the same pack. For related
+questions, KITE can also reserve a short quote for an uncovered clue found
+in several original lines. The saved candidate trace explains each selection.
 Question searches can quote identical transcripts from the same recording
 day once. Undated copies can also share a quote. The evidence pack keeps the
 source references and recording clocks. The segment IDs apply to each listed source. Use

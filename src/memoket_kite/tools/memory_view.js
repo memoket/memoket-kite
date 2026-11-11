@@ -34,6 +34,10 @@
       firstLinesPrioritized: 'More passages from the leading source',
       packingSegments: 'Segments',
       corroboratingTerms: 'Multiple clues match this passage',
+      recordingSelection: {
+        other_recording_followup: 'Follow-up in another recording',
+        selective_original_clue: 'Rare query clue matches multiple original lines',
+      },
       sameTextSources: 'Sources with the same transcript text',
       duplicateLines: 'duplicate lines reused',
       packingReasons: { quoted: 'Quoted', span_limit: 'Span limit reached', quote_budget: 'Quote budget', duplicate_text: 'Text already quoted from another source',
@@ -89,6 +93,10 @@
       firstLinesPrioritized: '先取同一来源的多个片段',
       packingSegments: '原文段',
       corroboratingTerms: '同一片段命中多个线索',
+      recordingSelection: {
+        other_recording_followup: '另一份录制有匹配的后续原文',
+        selective_original_clue: '低频检索词命中多行原文',
+      },
       sameTextSources: '原文相同的来源',
       duplicateLines: '行重复原文已共用',
       packingReasons: { quoted: '已引用', span_limit: '片段数已达上限', quote_budget: '引文预算不足', duplicate_text: '已引用其他来源中的相同原文',
@@ -912,6 +920,9 @@
       const status = [t('packingReasons')[candidate.reason]];
       if (candidate.corroborating_terms?.length) {
         status.push(t('corroboratingTerms') + ' · ' + candidate.corroborating_terms.join(' / '));
+      }
+      if (candidate.selection) {
+        status.push(t('recordingSelection')[candidate.selection.reason] + ' · ' + candidate.selection.term);
       }
       if (candidate.quoted_lines) status.push(`${number.format(candidate.quoted_lines)} ${t('quotes')}`);
       if (candidate.duplicate_lines) status.push(`${number.format(candidate.duplicate_lines)} ${t('duplicateLines')}`);

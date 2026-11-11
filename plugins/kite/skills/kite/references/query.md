@@ -36,6 +36,8 @@ English plural or verb form found in the original text.
 For related Chinese questions, the compile trace shows repeated clues.
 The graph marks nearby follow-up quotes from the same recording that match
 one of those clues.
+The candidate trace shows when a matching follow-up from another recording
+or a selective clue in several original lines moved a passage earlier.
 Question searches can share a quote across identical transcripts from the
 same recording day. The graph links each source and its clock. Identical
 transcripts keep their original segment IDs. Use `--matching-lines` for a

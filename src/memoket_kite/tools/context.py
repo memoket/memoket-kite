@@ -20,6 +20,7 @@ _TERM_BYTES = 6000
 _TRACE_CANDIDATES = 80
 _TEXT_SOURCE_COPIES = 8
 _FOLLOWUP_LINES = 3
+_SELECTIVE_SPANS = 4
 _RECORDING_DATES = ("start_date", "end_date")
 _SEARCH_TERMS = re.compile(r"[\u3400-\u9fff]+|[^\W_]+", re.UNICODE)
 _HAN = re.compile(r"([\u3400-\u9fff])")
@@ -893,6 +894,117 @@ def _positions(
     return [*range(start, stop), *(pos for pos in window if not start <= pos < stop)], None
 
 
+def _promote_alternative(rows, row, reason, term, **details):
+    promoted = {**dict(row), **details, "selection": {"reason": reason, "term": term}}
+    key = (row["checksum"], row["start"])
+    return [
+        rows[0],
+        promoted,
+        *(item for item in rows[1:] if (item["checksum"], item["start"]) != key),
+    ]
+
+
+def _uncovered_clues(question, terms, leading_text):
+    words = _tokens(question).split()
+    occurrences = {}
+    for term in terms:
+        tokens = term.split()
+        occurrences[term] = [
+            (i, i + len(tokens))
+            for i in range(len(words) - len(tokens) + 1)
+            if words[i : i + len(tokens)] == tokens
+        ]
+    # Overlapping fragments such as "put the data" and "the data tracking"
+    # can describe the same part of a question. Keep a slot for an independent
+    # clue when the more specific wording is already present in the head.
+    covered = [
+        bounds
+        for term, positions in occurrences.items()
+        if any(f" {term} " in text for text in leading_text)
+        for bounds in positions
+    ]
+    return [
+        term
+        for term, positions in occurrences.items()
+        if not positions
+        or not all(
+            any(
+                min(end, stop) - max(start, begin) >= min(2, end - start)
+                and stop - begin >= end - start
+                for begin, stop in covered
+            )
+            for start, end in positions
+        )
+    ]
+
+
+def _balance_recordings(
+    workspace, index, plan, question, rows, limit, max_bytes, neighbors, repeated
+):
+    records = {}
+
+    def segments(row):
+        checksum = row["checksum"]
+        if checksum not in records:
+            record = (
+                index.records[checksum] if index.records is not None else workspace.record(checksum)
+            )
+            records[checksum] = record["conversation"]["segments"]
+        original = records[checksum]
+        if not 0 <= row["start"] < row["stop"] <= len(original):
+            raise ToolError("integrity_error", "context index does not match its source revision")
+        return original
+
+    terms = {tokens: term for term in plan["terms"] if (tokens := _tokens(term))}
+    phrases = tuple(f" {term} " for term in terms)
+    if repeated and rows[0]["checksum"] == rows[1]["checksum"]:
+        for row in rows[2:limit]:
+            if row["checksum"] == rows[0]["checksum"]:
+                continue
+            _, followup = _positions(
+                segments(row), row["start"], row["stop"], neighbors, phrases, (), False, repeated
+            )
+            if followup is not None:
+                rows = _promote_alternative(rows, row, "other_recording_followup", followup[1])
+                break
+
+    leading = {row["checksum"] for row in rows[:2]}
+    leading_text = [
+        f" {_tokens(line['text'])} "
+        for row in rows[:2]
+        for line in segments(row)[row["start"] : row["stop"]]
+    ]
+    where, args = _search_scope(index.filters)
+    best = None
+    for term in _uncovered_clues(question, terms, leading_text):
+        if len(term.replace(" ", "")) < 2:
+            continue
+        matches = index.db.execute(
+            f"SELECT checksum, start, stop, day FROM context_spans WHERE {where} "
+            "ORDER BY bm25(context_spans, 1.0, 0.35, 1.2), day DESC, checksum, start LIMIT ?",
+            (f'text : "{term}"', *args, _SELECTIVE_SPANS + 1),
+        ).fetchall()
+        if len(matches) > _SELECTIVE_SPANS:
+            continue
+        for row in matches:
+            if row["checksum"] in leading:
+                continue
+            original = segments(row)
+            hits = [
+                pos
+                for pos in range(row["start"], row["stop"])
+                if f" {term} " in f" {_tokens(original[pos]['text'])} "
+            ]
+            size = sum(len(original[pos]["text"].encode("utf-8")) for pos in hits)
+            score = (len(hits), -len(matches))
+            if len(hits) >= 2 and size <= max_bytes // 8 and (best is None or score > best[0]):
+                best = (score, row, terms[term], hits)
+    if best is None:
+        return rows
+    _, row, term, hits = best
+    return _promote_alternative(rows, row, "selective_original_clue", term, direct_positions=hits)
+
+
 def _compact_sources(
     workspace, index: _SearchIndex, plan: dict, question: str, budget: int
 ) -> tuple[dict, dict]:
@@ -1048,6 +1160,11 @@ def _pack(
                     if isinstance(row, dict) and "corroborating_terms" in row
                     else {}
                 ),
+                **(
+                    {"selection": row["selection"]}
+                    if isinstance(row, dict) and "selection" in row
+                    else {}
+                ),
             }
             for rank, row in enumerate(rows[:_TRACE_CANDIDATES], 1)
         ]
@@ -1108,6 +1225,8 @@ def _pack(
                 segments, start, stop, neighbors, phrases, anchored, matching_lines, repeated
             )
         )
+        if isinstance(row, dict) and "direct_positions" in row:
+            positions, followup = row["direct_positions"], None
         first_positions = positions
         if prioritize_first_lines:
             first = next((pos for pos in positions if start <= pos < stop), None)
@@ -1294,6 +1413,29 @@ def _context_evidence(
             anchors=anchors,
             term_candidates=term_candidates,
         )
+        repeated = {}
+        if (
+            _question
+            and not (anchors or matching_lines or plan.get("latest") or _quoted_phrases(_question))
+            and _question.count("?") + _question.count("？") >= 2
+        ):
+            if neighbors:
+                clues = _repeated_han_terms(_question, _question_phrases(_question))
+                repeated = {
+                    f" {_tokens(clue)} ": clue for clue in sorted(clues, key=len, reverse=True)
+                }
+            if not preferred and limit >= 2 and len(candidates) >= 3:
+                candidates = _balance_recordings(
+                    workspace,
+                    index,
+                    plan,
+                    _question,
+                    candidates,
+                    limit,
+                    max_bytes,
+                    neighbors,
+                    repeated,
+                )
         first_lines = (
             prioritize_first_lines
             and neighbors > 0
@@ -1305,15 +1447,6 @@ def _context_evidence(
             # One recording occupies the front of this comparison branch.
             # Give another passage room before expanding neighboring lines.
             limit += 1
-        repeated = {}
-        if (
-            _question
-            and neighbors
-            and not (anchors or matching_lines or plan.get("latest") or _quoted_phrases(_question))
-            and _question.count("?") + _question.count("？") >= 2
-        ):
-            clues = _repeated_han_terms(_question, _question_phrases(_question))
-            repeated = {f" {_tokens(clue)} ": clue for clue in sorted(clues, key=len, reverse=True)}
         spans, size, omitted = _pack(
             workspace,
             candidates,

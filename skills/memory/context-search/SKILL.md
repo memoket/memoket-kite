@@ -23,6 +23,8 @@ exact form is absent. Cite the original words returned in the evidence.
 For several details from the same discussion, keep the related questions
 together. KITE can quote a nearby turn that directly mentions a repeated
 Chinese clue. Check each original quote for the detail it supports.
+When a pack includes multiple recordings, use the cited lines to match
+each answer to the right discussion.
 Repeat `--term` for alternate phrases in one lookup. Add `--save` to show
 per-phrase candidate spans and cited lines in the viewer. A candidate span can
 be left out by the quote budget or can match across original line boundaries.

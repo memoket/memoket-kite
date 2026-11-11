@@ -6207,6 +6207,88 @@ def test_context_keeps_repeated_clues_and_quotes_a_later_matching_turn(work):
     exact = call("context", "--term", "麦克风噪声", "--matching-lines")
     assert [line["segment_id"] for span in exact["spans"] for line in span["evidence"]] == ["start"]
 
+    daily = {
+        "format": "conversation",
+        "payload": {
+            "source": "transcript",
+            "conversation_id": "daily-check",
+            "metadata": {"source_reference": "daily-check"},
+            "segments": [
+                {
+                    "segment_id": f"daily-{i}",
+                    "text": "麦克风噪声以空载为准，我们需要测试麦克风。"
+                    + "这是仪器例行校对记录。" * 36
+                    + str(i),
+                }
+                for i in range(3)
+            ],
+        },
+    }
+    call("index-sources", payload={"sources": [{"source": daily}]})
+    balanced = call("context", "--question", query, "--limit", "4", "--explain")
+    first, alternative = balanced["packing_trace"]["candidates"][:2]
+    assert first["conversation_id"] == "daily-check"
+    assert alternative["conversation_id"] == "calibration"
+    assert alternative["selection"] == {"reason": "other_recording_followup", "term": "麦克风"}
+    assert any(
+        line["text"] == followup for passage in balanced["spans"] for line in passage["evidence"]
+    )
+
+
+def test_context_reserves_compact_original_lines_for_an_uncovered_question_clue(work):
+    directory, call = work
+    sources = [
+        {
+            "source": text_input(f"seating-{i}", "场地安排和座位有哪些改动，先汇总原有座位。")[
+                "source"
+            ]
+        }
+        for i in range(8)
+    ]
+    sources.append(
+        {
+            "source": {
+                "format": "conversation",
+                "payload": {
+                    "source": "transcript",
+                    "conversation_id": "changes",
+                    "metadata": {"source_reference": "changes"},
+                    "segments": [
+                        {"segment_id": "first", "text": "先撤遮阳棚。"},
+                        {"segment_id": "aside", "text": "午餐送到了，大家先休息。"},
+                        {"segment_id": "confirmed", "text": "确认先撤遮阳棚，原来的座位暂不动。"},
+                    ],
+                },
+            }
+        }
+    )
+    receipt = call("index-sources", payload={"sources": sources})
+    args = (
+        "context",
+        "--question",
+        "场地安排和座位有哪些改动？先撤掉哪种设施？",
+        "--max-bytes",
+        "1024",
+        "--limit",
+        "3",
+        "--explain",
+    )
+    pack = call(*args, "--save", "selective-clue")
+    candidate = pack["packing_trace"]["candidates"][1]
+    assert candidate["selection"] == {"reason": "selective_original_clue", "term": "先撤"}
+    assert candidate["conversation_id"] == "changes" and candidate["quoted_lines"] == 2
+    change = next(
+        span for span in pack["spans"] if span["evidence"][0]["conversation_id"] == "changes"
+    )
+    assert [line["segment_id"] for line in change["evidence"]] == ["first", "confirmed"]
+    assert pack["quote_bytes"] <= pack["quote_budget_bytes"] == 1024
+    replay = viewer._snapshot(directory, [], run_id="selective-clue")
+    assert (
+        replay["search_trace"]["packing"][0]["candidates"][1]["selection"] == candidate["selection"]
+    )
+    prior = call(*args, "--at-version", str(receipt["memory_version"]))
+    assert prior["packing_trace"]["candidates"][1]["selection"] == candidate["selection"]
+
 
 def test_context_quotes_identical_transcripts_once_and_retains_both_clocks(work):
     directory, call = work
