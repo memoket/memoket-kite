@@ -37,8 +37,12 @@ FACT = object_schema(
 )
 FACT["dependentRequired"] = {"event_date_basis": ["event_date"]}
 ENTITY = object_schema({"name": TEXT, "aliases": array(TEXT, 1)})
+INDEX_SPAN = object_schema(
+    {"segment_ids": array(TEXT, 1)}, {"topics": array(TEXT), "entities": array(TEXT)}
+)
 ANNOTATIONS = object_schema(
-    {"facts": array(FACT)}, {"taxonomy": array(TOPIC), "entity_aliases": array(ENTITY)}
+    {"facts": array(FACT)},
+    {"taxonomy": array(TOPIC), "entity_aliases": array(ENTITY), "index_spans": array(INDEX_SPAN)},
 )
 RECLASSIFY = object_schema({"from_topic": TEXT, "to_topic": TEXT})
 TOPIC_MOVE = object_schema({"topic": TEXT, "parents": array(TEXT, maximum=8)})
@@ -99,7 +103,23 @@ def annotate(context, normalized: dict, annotations: dict) -> dict:
         {"name": _symbol(entity["name"]), "aliases": _symbols(entity["aliases"])}
         for entity in annotations.get("entity_aliases", ())
     ]
-    return {**normalized, "facts": facts, "taxonomy": taxonomy, "entity_aliases": entities}
+    spans = []
+    for span in annotations.get("index_spans", ()):
+        if not set(span["segment_ids"]) <= segment_ids:
+            raise ToolError(
+                "invalid_evidence", "index span cites a segment outside its conversation"
+            )
+        spans.append(
+            {
+                "segment_ids": sorted(set(span["segment_ids"])),
+                "topics": _symbols(span.get("topics", ())),
+                "entities": _symbols(span.get("entities", ())),
+            }
+        )
+    result = {**normalized, "facts": facts, "taxonomy": taxonomy, "entity_aliases": entities}
+    if spans:
+        result["index_spans"] = spans
+    return result
 
 
 def revision_id(normalized: dict) -> str:
@@ -164,7 +184,7 @@ def _vocabulary(
                 raise ToolError("conflict", "entity alias is assigned to multiple entities")
             vocab.alias_entity(alias, name)
     for record in records:
-        for fact in record["facts"]:
+        for fact in (*record["facts"], *record.get("index_spans", ())):
             for topic in fact["topics"]:
                 if not vocab.resolve_topic(topic):
                     vocab.define_root(topic)

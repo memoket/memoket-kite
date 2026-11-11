@@ -52,7 +52,8 @@ SCHEMAS = {
             "facts": array(JSON_OBJECT),
             "taxonomy": array(JSON_OBJECT),
             "entity_aliases": array(JSON_OBJECT),
-        }
+        },
+        {"index_spans": array(JSON_OBJECT)},
     ),
     "query": QUERY,
     "resolved": object_schema(

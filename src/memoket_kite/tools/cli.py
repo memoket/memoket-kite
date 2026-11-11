@@ -10,10 +10,12 @@ from pathlib import Path
 
 from .audio import audio_source
 from .captions import CAPTION_FORMATS
+from .context import context_pack, render_context
 from .contracts import (
     HASH,
     TEXT,
     ToolError,
+    array,
     decode_object,
     digest,
     encode,
@@ -22,13 +24,15 @@ from .contracts import (
     validate,
 )
 from .demo import render_decision_story, render_demo, run_demo
-from .ingest import file_source, prepare_source
+from .index import annotate
+from .ingest import file_source, normalize, prepare_source
 from .memoket_source import memoket_source
 from .operations import SCHEMAS, SOURCE_SCOPE, TOOLS, Context
 from .resources import resource_root
 from .retrieve import evidence_context, segment_context, topic_inventory
 from .source_diff import source_changes
 from .trace_text import render_status, render_trace
+from .transcript_text import transcript_text_source
 from .viewer import view_memory
 from .workflow import (
     SCRIPTED_IMPORT_STAGES,
@@ -163,6 +167,24 @@ def _parser() -> argparse.ArgumentParser:
     viewer.add_argument(
         "--no-open", action="store_true", help="print the local URL without opening it"
     )
+    source_index = commands.add_parser("index-sources", help="index original sources without facts")
+    index_input = source_index.add_mutually_exclusive_group()
+    index_input.add_argument("--input", metavar="FILE", help="source batch JSON or - for stdin")
+    index_input.add_argument(
+        "--transcripts", type=Path, help="directory of timestamped TXT transcripts"
+    )
+    context = commands.add_parser("context", help="pack cited original passages for an agent task")
+    context.add_argument("--term", action="append", required=True, help="search phrase, repeatable")
+    context.add_argument("--source", help="restrict search to one source namespace")
+    context.add_argument("--start-date", help="earliest source date, inclusive")
+    context.add_argument("--end-date", help="latest source date, inclusive")
+    context.add_argument("--latest", action="store_true", help="give newer dated sources priority")
+    context.add_argument("--limit", type=int, default=8, help="maximum matched spans")
+    context.add_argument("--max-bytes", type=int, default=6000, help="original quote byte budget")
+    context.add_argument("--neighbors", type=int, default=1, help="adjacent turns on either side")
+    context.add_argument(
+        "--text", action="store_true", help="compact original quotes and citation IDs"
+    )
     query = commands.add_parser("query", help="run a read-only trace without saving a checkpoint")
     query.add_argument("--pipeline", choices=TRACE_PIPELINES, default="topic-tracing")
     query.add_argument(
@@ -240,7 +262,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     source.add_argument("path", type=Path)
     source.add_argument(
-        "--format", choices=("text", "memoket", "conversation", *CAPTION_FORMATS), required=True
+        "--format",
+        choices=("text", "transcript-text", "memoket", "conversation", *CAPTION_FORMATS),
+        required=True,
     )
     source.add_argument("--source-id", help="stable identity for a text or caption file")
     source.add_argument(
@@ -577,6 +601,19 @@ def _check_source(args: argparse.Namespace, root: Path) -> dict:
     return result
 
 
+def _index_sources(root: Path, workspace: Workspace, value: dict) -> dict:
+    item = object_schema({"source": SCHEMAS["source"]}, {"annotations": SCHEMAS["annotations"]})
+    validate(object_schema({"sources": array(item, maximum=1000)}), value, "source batch")
+    context = Context(root, workspace, "")
+    records = []
+    for entry in value["sources"]:
+        annotations = entry.get("annotations", {"facts": []})
+        if annotations["facts"]:
+            raise ToolError("invalid_input", "index-sources accepts original spans without facts")
+        records.append(annotate(context, normalize(context, entry["source"]), annotations))
+    return workspace.index_sources(records)
+
+
 def _dispatch(args) -> tuple[dict, ToolError | None]:
     if args.command == "view":
         return view_memory(args.workspace, open_browser=not args.no_open), None
@@ -619,6 +656,47 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
         return {"definition": definition, "digest": checksum, "skill_root": str(skill_root)}, None
     if args.command == "pipelines":
         return discover_pipelines(root, extension_root=extension_root), None
+
+    if args.command == "index-sources":
+        payload = _object(args.input) if args.input is not None else {"sources": []}
+        if args.transcripts is not None:
+            files = sorted(args.transcripts.expanduser().glob("*.txt"))
+            if (
+                not files
+                or len(files) > 1000
+                or any(path.is_symlink() or not path.is_file() for path in files)
+            ):
+                raise ToolError(
+                    "invalid_input", "provide a directory of 1–1000 regular TXT transcripts"
+                )
+            try:
+                payload["sources"] = [
+                    {"source": transcript_text_source(path, read_utf8(path))} for path in files
+                ]
+            except UnicodeError as exc:
+                raise ToolError("invalid_input", "transcript must be valid UTF-8") from exc
+        with Workspace.open(args.workspace) as workspace:
+            return _index_sources(root, workspace, payload), None
+
+    if args.command == "context":
+        plan = {"terms": args.term}
+        if args.latest:
+            plan["latest"] = True
+        plan.update(
+            {
+                key: value
+                for key in ("source", "start_date", "end_date")
+                if (value := getattr(args, key)) is not None
+            }
+        )
+        with Workspace.open(args.workspace, read_only=True) as workspace:
+            return context_pack(
+                workspace,
+                plan,
+                limit=args.limit,
+                max_bytes=args.max_bytes,
+                neighbors=args.neighbors,
+            ), None
 
     if args.command == "topics":
         with Workspace.open(args.workspace, read_only=True) as workspace:
@@ -829,6 +907,8 @@ def main(argv=None) -> int:
         print(render_decision_story(result["value"]))
     elif args.command == "query" and args.text_output:
         print(result["text"])
+    elif args.command == "context" and args.text:
+        print(render_context(result))
     elif args.command == "status" and args.text_output:
         print(render_status(result))
     elif args.command in {"audio-source", "file-source", "memoket-source"}:

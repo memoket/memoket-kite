@@ -13,6 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
+from .context import context_enabled, enable_context, rebuild_context
 from .contracts import (
     CURSOR,
     TEXT,
@@ -482,7 +483,12 @@ class Workspace:
                 or conversation["conversation_id"] != row["conversation_id"]
             )
             segments = conversation["segments"]
-            fields = (record["facts"], record["taxonomy"], record["entity_aliases"])
+            fields = (
+                record["facts"],
+                record["taxonomy"],
+                record["entity_aliases"],
+                record.get("index_spans", []),
+            )
             malformed = (
                 not isinstance(segments, list)
                 or not segments
@@ -718,7 +724,10 @@ class Workspace:
 
     def _supported_taxonomy(self, records: list[dict]) -> tuple[dict, dict]:
         topics = {
-            topic for record in records for fact in record["facts"] for topic in fact["topics"]
+            topic
+            for record in records
+            for item in (*record["facts"], *record.get("index_spans", ()))
+            for topic in item["topics"]
         }
         for record in records:
             for topic in record["taxonomy"]:
@@ -740,6 +749,7 @@ class Workspace:
         hierarchy: dict | None = None,
         force: bool = False,
         verify_sources: bool = False,
+        refresh_context: bool = False,
     ) -> dict:
         current = self._memory()
         previous_hierarchy = self.topic_hierarchy()
@@ -751,7 +761,8 @@ class Workspace:
             source_sealed = self._verify_source_snapshot(current, rows, previous_hierarchy)
         merges = json.loads(current["merges"]) if merges is None else merges
         encoded_merges = encode(merges)
-        index = build_index(self._records(rows), merges, hierarchy)
+        records = self._records(rows)
+        index = build_index(records, merges, hierarchy)
         checksum, source_checksum = _snapshot_checksums(index.xml, encoded_merges, rows, hierarchy)
         seal = self._index_seal(version)
         unchanged = (
@@ -764,6 +775,8 @@ class Workspace:
         if unchanged:
             if seal is None or (verify_sources and not source_sealed):
                 self._seal_index(version, checksum, source_checksum)
+            if refresh_context:
+                rebuild_context(self.db, records, index.vocab, version)
             return {"changed": False, "memory_version": version}
         self.db.execute(
             "UPDATE memory SET version=version+1, merges=?, xml=? WHERE singleton=1",
@@ -776,6 +789,8 @@ class Workspace:
                 ((topic, encode(parents)) for topic, parents in hierarchy.items()),
             )
         self._seal_index(version + 1, checksum, source_checksum)
+        if context_enabled(self.db):
+            rebuild_context(self.db, records, index.vocab, version + 1)
         return {"changed": True, "memory_version": version + 1}
 
     def require_source_allowed(self, source, conversation_id, reference) -> None:
@@ -850,12 +865,34 @@ class Workspace:
         return result
 
     def commit(self, record: dict, *, append_annotations: bool = False) -> dict:
+        self._require_current_index()
+        receipt = self._write_revision(record, append_annotations=append_annotations)
+        if receipt["changed"]:
+            return {**receipt, **self.replace_index(force=append_annotations)}
+        return receipt
+
+    def index_sources(self, records: list[dict]) -> dict:
+        """Commit a batch of source-only records as one searchable snapshot."""
+        self._require_current_index()
+        enable_context(self.db)
+        if any(record["facts"] for record in records):
+            raise ToolError("invalid_input", "index-sources accepts original spans without facts")
+        receipts = [self._write_revision(record, append_annotations=True) for record in records]
+        result = self.replace_index(
+            force=any(row["changed"] for row in receipts), refresh_context=True
+        )
+        return {
+            **result,
+            "sources_changed": sum(row["changed"] for row in receipts),
+            "sources_seen": len(receipts),
+        }
+
+    def _write_revision(self, record: dict, *, append_annotations: bool = False) -> dict:
         conversation = record["conversation"]
         uid = conversation["conversation_id"]
         self.require_source_allowed(
             conversation["source"], uid, conversation["metadata"]["source_reference"]
         )
-        self._require_current_index()
         checksum = record["checksum"]
         receipt = {"revision_id": revision_id(record), "checksum": checksum}
         state, key, prior = self._classify_source(conversation, checksum)
@@ -874,15 +911,15 @@ class Workspace:
             "INSERT INTO revisions VALUES(?, ?, ?, ?, 1, ?)",
             (checksum, key, conversation["source"], uid, encode(payload)),
         )
-        return {**receipt, **self.replace_index()}
+        return {**receipt, "changed": True}
 
     def _append_annotations(self, prior: sqlite3.Row, record: dict) -> dict:
         stored = self._decode_revision(prior)
         additions = {}
-        for field in ("facts", "taxonomy", "entity_aliases"):
-            seen = {digest(item) for item in stored[field]}
+        for field in ("facts", "taxonomy", "entity_aliases", "index_spans"):
+            seen = {digest(item) for item in stored.get(field, ())}
             additions[field] = []
-            for item in record[field]:
+            for item in record.get(field, ()):
                 fingerprint = digest(item)
                 if fingerprint not in seen:
                     seen.add(fingerprint)
@@ -893,12 +930,13 @@ class Workspace:
             raise ToolError("conflict", "new annotations require the current expected_checksum")
         self._validate_supersession({**record, "facts": additions["facts"]})
         for field, items in additions.items():
-            stored[field].extend(items)
+            if items:
+                stored.setdefault(field, []).extend(items)
         self.db.execute(
             "UPDATE revisions SET payload=? WHERE checksum=?",
             (encode(stored), prior["checksum"]),
         )
-        return self.replace_index(force=True)
+        return {"changed": True}
 
     def _validate_supersession(self, record: dict) -> None:
         replacements = [fact for fact in record["facts"] if "supersedes" in fact]

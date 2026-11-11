@@ -5533,3 +5533,78 @@ def test_provider_result_is_discarded_if_the_definition_changes(work, tmp_path, 
         assert process.returncode == 2, errors or output
         assert json.loads(output)["error"]["code"] == "stale_definition"
     assert call("status", "provider", repo=repo)["stages"]["extract"]["attempts"] == 0
+
+
+def test_context_index_source_revision_merge_and_delete(work):
+    directory, call = work
+
+    def entry(text, day, expected=None):
+        source = {
+            "format": "text",
+            "payload": {
+                "conversation_id": "rollout",
+                "text": text,
+                "source_date": day,
+                "metadata": {"source_reference": "rollout"},
+            },
+        }
+        if expected:
+            source["expected_checksum"] = expected
+        return {
+            "source": source,
+            "annotations": {
+                "facts": [],
+                "taxonomy": [{"name": "上线"}, {"name": "发布"}],
+                "index_spans": [{"segment_ids": ["text-1"], "topics": ["上线"]}],
+            },
+        }
+
+    first = entry("确认周五交付。", "2026-10-02")
+    assert call("index-sources", payload={"sources": [first]})["sources_changed"] == 1
+    assert call("index-sources", payload={"sources": [first]})["sources_changed"] == 0
+    call(
+        "start",
+        "memory-consolidation",
+        "--run-id",
+        "merge",
+        payload={
+            "merge": {"from_topic": "上线", "to_topic": "发布"},
+        },
+    )
+    call("stage", "merge", "commit")
+    old = call("context", "--term", "发布")["spans"][0]["evidence"][0]
+    assert old["text"] == "确认周五交付。"
+    update = entry("确认周一交付。", "2026-10-03", old["revision_checksum"])
+    assert call("index-sources", payload={"sources": [update]})["sources_changed"] == 1
+    assert call("context", "--term", "周五")["spans"] == []
+    assert call("context", "--term", "交付", "--end-date", "2026-10-02")["spans"] == []
+    new = call("context", "--term", "上线")["spans"][0]["evidence"][0]
+    assert new["text"] == "确认周一交付。"
+    assert call("evidence", old["source_line_id"])["value"]["evidence"]["text"] == old["text"]
+    invalid = entry("确认周三交付。", "2026-10-04", old["revision_checksum"])
+    call("index-sources", payload={"sources": [invalid]}, error="conflict")
+    _delete_source(call, "erase-indexed", {"source": "text", "conversation_id": "rollout"})
+    assert call("context", "--term", "交付")["spans"] == []
+    call("evidence", old["source_line_id"], error="not_found")
+    call("index-sources", payload={"sources": [first]}, error="deleted_source")
+    assert "确认周一交付".encode() not in (directory / "kite.sqlite3").read_bytes()
+
+
+def test_context_transcript_import_retains_file_lines_and_neighbor_turns(work, tmp_path):
+    _, call = work
+    source = tmp_path / "42_transcript.txt"
+    source.write_text(
+        "00:01\nSpeaker A\n\n这条接着前面的议题。\n\n00:04\nSpeaker B\n\n确认移动端采样率。\n",
+        encoding="utf-8",
+    )
+    assert call("index-sources", "--transcripts", str(tmp_path))["sources_changed"] == 1
+    pack = call("context", "--term", "采样率")
+    lines = pack["spans"][0]["evidence"]
+    assert [(row["segment_id"], row["speaker_id"], row["start_ms"]) for row in lines] == [
+        ("L4", "Speaker A", 1000),
+        ("L9", "Speaker B", 4000),
+    ]
+    assert lines[1]["source_reference"] == source.name
+    assert pack["quote_bytes"] == sum(len(line["text"].encode()) for line in lines)
+    prepared = call("file-source", str(source), "--format", "transcript-text")
+    assert call("source-check", payload=prepared)["state"] == "unchanged"

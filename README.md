@@ -70,6 +70,23 @@ See the [agent quickstart](examples/agent-workflows/README.md) for stage-by-stag
 commands, or [add KITE to your project's agent instructions](examples/agent-workflows/README.md#give-your-agent-a-task).
 The [operating guide](AGENT_GUIDE.md) describes the workflow and tool contracts.
 
+### Give an agent the original context
+
+Index timestamped transcripts once, then bring cited excerpts into tasks such
+as writing a handoff, checking a requirement, or explaining a changed plan.
+
+```sh
+kite-tool --workspace ./team-memory index-sources --transcripts ./transcripts
+kite-tool --workspace ./team-memory context --term 'release plan' --term 'rollout' --text
+```
+
+KITE keeps the source turns, speaker labels, offsets, and exact line IDs in
+its local workspace. Context queries return bounded original passages. An
+agent can use new terms found in a passage to follow the discussion across
+meetings. Source revisions and deletion also update the search index. Use the
+[conversation benchmark](benchmarks/agent/README.md#evaluate-original-conversation-context)
+to compare this workflow with giving Codex the transcript directory to search.
+
 <a id="news"></a>
 
 ## 📢 News

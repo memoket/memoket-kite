@@ -136,6 +136,15 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
         "text-line-3",
         quote,
     ), citation
+    transcripts = scratch / "Transcripts"
+    transcripts.mkdir()
+    (transcripts / "handoff_transcript.txt").write_text(
+        "00:01\nSpeaker A\n\nRollout depends on the checklist.\n", encoding="utf-8"
+    )
+    indexed = json.loads(run("index-sources", "--transcripts", transcripts).stdout)
+    assert indexed["sources_changed"] == 1, indexed
+    context = run("context", "--term", "rollout", "--text", cwd=subdirectory).stdout
+    assert "[handoff#L4] Speaker A: Rollout depends on the checklist." in context, context
     other_project = scratch / "Other project"
     other_project.mkdir()
     empty = run("query", "--topic", "onboarding", cwd=other_project, check=False)

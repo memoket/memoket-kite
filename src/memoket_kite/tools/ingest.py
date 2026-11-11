@@ -22,6 +22,7 @@ from .contracts import (
     validate,
 )
 from .memoket_transcript import api_transcript
+from .transcript_text import transcript_text_source
 
 SOURCE = object_schema(
     {
@@ -170,14 +171,25 @@ def file_source(
         raise ToolError("invalid_input", "--page and --recording-metadata require --format memoket")
     if source_format in file_formats:
         validate(TEXT, source_id, "file source ID")
-    elif any(value is not None for value in (source_id, source_date, started_at)):
+    elif source_format != "transcript-text" and any(
+        value is not None for value in (source_id, source_date, started_at)
+    ):
         raise ToolError("invalid_input", "JSON exports supply their own identity and dates")
     if expected_checksum is not None:
         validate(HASH, expected_checksum, "expected checksum")
     if project is not None:
         validate(TEXT, project, "project")
     raw = _read_source_file(path)
-    if source_format in file_formats:
+    if source_format == "transcript-text":
+        if source_id is not None:
+            validate(TEXT, source_id, "file source ID")
+        prepared = transcript_text_source(path, raw, source_id=source_id)
+        source_format, payload = prepared["format"], prepared["payload"]
+        if source_date is not None:
+            payload["source_date"] = source_date
+        if started_at is not None:
+            payload["started_at"] = started_at
+    elif source_format in file_formats:
         payload = {
             "conversation_id": source_id,
             "metadata": {"source_reference": source_id},

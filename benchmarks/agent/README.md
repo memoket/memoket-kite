@@ -167,3 +167,46 @@ Keep `deterministic` and `host-agent` results separate. The offline run provides
 repeatable tool and index checks. Host scores depend on the selected runtime and
 model. LoCoMo and LongMemEval-S retain their own datasets, scoring and reproduction
 commands.
+
+## Evaluate original conversation context
+
+The source-context benchmark uses a local directory of UTF-8 TXT transcripts.
+Each turn starts with a time such as `05:14` or `01:05:14` and a label such as
+`Speaker A`. Original lines are cited as `conversation-id#Lline-number`.
+Keep transcripts, answer keys, workspaces, and reports under a private,
+ignored directory.
+
+```sh
+python -m benchmarks.agent.context_eval /path/to/transcripts cases.json artifacts/context-eval
+```
+
+Use a JSON array of cases. Each case supplies an `id`, a natural-language
+`task`, a list of retrieval `terms` chosen from the task, and an `evidence`
+list of exact citation IDs. To run the host comparison, add `answer_patterns`
+with regular expressions for independently checked answer requirements.
+
+```sh
+python -m benchmarks.agent.context_eval /path/to/transcripts cases.json artifacts/host-eval \
+  --model YOUR_CODEX_MODEL --codex /path/to/codex
+```
+
+The same model answers each task in fresh, read-only Codex sessions. One arm
+can call `kite-tool context` and choose its own phrases. The other searches
+the same TXT files with shell tools. The report records actual Codex usage
+from its JSON events, elapsed wall time, command counts, and citation and
+answer checks. Use `--host-context prefilled` to measure delivering the fixed
+context pack directly in the prompt. Report that protocol separately.
+
+The fixed retrieval result checks exact evidence coverage and the fraction
+of tasks where all expected evidence was retrieved. A labeled citation hit
+does not assess the relevance of every extra retrieved line. Review answer
+pattern failures against the original evidence, including equivalent wording.
+
+Pass `--updates revisions.json` to test edits on a disposable workspace copy.
+Each case supplies an `id`, one `evidence` citation, the exact text to
+`replace`, its replacement in `with`, and the `terms` to query afterwards.
+The result checks that search returns the amended original and revision,
+the old citation still opens the historical original, replay is idempotent,
+and a stale writer is rejected. These controlled edits measure source
+revision handling. Changes in the team's decisions across different meetings
+require separate labeled timelines.

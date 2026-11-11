@@ -43,6 +43,13 @@ operation.
    draft my next steps based on the latest release decision and its owner.
    Explain what changed and cite the handoff.” Use a topic from your meetings.
 
+For a directory of timestamped TXT transcripts with `Speaker …` labels, ask
+“Index this directory in KITE so you can use the original quotes in future
+tasks.” This import builds the local source index without extracting facts.
+In a later chat in the same project, ask “Use KITE to draft a handoff from our
+discussions about the release. Cite the original lines.” Codex can retrieve
+the relevant turns and search again for a newer confirmation if needed.
+
 By default, project memory lives in
 `${XDG_DATA_HOME:-$HOME/.local/share}/kite/codex/` under an ID derived from the
 project path. Git worktrees of the same checkout share memory. To use a memory
