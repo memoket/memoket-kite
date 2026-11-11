@@ -62,6 +62,8 @@ CREATE TABLE IF NOT EXISTS revisions (
     payload TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS active_source ON revisions(source_key) WHERE active=1;
+CREATE INDEX IF NOT EXISTS revisions_by_conversation
+    ON revisions(source, conversation_id, active, checksum);
 CREATE TABLE IF NOT EXISTS tombstones (scope TEXT NOT NULL, key TEXT NOT NULL,
     PRIMARY KEY (scope, key));
 CREATE TABLE IF NOT EXISTS runs (
@@ -614,20 +616,21 @@ class Workspace:
         if project is not None:
             scope.append(project)
         offset = page_offset(scope, cursor, name="source listing")
+        source_filter = "WHERE source=?" if source is not None else ""
+        source_args = (source,) if source is not None else ()
         with closing(
             self.db.execute(
-                """
+                f"""
                 SELECT source, conversation_id, count(*) AS revisions,
                     max(CASE WHEN active=1 THEN checksum END) AS current_checksum
                 FROM revisions
-                WHERE (? IS NULL OR source=?)
+                {source_filter}
                 GROUP BY source, conversation_id
                 ORDER BY source, conversation_id
                 LIMIT ? OFFSET ?
                 """,
                 (
-                    source,
-                    source,
+                    *source_args,
                     -1 if project is not None or limit is None else limit + 1,
                     0 if project is not None else offset,
                 ),

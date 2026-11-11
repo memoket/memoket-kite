@@ -462,6 +462,8 @@ conversation's revision count includes its retained history.
 For a large workspace, use `kite-tool sources --limit 50`. Pass the returned
 `next_cursor` as `--cursor` with the same limit and filters for the next
 page. Start again without the cursor after the memory snapshot changes.
+Existing workspaces add the source lookup index on their next write.
+`kite-tool integrity` also installs it while checking the workspace.
 
 ```sh
 umask 077

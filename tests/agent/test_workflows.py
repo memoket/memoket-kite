@@ -4945,6 +4945,39 @@ def test_source_inventory_paginates_only_matching_projects(work):
     call(*page, *continuation, error="stale_snapshot")
 
 
+def test_existing_workspace_adds_source_lookup_index_on_next_write(work):
+    directory, call = work
+    ingest(call, "first", text_input("first", "Synthetic first source."))
+    ingest(call, "second", text_input("second", "Synthetic second source."))
+    integrity = call("integrity")
+    path = directory / "kite.sqlite3"
+    with closing(sqlite3.connect(path)) as db:
+        db.execute("DROP INDEX revisions_by_conversation")
+    before = path.read_bytes()
+
+    command = ("sources", "--source", "text", "--limit", "1")
+    first = call(*command)
+    second = call(*command, "--cursor", first["next_cursor"])
+    history = call("source-history", "text", "second")
+    assert path.read_bytes() == before
+
+    assert call("integrity") == integrity
+    assert call(*command) == first
+    assert call(*command, "--cursor", first["next_cursor"]) == second
+    assert call("source-history", "text", "second") == history
+    statements = []
+    with workspace.Workspace.open(directory, read_only=True) as reader:
+        reader.db.set_trace_callback(statements.append)
+        reader.source_inventory("text", limit=1)
+        reader.source_revision("text", "second", None)
+        reader.db.set_trace_callback(None)
+        lookups = [sql for sql in statements if "FROM revisions" in sql]
+        assert len(lookups) == 2
+        for sql in lookups:
+            plan = reader.db.execute("EXPLAIN QUERY PLAN " + sql).fetchall()
+            assert any("revisions_by_conversation" in row["detail"] for row in plan)
+
+
 def test_codebook_and_sources_read_committed_snapshot_during_a_write(work, monkeypatch):
     directory, call = work
     ingest(call, "selected", text_input("selected", "The selected transcript."))
