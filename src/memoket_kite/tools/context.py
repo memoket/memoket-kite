@@ -8,7 +8,7 @@ import unicodedata
 from collections import defaultdict
 
 from .contracts import DATE, TEXT, ToolError, array, object_schema, validate
-from .index import revision_id
+from .index import SPAN_FACET_AXES, revision_id
 from .ingest import source_day
 from .retrieve import _citation
 
@@ -57,6 +57,11 @@ def _span_labels(record: dict, vocab) -> dict:
             code = vocab.resolve_entity(entity)
             if code:
                 names.update({code, *vocab.entities[code].aliases})
+        facets = span.get("facets", {})
+        for axis in SPAN_FACET_AXES:
+            names.update(facets.get(axis, ()))
+        if duration := facets.get("duration"):
+            names.add(duration)
         for segment_id in span["segment_ids"]:
             labels[segment_id].update(names)
     return labels

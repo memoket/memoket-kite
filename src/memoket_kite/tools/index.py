@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import re
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -11,7 +12,7 @@ from graphlib import CycleError, TopologicalSorter
 from memoket_kite.core.algebra import Store
 from memoket_kite.core.vocab import Vocab, norm_code
 from memoket_kite.defaults import DEFAULT_MEMORY_PROFILE
-from memoket_kite.pipeline.extract import append_session_to_xml
+from memoket_kite.pipeline.extract import _normalize_duration, append_session_to_xml
 
 from .contracts import DATE, TEXT, XML_UNSAFE, ToolError, array, digest, object_schema
 from .ingest import source_day
@@ -37,8 +38,23 @@ FACT = object_schema(
 )
 FACT["dependentRequired"] = {"event_date_basis": ["event_date"]}
 ENTITY = object_schema({"name": TEXT, "aliases": array(TEXT, 1)})
+SPAN_FACET_AXES = ("object", "place", "event")
+_TIME_DURATION = re.compile(r"PT(?=[0-9])(?:[0-9]+H)?(?:[0-9]+M)?(?:[0-9]+S)?")
+SPAN_FACETS = object_schema(
+    {},
+    {
+        **{axis: array(TEXT) for axis in SPAN_FACET_AXES},
+        "duration": {"anyOf": [TEXT, {"type": "null"}]},
+    },
+)
 INDEX_SPAN = object_schema(
-    {"segment_ids": array(TEXT, 1)}, {"topics": array(TEXT), "entities": array(TEXT)}
+    {"segment_ids": array(TEXT, 1)},
+    {
+        "topics": array(TEXT),
+        "entities": array(TEXT),
+        "title": {**TEXT, "maxLength": 100},
+        "facets": SPAN_FACETS,
+    },
 )
 ANNOTATIONS = object_schema(
     {"facts": array(FACT)},
@@ -109,13 +125,28 @@ def annotate(context, normalized: dict, annotations: dict) -> dict:
             raise ToolError(
                 "invalid_evidence", "index span cites a segment outside its conversation"
             )
-        spans.append(
-            {
-                "segment_ids": sorted(set(span["segment_ids"])),
-                "topics": _symbols(span.get("topics", ())),
-                "entities": _symbols(span.get("entities", ())),
-            }
-        )
+        cleaned = {
+            "segment_ids": sorted(set(span["segment_ids"])),
+            "topics": _symbols(span.get("topics", ())),
+            "entities": _symbols(span.get("entities", ())),
+        }
+        if "title" in span:
+            cleaned["title"] = span["title"].strip()
+        facets = span.get("facets", {})
+        normalized_facets = {
+            axis: _symbols(facets[axis]) for axis in SPAN_FACET_AXES if facets.get(axis)
+        }
+        if facets.get("duration") is not None:
+            supplied = facets["duration"].strip().upper()
+            duration = (
+                supplied if _TIME_DURATION.fullmatch(supplied) else _normalize_duration(supplied)
+            )
+            if not duration:
+                raise ToolError("invalid_input", "span facet duration must be an ISO duration")
+            normalized_facets["duration"] = duration
+        if normalized_facets:
+            cleaned["facets"] = normalized_facets
+        spans.append(cleaned)
     result = {**normalized, "facts": facts, "taxonomy": taxonomy, "entity_aliases": entities}
     if spans:
         result["index_spans"] = spans

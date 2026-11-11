@@ -103,10 +103,12 @@ def test_memory_viewer_reads_fresh_committed_state(work):
                 {"name": "release"},
                 {"name": "onboarding", "parents": ["release"]},
             ]
+            kickoff["annotations"]["facts"][0]["events"] = ["Release decision"]
             call("ingest", payload=kickoff)
             first = snapshot()
             assert first["version"] == first["sources"] == 1
             assert first["states"]["owner"]["value"] == original
+            assert first["facts"][0]["facets"] == {"event": ["release_decision"]}
             assert next(topic for topic in first["topics"] if topic["code"] == "onboarding")[
                 "parents"
             ] == ["release"]
@@ -122,6 +124,129 @@ def test_memory_viewer_reads_fresh_committed_state(work):
             assert {row["checksum"] for row in current["revisions"]} == {
                 row["revision_checksum"] for row in current["evidence"].values()
             }
+            call("index-sources")
+            status, cache, body = get(url.path + "?term=Ravi&term=Maya")
+            assert (status, cache) == (200, "no-store")
+            match = re.search(rb'id="kite-memory-data"[^>]*>(.*?)</script>', body, re.S)
+            search = json.loads(match[1])
+            assert search["sources"] == 2 and search["facts"] == []
+            assert search["search_terms"] == ["Ravi", "Maya"]
+            assert {tuple(p["terms"]) for p in search["passages"]} == {("Ravi",), ("Maya",)}
+            assert {line["text"] for line in search["evidence"].values()} == {original, handoff}
+            assert original.encode() not in body
+            assert get(url.path + "?term=a&term=b&term=c&term=d")[0] == 400
+
+            source = kickoff["source"]
+            source["expected_checksum"] = next(iter(first["evidence"].values()))[
+                "revision_checksum"
+            ]
+            call(
+                "index-sources",
+                payload={
+                    "sources": [
+                        {
+                            "source": source,
+                            "annotations": {
+                                "facts": [],
+                                "entity_aliases": [{"name": "Ravi", "aliases": ["Release owner"]}],
+                                "index_spans": [
+                                    {
+                                        "title": "Release handoff",
+                                        "topics": ["release", "onboarding"],
+                                        "entities": ["Release owner"],
+                                        "facets": {
+                                            "object": ["Checklist", "checklist"],
+                                            "event": ["Shipment checkpoint"],
+                                            "place": ["Shenzhen"],
+                                            "duration": "p2w",
+                                        },
+                                        "segment_ids": ["text-1"],
+                                    }
+                                ],
+                            },
+                        }
+                    ]
+                },
+            )
+            saved = snapshot()
+            assert len(saved["facts"]) == 2
+            (passage,) = saved["passages"]
+            assert passage["label"] == "Release handoff"
+            assert passage["topics"] == ["onboarding", "release"] and passage["active"]
+            assert passage["entities"] == ["ravi"]
+            assert passage["facets"] == {
+                "object": ["checklist"],
+                "event": ["shipment_checkpoint"],
+                "place": ["shenzhen"],
+                "duration": "P2W",
+            }
+            pack = call("context", "--term", "shipment checkpoint")
+            assert pack["spans"][0]["evidence"][0]["text"] == original
+            second_span = {
+                "source": source,
+                "annotations": {
+                    "facts": [],
+                    "index_spans": [{"segment_ids": ["text-1"], "facets": {"duration": "pt30m"}}],
+                },
+            }
+            call("index-sources", payload={"sources": [second_span]})
+            assert any(row["facets"] == {"duration": "PT30M"} for row in snapshot()["passages"])
+            entity = next(row for row in saved["entities"] if row["code"] == "ravi")
+            assert entity["label"].casefold() == "ravi" and entity["aliases"] == ["release_owner"]
+            assert saved["evidence"][passage["evidence"][0]]["text"] == original
+        finally:
+            process.terminate()
+            process.wait(timeout=10)
+
+
+def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path):
+    directory, call = work
+    call("ingest", payload=text_input("release", "Review the release checklist."))
+    call("index-sources")
+    before = {"version": 1, "topics": [], "passages": [], "revisions": [], "evidence": {}}
+    comparison = tmp_path / "comparison.json"
+    comparison.write_text(
+        json.dumps(
+            {
+                "examples": [
+                    {
+                        "name": "Update",
+                        "title": "Compare revisions",
+                        "description": "Test snapshot",
+                        "before": before,
+                        "after": {**before, "version": 2},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with subprocess.Popen(
+        [sys.executable, "-m", "memoket_kite.tools.viewer", str(directory), str(comparison)],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as process:
+        try:
+            url = urlsplit(process.stdout.readline().strip())
+
+            def read(query):
+                with closing(HTTPConnection(url.hostname, url.port, timeout=10)) as client:
+                    client.request("GET", url.path + query)
+                    response = client.getresponse()
+                    assert response.status == 200
+                    body = response.read()
+                return json.loads(
+                    re.search(rb'id="kite-memory-data"[^>]*>(.*?)</script>', body, re.S)[1]
+                )
+
+            assert read("")["comparison"][0]["name"] == "Update"
+            assert read("?view=changes&show=facet")["comparison"][0]["after"]["version"] == 2
+            graph = read("?view=graph&mode=all")
+            assert graph["comparison_available"] and graph["sources"] == 1
+            search = read("?view=graph&term=checklist")
+            assert search["search_terms"] == ["checklist"] and search["comparison_available"]
         finally:
             process.terminate()
             process.wait(timeout=10)

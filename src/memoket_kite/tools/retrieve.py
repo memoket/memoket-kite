@@ -550,12 +550,58 @@ def _supersession(index, time_axis: str, end_date: str | None) -> tuple[set[str]
     return superseded, _correction_targets(index, uncertain) - superseded
 
 
+def _indexed_passages(index, evidence: dict) -> list[dict]:
+    passages = []
+    for record in index.revisions.values():
+        spans = record.get("index_spans", ())
+        if not spans:
+            continue
+        conversation = record["conversation"]
+        revision = revision_id(record)
+        by_segment = {
+            segment["segment_id"]: (position, segment)
+            for position, segment in enumerate(conversation["segments"], 1)
+        }
+        for span in spans:
+            cited = sorted(by_segment[sid] for sid in span["segment_ids"])
+            ids = []
+            for position, segment in cited:
+                line_id = f"{revision}L{position}"
+                evidence.setdefault(line_id, _citation(record, line_id, segment))
+                ids.append(line_id)
+            topics = {index.vocab.resolve_topic(topic) for topic in span["topics"]}
+            entities = {index.vocab.resolve_entity(entity) for entity in span.get("entities", ())}
+            passages.append(
+                {
+                    "label": span.get("title")
+                    or f"{conversation['conversation_id']}#{cited[0][1]['segment_id']}",
+                    "evidence": ids,
+                    "topics": sorted(topics - {None}),
+                    "entities": sorted(entities - {None}),
+                    "facets": span.get("facets", {}),
+                    "active": record["active"],
+                }
+            )
+    return passages
+
+
 def memory_snapshot(workspace) -> dict:
     """Read all retained memories, with the same state semantics as a complete trace."""
     index = workspace.index()
     superseded, _ = _supersession(index, "source", None)
     timeline = [_evidence(index, fid) for fid in index.facts]
     for row in timeline:
+        fact = index.store.facts.get(row["fact_id"])
+        row["facets"] = {
+            axis: values
+            for axis, values in (
+                ("object", fact.obj),
+                ("place", fact.place),
+                ("event", fact.event),
+                ("duration", fact.dur),
+            )
+            if values
+        }
         row["effective"] = row["source_revision_active"] and row["fact_id"] not in superseded
         row["supersession_uncertain"] = False
     states = _states(timeline, True, "source", set())
@@ -565,6 +611,7 @@ def memory_snapshot(workspace) -> dict:
         for line in row["evidence"]:
             evidence.setdefault(line["source_line_id"], line)
         row["evidence"] = [line["source_line_id"] for line in row["evidence"]]
+    passages = _indexed_passages(index, evidence)
 
     return {
         "version": workspace.version(),
@@ -580,6 +627,15 @@ def memory_snapshot(workspace) -> dict:
             if topic.status != "deprecated"
         ],
         "facts": timeline,
+        "entities": [
+            {
+                "code": entity.code,
+                "label": entity.name or entity.code,
+                "aliases": sorted(entity.aliases),
+            }
+            for entity in index.vocab.entities.values()
+        ],
+        "passages": passages,
         "states": states,
         "revisions": [
             {

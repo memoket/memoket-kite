@@ -16,7 +16,15 @@ import memoket_kite
 
 
 def main() -> None:
-    assert files("memoket_kite.tools").joinpath("memory_view.html").is_file()
+    viewer_assets = files("memoket_kite.tools")
+    for name in (
+        "memory_view.html",
+        "memory_view.css",
+        "memory_view.js",
+        "memory_scene.js",
+        "memory_compare.js",
+    ):
+        assert viewer_assets.joinpath(name).is_file(), name
     name = "kite-tool.exe" if os.name == "nt" else "kite-tool"
     command = Path(sysconfig.get_path("scripts")) / name
     with TemporaryDirectory(prefix="kite-installed-") as temporary:

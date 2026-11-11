@@ -43,8 +43,19 @@ codex plugin marketplace add memoket/memoket-kite --ref codex/agent-native-memor
 ```
 
 See the [Codex installation guide](docs/codex.md) for first-run setup, import,
-and citation examples. Ask **“Open my KITE memory graph”** to see how the
-project's memories connect to topics, state keys, and source revisions.
+and citation examples. Ask **“Open my KITE memory graph”** and choose **All topics**
+to see the whole workspace in one rotatable view. Select a topic to see its
+parents, children, and other topics that share its memories. Open a memory to
+follow its citations to the original lines and source revisions, and inspect
+any entities and facets indexed for that memory. Use **Entities** and **Facets**
+to browse the workspace's annotations and follow a value to the passages that
+support it. The evidence view gives topics, entities, facets, passages, quotes,
+and source revisions separate levels. A co-occurrence edge opens the quotes
+shared by its endpoints. Use **Sources** to browse the full transcript inventory,
+including sources without labels. Original spans can carry `facets` for object,
+place, event, and duration. These labels are also searchable with `kite-tool context`.
+When `kite-tool view --compare` is given saved comparison snapshots, the viewer
+offers both the live graph and the snapshots in one browser tab.
 
 ### Try the command line
 

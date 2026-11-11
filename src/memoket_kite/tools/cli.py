@@ -167,6 +167,11 @@ def _parser() -> argparse.ArgumentParser:
     viewer.add_argument(
         "--no-open", action="store_true", help="print the local URL without opening it"
     )
+    view_options = viewer.add_mutually_exclusive_group()
+    view_options.add_argument(
+        "--term", action="append", help="open an original-evidence search in the graph"
+    )
+    view_options.add_argument("--compare", type=Path, help="compare saved graph snapshots")
     source_index = commands.add_parser("index-sources", help="index original sources without facts")
     index_input = source_index.add_mutually_exclusive_group()
     index_input.add_argument("--input", metavar="FILE", help="source batch JSON or - for stdin")
@@ -616,7 +621,9 @@ def _index_sources(root: Path, workspace: Workspace, value: dict) -> dict:
 
 def _dispatch(args) -> tuple[dict, ToolError | None]:
     if args.command == "view":
-        return view_memory(args.workspace, open_browser=not args.no_open), None
+        return view_memory(
+            args.workspace, open_browser=not args.no_open, terms=args.term, comparison=args.compare
+        ), None
     if args.command == "describe":
         return _describe(args.tool), None
     root = resource_root(args.repo)

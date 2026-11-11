@@ -61,16 +61,24 @@ workspace locally.
 ## View the memory graph
 
 Ask Codex “Open my KITE memory graph.” KITE opens a local browser page on
-`127.0.0.1`. Drag to rotate, scroll or use the zoom buttons to zoom, and
-click the zoom percentage to reset. Select a memory to see its topic,
-state key, source version, and original quotes. Select a topic, state key, or
-source revision to see which memories connect to it.
+`127.0.0.1`. Choose **All topics** for the full map, or select a topic in the
+sidebar to expand its children. Drag to rotate, scroll or use the zoom buttons
+to zoom, and click the zoom percentage to reset.
 
-Select a topic to see its stored parents and children and other topics that
-share a memory or source revision. Select a memory to see explicit corrections
-and peers that share its state key, original line, or source revision. Dashed
-edges show shared evidence or state. The detail panel names the basis for each
-relationship.
+Open **Entities**, **Facets**, or **Sources** beside the topic tree. In the
+evidence view, topics, entities, facets, passages, quoted lines, and source
+revisions occupy separate levels. Select a passage to see its original quotes,
+or follow a co-occurrence connection to see the passage shared by two entities
+or facet values. **Sources** includes transcripts with no annotations. When the
+workspace has an original-text index, use the search field or start the viewer
+with `kite-tool view --term PHRASE`.
+
+To browse a live graph alongside saved before-and-after snapshots, start the
+viewer with `kite-tool view --compare PATH`. The JSON file contains an `examples`
+array. Each example has `name`, `title`, `description`, `before`, and `after`.
+Each snapshot has `version`, `topics`, `passages`, `revisions`, and `evidence`,
+with `entities` optional. Switch between **Memory graph** and **Compare changes**
+in the same tab. Comparison pages show the supplied snapshots.
 
 The page reads the current workspace when opened or refreshed. The server
 listens only on this machine and stops after an hour without a request. You
