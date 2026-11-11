@@ -11,10 +11,18 @@ retain the shown revision checksum with historical citations.
 The question itself can include `workspace v12` or `workspace as of TIMESTAMP`.
 Use one workspace snapshot per query.
 
+For a recording window such as “the last 30 days,” resolve the dates in the
+user's timezone and pass them as inclusive recording bounds. If there are no
+matches, check whether the relevant recordings have dates before reporting an
+empty period. For an index-only workspace, use `context` for decision changes.
+Read the surrounding quotes for approval, explicit effective dates, and later
+corrections. Report unknown dates or unresolved conflicts with their citations.
+
 Use `bash "$KITE" topics --contains PHRASE` to find indexed topics, then
 `bash "$KITE" query --topic TOPIC --text` for a readable trace. Use
 `query --pipeline task-tracing` for assignments or `decision-evolution` for
-changes to a decision. Use `--end-date YYYY-MM-DD` to answer as of a date.
+changes to a decision in workspaces with structured decision records. The
+`--end-date YYYY-MM-DD` bound uses the trace's selected time axis.
 When searching by an earlier owner or wording, use `--follow-states` with an
 entity or text filter to recover later records for the same decision.
 For a draft or plan based on meetings, query the relevant current state before
