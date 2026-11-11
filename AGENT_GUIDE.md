@@ -72,6 +72,10 @@ Use `--explain --save` to retain the first 80 packing candidates for each
 search. The viewer links each candidate to its original source position and
 shows whether it contributed quotes or met a packing limit. Without `--text`,
 the command also returns these details in JSON.
+Question searches can quote identical transcripts from the same recording
+day once. Undated copies can also share a quote. The evidence pack keeps the
+source references and recording clocks. The segment IDs apply to each listed source. Use
+`--matching-lines` to inspect every occurrence separately.
 For two independent questions, use `--question "$FIRST" --compare-with "$SECOND"`.
 The two searches share the workspace snapshot and total quote budget.
 Recording dates are shared by default. Use `--compare-start-date` and

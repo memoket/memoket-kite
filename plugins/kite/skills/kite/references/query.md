@@ -31,6 +31,12 @@ quotes. The graph shows the packing order and links to each original source,
 including candidates skipped by the quote budget or span limit. A passage
 from another recording can move up when it matches the leading clues plus
 an additional clue in its original text. The graph shows those matches.
+Question searches can share a quote across identical transcripts from the
+same recording day. The graph links each source and its clock. Identical
+transcripts keep their original segment IDs. Use `--matching-lines` for a
+separate result per occurrence.
+Several copies of a short named note can share one evidence pack, including
+lines that answer the question without repeating its title.
 Use `--latest` when the task needs newer recordings first. For two independent
 questions, run `context --question "$FIRST" --compare-with "$SECOND" --text`.
 Restate the subject where needed so each question can retrieve its own quotes.

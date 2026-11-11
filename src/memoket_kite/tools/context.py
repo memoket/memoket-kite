@@ -18,6 +18,7 @@ _SPAN_CHARS = 320
 _QUESTION_BYTES = 3800
 _TERM_BYTES = 6000
 _TRACE_CANDIDATES = 80
+_TEXT_SOURCE_COPIES = 8
 _RECORDING_DATES = ("start_date", "end_date")
 _SEARCH_TERMS = re.compile(r"[\u3400-\u9fff]+|[^\W_]+", re.UNICODE)
 _HAN = re.compile(r"([\u3400-\u9fff])")
@@ -758,26 +759,35 @@ def _positions(
 
 def _compact_sources(
     workspace, index: _SearchIndex, plan: dict, question: str, budget: int
-) -> dict:
+) -> tuple[dict, dict]:
     quoted = {_tokens(phrase) for phrase in _quoted_phrases(question)}
     named = {_tokens(name) for name in _NAME_WORDS.findall(question)}
     where, args = _search_scope(index.filters)
     compact = {}
+    copies = {}
+    covered = set()
+    # A short note can still be identified by name when several exports
+    # preserve exactly the same text and recording day.
+    max_sources = 1 + _TEXT_SOURCE_COPIES
     for phrase in dict.fromkeys(map(_tokens, plan["terms"])):
         if phrase not in quoted and phrase not in named:
             continue
         matches = index.db.execute(
-            f"SELECT DISTINCT checksum FROM context_spans WHERE {where} LIMIT 2",
-            (f'"{phrase}"', *args),
+            f"SELECT DISTINCT checksum FROM context_spans WHERE {where} LIMIT ?",
+            (f'"{phrase}"', *args, max_sources + 1),
         ).fetchall()
-        if len(matches) != 1 or (checksum := matches[0]["checksum"]) in compact:
+        if not matches or len(matches) > max_sources:
             continue
+        checksums = [row["checksum"] for row in matches]
+        if covered.intersection(checksums):
+            continue
+        checksum = checksums[0]
         record = (
             index.records[checksum] if index.records is not None else workspace.record(checksum)
         )
         conversation = record["conversation"]
         segments = conversation["segments"]
-        if len(segments) > 12:
+        if len(segments) > 12 or (len(matches) > 1 and len(segments) < 2):
             continue
         title = conversation.get("title", "")
         if segments[0]["text"].lstrip().startswith("# "):
@@ -785,10 +795,25 @@ def _compact_sources(
         if phrase not in quoted and f" {phrase} " not in f" {_tokens(title)} ":
             continue
         size = sum(len(segment["text"].encode("utf-8")) for segment in segments)
-        if size <= budget:
-            compact[checksum] = record
-            budget -= size
-    return compact
+        if size > budget:
+            continue
+        alternatives = [
+            index.records[key] if index.records is not None else workspace.record(key)
+            for key in checksums[1:]
+        ]
+        if any(
+            other["conversation"]["source"] != conversation["source"]
+            or source_day(other["conversation"]) != source_day(conversation)
+            or other["conversation"]["segments"] != segments
+            for other in alternatives
+        ):
+            continue
+        compact[checksum] = record
+        if alternatives:
+            copies[checksum] = alternatives
+        covered.update(checksums)
+        budget -= size
+    return compact, copies
 
 
 def _quoted_sources(index: _SearchIndex, question: str, terms: list[str], limit: int) -> set[str]:
@@ -804,6 +829,45 @@ def _quoted_sources(index: _SearchIndex, question: str, terms: list[str], limit:
     return {row["checksum"] for row in rows} if len(rows) <= limit else set()
 
 
+def _quote_group(record, groups, members):
+    conversation = record["conversation"]
+    segments = conversation["segments"]
+    checksum = record["checksum"]
+    if len(segments) < 2:
+        return checksum
+    key = (
+        conversation["source"],
+        source_day(conversation),
+        len(segments),
+        segments[0]["text"],
+        segments[-1]["text"],
+    )
+    # Compare the entire transcript, including segment IDs and offsets.
+    # Keep separate source references and clocks even for identical text.
+    for other in groups[key]:
+        if segments == other["conversation"]["segments"]:
+            group = other["checksum"]
+            members[group].append(record)
+            return group
+    groups[key].append(record)
+    members[checksum].append(record)
+    return checksum
+
+
+def _same_text_source(record):
+    conversation = record["conversation"]
+    return {
+        "source": conversation["source"],
+        "conversation_id": conversation["conversation_id"],
+        "source_reference": conversation["metadata"]["source_reference"],
+        "revision_checksum": record["checksum"],
+        "source_revision_active": record["active"],
+        "title": conversation.get("title", ""),
+        "source_date": source_day(conversation),
+        **{key: conversation[key] for key in RECORDING_CLOCK_FIELDS if key in conversation},
+    }
+
+
 def _pack(
     workspace,
     rows: list,
@@ -816,16 +880,21 @@ def _pack(
     matching_lines: bool = False,
     historical_records: dict | None = None,
     compact_sources: dict | None = None,
+    compact_copies: dict | None = None,
     trace: dict | None = None,
     prioritize_first_lines: bool = False,
+    reuse_identical_text: bool = False,
 ):
     compact_sources = compact_sources or {}
+    compact_copies = compact_copies or {}
     records = historical_records if historical_records is not None else dict(compact_sources)
     if compact_sources:
+        covered = set(compact_sources)
+        covered.update(copy["checksum"] for group in compact_copies.values() for copy in group)
         rows = [
             {"checksum": checksum, "start": 0, "stop": len(record["conversation"]["segments"])}
             for checksum, record in compact_sources.items()
-        ] + [row for row in rows if row["checksum"] not in compact_sources]
+        ] + [row for row in rows if row["checksum"] not in covered]
     traced = []
     if trace is not None:
         traced = [
@@ -846,7 +915,11 @@ def _pack(
             for rank, row in enumerate(rows[:_TRACE_CANDIDATES], 1)
         ]
         trace.update(total=len(rows), candidates=traced)
-    seen = defaultdict(set)
+    seen = defaultdict(dict)
+    groups = defaultdict(list)
+    members = defaultdict(list)
+    group_by_checksum = {}
+    shared_groups = set()
     packed = []
     remaining = []
     size = omitted = 0
@@ -855,8 +928,12 @@ def _pack(
     def take(checksum, segments, positions):
         nonlocal size, omitted
         chosen = []
+        duplicate_lines = 0
+        group = group_by_checksum.get(checksum, checksum)
+        quoted = seen[group]
         for pos in positions:
-            if pos in seen[checksum]:
+            if pos in quoted:
+                duplicate_lines += quoted[pos] != checksum
                 continue
             weight = len(segments[pos]["text"].encode("utf-8"))
             if size + weight > max_bytes:
@@ -864,8 +941,10 @@ def _pack(
                 continue
             size += weight
             chosen.append(pos)
-            seen[checksum].add(pos)
-        return chosen
+            quoted[pos] = checksum
+        if duplicate_lines:
+            shared_groups.add(group)
+        return chosen, duplicate_lines
 
     for index, row in enumerate(rows):
         if len(packed) == limit:
@@ -881,6 +960,8 @@ def _pack(
         start, stop = row["start"], row["stop"]
         if not 0 <= start < stop <= len(segments):
             raise ToolError("integrity_error", "context index does not match its source revision")
+        if reuse_identical_text and checksum not in group_by_checksum:
+            group_by_checksum[checksum] = _quote_group(record, groups, members)
         previously_omitted = omitted
         positions = (
             range(start, stop)
@@ -891,7 +972,7 @@ def _pack(
         if prioritize_first_lines:
             first = next((pos for pos in positions if start <= pos < stop), None)
             first_positions = () if first is None else (first,)
-        chosen = take(checksum, segments, first_positions)
+        chosen, duplicates = take(checksum, segments, first_positions)
         if index < len(traced):
             over_budget = omitted - previously_omitted
             reason = "already_quoted" if first_positions else "no_matching_line"
@@ -899,24 +980,39 @@ def _pack(
                 reason = "quoted"
             elif over_budget:
                 reason = "quote_budget"
+            elif duplicates:
+                reason = "duplicate_text"
             traced[index].update(
                 reason=reason, quoted_lines=len(chosen), lines_over_budget=over_budget
             )
+            if duplicates:
+                traced[index]["duplicate_lines"] = duplicates
         if chosen:
             packed.append((record, chosen))
             if prioritize_first_lines:
                 remaining.append((index, checksum, segments, positions, chosen))
     for index, checksum, segments, positions, chosen in remaining:
         previously_omitted = omitted
-        chosen.extend(take(checksum, segments, positions))
+        extra, duplicates = take(checksum, segments, positions)
+        chosen.extend(extra)
         if index < len(traced):
             traced[index]["quoted_lines"] = len(chosen)
             traced[index]["lines_over_budget"] += omitted - previously_omitted
+            if duplicates:
+                traced[index]["duplicate_lines"] = (
+                    traced[index].get("duplicate_lines", 0) + duplicates
+                )
     spans = []
     for record, chosen in packed:
         conversation = record["conversation"]
         segments = conversation["segments"]
         revision = revision_id(record)
+        group = group_by_checksum.get(record["checksum"])
+        copies = list(compact_copies.get(record["checksum"], ()))
+        if group in shared_groups:
+            copies.extend(
+                other for other in members[group] if other["checksum"] != record["checksum"]
+            )
         spans.append(
             {
                 "source_date": source_day(conversation),
@@ -925,6 +1021,11 @@ def _pack(
                 **(
                     {"source_revision_active": record["active"]}
                     if historical_records is not None
+                    else {}
+                ),
+                **(
+                    {"same_text_sources": [_same_text_source(other) for other in copies]}
+                    if copies
                     else {}
                 ),
                 "evidence": [
@@ -1019,10 +1120,10 @@ def _context_evidence(
     )
     trace = {} if plan.get("explain") else None
     with nullcontext(_index) if _index is not None else _search_index(workspace, plan) as index:
-        compact = (
+        compact, compact_copies = (
             _compact_sources(workspace, index, plan, _question, max_bytes // 2)
             if _question and neighbors and not plan.get("latest")
-            else {}
+            else ({}, {})
         )
         preferred = set(compact)
         anchors = ()
@@ -1065,8 +1166,10 @@ def _context_evidence(
             matching_lines=matching_lines,
             historical_records=index.records,
             compact_sources=compact,
+            compact_copies=compact_copies,
             trace=trace,
             prioritize_first_lines=first_lines,
+            reuse_identical_text=focus and not (matching_lines or plan.get("latest")),
         )
         if trace is not None:
             _trace_sources(workspace, trace)
@@ -1099,6 +1202,23 @@ def _context_evidence(
     }
 
 
+def _render_copy(source, namespaces, history):
+    identity = source["conversation_id"]
+    if len(namespaces[identity]) > 1:
+        identity = f"{source['source']}/{identity}"
+    clock = source.get("local_started_at")
+    when = (
+        f"{clock.replace('T', ' ')} (timezone unknown)"
+        if clock
+        else source.get("started_at", source["source_date"])
+    )
+    if when:
+        identity += f" ({when})"
+    if history:
+        identity += f" [{source['revision_checksum']}]"
+    return identity
+
+
 def render_context(pack: dict) -> str:
     namespaces = defaultdict(set)
     parts = pack.get("parts", [pack])
@@ -1106,6 +1226,8 @@ def render_context(pack: dict) -> str:
         for span in part["spans"]:
             for line in span["evidence"]:
                 namespaces[line["conversation_id"]].add(line["source"])
+            for source in span.get("same_text_sources", ()):
+                namespaces[source["conversation_id"]].add(source["source"])
     lines = []
     if history := pack.get("history"):
         lines.append(f"Workspace v{history['version']} · {history['committed_at']}")
@@ -1123,6 +1245,7 @@ def render_context(pack: dict) -> str:
                 f"Recording dates: {scope.get('start_date', 'any')} – {scope.get('end_date', 'any')}"
             )
         previous_revision = None
+        shown_copy_groups = set()
         for span in part["spans"]:
             revision = span["evidence"][0]["revision_checksum"]
             if revision != previous_revision:
@@ -1140,6 +1263,18 @@ def render_context(pack: dict) -> str:
                 if history:
                     lines.append(f"Revision: {revision}")
                 previous_revision = revision
+            copies = span.get("same_text_sources", ())
+            if copies:
+                group = frozenset([revision, *(source["revision_checksum"] for source in copies)])
+                if group not in shown_copy_groups:
+                    shown_copy_groups.add(group)
+                    locations = [
+                        _render_copy(source, namespaces, history)
+                        for source in copies[:_TEXT_SOURCE_COPIES]
+                    ]
+                    if len(copies) > _TEXT_SOURCE_COPIES:
+                        locations.append(f"{len(copies) - _TEXT_SOURCE_COPIES} more in JSON")
+                    lines.append("Same text and segment IDs in: " + ", ".join(locations))
             for line in span["evidence"]:
                 ref = f"{line['conversation_id']}#{line['segment_id']}"
                 if len(namespaces[line["conversation_id"]]) > 1:

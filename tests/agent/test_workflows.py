@@ -6106,6 +6106,95 @@ def test_context_comparison_can_cover_more_passages_from_a_dominant_source(work)
     assert fixed["parts"][0]["span_limit"] == 4
 
 
+def test_context_quotes_identical_transcripts_once_and_retains_both_clocks(work):
+    directory, call = work
+    quotes = ["The relay calibration is 3 volts.", "The relay calibration passed."]
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {
+                    "source": {
+                        "format": "conversation",
+                        "payload": {
+                            "source": "transcript",
+                            "conversation_id": identity,
+                            "title": "Maple plan",
+                            "local_started_at": clock,
+                            "metadata": {"source_reference": identity},
+                            "segments": [
+                                {"segment_id": str(i), "text": text, "start_ms": i * 1000}
+                                for i, text in enumerate(quotes)
+                            ],
+                        },
+                    }
+                }
+                for identity, clock in [
+                    ("morning", "2026-03-11T08:00:00"),
+                    ("afternoon", "2026-03-11T14:00:00"),
+                    ("different-day", "2026-03-12T08:00:00"),
+                ]
+            ],
+        },
+    )
+    args = ("context", "--question", "What was the relay calibration?", "--explain")
+    result = call(*args)
+    assert sum(len(span["evidence"]) for span in result["spans"]) == 4
+    (shared,) = [span for span in result["spans"] if span.get("same_text_sources")]
+    original = shared["evidence"][0]["conversation_id"]
+    (alternative,) = shared["same_text_sources"]
+    assert {original, alternative["conversation_id"]} == {"morning", "afternoon"}
+    assert {shared["local_started_at"], alternative["local_started_at"]} == {
+        "2026-03-11T08:00:00",
+        "2026-03-11T14:00:00",
+    }
+    assert result["quote_bytes"] == 2 * sum(len(quote.encode()) for quote in quotes)
+    (skipped,) = [
+        row for row in result["packing_trace"]["candidates"] if row["reason"] == "duplicate_text"
+    ]
+    assert skipped["duplicate_lines"] == 2
+    assert skipped["revision_checksum"] == alternative["revision_checksum"]
+    assert "Same text and segment IDs in: " + alternative["conversation_id"] in call(
+        *args, "--text"
+    )
+    literal = call("context", "--term", "relay calibration", "--matching-lines")
+    assert sum(len(span["evidence"]) for span in literal["spans"]) == 6
+    scoped = call(*args, "--conversation-id", alternative["conversation_id"])
+    assert scoped["spans"][0]["evidence"][0]["conversation_id"] == alternative["conversation_id"]
+    assert "same_text_sources" not in scoped["spans"][0]
+    named = call(
+        "context",
+        "--question",
+        "Maple calibration?",
+        "--start-date",
+        "2026-03-11",
+        "--end-date",
+        "2026-03-11",
+    )
+    assert named["compact_sources"] == 1
+    (note,) = named["spans"]
+    assert [line["text"] for line in note["evidence"]] == quotes
+    assert {
+        note["evidence"][0]["conversation_id"],
+        note["same_text_sources"][0]["conversation_id"],
+    } == {"morning", "afternoon"}
+    # A copy is a retained source even when it contributed no additional text.
+    call("context", "--question", args[2], "--save", "shared-source")
+    graph = viewer._snapshot(directory, [], run_id="shared-source")
+    assert any(
+        alternative["revision_checksum"] in row.get("same_text_sources", [])
+        for row in graph["passages"]
+    )
+    _delete_source(
+        call,
+        "delete-copy",
+        {"source": "transcript", "conversation_id": alternative["conversation_id"]},
+    )
+    with pytest.raises(ToolError, match="deletion removed this saved search"):
+        viewer._snapshot(directory, [], run_id="shared-source")
+    assert call(*args, "--conversation-id", original)["spans"][0]["evidence"]
+
+
 def test_context_prioritizes_a_passage_with_topic_and_original_text_clues(work):
     directory, call = work
     target = (

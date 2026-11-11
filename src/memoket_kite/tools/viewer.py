@@ -121,6 +121,18 @@ def _search_snapshot(
                 "active": span.get("source_revision_active", True),
             }
             ids = tuple(line["source_line_id"] for line in lines)
+            copy_checksums = []
+            for copy in span.get("same_text_sources", ()):
+                copied = copy["revision_checksum"]
+                copy_checksums.append(copied)
+                sources[copied] = {
+                    "checksum": copied,
+                    "reference": copy["source_reference"],
+                    "title": copy["title"],
+                    "day": copy["source_date"],
+                    **{key: copy[key] for key in RECORDING_CLOCK_FIELDS if key in copy},
+                    "active": copy["source_revision_active"],
+                }
             matched = set()
             for line in lines:
                 quote = evidence.setdefault(line["source_line_id"], {**line, "matched_terms": []})
@@ -134,6 +146,10 @@ def _search_snapshot(
             if len(lines) > 1:
                 citation += f"–{last['segment_id']}"
             passage = passages.setdefault(ids, {"label": citation, "evidence": ids, "terms": []})
+            if copy_checksums:
+                passage["same_text_sources"] = list(
+                    dict.fromkeys([*passage.get("same_text_sources", ()), *copy_checksums])
+                )
             branches = (
                 [term] if term is not None else [phrase for phrase in terms if phrase in matched]
             )

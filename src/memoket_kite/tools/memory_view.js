@@ -32,7 +32,9 @@
       firstLinesPrioritized: 'More passages from the leading source',
       packingSegments: 'Segments',
       corroboratingTerms: 'Multiple clues match this passage',
-      packingReasons: { quoted: 'Quoted', span_limit: 'Span limit reached', quote_budget: 'Quote budget',
+      sameTextSources: 'Sources with the same transcript text',
+      duplicateLines: 'duplicate lines reused',
+      packingReasons: { quoted: 'Quoted', span_limit: 'Span limit reached', quote_budget: 'Quote budget', duplicate_text: 'Text already quoted from another source',
         already_quoted: 'Already quoted', no_matching_line: 'No matching original line' },
       sourceScope: 'Source scope', allSources: 'Search all sources',
       invalidMatching: 'Enter up to twelve phrases of at most 128 characters.',
@@ -83,7 +85,9 @@
       firstLinesPrioritized: '先取同一来源的多个片段',
       packingSegments: '原文段',
       corroboratingTerms: '同一片段命中多个线索',
-      packingReasons: { quoted: '已引用', span_limit: '片段数已达上限', quote_budget: '引文预算不足',
+      sameTextSources: '原文相同的来源',
+      duplicateLines: '行重复原文已共用',
+      packingReasons: { quoted: '已引用', span_limit: '片段数已达上限', quote_budget: '引文预算不足', duplicate_text: '已引用其他来源中的相同原文',
         already_quoted: '已在前面引用', no_matching_line: '原文行无完整命中' },
       sourceScope: '限定来源', allSources: '搜索全部来源',
       invalidMatching: '请输入最多十二个检索词，每个不超过 128 字符。',
@@ -171,7 +175,9 @@
   for (const row of rows) {
     const evidence = [...new Set(row.evidence)].map(id => lines.get(id)).filter(Boolean);
     const associations = [...new Set(row.terms || row.topics || [])].map(code => topics.get(code)).filter(Boolean);
-    const revisions = [...new Set(evidence.map(line => sources.get(line.revision_checksum)).filter(Boolean))];
+    const primary = evidence.map(line => sources.get(line.revision_checksum)).filter(Boolean);
+    const copies = (row.same_text_sources || []).map(checksum => sources.get(checksum)).filter(Boolean);
+    const revisions = [...new Set([...primary, ...copies])];
     const linkedEntities = [...new Set(row.entities || [])].map(code => entities.get(code)).filter(Boolean);
     const linkedFacets = facetAxes.flatMap(axis => {
       const values = row.facets?.[axis];
@@ -183,7 +189,8 @@
     });
     const memory = {
       ...row, id: 'memory:' + row.key, kind: 'memory', evidence,
-      topics: associations, sources: revisions, entities: linkedEntities, facets: linkedFacets, state: states.get(row.state_key), corrections: [],
+      topics: associations, sources: revisions, sameTextSources: copies,
+      entities: linkedEntities, facets: linkedFacets, state: states.get(row.state_key), corrections: [],
     };
     memories.set(row.key, memory);
     for (const item of [...evidence, ...associations, ...revisions, ...linkedEntities, ...linkedFacets]) item.memories.push(memory);
@@ -776,7 +783,10 @@
       section(panel, 'entities', selected.entities);
       section(panel, 'facets', selected.facets.map(node => ({ node, note: t(node.axis) })));
       citationSection(panel, t('original'), selected.evidence);
-      section(panel, 'sources', selected.sources);
+      section(panel, 'sources', selected.sources.filter(source => !selected.sameTextSources.includes(source)));
+      section(panel, 'sameTextSources', selected.sameTextSources.map(node => ({
+        node, note: recordingClock(node) || node.day || t('noDate'),
+      })));
       section(panel, 'supersedes', [memories.get(selected.supersedes)].filter(Boolean));
       section(panel, 'correctedBy', selected.corrections);
       section(panel, 'related', [...neighbors(selected)].map(([node, reason]) => ({ node, note: t(reason) })));
@@ -885,6 +895,7 @@
         status.push(t('corroboratingTerms') + ' · ' + candidate.corroborating_terms.join(' / '));
       }
       if (candidate.quoted_lines) status.push(`${number.format(candidate.quoted_lines)} ${t('quotes')}`);
+      if (candidate.duplicate_lines) status.push(`${number.format(candidate.duplicate_lines)} ${t('duplicateLines')}`);
       if (candidate.reason === 'quoted' && candidate.lines_over_budget) {
         status.push(`${t('packingReasons').quote_budget} ${number.format(candidate.lines_over_budget)}`);
       }

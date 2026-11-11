@@ -27,6 +27,9 @@ Set `request.explain: true` to retain packing order and inclusion reasons.
 For a saved search, the graph opens each candidate at its original source
 position and shows the clues that moved a passage ahead of other recordings.
 Its list shows up to 80 candidates per question.
+If the evidence lists sources with the same transcript text, quote the
+original segment ID under the source that supports the answer. Check its
+recording clock separately when timing matters.
 Open nearby lines with `kite-tool evidence 'CONVERSATION#SEGMENT' --context 2 --text`.
 Use `--at-version VERSION` or `--known-at TIMESTAMP` for what the workspace
 knew at a historical point. Use recording dates for meeting windows. Keep
