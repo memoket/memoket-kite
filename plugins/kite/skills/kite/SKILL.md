@@ -22,7 +22,7 @@ For two-question comparisons, date filters, revision differences, and decision h
 ## Choose a workflow
 
 - To open the memory graph, run `bash "$KITE" view` and give the local URL.
-  Use **Workflows** for committed changes and compile/search stages, or
+  Use **Workflows** to open committed changes and saved `context-search` evidence, or
   `view --compare FILE` when the user supplies saved snapshots.
 - For setup or a demo, run `bash "$KITE" demo --decision-story`. Show the
   changed decision, the later proposal, and the original citation.
