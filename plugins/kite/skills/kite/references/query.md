@@ -28,7 +28,9 @@ Add `--save` to a phrase lookup and open the run in **Workflows** to see
 candidate spans and cited lines per phrase.
 Use `--explain --save` when the user wants to inspect which candidates supplied
 quotes. The graph shows the packing order and links to each original source,
-including candidates skipped by the quote budget or span limit.
+including candidates skipped by the quote budget or span limit. A passage
+from another recording can move up when it matches the leading clues plus
+an additional clue in its original text. The graph shows those matches.
 Use `--latest` when the task needs newer recordings first. For two independent
 questions, run `context --question "$FIRST" --compare-with "$SECOND" --text`.
 Restate the subject where needed so each question can retrieve its own quotes.
@@ -40,8 +42,9 @@ can cite an additional passage within its quote budget. Pass `--limit` when
 the number of passages needs a fixed upper bound.
 Keep related details in one question when they can come from the same passage.
 In the graph, **Recording dates** limits search and the result panel groups
-passages by their recording date. **Compare** shows both sets of compiled terms
-and accepts recording date overrides for the second question.
+passages by their recording date. **Compare** shows both sets of compiled
+terms and cited dates and accepts recording date overrides for the second
+question. Use cited wording to resolve which decision was made when.
 
 Use `bash "$KITE" topics --contains PHRASE` to find indexed topics, then
 `bash "$KITE" query --topic TOPIC --text` for a readable trace. Use

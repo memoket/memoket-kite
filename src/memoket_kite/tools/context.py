@@ -625,6 +625,36 @@ def _coherent_order(matches: list[list], preferred_sources: set[str] | None = No
     return [candidates[key] for key in ordered]
 
 
+def _prioritize_corroborated_passage(db, where, args, order, terms, ranked):
+    if len(terms) < 3 or len(ranked) < 3:
+        return ranked
+    # A meeting can dominate separate term searches. Look for a passage
+    # that joins the two leading clues with another clue in the original text.
+    phrases = [f'"{term}"' for term in terms]
+    expression = f"{phrases[0]} AND {phrases[1]} AND text : ({' OR '.join(phrases[2:])})"
+    candidate = db.execute(
+        f"SELECT checksum, start, stop, day, text FROM context_spans WHERE {where} "
+        f"ORDER BY {order}, checksum, start LIMIT 1",
+        (expression, *args),
+    ).fetchone()
+    if candidate is None or any(row["checksum"] == candidate["checksum"] for row in ranked[:2]):
+        return ranked
+    original = f" {candidate['text']} "
+    original_clues = [term for term in terms[2:] if f" {term} " in original]
+    if not original_clues:
+        return ranked
+    passage = {key: candidate[key] for key in ("checksum", "start", "stop", "day")}
+    passage["corroborating_terms"] = [*terms[:2], *original_clues]
+    return [
+        passage,
+        *(
+            row
+            for row in ranked
+            if (row["checksum"], row["start"]) != (candidate["checksum"], candidate["start"])
+        ),
+    ]
+
+
 def _candidates(
     db,
     plan: dict,
@@ -644,9 +674,8 @@ def _candidates(
     stream_limit = max(limit, min(limit * 6, 30)) if coherent else limit * 6
     matches = []
     exact = []
-    for phrase in dict.fromkeys(map(_tokens, plan["terms"])):
-        if not phrase:
-            continue
+    terms = list(dict.fromkeys(tokens for term in plan["terms"] if (tokens := _tokens(term))))
+    for phrase in terms:
         expression = f'"{phrase}"'
         if matching_lines:
             expression = f"text : {expression}"
@@ -669,7 +698,11 @@ def _candidates(
     if coherent:
         ranked = _coherent_order(matches, preferred_sources)
         if not exact:
-            return ranked
+            return (
+                ranked
+                if preferred_sources
+                else _prioritize_corroborated_passage(db, where, args, order, terms, ranked)
+            )
         # Reserve a place for an explicit quote in original text before scoring
         # looser clues. Title and label matches still use the ordinary ranking.
         return list({(row["checksum"], row["start"]): row for row in (*exact, *ranked)}.values())
@@ -804,6 +837,11 @@ def _pack(
                 "reason": "span_limit",
                 "quoted_lines": 0,
                 "lines_over_budget": 0,
+                **(
+                    {"corroborating_terms": row["corroborating_terms"]}
+                    if isinstance(row, dict) and "corroborating_terms" in row
+                    else {}
+                ),
             }
             for rank, row in enumerate(rows[:_TRACE_CANDIDATES], 1)
         ]
@@ -1032,6 +1070,12 @@ def _context_evidence(
         )
         if trace is not None:
             _trace_sources(workspace, trace)
+            display_terms = {_tokens(term): term for term in plan["terms"]}
+            for candidate in trace["candidates"]:
+                if "corroborating_terms" in candidate:
+                    candidate["corroborating_terms"] = [
+                        display_terms[term] for term in candidate["corroborating_terms"]
+                    ]
     return {
         "memory_version": workspace.version(),
         "plan": plan,

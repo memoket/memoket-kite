@@ -6106,6 +6106,68 @@ def test_context_comparison_can_cover_more_passages_from_a_dominant_source(work)
     assert fixed["parts"][0]["span_limit"] == 4
 
 
+def test_context_prioritizes_a_passage_with_topic_and_original_text_clues(work):
+    directory, call = work
+    target = (
+        "The retest threshold is 2.4 volts. " + "The team recorded the instrument readings. " * 15
+    ).rstrip()
+    sources = [
+        *(
+            {
+                "source": text_input(
+                    f"calibration-{index}",
+                    "Calibration passed after actuator adjustment.",
+                    date="2026-02-02",
+                )["source"]
+            }
+            for index in range(8)
+        ),
+        *(
+            {
+                "source": text_input(
+                    f"threshold-{index}", "The default threshold is 4 volts.", date="2026-01-01"
+                )["source"]
+            }
+            for index in range(8)
+        ),
+        {
+            "source": text_input("followup", target, date="2026-02-03")["source"],
+            "annotations": {
+                "facts": [],
+                "taxonomy": [{"name": "calibration"}, {"name": "actuator"}],
+                "index_spans": [{"segment_ids": ["text-1"], "topics": ["calibration", "actuator"]}],
+            },
+        },
+        {"source": text_input("handoff", "Dispatch moved to Pier 2.")["source"]},
+    ]
+    call("index-sources", payload={"sources": sources})
+    result = call(
+        "context",
+        "--question",
+        "Calibration actuator threshold?",
+        "--compare-with",
+        "Where did dispatch move?",
+        "--explain",
+        "--save",
+        "retest",
+    )
+    first, second = result["parts"]
+    assert first["spans"][0]["evidence"][0]["text"] == target
+    assert first["packing_trace"]["candidates"][0]["corroborating_terms"] == [
+        "calibration",
+        "actuator",
+        "threshold",
+    ]
+    assert second["spans"][0]["evidence"][0]["conversation_id"] == "handoff"
+    assert result["quote_bytes"] <= result["quote_budget_bytes"] == 3800
+    saved = viewer._snapshot(directory, [], run_id="retest")
+    first, second = saved["search_comparison"]
+    assert "2026-02-03" in first["evidence_recording_dates"]
+    assert not first["has_undated_evidence"]
+    assert not second["evidence_recording_dates"] and second["has_undated_evidence"]
+    assert saved["search_trace"]["packing"][0]["candidates"][0]["conversation_id"] == "followup"
+
+
 def test_context_comparison_recording_dates_are_independent_of_the_workspace_snapshot(work):
     directory, call = work
     initial = call(

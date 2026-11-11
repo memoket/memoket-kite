@@ -62,6 +62,10 @@ def _search_snapshot(
                     "quote_budget_bytes": part["quote_budget_bytes"],
                     "term_coverage": part.get("term_coverage", []),
                     "first_lines_prioritized": part.get("first_lines_prioritized", False),
+                    "evidence_recording_dates": sorted(
+                        {span["source_date"] for span in part["spans"] if span["source_date"]}
+                    ),
+                    "has_undated_evidence": any(not span["source_date"] for span in part["spans"]),
                     **(
                         {"recording_bounds": _recording_dates(part["plan"])}
                         if compare_date_overrides

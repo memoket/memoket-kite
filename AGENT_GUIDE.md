@@ -84,6 +84,10 @@ can include one additional passage within the question's quote budget. Pass
 `--limit` to use a fixed span limit.
 Open **Workflows** in the memory viewer to inspect a completed search and its
 saved citations, or to open a committed change and its retained source versions.
+When separate term searches favor other meetings, KITE can prioritize a
+passage that matches the two leading clues and another clue in its original
+text. The candidate trace shows those clues. Comparison results show the
+dates of the cited recordings in each question.
 
 Use `--at-version VERSION` or `--known-at 2026-05-14T10:30:00+08:00` to search
 the source revisions visible in a tracked workspace snapshot. `--start-date`
@@ -98,6 +102,8 @@ the whole note within its quote budget.
 Historical searches use the original text and titles of the selected revisions.
 Read any stated effective date and approval status from the quoted text. Use
 the revision checksum with `evidence` to read an exact historical quote.
+When a question refers to an earlier or later discussion, check the dates
+and wording of the cited recordings before drawing a sequence or change.
 Upgrading a workspace starts tracking its current version. A later permanent
 deletion can leave an older snapshot with missing evidence.
 

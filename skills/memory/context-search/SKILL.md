@@ -25,11 +25,15 @@ In a pipeline, use `request.terms` or `request.question` and optionally set
 `request.matching_lines: true`.
 Set `request.explain: true` to retain packing order and inclusion reasons.
 For a saved search, the graph opens each candidate at its original source
-position. Its list shows up to 80 candidates per question.
+position and shows the clues that moved a passage ahead of other recordings.
+Its list shows up to 80 candidates per question.
 Open nearby lines with `kite-tool evidence 'CONVERSATION#SEGMENT' --context 2 --text`.
 Use `--at-version VERSION` or `--known-at TIMESTAMP` for what the workspace
 knew at a historical point. Use recording dates for meeting windows. Keep
 historical revision checksums with their quotes.
+For questions about earlier or later discussions, check the recording dates
+and the quoted wording for each answer. Keep the sequence uncertain when
+the citations leave competing recordings or tied times.
 The question can supply the scope as `workspace v12`, `workspace as of TIMESTAMP`,
 `工作区 v12`, or `工作区截至 TIMESTAMP`. Include the timestamp's offset.
 Quote a topic or project name to search its full phrase first.

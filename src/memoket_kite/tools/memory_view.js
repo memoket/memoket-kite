@@ -31,12 +31,14 @@
       inspectCandidates: 'Rerun with candidate details', packingOrder: 'Packing order',
       firstLinesPrioritized: 'More passages from the leading source',
       packingSegments: 'Segments',
+      corroboratingTerms: 'Multiple clues match this passage',
       packingReasons: { quoted: 'Quoted', span_limit: 'Span limit reached', quote_budget: 'Quote budget',
         already_quoted: 'Already quoted', no_matching_line: 'No matching original line' },
       sourceScope: 'Source scope', allSources: 'Search all sources',
       invalidMatching: 'Enter up to twelve phrases of at most 128 characters.',
       versionFilter: 'Version', versionFilterLabel: 'Search at a workspace version', history: 'Workspace snapshot',
       recordingDates: 'Recording dates', recordingFrom: 'From', recordingThrough: 'Through',
+      evidenceRecordingDates: 'Cited recording dates',
       secondRecordingDates: 'Second question recording dates (blank uses first range)', allRecordingDates: 'All recording dates',
       recordingTimeline: 'Evidence by recording date', invalidDateRange: 'Start date must not follow end date.',
       noDatedResults: 'No matching passages in this recording window.', timezoneUnknown: 'timezone unknown', matchingLines: 'Matching lines',
@@ -80,12 +82,14 @@
       inspectCandidates: '重查并查看候选', packingOrder: '引文选取顺序',
       firstLinesPrioritized: '先取同一来源的多个片段',
       packingSegments: '原文段',
+      corroboratingTerms: '同一片段命中多个线索',
       packingReasons: { quoted: '已引用', span_limit: '片段数已达上限', quote_budget: '引文预算不足',
         already_quoted: '已在前面引用', no_matching_line: '原文行无完整命中' },
       sourceScope: '限定来源', allSources: '搜索全部来源',
       invalidMatching: '请输入最多十二个检索词，每个不超过 128 字符。',
       versionFilter: '版本', versionFilterLabel: '按工作区版本检索', history: '工作区快照',
       recordingDates: '录制日期', recordingFrom: '起始日期', recordingThrough: '截止日期',
+      evidenceRecordingDates: '引文录制日期',
       secondRecordingDates: '第二问录制日期（留空沿用第一问）', allRecordingDates: '全部录制日期',
       recordingTimeline: '按录制日期查看原文', invalidDateRange: '起始日期应早于或等于截止日期。',
       noDatedResults: '这个录制日期范围内没有命中的原文片段。', timezoneUnknown: '时区未知', matchingLines: '仅命中行',
@@ -877,6 +881,9 @@
       if (query.has('run')) params.set('run', query.get('run'));
       link.href = '?' + params.toString();
       const status = [t('packingReasons')[candidate.reason]];
+      if (candidate.corroborating_terms?.length) {
+        status.push(t('corroboratingTerms') + ' · ' + candidate.corroborating_terms.join(' / '));
+      }
       if (candidate.quoted_lines) status.push(`${number.format(candidate.quoted_lines)} ${t('quotes')}`);
       if (candidate.reason === 'quoted' && candidate.lines_over_budget) {
         status.push(`${t('packingReasons').quote_budget} ${number.format(candidate.lines_over_budget)}`);
@@ -938,6 +945,12 @@
           branch.append(button(part.question, () => choose(topics.get(part.key)), 'citation-link'));
           if (part.recording_bounds) {
             branch.append(element('p', recordingScope(part.recording_bounds) || t('allRecordingDates')));
+          }
+          const citedDates = [...(part.evidence_recording_dates || [])];
+          if (part.has_undated_evidence) citedDates.push(t('noDate'));
+          if (citedDates.length && (citedDates.length !== 1 || citedDates[0] !== part.recording_bounds?.start_date
+            || citedDates[0] !== part.recording_bounds?.end_date)) {
+            branch.append(element('p', t('evidenceRecordingDates') + ' · ' + citedDates.join(' / ')));
           }
           branch.append(
             termSummary(part.terms, part.term_coverage),
