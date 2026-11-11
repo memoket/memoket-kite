@@ -167,6 +167,13 @@ supplied to `start` is invalid, correct the input and reuse the run ID.
 If you supply the source at `normalize`, a rejected input leaves the stage
 available for another attempt with the corrected source.
 
+If validation rejects annotations already saved in an ingestion run, check
+the `annotate` stage's `replaceable_inputs` in `status`. Supply the corrected
+`{"annotations": ...}` object with `kite-tool stage RUN_ID annotate --input FILE`.
+The successful retry saves the corrected input and reuses the normalized source.
+After annotation succeeds, use `kite-tool ingest --resume RUN_ID` to finish a
+standard local ingestion run, or advance the remaining stages individually.
+
 For local scripts with a complete `source` and `annotations` object,
 `kite-tool ingest --input FILE` runs the standard local ingestion workflow
 and returns its commit receipt and integrity result. It stops at the first

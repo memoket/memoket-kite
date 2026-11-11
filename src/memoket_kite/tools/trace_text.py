@@ -69,9 +69,13 @@ def render_status(checkpoint: dict) -> str:
         for stage in resume["stages"]:
             lines.append(f"  {stage['id']}  ({stage['tool']})")
             lines.append(f"    Skill  {stage['skill']}")
-            if missing := stage["missing_inputs"]:
-                inputs = ", ".join(f"{name} ({kind})" for name, kind in missing.items())
-                lines.append(f"    Missing inputs  {inputs}")
+            for field, label in (
+                ("missing_inputs", "Missing inputs"),
+                ("replaceable_inputs", "Replaceable inputs"),
+            ):
+                if values := stage.get(field):
+                    inputs = ", ".join(f"{name} ({kind})" for name, kind in values.items())
+                    lines.append(f"    {label}  {inputs}")
             if flags := stage["required_flags"]:
                 lines.append(f"    Authorization flags  {', '.join(flags)}")
     return "\n".join(map(_inline, lines))

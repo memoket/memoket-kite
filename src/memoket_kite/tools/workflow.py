@@ -414,6 +414,27 @@ def _dependency_pending(checkpoint: dict, stage: dict) -> bool:
     return any(checkpoint["stages"][dep]["state"] != "completed" for dep in stage["needs"])
 
 
+def _replaceable_annotations(definition: dict, checkpoint: dict, stage: dict) -> str | None:
+    state = checkpoint["stages"][stage["id"]]
+    if (
+        stage["tool"] != "annotate"
+        or state["state"] != "failed"
+        or state["error"] not in {"invalid_evidence", "invalid_input", "integrity_error"}
+    ):
+        return None
+    reference = stage["inputs"]["annotations"]
+    if not reference.startswith("input."):
+        return None
+    name = reference[6:]
+    if any(
+        checkpoint["stages"][other["id"]]["state"] == "completed"
+        and name in _stage_input_names(other)
+        for other in definition["stages"]
+    ):
+        return None
+    return name
+
+
 def _resume(context: Context, row, checkpoint: dict) -> dict:
     try:
         definition, _ = _bound_definition(context, row, checkpoint)
@@ -450,15 +471,17 @@ def _resume(context: Context, row, checkpoint: dict) -> dict:
             blocked_reason = blocked_reason or error.code
             continue
         missing = _stage_input_names(stage) - supplied.keys()
-        eligible.append(
-            {
-                "id": stage_id,
-                "tool": stage["tool"],
-                "skill": stage["skill"],
-                "missing_inputs": {key: definition["inputs"][key] for key in sorted(missing)},
-                "required_flags": flags.get(TOOLS[stage["tool"]].effect, []),
-            }
-        )
+        details = {
+            "id": stage_id,
+            "tool": stage["tool"],
+            "skill": stage["skill"],
+            "missing_inputs": {key: definition["inputs"][key] for key in sorted(missing)},
+            "required_flags": flags.get(TOOLS[stage["tool"]].effect, []),
+        }
+        replacement = _replaceable_annotations(definition, checkpoint, stage)
+        if replacement is not None and replacement in supplied:
+            details["replaceable_inputs"] = {replacement: definition["inputs"][replacement]}
+        eligible.append(details)
     if not eligible:
         return {"state": "blocked", "reason": blocked_reason or "dependency_pending", "stages": []}
     return {"state": "available", "stages": eligible}
@@ -719,10 +742,13 @@ def advance(
     state = checkpoint["stages"][stage_id]
     supplied = _stored_inputs(row, checkpoint)
     extra = _inputs(context, definition, extra)
-    if not extra.keys() <= _stage_input_names(stage) or any(
-        key in supplied and supplied[key] != value for key, value in extra.items()
+    changes = {key for key, value in extra.items() if key in supplied and supplied[key] != value}
+    if not extra.keys() <= _stage_input_names(stage) or (
+        changes and changes != {_replaceable_annotations(definition, checkpoint, stage)}
     ):
-        raise ToolError("conflict", "stage inputs can only fill its own unset input values")
+        raise ToolError(
+            "conflict", "stage input can fill an unset value or replace rejected annotations"
+        )
     if state["state"] == "completed":
         if extra.keys() - supplied.keys():
             raise ToolError("conflict", "cannot change a completed stage")

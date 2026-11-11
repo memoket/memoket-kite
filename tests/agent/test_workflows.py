@@ -477,6 +477,52 @@ def test_discover_interrupted_runs_and_resume_without_disclosing_inputs(work):
     assert "private-marker" not in json.dumps(status)
 
 
+def test_rejected_saved_annotations_can_be_replaced_on_the_same_run(work):
+    _, call = work
+    payload = text_input("notes", "The review is on Tuesday.")
+    original_annotations = copy.deepcopy(payload["annotations"])
+    payload["annotations"]["facts"][0]["segment_ids"] = ["wrong-id"]
+    call("start", "memory-ingestion", "--run-id", "repair", payload=payload)
+    normalized = call("stage", "repair", "normalize")["manifest"]
+    correction = {"annotations": original_annotations}
+    call("stage", "repair", "annotate", payload=correction, error="conflict")
+
+    rejected = call("stage", "repair", "annotate", error="invalid_evidence")["checkpoint"]
+    call("stage", "repair", "commit", error="dependency_pending")
+    ready = call("status", "repair")["resume"]["stages"][0]
+    assert ready["replaceable_inputs"] == {"annotations": "annotations"}
+    assert ready["missing_inputs"] == {}
+    assert "Replaceable inputs  annotations (annotations)" in call("status", "repair", "--text")
+
+    wrong = copy.deepcopy(correction)
+    wrong["annotations"]["facts"][0]["segment_ids"] = ["another-wrong-id"]
+    again = call("stage", "repair", "annotate", payload=wrong, error="invalid_evidence")
+    assert again["checkpoint"]["input_digest"] == rejected["input_digest"]
+    assert call("integrity")["revisions"] == 0
+
+    repaired = call("stage", "repair", "annotate", payload=correction)
+    assert repaired["checkpoint"]["input_digest"] != rejected["input_digest"]
+    assert repaired["checkpoint"]["stages"]["annotate"]["attempts"] == 3
+    assert call("artifact", "repair", "normalize")["manifest"] == normalized
+    call("stage", "repair", "annotate", payload=wrong, error="conflict")
+    completed = call("ingest", "--resume", "repair")
+    assert completed["integrity"]["revisions"] == completed["integrity"]["facts"] == 1
+    assert call("ingest", "--resume", "repair") == completed
+
+
+def test_annotations_used_by_a_completed_stage_cannot_be_replaced():
+    first = {"id": "first", "tool": "annotate", "inputs": {"annotations": "input.notes"}}
+    second = {**first, "id": "second"}
+    definition = {"stages": [first, second]}
+    checkpoint = {
+        "stages": {
+            "first": {"state": "completed", "error": None},
+            "second": {"state": "failed", "error": "invalid_evidence"},
+        }
+    }
+    assert workflow._replaceable_annotations(definition, checkpoint, second) is None
+
+
 def test_run_listing_filters_before_paginating_in_creation_order(work):
     _, call = work
     call("start", "memory-ingestion", "--run-id", "first-pending")
