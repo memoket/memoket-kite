@@ -196,6 +196,8 @@ def _parser() -> argparse.ArgumentParser:
     context_input.add_argument("--term", action="append", help="search phrase, repeatable")
     context_input.add_argument("--question", help="compile a task into search phrases locally")
     context.add_argument("--compare-with", help="search a second question within the same budget")
+    context.add_argument("--compare-start-date", help="second question's earliest recording date")
+    context.add_argument("--compare-end-date", help="second question's latest recording date")
     context.add_argument(
         "--save", nargs="?", const="", metavar="RUN_ID", help="save the compile and search results"
     )
@@ -796,6 +798,10 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
     if args.command == "context":
         if args.compare_with is not None and args.question is None:
             raise ToolError("invalid_input", "--compare-with requires --question")
+        if args.compare_with is None and (
+            args.compare_start_date is not None or args.compare_end_date is not None
+        ):
+            raise ToolError("invalid_input", "comparison recording dates require --compare-with")
         plan = {}
         if args.latest:
             plan["latest"] = True
@@ -833,6 +839,9 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 request["max_bytes"] = args.max_bytes
             if args.compare_with is not None:
                 request["compare_with"] = args.compare_with
+                for key in ("compare_start_date", "compare_end_date"):
+                    if (value := getattr(args, key)) is not None:
+                        request[key] = value
             if args.save is not None:
                 with Workspace.open(args.workspace) as workspace:
                     context = Context(

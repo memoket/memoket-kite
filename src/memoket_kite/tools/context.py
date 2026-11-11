@@ -7,7 +7,7 @@ import sqlite3
 import unicodedata
 from collections import defaultdict
 from contextlib import closing, contextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .contracts import DATE, TEXT, ToolError, array, object_schema, utc_timestamp, validate
 from .index import SPAN_FACET_AXES, revision_id
@@ -18,6 +18,7 @@ _SPAN_CHARS = 320
 _QUESTION_BYTES = 3800
 _TERM_BYTES = 6000
 _TRACE_CANDIDATES = 80
+_RECORDING_DATES = ("start_date", "end_date")
 _SEARCH_TERMS = re.compile(r"[\u3400-\u9fff]+|[^\W_]+", re.UNICODE)
 _HAN = re.compile(r"([\u3400-\u9fff])")
 _QUERY_WORDS = re.compile(r"[\u3400-\u9fff]+|[a-z0-9]+(?:\s+[a-z0-9]+)*", re.I)
@@ -70,6 +71,8 @@ CONTEXT_REQUEST = {
             **_CONTEXT_SCHEMA["properties"],
             "question": {**TEXT, "maxLength": 512},
             "compare_with": {**TEXT, "maxLength": 512},
+            "compare_start_date": DATE,
+            "compare_end_date": DATE,
             "limit": {"type": "integer", "minimum": 1, "maximum": 50},
             "max_bytes": {"type": "integer", "minimum": 512, "maximum": 65536},
             "neighbors": {"type": "integer", "minimum": 0, "maximum": 5},
@@ -244,6 +247,8 @@ def _question_scope(request: dict) -> tuple[dict, str]:
 
 def _context_scope(request: dict) -> tuple[dict, str | None, str | None]:
     validate(CONTEXT_REQUEST, request, "context request")
+    if _comparison_dates(request) and "compare_with" not in request:
+        raise ToolError("invalid_input", "comparison recording dates require compare_with")
     if "terms" in request:
         if "compare_with" in request:
             raise ToolError("invalid_input", "compare_with requires a question")
@@ -258,7 +263,8 @@ def _context_scope(request: dict) -> tuple[dict, str | None, str | None]:
     return {**scoped, "question": request["question"]}, search, compare_search
 
 
-def _compile_questions(workspace, index, request, search, compare_search):
+def _compile_questions(workspace, indexes, request, search, compare_search):
+    index, comparison = indexes
     result = {
         "request": request,
         "terms": request["terms"]
@@ -267,33 +273,36 @@ def _compile_questions(workspace, index, request, search, compare_search):
         "memory_version": workspace.version(),
     }
     if compare_search is not None:
-        result["comparison_terms"] = _compile_terms(index.db, index.filters, compare_search)
+        result["comparison_terms"] = _compile_terms(
+            comparison.db, comparison.filters, compare_search
+        )
     return result
 
 
 def compile_question(workspace, request: dict) -> dict:
     request, search, compare_search = _context_scope(request)
-    with _search_index(workspace, request) as index:
-        return _compile_questions(workspace, index, request, search, compare_search)
+    with _comparison_indexes(workspace, request) as indexes:
+        return _compile_questions(workspace, indexes, request, search, compare_search)
 
 
 def question_pack(workspace, request: dict) -> dict:
     request, search, compare_search = _context_scope(request)
-    with _search_index(workspace, request) as index:
-        compiled = _compile_questions(workspace, index, request, search, compare_search)
-        return _search_questions(workspace, compiled, index)
+    with _comparison_indexes(workspace, request) as indexes:
+        compiled = _compile_questions(workspace, indexes, request, search, compare_search)
+        return _search_questions(workspace, compiled, indexes)
 
 
 def search_question(workspace, compiled: dict) -> dict:
     if compiled["memory_version"] != workspace.version():
         raise ToolError("stale_snapshot", "memory changed; compile the question again")
     request = compiled["request"]
-    with _search_index(workspace, request) as index:
-        return _search_questions(workspace, compiled, index)
+    with _comparison_indexes(workspace, request) as indexes:
+        return _search_questions(workspace, compiled, indexes)
 
 
-def _search_questions(workspace, compiled: dict, index) -> dict:
+def _search_questions(workspace, compiled: dict, indexes) -> dict:
     request = compiled["request"]
+    index, comparison = indexes
     filters = {key: request[key] for key in _CONTEXT_SCHEMA["properties"] if key in request}
     limit = request.get("limit", 8)
     question = request.get("question")
@@ -302,15 +311,15 @@ def _search_questions(workspace, compiled: dict, index) -> dict:
     if (compare_terms is not None) != ("compare_with" in request):
         raise ToolError("invalid_input", "compile both comparison questions before searching")
 
-    def search(question, terms, span_limit, quote_budget):
+    def search(question, terms, span_limit, quote_budget, search_index, date_overrides=None):
         result = _context_evidence(
             workspace,
-            {**filters, "terms": terms},
+            {**filters, **(date_overrides or {}), "terms": terms},
             limit=span_limit,
             max_bytes=quote_budget,
             neighbors=request.get("neighbors", 0 if request.get("matching_lines") else 1),
             focus=question is not None,
-            _index=index,
+            _index=search_index,
             _question=question,
             prioritize_first_lines=compare_terms is not None and "limit" not in request,
         )
@@ -319,17 +328,26 @@ def _search_questions(workspace, compiled: dict, index) -> dict:
         return result
 
     if compare_terms is None:
-        return search(question, compiled["terms"], limit, budget)
+        return search(question, compiled["terms"], limit, budget, index)
     first_limit, first_budget = (limit + 1) // 2, (budget + 1) // 2
+    date_overrides = _comparison_dates(request)
     parts = [
-        search(question, compiled["terms"], first_limit, first_budget),
-        search(request["compare_with"], compare_terms, limit - first_limit, budget - first_budget),
+        search(question, compiled["terms"], first_limit, first_budget, index),
+        search(
+            request["compare_with"],
+            compare_terms,
+            limit - first_limit,
+            budget - first_budget,
+            comparison,
+            date_overrides,
+        ),
     ]
     return {
         "memory_version": compiled["memory_version"],
         "quote_budget_bytes": budget,
         "quote_bytes": sum(part["quote_bytes"] for part in parts),
         "parts": parts,
+        **({"compare_recording_overrides": date_overrides} if date_overrides else {}),
         **({"history": index.history} if index.history is not None else {}),
     }
 
@@ -479,7 +497,7 @@ def _history_snapshot(workspace, plan: dict) -> dict:
 
 
 @contextmanager
-def _search_index(workspace, plan: dict):
+def _search_index(workspace, plan: dict, *, recording_windows: tuple[dict, ...] = ()):
     if "at_version" not in plan and "known_at" not in plan:
         _require_context(workspace)
         yield _SearchIndex(workspace.db, plan)
@@ -487,12 +505,19 @@ def _search_index(workspace, plan: dict):
     _search_scope(plan)
     history = _history_snapshot(workspace, plan)
     visible = workspace.records_at(history["version"], plan)
-    if "start_date" in plan or "end_date" in plan:
-        lower, upper = plan.get("start_date", ""), plan.get("end_date", "9999-12-31")
+    windows = [
+        (window.get("start_date"), window.get("end_date"))
+        for window in recording_windows or (plan,)
+    ]
+    if (None, None) not in windows:
         visible = [
             record
             for record in visible
-            if (day := source_day(record["conversation"])) and lower <= day <= upper
+            if (day := source_day(record["conversation"]))
+            and any(
+                (lower is None or lower <= day) and (upper is None or day <= upper)
+                for lower, upper in windows
+            )
         ]
     records = {record["checksum"]: record for record in visible}
     with closing(sqlite3.connect(":memory:")) as db:
@@ -506,6 +531,35 @@ def _search_index(workspace, plan: dict):
         )
         filters = {key: value for key, value in plan.items() if key != "conversation_id"}
         yield _SearchIndex(db, filters, history, records)
+
+
+def _comparison_dates(request: dict) -> dict:
+    return {
+        key: request[f"compare_{key}"] for key in _RECORDING_DATES if f"compare_{key}" in request
+    }
+
+
+@contextmanager
+def _comparison_indexes(workspace, request: dict):
+    overrides = _comparison_dates(request)
+    if not overrides:
+        with _search_index(workspace, request) as index:
+            yield index, index
+        return
+    comparison = {**request, **overrides}
+    _search_scope(request)
+    _search_scope(comparison)
+    # The historical index holds both windows from the same snapshot. Each
+    # search then restricts the indexed evidence to its own recording dates.
+    with _search_index(workspace, request, recording_windows=(request, comparison)) as index:
+        shared = {key: value for key, value in index.filters.items() if key not in _RECORDING_DATES}
+        yield tuple(
+            replace(
+                index,
+                filters={**shared, **{key: plan[key] for key in _RECORDING_DATES if key in plan}},
+            )
+            for plan in (request, comparison)
+        )
 
 
 def _search_scope(plan: dict) -> tuple[str, list]:
@@ -1019,6 +1073,11 @@ def render_context(pack: dict) -> str:
     for number, part in enumerate(parts, 1):
         if len(parts) > 1:
             lines.append(f"Question {number}")
+        if pack.get("compare_recording_overrides"):
+            scope = part["plan"]
+            lines.append(
+                f"Recording dates: {scope.get('start_date', 'any')} – {scope.get('end_date', 'any')}"
+            )
         previous_revision = None
         for span in part["spans"]:
             revision = span["evidence"][0]["revision_checksum"]

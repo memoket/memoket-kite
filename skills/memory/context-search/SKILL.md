@@ -5,8 +5,12 @@ description: Retrieve cited original passages from a task in one local call.
 
 Run `kite-tool context --question "$QUESTION" --text` with the user's task.
 For two independent questions, use `--question "$FIRST" --compare-with "$SECOND"`.
-Give each question the subject it refers to. Both use the same recording bounds
-and workspace snapshot. Each receives a share of the quote and span budget.
+Give each question the subject it refers to. Both use one workspace snapshot
+and share the quote and span budget. If the questions refer to different
+recording windows, set `--start-date` and `--end-date` for the first and
+override either bound for the second with `--compare-start-date` and
+`--compare-end-date`. Keep stated event dates and decision status with the
+original quotes when tracing what changed.
 If one recording dominates the leading candidates of a default comparison,
 KITE can quote one more passage within the same byte budget. An explicit
 `--limit` fixes the span limit.
@@ -33,4 +37,5 @@ Quote a topic or project name to search its full phrase first.
 When the user wants a saved inspection of compilation and search, use the
 `context-search` pipeline with `{"request":{"question":"…"}}`. Inspect the
 compiled phrases before searching. For a comparison add `compare_with` to the
-request. The plan is bound to one workspace version.
+request, with optional `compare_start_date` and `compare_end_date`. The plan is
+bound to one workspace version.

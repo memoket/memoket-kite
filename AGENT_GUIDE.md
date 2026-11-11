@@ -73,8 +73,11 @@ search. The viewer links each candidate to its original source position and
 shows whether it contributed quotes or met a packing limit. Without `--text`,
 the command also returns these details in JSON.
 For two independent questions, use `--question "$FIRST" --compare-with "$SECOND"`.
-The two searches share the snapshot, date filters and total quote budget. The
-pipeline accepts the second question as `request.compare_with`.
+The two searches share the workspace snapshot and total quote budget.
+Recording dates are shared by default. Use `--compare-start-date` and
+`--compare-end-date` to override either bound for the second question.
+The pipeline accepts `request.compare_with`, `request.compare_start_date`
+and `request.compare_end_date`. The saved search shows each effective range.
 When one recording fills the head of a default comparison search, KITE gives
 each leading passage room for an original line before adding neighbors. This
 can include one additional passage within the question's quote budget. Pass

@@ -6,6 +6,7 @@
   const searching = Boolean(snapshot.search_terms?.length);
   const comparison = snapshot.search_comparison || [];
   const recordingBounds = snapshot.search_recording_bounds || {};
+  const compareDateOverrides = snapshot.search_comparison_recording_overrides || {};
   const sourceScope = snapshot.search_source_scope || {};
   let searchAllSources = false;
   let explainCandidates = Boolean(snapshot.search_trace?.packing?.length);
@@ -36,6 +37,7 @@
       invalidMatching: 'Enter up to twelve phrases of at most 128 characters.',
       versionFilter: 'Version', versionFilterLabel: 'Search at a workspace version', history: 'Workspace snapshot',
       recordingDates: 'Recording dates', recordingFrom: 'From', recordingThrough: 'Through',
+      secondRecordingDates: 'Second question recording dates (blank uses first range)', allRecordingDates: 'All recording dates',
       recordingTimeline: 'Evidence by recording date', invalidDateRange: 'Start date must not follow end date.',
       noDatedResults: 'No matching passages in this recording window.', timezoneUnknown: 'timezone unknown', matchingLines: 'Matching lines',
       compareQuestions: 'Compare', secondQuestion: 'Second question', firstQuestionRequired: 'Enter the first question.',
@@ -84,6 +86,7 @@
       invalidMatching: '请输入最多十二个检索词，每个不超过 128 字符。',
       versionFilter: '版本', versionFilterLabel: '按工作区版本检索', history: '工作区快照',
       recordingDates: '录制日期', recordingFrom: '起始日期', recordingThrough: '截止日期',
+      secondRecordingDates: '第二问录制日期（留空沿用第一问）', allRecordingDates: '全部录制日期',
       recordingTimeline: '按录制日期查看原文', invalidDateRange: '起始日期应早于或等于截止日期。',
       noDatedResults: '这个录制日期范围内没有命中的原文片段。', timezoneUnknown: '时区未知', matchingLines: '仅命中行',
       compareQuestions: '对比', secondQuestion: '第二个问题', firstQuestionRequired: '请输入第一个问题。',
@@ -631,6 +634,14 @@
     return source.started_at?.replace('T', ' ');
   }
 
+  function recordingScope(bounds) {
+    const dates = [
+      bounds.start_date && `${t('recordingFrom')} ${bounds.start_date}`,
+      bounds.end_date && `${t('recordingThrough')} ${bounds.end_date}`,
+    ].filter(Boolean);
+    return dates.length ? [t('recordingDates'), ...dates].join(' · ') : '';
+  }
+
   function recordingTimeline(panel, entries) {
     const days = new Map();
     for (const node of entries) {
@@ -903,6 +914,9 @@
     byId('recording-end-label').textContent = t('recordingThrough');
     byId('comparison-filter-label').textContent = t('compareQuestions');
     byId('comparison-question-label').textContent = t('secondQuestion');
+    byId('comparison-recording-label').textContent = t('secondRecordingDates');
+    byId('compare-recording-start-label').textContent = t('recordingFrom');
+    byId('compare-recording-end-label').textContent = t('recordingThrough');
     byId('matching-lines-label').textContent = t('matchingLines');
     const versionFilter = byId('search-version');
     versionFilter.hidden = snapshot.history_origin == null;
@@ -921,7 +935,11 @@
         const branches = element('div', undefined, 'comparison-trace');
         for (const part of comparison) {
           const branch = element('div');
-          branch.append(button(part.question, () => choose(topics.get(part.key)), 'citation-link'),
+          branch.append(button(part.question, () => choose(topics.get(part.key)), 'citation-link'));
+          if (part.recording_bounds) {
+            branch.append(element('p', recordingScope(part.recording_bounds) || t('allRecordingDates')));
+          }
+          branch.append(
             termSummary(part.terms, part.term_coverage),
             element('p', `${number.format(part.passages)} ${t('record')} · ${number.format(part.quote_bytes)}/${number.format(part.quote_budget_bytes)} ${t('quoteBytes')}`));
           if (part.first_lines_prioritized) branch.append(element('p', t('firstLinesPrioritized')));
@@ -963,12 +981,9 @@
         trace.prepend(element('p', `${t('history')} v${history.version} · ${new Date(history.committed_at).toLocaleString(language)}`));
         if (history.later_deletions) trace.append(element('p', t('historyDeletes')));
       }
-      const recordingScope = [
-        recordingBounds.start_date && `${t('recordingFrom')} ${recordingBounds.start_date}`,
-        recordingBounds.end_date && `${t('recordingThrough')} ${recordingBounds.end_date}`,
-      ].filter(Boolean);
-      if (recordingScope.length) {
-        trace.prepend(element('p', [t('recordingDates'), ...recordingScope].join(' · ')));
+      const scopeLabel = recordingScope(recordingBounds);
+      if (scopeLabel && !comparison.some(part => part.recording_bounds)) {
+        trace.prepend(element('p', scopeLabel));
         if (!stats.quotes) trace.append(element('p', t('noDatedResults')));
       }
       if (snapshot.saved_search) {
@@ -1011,13 +1026,28 @@
   recordingEnd.value = recordingBounds.end_date ?? query.get('end_date') ?? '';
   const recordingFilter = byId('recording-filter');
   recordingFilter.toggleAttribute('data-active', Boolean(recordingStart.value || recordingEnd.value));
-  recordingFilter.addEventListener('input', () => recordingEnd.setCustomValidity(''));
   const secondQuestion = byId('comparison-question');
+  const compareStart = byId('compare-recording-start');
+  const compareEnd = byId('compare-recording-end');
+  compareStart.value = compareDateOverrides.start_date ?? query.get('compare_start_date') ?? '';
+  compareEnd.value = compareDateOverrides.end_date ?? query.get('compare_end_date') ?? '';
+  function clearDateErrors() {
+    for (const input of [recordingEnd, compareStart, compareEnd]) input.setCustomValidity('');
+  }
+  recordingFilter.addEventListener('input', clearDateErrors);
   const matchingLines = byId('matching-lines');
   matchingLines.checked = Boolean(snapshot.search_matching_lines);
   secondQuestion.value = comparison[1]?.question ?? query.get('q2') ?? '';
+  function enableCompareDates() {
+    compareStart.disabled = compareEnd.disabled = !secondQuestion.value.trim();
+  }
+  enableCompareDates();
   byId('comparison-filter').toggleAttribute('data-active', Boolean(secondQuestion.value));
-  secondQuestion.addEventListener('input', () => byId('search-terms').setCustomValidity(''));
+  byId('comparison-filter').addEventListener('input', clearDateErrors);
+  secondQuestion.addEventListener('input', () => {
+    byId('search-terms').setCustomValidity('');
+    enableCompareDates();
+  });
   byId('search-terms').addEventListener('input', event => event.target.setCustomValidity(''));
   byId('search').addEventListener('submit', event => {
     event.preventDefault();
@@ -1032,6 +1062,14 @@
     if (recordingStart.value && recordingEnd.value && recordingStart.value > recordingEnd.value) {
       recordingEnd.setCustomValidity(t('invalidDateRange'));
       recordingEnd.reportValidity();
+      return;
+    }
+    const secondStart = compareStart.value || recordingStart.value;
+    const secondEnd = compareEnd.value || recordingEnd.value;
+    if (compareWith && secondStart && secondEnd && secondStart > secondEnd) {
+      const dateInput = compareEnd.value ? compareEnd : compareStart;
+      dateInput.setCustomValidity(t('invalidDateRange'));
+      dateInput.reportValidity();
       return;
     }
     const previousTerms = snapshot.search_question ? [] : (snapshot.search_terms || []);
@@ -1050,7 +1088,11 @@
     if (snapshot.comparison_available) params.set('view', 'graph');
     for (const term of terms) params.append('term', term);
     if (!terms.length && value) params.set('q', value);
-    if (compareWith) params.set('q2', compareWith);
+    if (compareWith) {
+      params.set('q2', compareWith);
+      if (compareStart.value) params.set('compare_start_date', compareStart.value);
+      if (compareEnd.value) params.set('compare_end_date', compareEnd.value);
+    }
     if (value && matchingLines.checked) params.set('matching_lines', '1');
     if (value && explainCandidates) params.set('explain', '1');
     if (value && byId('search-version').value) params.set('at', byId('search-version').value);

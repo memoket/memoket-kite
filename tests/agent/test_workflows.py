@@ -6106,6 +6106,84 @@ def test_context_comparison_can_cover_more_passages_from_a_dominant_source(work)
     assert fixed["parts"][0]["span_limit"] == 4
 
 
+def test_context_comparison_recording_dates_are_independent_of_the_workspace_snapshot(work):
+    directory, call = work
+    initial = call(
+        "index-sources",
+        payload={
+            "sources": [
+                {"source": text_input(id_, note, date=day)["source"]}
+                for id_, note, day in [
+                    ("early", "The launch review names Rowan as owner.", "2026-01-03"),
+                    ("between", "The launch review names Ari as owner.", "2026-02-03"),
+                    ("late", "The launch review names Jules as owner.", "2026-03-03"),
+                ]
+            ]
+        },
+    )
+    version = str(initial["memory_version"])
+    args = (
+        "--question",
+        "Who owns the launch review?",
+        "--compare-with",
+        "Who was named launch review owner?",
+        "--start-date",
+        "2026-01-01",
+        "--end-date",
+        "2026-01-31",
+        "--compare-start-date",
+        "2026-03-01",
+        "--compare-end-date",
+        "2026-03-31",
+    )
+    active = call("context", *args)
+    assert [
+        [span["evidence"][0]["conversation_id"] for span in part["spans"]]
+        for part in active["parts"]
+    ] == [["early"], ["late"]]
+    assert active["quote_bytes"] <= active["quote_budget_bytes"] == 3800
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {
+                    "source": {
+                        **text_input(
+                            "late",
+                            "The launch review now names Morgan as owner.",
+                            date="2026-03-03",
+                        )["source"],
+                        "expected_checksum": active["parts"][1]["spans"][0]["evidence"][0][
+                            "revision_checksum"
+                        ],
+                    },
+                }
+            ]
+        },
+    )
+    saved = call("context", *args, "--at-version", version, "--save", "dated-comparison")
+    assert saved["history"]["version"] == int(version)
+    assert [part["spans"][0]["evidence"][0]["text"] for part in saved["parts"]] == [
+        "The launch review names Rowan as owner.",
+        "The launch review names Jules as owner.",
+    ]
+    replay = viewer._snapshot(directory, [], run_id="dated-comparison")
+    bounds = [
+        dict(start_date="2026-01-01", end_date="2026-01-31"),
+        dict(start_date="2026-03-01", end_date="2026-03-31"),
+    ]
+    assert [part["recording_bounds"] for part in replay["search_comparison"]] == bounds
+    assert replay["search_recording_bounds"] == bounds[0]
+    assert replay["search_comparison_recording_overrides"] == bounds[1]
+    rendered = call("context", *args, "--at-version", version, "--text")
+    for part, dates in zip(rendered.split("Question ")[1:], bounds, strict=True):
+        assert f"Recording dates: {dates['start_date']} – {dates['end_date']}" in part
+    inherited = call("context", *args[:-4], "--compare-end-date", "2026-02-28")
+    assert inherited["parts"][1]["plan"]["start_date"] == "2026-01-01"
+    call("context", *args[:-2], error="invalid_input")
+    call("context", *args[:2], "--compare-start-date", "2026-03-01", error="invalid_input")
+
+
 def test_context_text_reuses_a_quote_across_questions(work):
     _, call = work
     original = "The ledger review moves to Monday because the reconciled figures arrive Friday."

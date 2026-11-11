@@ -23,6 +23,11 @@ from .workflow import saved_context_search, source_revision_page
 from .workspace import Workspace
 
 IDLE_TIMEOUT = 3600
+_RECORDING_DATE_PARAMS = ("start_date", "end_date", "compare_start_date", "compare_end_date")
+
+
+def _recording_dates(plan: dict) -> dict:
+    return {key: plan[key] for key in ("start_date", "end_date") if key in plan}
 
 
 def _search_snapshot(
@@ -38,6 +43,7 @@ def _search_snapshot(
     evidence = {}
     quote_occurrences = 0
     comparison = []
+    compare_date_overrides = {}
     if question is not None:
         result = (
             saved["value"]
@@ -46,6 +52,7 @@ def _search_snapshot(
         )
         if "parts" in result:
             packs = [(f"question-{i}", part) for i, part in enumerate(result["parts"], 1)]
+            compare_date_overrides = result.get("compare_recording_overrides", {})
             comparison = [
                 {
                     "key": key,
@@ -55,6 +62,11 @@ def _search_snapshot(
                     "quote_budget_bytes": part["quote_budget_bytes"],
                     "term_coverage": part.get("term_coverage", []),
                     "first_lines_prioritized": part.get("first_lines_prioritized", False),
+                    **(
+                        {"recording_bounds": _recording_dates(part["plan"])}
+                        if compare_date_overrides
+                        else {}
+                    ),
                 }
                 for key, part in packs
             ]
@@ -167,11 +179,8 @@ def _search_snapshot(
             for key in ("source", "conversation_id")
             if key in packs[0][1]["plan"]
         },
-        "search_recording_bounds": {
-            key: packs[0][1]["plan"][key]
-            for key in ("start_date", "end_date")
-            if key in packs[0][1]["plan"]
-        },
+        "search_recording_bounds": _recording_dates(packs[0][1]["plan"]),
+        "search_comparison_recording_overrides": compare_date_overrides,
         "search_trace": {
             "terms": packs[0][1]["compilation"]["terms"] if question is not None else terms,
             "term_coverage": packs[0][1].get("term_coverage", []) if not comparison else [],
@@ -371,6 +380,10 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                     or (question is not None and (len(question) > 512 or terms))
                     or (compare_with is not None and (question is None or len(compare_with) > 512))
                     or (
+                        compare_with is None
+                        and any(key in params for key in _RECORDING_DATE_PARAMS[2:])
+                    )
+                    or (
                         run_id is not None
                         and (
                             terms
@@ -379,8 +392,7 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                                 key in params
                                 for key in (
                                     "at",
-                                    "start_date",
-                                    "end_date",
+                                    *_RECORDING_DATE_PARAMS,
                                     "matching_lines",
                                     "explain",
                                     "source",
@@ -427,7 +439,7 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                 else:
                     at_version = _version_parameter(params, "at")
                     bounds = {
-                        key: params[key][0] for key in ("start_date", "end_date") if key in params
+                        key: params[key][0] for key in _RECORDING_DATE_PARAMS if key in params
                     }
                     source_scope = {
                         key: params[key][0]

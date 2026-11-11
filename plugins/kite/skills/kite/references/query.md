@@ -32,13 +32,16 @@ including candidates skipped by the quote budget or span limit.
 Use `--latest` when the task needs newer recordings first. For two independent
 questions, run `context --question "$FIRST" --compare-with "$SECOND" --text`.
 Restate the subject where needed so each question can retrieve its own quotes.
-Both share the snapshot, recording date filters, and total context budget.
+Both share the workspace snapshot and total context budget. For different
+recording windows, set `--start-date` and `--end-date` for the first question
+and override either bound with `--compare-start-date` and `--compare-end-date`.
 When one recording supplies the leading candidates, a default comparison
 can cite an additional passage within its quote budget. Pass `--limit` when
 the number of passages needs a fixed upper bound.
 Keep related details in one question when they can come from the same passage.
 In the graph, **Recording dates** limits search and the result panel groups
-passages by their recording date. **Compare** shows both sets of compiled terms.
+passages by their recording date. **Compare** shows both sets of compiled terms
+and accepts recording date overrides for the second question.
 
 Use `bash "$KITE" topics --contains PHRASE` to find indexed topics, then
 `bash "$KITE" query --topic TOPIC --text` for a readable trace. Use
