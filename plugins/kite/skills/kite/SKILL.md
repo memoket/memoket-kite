@@ -17,6 +17,8 @@ When asked to open, browse, or visualize KITE memory in a browser, run
 `bash "$KITE" view` and give the user the returned local URL. The graph shows
 the workspace's retained memories and their links to topics, state keys, and
 source revisions. Refresh the page to read the latest committed records.
+Selecting a topic or memory reveals its related nodes and the basis for each
+relationship. Use the mouse wheel or the zoom buttons to change scale.
 
 If `viewer_unavailable` reports that the host blocks loopback access, use the
 host's normal command approval when available. The same command can also be run

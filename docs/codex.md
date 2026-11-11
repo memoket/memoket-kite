@@ -54,9 +54,16 @@ workspace locally.
 ## View the memory graph
 
 Ask Codex “Open my KITE memory graph.” KITE opens a local browser page on
-`127.0.0.1`. Drag to rotate the graph. Select a memory to see its topic,
+`127.0.0.1`. Drag to rotate, scroll or use the zoom buttons to zoom, and
+click the zoom percentage to reset. Select a memory to see its topic,
 state key, source version, and original quotes. Select a topic, state key, or
 source revision to see which memories connect to it.
+
+Select a topic to see its stored parents and children and other topics that
+share a memory or source revision. Select a memory to see explicit corrections
+and peers that share its state key, original line, or source revision. Dashed
+edges show shared evidence or state. The detail panel names the basis for each
+relationship.
 
 The page reads the current workspace when opened or refreshed. The server
 listens only on this machine and stops after an hour without a request. You
