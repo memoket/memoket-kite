@@ -1,7 +1,7 @@
 {
   "name": "kite",
-  "version": "0.1.1",
-  "description": "Import meeting notes and query conversation memory with original citations.",
+  "version": "0.1.2",
+  "description": "Remember what your team decided, who owns it now, and why it changed.",
   "author": { "name": "Memoket Inc.", "url": "https://github.com/memoket" },
   "homepage": "https://github.com/memoket/memoket-kite",
   "repository": "https://github.com/memoket/memoket-kite",
@@ -11,16 +11,16 @@
   "onboardingSkill": "./skills/kite/SKILL.md",
   "interface": {
     "displayName": "KITE",
-    "shortDescription": "Find decisions and action items in your meetings.",
-    "longDescription": "Import selected meeting notes, transcripts, or Memoket exports. Query your project's conversation memory and cite the original evidence.",
+    "shortDescription": "Recall the latest decision, its owner, and the original evidence.",
+    "longDescription": "Turn meetings into memory for future chats. Follow changing decisions and assignments, check what was known on a date, and open the original quote.",
     "developerName": "Memoket",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],
     "websiteURL": "https://github.com/memoket/memoket-kite",
     "defaultPrompt": [
-      "Run the KITE demo with sample meetings.",
-      "Import the attached meeting notes into KITE.",
-      "Use KITE to trace the latest onboarding decision."
+      "Show me how KITE remembers a changed release decision.",
+      "Use KITE to draft my next steps from the latest decisions and owners.",
+      "Use KITE to explain what changed since the last meeting and cite why."
     ]
   }
 }

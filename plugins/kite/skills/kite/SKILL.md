@@ -1,6 +1,6 @@
 ---
 name: kite
-description: Import meeting notes, transcripts, or Memoket exports into KITE and answer questions about earlier decisions, assignments, and timelines with original citations. Use when asked to run the KITE demo or to use KITE for conversation memory.
+description: Use KITE to recall what the team decided, who owns it now, and how plans changed. Use when asked for a KITE demo or when KITE should supply meeting decisions or commitments for an answer or next action. Imports selected notes and transcripts with original citations.
 ---
 
 Use `bash` with the absolute path to `scripts/kite.sh` beside this skill. In the
@@ -13,12 +13,14 @@ destination the user selects.
 
 ## Setup and demo
 
-When invoked from plugin setup or asked for a demo, run `bash "$KITE" demo --text`.
-Summarize the confirmed decision, owner, and original quotes. The demo imports
-synthetic notes into a temporary workspace. Suggest attaching a real transcript
-when the user is ready. On first use, the launcher may need network access to
-download uv, Python, and KITE's pinned runtime. KITE needs no model API key for
-this workflow. If setup fails, show the error and retry after access is restored.
+When invoked from plugin setup or asked for a KITE demo, run
+`bash "$KITE" demo --decision-story`. Show what the team had decided on Nov 4,
+what changed, and why the later Monday proposal did not replace the approved
+Tuesday plan. Include the memory record and original quote from the result.
+The sample meetings use a temporary workspace. On first use, the launcher may
+need network access to download uv, Python, and KITE's pinned runtime. The demo
+runs without a model API key. If setup fails, show the error and retry after
+access is restored.
 
 ## Import notes
 
@@ -48,8 +50,11 @@ this workflow. If setup fails, show the error and retry after access is restored
    and page the transcript with `segments RUN_ID normalize --limit 50`.
 5. Create `{"annotations":{"taxonomy":[...],"facts":[...]}}` using the
    fact-extraction skill and `bash "$KITE" describe annotate`. Ground every fact
-   in its cited segments. Preserve the difference between a proposal, a rejection,
-   and a confirmed decision. Submit the object with
+   in its cited segments. For decisions, owners, and commitments that may change,
+   save a `state_key` and `state`. Look up existing facts for the topic and reuse
+   the key when the new record concerns the same decision or assignment. Preserve
+   the difference between a proposal, a rejection, and a confirmed decision.
+   Submit the object with
    `bash "$KITE" stage RUN_ID annotate --input ANNOTATIONS_JSON`. Advance the
    remaining stages from the validated definition one at a time, inspect each
    result, and report success only after verification. Keep the run ID for
@@ -60,7 +65,12 @@ this workflow. If setup fails, show the error and retry after access is restored
 Use `bash "$KITE" topics --contains PHRASE` to find indexed topics, then
 `bash "$KITE" query --topic TOPIC --text` for a readable trace. Use
 `query --pipeline task-tracing` for assignments or `decision-evolution` for
-changes to a decision. Scope a trace to one transcript with
+changes to a decision. Use `--end-date YYYY-MM-DD` to answer as of a date.
+When searching by an earlier owner or wording, use `--follow-states` with an
+entity or text filter to recover later records for the same decision.
+For a draft or plan based on meetings, query the relevant current state before
+writing. Use confirmed states to guide the next action and surface open decisions.
+Scope a trace to one transcript with
 `--source NAMESPACE --conversation-id ID`. Run `query --help` for date filters.
 Continue with `--cursor` when more results remain. If the workspace is empty,
 ask the user to provide a source to import. If a claim needs verification, use

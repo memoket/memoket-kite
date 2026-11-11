@@ -82,8 +82,10 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
             timeout=300,
         )
 
-    demo = run("demo", "--text").stdout
-    assert "short checklist" in demo and "memoket/184#line-b" in demo, demo
+    demo = run("demo", "--decision-story").stdout
+    assert "Maya owns the release. Ship Tuesday." in demo, demo
+    assert "Starting from Ravi's earlier mention leads to Maya." in demo, demo
+    assert '"source": "text/release-handoff#text-1"' in demo, demo
     env["UV_OFFLINE"] = "1"
     unavailable_uv_cache = scratch / "unavailable uv cache"
     unavailable_uv_cache.touch()

@@ -1,7 +1,7 @@
 # KITE for Codex desktop
 
-Import meeting notes and transcripts from a Codex chat, then ask about past
-decisions, owners, and timelines. KITE links answers to the original quotes.
+Recall what your team decided, who owns it now, and why the plan changed.
+KITE gives Codex the original evidence when it uses past decisions in a new chat.
 
 ## Install
 
@@ -31,16 +31,17 @@ operation.
 
 ## Try it in a chat
 
-1. **Demo.** Ask “Run the KITE demo.” KITE imports two sample meetings into a
-   temporary workspace and reports the confirmed checklist decision, its owner,
-   and the quotes that support it.
+1. **Demo.** Ask “Show me how KITE remembers a changed release decision.” KITE
+   reads three sample meetings from a temporary workspace and shows the previous
+   decision, the current decision, a later proposal, and a memory record you can
+   check against the original quote.
 2. **Import.** Attach a UTF-8 text or Markdown transcript, a Memoket export,
    or an SRT/VTT caption file. Ask “Use KITE to import this transcript and
    list the confirmed decisions and owners.” Codex reads and annotates the
    selected text, and KITE verifies the cited segments and stores the memory.
-3. **Query.** In a new chat in the same project, ask “Use KITE to find what we
-   decided about onboarding and cite the original meeting lines.” Use a topic
-   from your imported transcript.
+3. **Act on the decision.** In a new chat in the same project, ask “Use KITE to
+   draft my next steps based on the latest release decision and its owner.
+   Explain what changed and cite the handoff.” Use a topic from your meetings.
 
 By default, project memory lives in
 `${XDG_DATA_HOME:-$HOME/.local/share}/kite/codex/` under an ID derived from the

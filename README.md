@@ -2,9 +2,9 @@
 
 <a href="https://memoket.ai/"><img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/kite-banner.png" width="830" alt="Memoket × KITE: the memory inside Memoket"></a>
 
-### Follow the thread, not the nearest match.
+### Give your AI the decisions from meetings it missed.
 
-Open-source, vector-free memory for conversations. Trace decisions back to the original lines.
+Recall what your team decided, who owns it now, and why the plan changed.
 
 <a href="https://memoket.ai/"><img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/memoket-website-badge-navy.svg" alt="Memoket website"></a>
 <a href="https://discord.com/invite/tFh4nur4Vn"><img src="https://img.shields.io/badge/-Discord-232B3A?style=for-the-badge&logo=discord&logoColor=white" alt="Join Memoket on Discord"></a>
@@ -20,16 +20,22 @@ Open-source, vector-free memory for conversations. Trace decisions back to the o
   <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/kite-architecture-flow.png" width="100%" alt="KITE at a glance: conversations become source-linked memory facts, memory settles under a governed topic map, a question compiles to an inspectable plan, and the answer arrives with receipts.">
 </p>
 
-## Give your agent the context from your meetings
+## Ask what the team decided
 
-KITE turns meeting notes, transcripts, and Memoket conversations into
-evidence-backed memory. Codex and Claude Code use the same YAML workflows and
-skills to trace decisions, recover task history, and resume interrupted imports.
+**Who owns the release, and when are we shipping?** In the demo, Ravi owned
+it as of November 4 and the plan was Friday. The next meeting assigned Maya and approved
+Tuesday because Friday's build failed validation. A later Monday proposal stays
+in the history while Tuesday remains the confirmed plan.
+
+KITE stores each claim with its topic, status, original evidence, and date when
+known. A new Codex or Claude Code session can use the same memory to answer
+questions and act on the team's latest confirmed decisions.
 
 ### Install KITE in Codex desktop
 
 Add the Memoket plugin directory once, then open **Plugins → Memoket → KITE →
-Install** in Codex desktop. Start a new chat and ask **“Run the KITE demo.”**
+Install** in Codex desktop. Start a new chat and ask **“Show me how KITE remembers
+a changed release decision.”**
 
 ```sh
 codex plugin marketplace add memoket/memoket-kite --ref codex/agent-native-memory \
@@ -41,21 +47,24 @@ and citation examples.
 
 ### Try the command line
 
-From a KITE checkout, install the package and try the offline demo with two synthetic meetings.
+From a KITE checkout, install the package and try the release decision demo.
 
 ```bash
 python -m pip install '.[agent]'
-kite-tool demo --text
+kite-tool demo --decision-story
 ```
 
-The demo follows an early proposal through to a confirmed decision. It prints
-the decision, owner, and original quotes with conversation and segment IDs.
-It runs without an API key. The installed CLI carries its workflows, skills,
-and demo data. Add `--save-workspace ./kite-demo` to keep the example data
-and run `kite-tool --workspace ./kite-demo topics` to find queryable topics.
-Use `kite-tool --workspace ./kite-demo query --topic "first run" --text`
-to read the decision timeline and its citations. Use `kite-tool ingest --input FILE`
-to import a prepared source and its annotations in one command.
+The demo shows the prior and current answers, the later proposal, and an actual
+memory record with its original quote. It runs locally on three synthetic
+meetings without model calls. Add `--save-workspace ./kite-demo` to keep the
+sample and ask it again from another process.
+
+```sh
+kite-tool --workspace ./kite-demo query --pipeline decision-evolution --topic 'release plan' --text
+```
+
+Run `kite-tool demo --text` for the text and Memoket import walkthrough. Use
+`kite-tool ingest --input FILE` to import a prepared source and its annotations.
 See the [agent quickstart](examples/agent-workflows/README.md) for stage-by-stage
 commands, or [add KITE to your project's agent instructions](examples/agent-workflows/README.md#give-your-agent-a-task).
 The [operating guide](AGENT_GUIDE.md) describes the workflow and tool contracts.
@@ -70,31 +79,16 @@ The [operating guide](AGENT_GUIDE.md) describes the workflow and tool contracts.
 
 ## 💡 Why KITE by Memoket
 
-Most AI memory turns every sentence into a cloud of numbers and hands back whatever
-lands closest to your question. It always returns *something*, even when the answer
-was never there, and it cannot show you *why*.
+KITE keeps facts about the same decision or assignment together as meetings
+accumulate. You can start with an earlier owner, follow the assignment forward,
+and verify the handoff in the original conversation. Date filters let you ask
+what was known before a change. If the selected evidence leaves a question open
+or supports competing answers, the trace surfaces that uncertainty.
 
-KITE by Memoket reads what a question means, not how it sounds.
-
-> **"Who's the decision-maker on the Henderson account now?"**
->
-> Nothing in memory says *decision-maker*:
->
-> - *March.* Marcus: "I'll sign off on Henderson."
-> - *June.* The new VP of Ops: "Dana owns Henderson from here."
->
-> Both were filed under the same topic when they were written. Then *now* sorts them
-> by date. Similarity has no notion of *now*: nearest-match memory rates March just as
-> relevant and answers **"Marcus"**, with nothing to tell you it is wrong. KITE answers
-> **"Dana"**, with the June line attached.
-
-|  | Nearest-match memory | 🪁 KITE by Memoket |
-|---|---|---|
-| **Finds** | whatever *sounds* like the question | the facts that *answer* it |
-| **When it was never said** | returns something anyway | comes back empty, and says so |
-| **Why this answer?** | a similarity score | a readable plan, with who said it and when |
-| **Runtime stack** | embeddings · vector DB · rerankers | one portable, topic-indexed file |
-| **Ask again tomorrow** | depends on the index that day | the same plan walks the same steps |
+The agent CLI stores conversation revisions, their evidence, and a Codebook
+index in a local workspace. Once the agent has annotated a conversation, the
+index can retrieve its facts and calculate reported states without an embedding
+service or a model call.
 
 <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/string-b.svg" width="100%" alt="">
 
