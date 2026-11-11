@@ -6327,7 +6327,10 @@ def test_schedule_question_follows_a_repeated_calendar_date_into_a_later_recordi
         }
 
     old = "The harbor rehearsal was scheduled for April 12. Attendance is optional."
-    changed = "We moved to April 19 because the auditorium is unavailable."
+    changed = (
+        "We moved to April 19 because the auditorium is unavailable. "
+        + "This is a check of the wording in the original minutes for the group. " * 7
+    ).strip()
     first = call(
         "index-sources",
         payload={
@@ -6381,6 +6384,28 @@ def test_schedule_question_follows_a_repeated_calendar_date_into_a_later_recordi
             for row in bounded["packing_trace"]["candidates"]
         )
         assert old in {line["text"] for span in bounded["spans"] for line in span["evidence"]}
+    comparison = call(
+        *args, "--from-version", str(first["memory_version"]), "--save", "dated-comparison"
+    )
+    before, after = comparison["parts"]
+    assert before["quote_bytes"] + after["quote_bytes"] <= comparison["quote_budget_bytes"] == 3800
+    original_lines = {line["text"] for span in before["spans"] for line in span["evidence"]}
+    assert old in original_lines and changed not in original_lines
+    assert changed in {line["text"] for span in after["spans"] for line in span["evidence"]}
+    assert any(
+        row.get("selection", {}).get("reason") == "dated_plan_followup"
+        and row["conversation_id"] == "followup"
+        and row["reason"] == "quoted"
+        for row in after["packing_trace"]["candidates"]
+    )
+    graph = viewer._snapshot(directory, [], run_id="dated-comparison")
+    (linked,) = [
+        pick
+        for pick in graph["search_comparison"][1]["phase_evidence"]
+        if pick["reason"] == "dated_plan_followup"
+    ]
+    assert linked["term"] == "April 12"
+    assert graph["evidence"][linked["source_line_id"]]["text"] == changed
 
 
 def test_change_questions_reserve_original_evidence_for_separate_subquestions(work):
@@ -6391,7 +6416,10 @@ def test_change_questions_reserve_original_evidence_for_separate_subquestions(wo
         "Did the print quantity change?"
     )
     initial = "We decided the library wayfinding prototype would use gray card and embossed arrows."
-    approved = "At the accessibility review we approve yellow vinyl for the signage."
+    approved = (
+        "At the accessibility review we approve yellow vinyl for the signage. "
+        + "The details belong in the project archive for reference in future reviews. " * 6
+    ).strip()
     retained = "We decided to keep the print quantity at 500 copies."
     baseline = call(
         "index-sources",

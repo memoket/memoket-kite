@@ -1052,8 +1052,17 @@
             element('p', `${number.format(part.passages)} ${t('record')} · ${number.format(part.quote_bytes)}/${number.format(part.quote_budget_bytes)} ${t('quoteBytes')}`));
           renderWordForms(branch, part.word_forms);
           renderRepeatedTerms(branch, part.repeated_terms);
-          if (part.change_phases?.length) {
-            branch.append(element('p', t('changePhases') + ' · ' + part.change_phases.join(' / ')));
+          const phaseEvidence = part.phase_evidence || [];
+          const unlinkedPhases = (part.change_phases || []).filter(phase => !phaseEvidence.some(pick => pick.term === phase));
+          if (unlinkedPhases.length) {
+            branch.append(element('p', t('changePhases') + ' · ' + unlinkedPhases.join(' / ')));
+          }
+          for (const pick of phaseEvidence) {
+            const line = lines.get(pick.source_line_id);
+            if (!line) continue;
+            const label = pick.reason === 'dated_plan_followup' ? t('recordingSelection').dated_plan_followup : '';
+            branch.append(button([label, pick.term, line.conversation_id + '#' + line.segment_id].filter(Boolean).join(' · '),
+              () => choose(line), 'citation-link'));
           }
           if (part.first_lines_prioritized) {
             branch.append(element('p', t(history ? 'versionLinesPrioritized' : 'firstLinesPrioritized')));

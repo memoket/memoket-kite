@@ -1173,7 +1173,7 @@ def _balance_recordings(
     return _promote_alternative(rows, row, "selective_original_clue", term, direct_positions=hits)
 
 
-def _schedule_followup(workspace, index, plan, rows, limit, max_bytes):
+def _schedule_followup(workspace, index, plan, rows, limit, line_budget):
     records = {}
 
     def segments(row):
@@ -1234,7 +1234,7 @@ def _schedule_followup(workspace, index, plan, rows, limit, max_bytes):
                     if (
                         dates - {pivot}
                         and _SCHEDULE_CHANGE.search(statement)
-                        and len(statement.encode("utf-8")) <= max_bytes // 4
+                        and len(statement.encode("utf-8")) <= line_budget
                     ):
                         return {
                             **dict(row),
@@ -1268,7 +1268,9 @@ def _compiled_change_phases(request, question):
     return phases if 2 <= len(phases) <= 4 else []
 
 
-def _change_clause_candidates(workspace, index, clauses, slots, max_bytes, *, implicit=False):
+def _change_clause_candidates(
+    workspace, index, clauses, slots, max_bytes, *, implicit=False, version_comparison=False
+):
     clauses = list(dict.fromkeys(part.strip() for part in clauses if part.strip()))
     if not 2 <= len(clauses) <= min(4, slots):
         return []
@@ -1323,6 +1325,7 @@ def _change_clause_candidates(workspace, index, clauses, slots, max_bytes, *, im
     records = {}
     line_terms = {}
     ranked = [[] for _ in clauses]
+    line_budget = max_bytes // (2 if version_comparison else 4)
     decision = _PHASE_STATE if implicit else _CLAUSE_DECISION
     asks_date = [
         bool(
@@ -1345,7 +1348,7 @@ def _change_clause_candidates(workspace, index, clauses, slots, max_bytes, *, im
         for pos in range(start, stop):
             text = segments[pos]["text"]
             size = len(text.encode("utf-8"))
-            if size > max_bytes // 4:
+            if size > line_budget:
                 continue
             dates = min(2, len(set(_CLAUSE_DATE.findall(text))))
             changes = min(2, len(set(decision.findall(text))))
@@ -1368,7 +1371,7 @@ def _change_clause_candidates(workspace, index, clauses, slots, max_bytes, *, im
 
     selected = []
     seen = set()
-    budget = max_bytes // 2
+    budget = max_bytes * 2 // 3 if version_comparison else max_bytes // 2
     for clause, options in zip(clauses, ranked, strict=True):
         for _, row, pos, size in sorted(options, key=lambda candidate: -candidate[0]):
             key = (row["checksum"], pos)
@@ -1909,6 +1912,7 @@ def _context_evidence(
                     repeated,
                 )
         reserved_clauses = []
+        followup = None
         if (
             _question
             and neighbors
@@ -1916,9 +1920,15 @@ def _context_evidence(
             and not (preferred or anchors or matching_lines or plan.get("latest"))
         ):
             sequence = _SCHEDULE_SEQUENCE.search(_question)
-            followup = None
             if limit >= 2 and sequence and _SCHEDULE_QUESTION.search(_question):
-                followup = _schedule_followup(workspace, index, plan, candidates, limit, max_bytes)
+                followup = _schedule_followup(
+                    workspace,
+                    index,
+                    plan,
+                    candidates,
+                    limit,
+                    max_bytes // (2 if reserve_change_phases else 4),
+                )
                 if followup:
                     candidates.insert(1, followup)
             first = 2 if followup else 1
@@ -1926,13 +1936,29 @@ def _context_evidence(
             if _question.count("?") + _question.count("？") >= 2:
                 if not followup and sequence and _CLAUSE_CHANGE_QUESTION.search(_question):
                     reserved_clauses = _change_clause_candidates(
-                        workspace, index, _CLAUSE_BREAK.split(_question), phase_slots, max_bytes
+                        workspace,
+                        index,
+                        _CLAUSE_BREAK.split(_question),
+                        phase_slots,
+                        max_bytes,
+                        version_comparison=reserve_change_phases,
                     )
             elif change_phases:
                 reserved_clauses = _change_clause_candidates(
-                    workspace, index, change_phases, phase_slots, max_bytes, implicit=True
+                    workspace,
+                    index,
+                    change_phases,
+                    phase_slots,
+                    max_bytes,
+                    implicit=True,
+                    version_comparison=reserve_change_phases,
                 )
             candidates[first:first] = reserved_clauses
+            if reserve_change_phases and (followup or reserved_clauses):
+                # Protect the selected original lines from a long, general
+                # match at the front of this version's half of the budget.
+                leading = candidates.pop(0)
+                candidates.insert(first + len(reserved_clauses) - 1, leading)
         selected_version = None
         if other_records is not None and not (
             reserved_clauses or matching_lines or plan.get("latest")
@@ -1957,7 +1983,7 @@ def _context_evidence(
         # before expanding the leading candidate with its surrounding turns.
         first_lines = (
             first_lines
-            or (reserve_change_phases and bool(reserved_clauses))
+            or (reserve_change_phases and bool(followup or reserved_clauses))
             or selected_version is not None
         )
         spans, size, omitted = _pack(
@@ -1986,15 +2012,20 @@ def _context_evidence(
                         display_terms[term] for term in candidate["corroborating_terms"]
                     ]
         version_quote = None
-        if selected_version is not None:
-            revision = revision_id(index.records[selected_version["checksum"]])
-            candidate_id = f"{revision}L{selected_version['start'] + 1}"
-            if any(
-                line["source_line_id"] == candidate_id
-                for span in spans
-                for line in span["evidence"]
-            ):
-                version_quote = candidate_id
+        phase_evidence = []
+        if reserve_change_phases:
+            quoted = {line["source_line_id"] for span in spans for line in span["evidence"]}
+            for row in (selected_version, followup, *reserved_clauses):
+                if row is None:
+                    continue
+                revision = revision_id(index.records[row["checksum"]])
+                candidate_id = f"{revision}L{row['direct_positions'][0] + 1}"
+                if candidate_id not in quoted:
+                    continue
+                if row is selected_version:
+                    version_quote = candidate_id
+                else:
+                    phase_evidence.append({**row["selection"], "source_line_id": candidate_id})
     return {
         "memory_version": workspace.version(),
         "plan": plan,
@@ -2007,6 +2038,7 @@ def _context_evidence(
         "span_limit": limit,
         **({"first_lines_prioritized": True} if first_lines else {}),
         **({"version_evidence": version_quote} if version_quote else {}),
+        **({"phase_evidence": phase_evidence} if phase_evidence else {}),
         **({"packing_trace": trace} if trace is not None else {}),
         **(
             {"term_coverage": _term_coverage(plan["terms"], term_candidates, spans)}

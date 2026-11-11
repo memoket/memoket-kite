@@ -139,6 +139,9 @@ The graph links that line to its source. Read the quote to determine whether
 it confirms a change or records a proposal. In text output, an unchanged
 quote may refer to the same words in the earlier version while keeping its
 own source line and revision heading.
+When a long original turn supports an explicit decision phase or a repeated
+date followed by a schedule change, it can use more of its version's share
+of the quote budget. The shared total stays the same.
 A topic merge can affect current label lookup. Both sides of a workspace
 version comparison use original text.
 When a question refers to an earlier or later discussion, check the dates

@@ -17,6 +17,8 @@ snapshots in the graph. A permanent deletion can remove evidence from both.
 The comparison can cite relevant original wording that appears in only one
 version. Check the quote for approval status. Text output can refer back to
 identical wording with the citation for the selected version.
+The graph links selected phase and schedule evidence from each version to
+the complete original line.
 
 For a recording window such as “the last 30 days,” resolve the dates in the
 user's timezone and pass them as inclusive recording bounds. If there are no

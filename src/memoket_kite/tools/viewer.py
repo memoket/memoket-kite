@@ -65,6 +65,11 @@ def _search_snapshot(
                         if part.get("version_evidence")
                         else {}
                     ),
+                    **(
+                        {"phase_evidence": part["phase_evidence"]}
+                        if part.get("phase_evidence")
+                        else {}
+                    ),
                     "passages": len(part["spans"]),
                     "quote_bytes": part["quote_bytes"],
                     "quote_budget_bytes": part["quote_budget_bytes"],
