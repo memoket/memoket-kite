@@ -50,6 +50,7 @@ from .workflow import (
     query_report,
     recent_runs,
     resume_ingestion,
+    save_context_search,
     source_lines,
     start,
     status,
@@ -178,6 +179,7 @@ def _parser() -> argparse.ArgumentParser:
         "--term", action="append", help="open an original-evidence search in the graph"
     )
     view_options.add_argument("--compare", type=Path, help="compare saved graph snapshots")
+    view_options.add_argument("--run", help="open the evidence from a saved search")
     source_index = commands.add_parser("index-sources", help="index original sources without facts")
     index_input = source_index.add_mutually_exclusive_group()
     index_input.add_argument("--input", metavar="FILE", help="source batch JSON or - for stdin")
@@ -194,6 +196,9 @@ def _parser() -> argparse.ArgumentParser:
     context_input.add_argument("--term", action="append", help="search phrase, repeatable")
     context_input.add_argument("--question", help="compile a task into search phrases locally")
     context.add_argument("--compare-with", help="search a second question within the same budget")
+    context.add_argument(
+        "--save", nargs="?", const="", metavar="RUN_ID", help="save the compile and search results"
+    )
     context.add_argument("--source", help="restrict search to one source namespace")
     context.add_argument("--conversation-id", help="search within an original conversation ID")
     context.add_argument("--start-date", help="earliest source date, inclusive")
@@ -694,7 +699,11 @@ def _index_sources(
 def _dispatch(args) -> tuple[dict, ToolError | None]:
     if args.command == "view":
         return view_memory(
-            args.workspace, open_browser=not args.no_open, terms=args.term, comparison=args.compare
+            args.workspace,
+            open_browser=not args.no_open,
+            terms=args.term,
+            comparison=args.compare,
+            run_id=args.run,
         ), None
     if args.command == "describe":
         return _describe(args.tool), None
@@ -774,6 +783,8 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
     if args.command == "context":
         if args.compare_with is not None and args.question is None:
             raise ToolError("invalid_input", "--compare-with requires --question")
+        if args.save is not None and args.question is None:
+            raise ToolError("invalid_input", "--save requires --question")
         plan = {}
         if args.latest:
             plan["latest"] = True
@@ -791,19 +802,26 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 if (value := getattr(args, key)) is not None
             }
         )
-        with Workspace.open(args.workspace, read_only=True) as workspace:
-            if args.question is not None:
-                request = {
-                    **plan,
-                    "question": args.question,
-                    "limit": args.limit,
-                    "neighbors": args.neighbors,
-                }
-                if args.max_bytes is not None:
-                    request["max_bytes"] = args.max_bytes
-                if args.compare_with is not None:
-                    request["compare_with"] = args.compare_with
+        if args.question is not None:
+            request = {
+                **plan,
+                "question": args.question,
+                "limit": args.limit,
+                "neighbors": args.neighbors,
+            }
+            if args.max_bytes is not None:
+                request["max_bytes"] = args.max_bytes
+            if args.compare_with is not None:
+                request["compare_with"] = args.compare_with
+            if args.save is not None:
+                with Workspace.open(args.workspace) as workspace:
+                    context = Context(
+                        root, workspace, "context-search", extension_root=extension_root
+                    )
+                    return save_context_search(context, request, args.save or None)
+            with Workspace.open(args.workspace, read_only=True) as workspace:
                 return question_pack(workspace, request), None
+        with Workspace.open(args.workspace, read_only=True) as workspace:
             return context_pack(
                 workspace,
                 {**plan, "terms": args.term},

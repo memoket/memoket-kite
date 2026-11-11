@@ -19,6 +19,7 @@
       sourceCatalog: 'Sources', noSources: 'No sources are available.', filterCatalog: 'Filter this list',
       noMatches: 'No matching items.', more: 'Show more', scanned: 'sources with entity or facet labels',
       compile: 'Compiled phrases', candidates: 'candidate spans', quoteBytes: 'quote bytes',
+      sharedQuotes: 'lines shared by both questions',
       candidateSources: 'candidate sources', compareRevision: 'Compare with current version',
       readRevision: 'Read this revision',
       anchorSources: 'sources matching the name',
@@ -59,6 +60,7 @@
       sourceCatalog: '来源', noSources: '当前工作区没有来源。', filterCatalog: '筛选当前列表',
       noMatches: '没有匹配项。', more: '显示更多', scanned: '份来源有实体或 Facet 标注',
       compile: '编译出的检索词', candidates: '个候选片段', quoteBytes: '字节原文',
+      sharedQuotes: '行引文由两问共享',
       candidateSources: '份候选来源', compareRevision: '与当前版本对照',
       readRevision: '查看此版本原文',
       anchorSources: '份来源命中名称',
@@ -865,7 +867,9 @@
           stats.candidate_sources === null ? null : number.format(stats.candidate_sources) + ' ' + t('candidateSources'),
           stats.anchor_sources ? number.format(stats.anchor_sources) + ' ' + t('anchorSources') : null,
           number.format(stats.sources) + ' ' + t('sourceCatalog'),
-          number.format(stats.quotes) + ' ' + t('quotes'), number.format(stats.quote_bytes) + ' ' + t('quoteBytes')].filter(Boolean).join(' · ')));
+          number.format(stats.quotes) + ' ' + t('quotes'),
+          stats.shared_quotes ? number.format(stats.shared_quotes) + ' ' + t('sharedQuotes') : null,
+          number.format(stats.quote_bytes) + ' ' + t('quoteBytes')].filter(Boolean).join(' · ')));
       if (snapshot.search_history) {
         const history = snapshot.search_history;
         trace.prepend(element('p', `${t('history')} v${history.version} · ${new Date(history.committed_at).toLocaleString(language)}`));

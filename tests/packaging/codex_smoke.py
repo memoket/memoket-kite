@@ -174,6 +174,17 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
     first, second = comparison.split("Question 2", 1)
     assert "Question 1" in first and "[launch#text-line-3]" in first, comparison
     assert "[handoff#L4]" in second, comparison
+    saved = run(
+        "context",
+        "--question",
+        'What does "rollout depends" refer to?',
+        "--save",
+        "installed-search",
+        "--text",
+        cwd=subdirectory,
+    ).stdout
+    assert "Saved search: installed-search" in saved and "[handoff#L4]" in saved, saved
+    assert json.loads(run("status", "installed-search").stdout)["state"] == "completed"
     assert (
         json.loads(run("validate-pipeline", "context-search").stdout)["definition"]["id"]
         == "context-search"
@@ -205,7 +216,7 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
     assert "[handoff#L4] Speaker A: Rollout depends on the checklist." in historical
     assert "QA signoff" not in historical
     viewer = run("view", "--help").stdout
-    assert "--compare" in viewer and "--term" in viewer, viewer
+    assert all(option in viewer for option in ("--compare", "--term", "--run")), viewer
     other_project = scratch / "Other project"
     other_project.mkdir()
     empty = run("query", "--topic", "onboarding", cwd=other_project, check=False)

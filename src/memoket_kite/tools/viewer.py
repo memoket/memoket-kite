@@ -35,6 +35,7 @@ def _search_snapshot(
     passages = {}
     sources = {}
     evidence = {}
+    quote_occurrences = 0
     comparison = []
     if question is not None:
         result = (
@@ -75,6 +76,7 @@ def _search_snapshot(
         ]
         for span in pack["spans"]:
             lines = span["evidence"]
+            quote_occurrences += len(lines)
             first, last = lines[0], lines[-1]
             checksum = first["revision_checksum"]
             sources[checksum] = {
@@ -154,6 +156,7 @@ def _search_snapshot(
             "quote_bytes": sum(pack["quote_bytes"] for _, pack in packs),
             "sources": len(sources),
             "quotes": len(evidence),
+            **({"shared_quotes": quote_occurrences - len(evidence)} if comparison else {}),
         },
         "passages": list(passages.values()),
     }
@@ -448,9 +451,13 @@ def view_memory(
     open_browser: bool,
     terms: list[str] | None = None,
     comparison: Path | None = None,
+    run_id: str | None = None,
 ) -> dict:
     if terms and (len(terms) > 3 or any(not term.strip() or len(term) > 128 for term in terms)):
         raise ToolError("invalid_input", "use up to three nonempty search phrases")
+    if run_id is not None:
+        with Workspace.open(directory, read_only=True) as workspace:
+            saved_context_search(workspace, run_id)
     command = [sys.executable, "-m", __name__, str(directory.expanduser().resolve())]
     if comparison is not None:
         comparison = comparison.expanduser().resolve()
@@ -474,6 +481,8 @@ def view_memory(
         )
     if terms:
         url += "?" + urlencode({"term": terms}, doseq=True)
+    if run_id is not None:
+        url += "?" + urlencode({"view": "graph", "run": run_id})
 
     opened = False
     if open_browser:

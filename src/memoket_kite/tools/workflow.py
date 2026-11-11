@@ -204,7 +204,7 @@ def _inputs(context: Context, definition: dict, supplied: dict) -> dict:
 
 def _require_stage_sequence(definition: dict, expected: tuple[tuple[str, str], ...]) -> None:
     if tuple((stage["id"], stage["tool"]) for stage in definition["stages"]) != expected:
-        raise ToolError("invalid_pipeline", "ingest requires the standard local ingestion stages")
+        raise ToolError("invalid_pipeline", "this command requires the standard workflow stages")
 
 
 def start(
@@ -621,6 +621,25 @@ def saved_context_search(workspace, run_id: str) -> dict:
     ):
         raise ToolError("integrity_error", "saved search does not match its workspace snapshot")
     return result
+
+
+def save_context_search(
+    context: Context, request: dict, run_id: str | None
+) -> tuple[dict, ToolError | None]:
+    stages = (("compile", "compile_context"), ("search", "search_context"))
+    checkpoint = start(
+        context,
+        {"request": request},
+        run_id,
+        expected_stages=stages,
+        resume_existing=True,
+    )
+    run_id = checkpoint["run_id"]
+    for stage, _ in stages:
+        result, error = advance(context, run_id, stage, {})
+        if error is not None:
+            return {"saved_run": run_id}, error
+    return {**result["value"], "saved_run": run_id}, None
 
 
 def committed_topic_merge(workspace, version: int) -> dict | None:

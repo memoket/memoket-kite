@@ -50,7 +50,7 @@ def work(tmp_path, capsys, monkeypatch):
         assert code == (2 if error else 0), output
         if not error and (
             args[0] == "codebook"
-            or (args[0] in {"query", "status", "evidence"} and "--text" in args)
+            or (args[0] in {"query", "status", "evidence", "context"} and "--text" in args)
         ):
             return output
         data = json.loads(output)
@@ -332,6 +332,11 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
             ]
             assert [part["passages"] for part in compared["search_comparison"]] == [1, 0]
             assert compared["passages"][0]["terms"] == ["question-1"]
+            overlap = read(f"?q=review&q2=checklist&at={question['version']}")
+            assert (
+                overlap["search_trace"]["quotes"] == overlap["search_trace"]["shared_quotes"] == 1
+            )
+            assert overlap["passages"][0]["terms"] == ["question-1", "question-2"]
             third = text_input("release", "Sign off the checklist.", date="2026-02-07")["source"]
             third["expected_checksum"] = updated
             call("index-sources", payload={"sources": [{"source": third}]})
@@ -5889,6 +5894,7 @@ def test_context_comparison_keeps_both_questions_in_one_budget_and_snapshot(work
                 "compare_with": args[3],
                 "max_bytes": 513,
                 "limit": 3,
+                "neighbors": 1,
             }
         },
     )
@@ -5898,8 +5904,46 @@ def test_context_comparison_keeps_both_questions_in_one_budget_and_snapshot(work
     assert call("stage", "compare-questions", "search")["value"] == {
         key: value for key, value in direct.items() if key != "ok"
     }
+    saved = call("context", *args, "--save", "comparison-saved")
+    assert saved == {**direct, "saved_run": "comparison-saved"}
+    assert call("context", *args, "--save", "comparison-saved") == saved
+    assert call("artifact", "comparison-saved", "compile")["value"] == compiled
+    assert call("status", "comparison-saved")["state"] == "completed"
+    text = call("context", *args, "--save", "comparison-saved", "--text")
+    assert "Saved search: comparison-saved" in text
+    generated = call("context", *args, "--save")["saved_run"]
+    assert generated != "comparison-saved" and call("status", generated)["state"] == "completed"
+    call("context", "--question", "Loading?", "--save", "comparison-saved", error="conflict")
     call("context", *args, "--at-version", str(version + 1), error="invalid_input")
     call("context", "--term", "northwind", "--compare-with", "loading", error="invalid_input")
+    call("context", "--term", "northwind", "--save", error="invalid_input")
+
+
+def test_context_text_reuses_a_quote_across_questions(work):
+    _, call = work
+    original = "The ledger review moves to Monday because the reconciled figures arrive Friday."
+    call(
+        "index-sources",
+        payload={
+            "sources": [{"source": text_input("ledger", original, date="2026-02-07")["source"]}]
+        },
+    )
+    args = (
+        "--question",
+        "When does the ledger review move?",
+        "--compare-with",
+        "Why does the ledger review move?",
+    )
+    result = call("context", *args)
+    assert [part["spans"][0]["evidence"][0]["text"] for part in result["parts"]] == [
+        original,
+        original,
+    ]
+    first, second = call("context", *args, "--text").split("Question 2", 1)
+    assert original in first and "[ledger#text-1]" in first
+    assert "[ledger#text-1] (quoted in Question 1)" in second
+    assert original not in second
+    assert "Date: 2026-02-07" in first and "Date: 2026-02-07" in second
 
 
 def test_context_index_source_revision_merge_and_delete(work, monkeypatch):

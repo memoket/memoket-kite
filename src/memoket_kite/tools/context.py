@@ -819,21 +819,34 @@ def render_context(pack: dict) -> str:
             lines.append(
                 f"Later deletions: {history['later_deletions']}. Deleted evidence is unavailable."
             )
+    first_question = {}
     for number, part in enumerate(parts, 1):
         if len(parts) > 1:
             lines.append(f"Question {number}")
+        previous_revision = None
         for span in part["spans"]:
-            if span["source_date"]:
-                lines.append(f"Date: {span['source_date']}")
-            if history:
-                lines.append(f"Revision: {span['evidence'][0]['revision_checksum']}")
+            revision = span["evidence"][0]["revision_checksum"]
+            if revision != previous_revision:
+                if span["source_date"]:
+                    lines.append(f"Date: {span['source_date']}")
+                if history:
+                    lines.append(f"Revision: {revision}")
+                previous_revision = revision
             for line in span["evidence"]:
                 ref = f"{line['conversation_id']}#{line['segment_id']}"
                 if len(namespaces[line["conversation_id"]]) > 1:
                     ref = f"{line['source']}/{ref}"
                 speaker = f" {line['speaker_id']}:" if "speaker_id" in line else ""
-                lines.append(f"[{ref}]{speaker} {line['text']}")
+                quote = f"{speaker} {line['text']}"
+                if len(parts) > 1:
+                    earlier = first_question.setdefault(line["source_line_id"], number)
+                    reference = f" (quoted in Question {earlier})"
+                    if earlier < number and len(reference.encode()) < len(quote.encode()):
+                        quote = reference
+                lines.append(f"[{ref}]{quote}")
             lines.append("")
         if not part["spans"]:
             lines.append("No evidence matched.")
+    if run_id := pack.get("saved_run"):
+        lines.extend(("", f"Saved search: {run_id}"))
     return "\n".join(lines).strip()
