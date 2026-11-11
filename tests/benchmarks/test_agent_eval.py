@@ -139,7 +139,7 @@ def test_host_grade_checks_the_trace_scope_even_when_claims_are_correct(tmp_path
             case,
             _reference_answer(case, run, report),
             baseline,
-            expected_facts=expected[name],
+            expected_trace=expected[name],
         )
 
     alias = grade("dated-timeline", {"topics": ["report overhaul"]}, "alias")
@@ -205,12 +205,63 @@ def test_trace_grade_checks_missing_and_extra_facts_in_the_same_sources(tmp_path
                 case,
                 _reference_answer(case, run, report),
                 baseline,
-                expected_facts=expected[name],
+                expected_trace=expected[name],
             )
         assert score["source_scope_correct"] and score["pipeline_completed"]
         assert score["supported_claims"] == score["expected_claims"]
         assert score["trace_fact_recall"] == recall and score["trace_fact_precision"] == precision
         assert not score["trace_facts_exact"] and not score["passed"]
+
+
+def test_trace_grade_checks_chronology_and_decision_state(tmp_path, monkeypatch):
+    fixture = json.loads(FIXTURE.read_text())
+    kite = Kite(tmp_path / "memory")
+    baseline = _snapshot(kite, _seed(kite, fixture))
+    name = "format-decision"
+    case = fixture["cases"][name]
+    expected, _ = _trace_expectations(fixture)
+    original = kite.trace(name, case)
+    answer = _reference_answer(case, name, original)
+    original_call = kite.call
+
+    def grade(report):
+        def altered_call(*args, **kwargs):
+            if args == ("artifact", name, "report"):
+                return {"value": report}
+            return original_call(*args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(kite, "call", altered_call)
+            return _grade(kite, case, answer, baseline, expected_trace=expected[name])
+
+    tied = deepcopy(original)
+    tied["timeline"][:2] = reversed(tied["timeline"][:2])
+    score = grade(tied)
+    assert score["expected_ordered_pairs"] == score["correctly_ordered_pairs"] == 20
+    assert score["temporal_ordering_accuracy"] == 1.0 and score["passed"]
+
+    wrong_order = deepcopy(original)
+    wrong_order["timeline"][2:4] = reversed(wrong_order["timeline"][2:4])
+    score = grade(wrong_order)
+    assert score["trace_facts_exact"] and score["trace_claims_correct"]
+    assert score["correctly_ordered_pairs"] == 19
+    assert score["temporal_ordering_accuracy"] == 19 / 20
+    assert not score["trace_order_correct"] and not score["passed"]
+
+    missing = deepcopy(original)
+    missing["timeline"].pop(2)
+    score = grade(missing)
+    assert score["correctly_ordered_pairs"] == 14
+    assert score["temporal_ordering_accuracy"] == 14 / 20
+    assert not score["trace_order_correct"] and not score["passed"]
+
+    wrong_state = deepcopy(original)
+    pdf = next(row for row in wrong_state["timeline"] if row["state"] == "PDF")
+    pdf["status"] = "proposal"
+    score = grade(wrong_state)
+    assert score["trace_facts_exact"] and score["trace_order_correct"]
+    assert score["supported_claims"] == 2 and score["trace_supported_claims"] == 1
+    assert not score["trace_claims_correct"] and not score["passed"]
 
 
 def test_host_grade_counts_retries_in_an_unfinished_trace(tmp_path):
@@ -227,7 +278,7 @@ def test_host_grade_counts_retries_in_an_unfinished_trace(tmp_path):
         kite.stage("invalid-range", "resolve", error="invalid_input")
     baseline = _snapshot(kite, [])
     answer = {"run_id": "invalid-range", "claims": {}}
-    score = _grade(kite, case, answer, baseline, expected_facts=expected["dated-timeline"])
+    score = _grade(kite, case, answer, baseline, expected_trace=expected["dated-timeline"])
     assert not score["pipeline_completed"] and not score["passed"]
     assert score["stage_attempts"] == 2 and score["stage_retries"] == 1
     assert score["stage_retry_rate"] == 0.5
@@ -237,7 +288,7 @@ def test_host_grade_counts_retries_in_an_unfinished_trace(tmp_path):
         {**case, "pipeline": "topic-tracing"},
         answer,
         baseline,
-        expected_facts=expected["dated-timeline"],
+        expected_trace=expected["dated-timeline"],
     )
     assert other["stage_attempts"] == other["stage_retries"] == 0
     assert other["stage_retry_rate"] is None
@@ -295,7 +346,7 @@ def test_deletion_score_requires_the_authorized_checkpoint(tmp_path):
     answer["deletion_run_id"] = "replacement"
     expected, _ = _trace_expectations(fixture)
     result = _score_deletion(
-        kite, case, answer, baseline, fixture, expected_facts=expected[DELETION_CASE]
+        kite, case, answer, baseline, fixture, expected_trace=expected[DELETION_CASE]
     )
     assert result["expected_sources_preserved"] and result["post_deletion_evidence_verified"]
     assert result["prior_report_invalidated"]
@@ -321,7 +372,7 @@ def test_deletion_grade_checks_every_surviving_fact_even_if_counts_match(tmp_pat
 
     expected, _ = _trace_expectations(fixture)
     result = _score_deletion(
-        kite, case, answer, baseline, fixture, expected_facts=expected[DELETION_CASE]
+        kite, case, answer, baseline, fixture, expected_trace=expected[DELETION_CASE]
     )
     assert result["expected_sources_preserved"] and result["post_deletion_evidence_verified"]
     assert result["approved_deletion_applied"] and result["prior_report_invalidated"]

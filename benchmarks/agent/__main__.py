@@ -132,9 +132,17 @@ def _reference_answer(case: dict, run: str, report: dict) -> dict:
         rows = [row for row in timeline if row["state_key"] == state_key]
         current = report["current_reported_states"].get(state_key, {})
         if mode == "state":
+            confirmed = current.get("status") == "confirmed"
             claims[key] = _claim(
-                current.get("value"),
-                [r for r in rows if r["fact_id"] in current.get("fact_ids", [])],
+                current["value"] if confirmed else None,
+                [
+                    r
+                    for r in rows
+                    if confirmed
+                    and r["fact_id"] in current["fact_ids"]
+                    and r["status"] == "confirmed"
+                    and r["effective"]
+                ],
             )
         elif mode == "dates":
             by_date = {}
@@ -256,7 +264,7 @@ def _grade(
     answer: dict,
     seeded: dict,
     *,
-    expected_facts: Counter,
+    expected_trace: list[Counter],
     require_fact_text: bool = True,
 ) -> dict:
     run = answer.get("run_id")
@@ -302,11 +310,17 @@ def _grade(
     )
     claims = answer.get("claims")
     result = score_claims(case, claims if isinstance(claims, dict) else {}, report)
-    observed_facts = _report_facts(report)
+    trace_claims = _reference_answer(case, run, report)["claims"] if report is not None else {}
+    trace_score = score_claims(case, trace_claims, report)
+    observed_trace = _report_facts(report)
     if not require_fact_text:
-        expected_facts = _evidence_counts(expected_facts)
-        observed_facts = _evidence_counts(observed_facts)
+        expected_trace = [_evidence_counts(group) for group in expected_trace]
+        observed_trace = [evidence for _, evidence in observed_trace]
+    expected_facts = sum(expected_trace, Counter())
+    observed_facts = Counter(observed_trace)
     matched = (expected_facts & observed_facts).total()
+    expected_pairs, ordered_pairs = _timeline_order(expected_trace, expected_facts, observed_trace)
+    order_correct = report is not None and ordered_pairs == expected_pairs
     facts_exact = (
         report is not None
         and not report["truncated"]
@@ -323,6 +337,12 @@ def _grade(
         trace_fact_recall=_rate(matched, expected_facts.total()),
         trace_fact_precision=_rate(matched, observed_facts.total()),
         trace_facts_exact=facts_exact,
+        expected_ordered_pairs=expected_pairs,
+        correctly_ordered_pairs=ordered_pairs,
+        temporal_ordering_accuracy=_rate(ordered_pairs, expected_pairs),
+        trace_order_correct=order_correct,
+        trace_supported_claims=trace_score["supported_claims"],
+        trace_claims_correct=trace_score["passed"],
         stage_attempts=attempts,
         stage_retries=retries,
         stage_retry_rate=_rate(retries, attempts),
@@ -331,7 +351,13 @@ def _grade(
     if requires_dates:
         result["date_scope_correct"] = date_scope_correct
     result["passed"] &= (
-        completed and unchanged and source_scope_correct and date_scope_correct and facts_exact
+        completed
+        and unchanged
+        and source_scope_correct
+        and date_scope_correct
+        and facts_exact
+        and order_correct
+        and trace_score["passed"]
     )
     return result
 
@@ -394,23 +420,26 @@ def _fixture_facts(
     return facts
 
 
-def _trace_expectations(fixture: dict) -> tuple[dict[str, Counter], str]:
+def _trace_expectations(fixture: dict) -> tuple[dict[str, list[Counter]], str]:
     raw = TRACE_EXPECTATIONS.read_bytes()
     selections = json.loads(raw)
     if selections.keys() != fixture["cases"].keys():
         raise BenchmarkError("trace expectations must cover the fixed trace cases")
-    expected = {name: _fixture_facts(fixture, refs=refs) for name, refs in selections.items()}
-    retained = [
-        ref
-        for ref in selections["format-decision"]
-        if ref[:2] != [DELETION_TARGET["source"], DELETION_TARGET["conversation_id"]]
+    target = [DELETION_TARGET["source"], DELETION_TARGET["conversation_id"]]
+    selections[DELETION_CASE] = [
+        kept
+        for group in selections["format-decision"]
+        if (kept := [ref for ref in group if ref[:2] != target])
     ]
-    expected[DELETION_CASE] = _fixture_facts(fixture, refs=retained)
+    expected = {
+        name: [_fixture_facts(fixture, refs=group) for group in groups]
+        for name, groups in selections.items()
+    }
     return expected, hashlib.sha256(raw).hexdigest()
 
 
-def _report_facts(report: dict | None) -> Counter:
-    return Counter(
+def _report_facts(report: dict | None) -> list[tuple]:
+    return [
         (
             row["content"],
             tuple(
@@ -427,7 +456,7 @@ def _report_facts(report: dict | None) -> Counter:
             ),
         )
         for row in (report or {}).get("timeline", [])
-    )
+    ]
 
 
 def _evidence_counts(facts: Counter) -> Counter:
@@ -438,11 +467,34 @@ def _evidence_counts(facts: Counter) -> Counter:
     return counts
 
 
+def _timeline_order(
+    groups: list[Counter], expected: Counter, observed: list[tuple]
+) -> tuple[int, int]:
+    """Count comparable expected pairs and those returned in chronological order."""
+    rank = {fact: position for position, group in enumerate(groups) for fact in group}
+    if len(rank) != sum(len(group) for group in groups):
+        raise BenchmarkError("the same timeline fact appears in different order groups")
+    expected_pairs = previous = 0
+    for group in groups:
+        size = group.total()
+        expected_pairs += previous * size
+        previous += size
+
+    returned = Counter()
+    ranks = []
+    for fact in observed:
+        if returned[fact] < expected[fact]:
+            ranks.append(rank[fact])
+            returned[fact] += 1
+    ordered_pairs = sum(left < right for i, left in enumerate(ranks) for right in ranks[i + 1 :])
+    return expected_pairs, ordered_pairs
+
+
 def _fact_provenance(kite: Kite, expected: Counter) -> dict:
     report = kite.call(
         "query", "--pipeline", "timeline-reconstruction", payload={"query": {"limit": 1000}}
     )["value"]
-    observed = _report_facts(report)
+    observed = Counter(_report_facts(report))
     matched = (expected & observed).total()
     return {
         "expected_facts": expected.total(),
@@ -599,7 +651,7 @@ def offline(fixture: dict) -> dict:
                 case,
                 _reference_answer(case, name, report),
                 snapshot,
-                expected_facts=expected_trace[name],
+                expected_trace=expected_trace[name],
             )
 
         approval, baseline = _deletion_preview(kite, "format-decision", snapshot, fixture)
@@ -610,7 +662,7 @@ def offline(fixture: dict) -> dict:
         answer = _reference_answer(case, "after-delete", surviving)
         answer["deletion_run_id"] = deletion
         cases[DELETION_CASE] = _score_deletion(
-            kite, case, answer, baseline, fixture, expected_facts=expected_trace[DELETION_CASE]
+            kite, case, answer, baseline, fixture, expected_trace=expected_trace[DELETION_CASE]
         )
         update = _offline_update(Path(directory) / "update")
         lifecycle = {
@@ -781,7 +833,7 @@ def _score_recovery(kite: Kite, fixture: dict, answer: dict, snapshot: dict) -> 
         case,
         answer,
         {**snapshot, **integrity},
-        expected_facts=_fixture_facts({"sources": [recovered_source]}),
+        expected_trace=[_fixture_facts({"sources": [recovered_source]})],
         require_fact_text=False,
     )
     result.pop("workspace_unchanged")
@@ -961,10 +1013,16 @@ Use `ANSWER.schema.json` for the response.
 
 
 def _score_deletion(
-    kite: Kite, case: dict, answer: dict, snapshot: dict, fixture: dict, *, expected_facts: Counter
+    kite: Kite,
+    case: dict,
+    answer: dict,
+    snapshot: dict,
+    fixture: dict,
+    *,
+    expected_trace: list[Counter],
 ) -> dict:
     integrity = kite.call("integrity")
-    result = _grade(kite, case, answer, {**snapshot, **integrity}, expected_facts=expected_facts)
+    result = _grade(kite, case, answer, {**snapshot, **integrity}, expected_trace=expected_trace)
     result.pop("workspace_unchanged")
     run = snapshot["deletion_run_id"]
     audit = kite.call("deletion-audit")["deletions"]
@@ -1096,11 +1154,11 @@ def main(argv=None) -> int:
                         answer,
                         snapshot,
                         fixture,
-                        expected_facts=expected,
+                        expected_trace=expected,
                     )
                 else:
                     metrics = _grade(
-                        kite, fixture["cases"][args.case], answer, snapshot, expected_facts=expected
+                        kite, fixture["cases"][args.case], answer, snapshot, expected_trace=expected
                     )
                 metrics["trace_expectations_sha256"] = trace_sha
             result = {

@@ -76,13 +76,15 @@ expected pipeline at the seeded snapshot, then checks the returned values and
 citations against the answer key. It checks source coverage and any required
 date bounds in the saved trace.
 A correct string with a missing or unrelated citation fails.
-The scorer also checks every returned timeline fact against the fixed
-[trace expectations](trace-expectations.json). Each entry selects an original
-annotation by source namespace, conversation ID and one-based position. The
-scorer uses the fixture's fact text and original cited lines for the comparison.
-`trace_expectations_sha256` identifies those selections in the score. Recovery
-checks original citations and the confirmed state against its own fixture and
-allows the host to phrase the annotation in its own words.
+The scorer checks the returned timeline against the fixed
+[trace expectations](trace-expectations.json). Each group selects one or more
+original annotations by source namespace, conversation ID and one-based position.
+Groups appear in expected chronological order, with no required order within a
+group. The scorer uses the fixture's fact text and original cited lines for the
+comparison. `trace_expectations_sha256` identifies the selections and order.
+It also verifies that the saved report's decision and task states support the
+expected claims. Recovery checks original citations and the confirmed state
+against its own fixture and allows the host to phrase the annotation in its own words.
 
 ## Read the results
 
@@ -104,6 +106,13 @@ allows the host to phrase the annotation in its own words.
   the original source identities, segment IDs and quote text. A repeated row
   adds to the returned count. `trace_facts_exact` requires the full expected set
   with its original citations and the correct report count.
+- `temporal_ordering_accuracy` divides correctly returned pairs of timeline
+  facts by all expected pairs across chronological groups. Missing pairs lower
+  the score. Pairs within a group are excluded, and cases with no comparable
+  pairs return `null`.
+- `trace_supported_claims` counts expected claims confirmed by the saved
+  report's timeline and reported states. `trace_claims_correct` requires full
+  support, even when the host submitted the expected answer and citations.
 - `fact_provenance` in the offline summary and `surviving_fact_provenance` in
   the deletion case compare stored facts with the fixture. A match requires the
   fact text and all original source identities, references, segment IDs and quotes.
