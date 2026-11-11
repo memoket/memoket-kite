@@ -190,16 +190,46 @@ def evidence_context(
     workspace, line_id: str, radius: int, *, byte_budget: int | None = None
 ) -> dict:
     match = re.fullmatch(r"c-([a-f0-9]{64})L([1-9][0-9]{0,4})", line_id)
-    if match is None or not 0 <= radius <= 20:
-        raise ToolError("invalid_input", "use a source_line_id and a context radius of 0–20")
-    if byte_budget is not None and not 128 <= byte_budget <= 1024 * 1024:
-        raise ToolError("invalid_input", "context byte budget must be 128–1048576")
+    if match is None:
+        raise ToolError("invalid_input", "use a source_line_id from a trace or source-lines page")
+    _validate_context_window(radius, byte_budget)
     checksum, position = match.groups()
     record = workspace.record(checksum)
-    segments = record["conversation"]["segments"]
     offset = int(position) - 1
-    if offset >= len(segments):
+    if offset >= len(record["conversation"]["segments"]):
         raise ToolError("not_found", "source line was not found")
+    return _context_window(workspace, record, offset, radius, byte_budget)
+
+
+def segment_context(
+    workspace,
+    *,
+    source: str,
+    conversation_id: str,
+    segment_id: str,
+    checksum: str | None,
+    radius: int,
+    byte_budget: int | None,
+) -> dict:
+    _validate_context_window(radius, byte_budget)
+    record = workspace.source_revision(source, conversation_id, checksum)
+    for offset, segment in enumerate(record["conversation"]["segments"]):
+        if segment["segment_id"] == segment_id:
+            return _context_window(workspace, record, offset, radius, byte_budget)
+    raise ToolError("not_found", "segment ID was not found in the selected revision")
+
+
+def _validate_context_window(radius: int, byte_budget: int | None) -> None:
+    if not 0 <= radius <= 20:
+        raise ToolError("invalid_input", "context radius must be between 0 and 20")
+    if byte_budget is not None and not 128 <= byte_budget <= 1024 * 1024:
+        raise ToolError("invalid_input", "context byte budget must be 128–1048576")
+
+
+def _context_window(
+    workspace, record: dict, offset: int, radius: int, byte_budget: int | None
+) -> dict:
+    segments = record["conversation"]["segments"]
     revision = revision_id(record)
 
     def cited(index: int) -> dict:

@@ -10,12 +10,12 @@ from pathlib import Path
 
 from .audio import audio_source
 from .captions import CAPTION_FORMATS
-from .contracts import ToolError, decode_object, encode, read_utf8, validate
+from .contracts import HASH, TEXT, ToolError, decode_object, encode, read_utf8, validate
 from .demo import render_demo, run_demo
 from .ingest import file_source
 from .operations import SCHEMAS, SOURCE_SCOPE, TOOLS, Context
 from .resources import resource_root
-from .retrieve import evidence_context, topic_inventory
+from .retrieve import evidence_context, segment_context, topic_inventory
 from .trace_text import render_trace
 from .workflow import (
     SCRIPTED_IMPORT_STAGES,
@@ -190,7 +190,12 @@ def _parser() -> argparse.ArgumentParser:
     evidence = commands.add_parser(
         "evidence", help="read an original cited line and nearby context"
     )
-    evidence.add_argument("source_line_id")
+    evidence_id = evidence.add_mutually_exclusive_group(required=True)
+    evidence_id.add_argument("source_line_id", nargs="?", help="line ID from a KITE trace")
+    evidence_id.add_argument("--segment-id", help="original segment ID in a conversation")
+    evidence.add_argument("--source", help="source namespace for --segment-id")
+    evidence.add_argument("--conversation-id", help="original conversation ID for --segment-id")
+    evidence.add_argument("--revision", metavar="CHECKSUM", help="select a retained revision")
     evidence.add_argument("--context", type=int, default=0, help="lines on either side (0–20)")
     evidence.add_argument(
         "--byte-budget",
@@ -448,6 +453,30 @@ def _ingest(
     return {**output, "integrity": result["value"]}, None
 
 
+def _read_evidence(args: argparse.Namespace, workspace: Workspace) -> dict:
+    if args.source_line_id is not None:
+        if any(value is not None for value in (args.source, args.conversation_id, args.revision)):
+            raise ToolError("invalid_input", "source and revision options require --segment-id")
+        return evidence_context(
+            workspace, args.source_line_id, args.context, byte_budget=args.byte_budget
+        )
+    if args.source is None or args.conversation_id is None:
+        raise ToolError("invalid_input", "--segment-id requires --source and --conversation-id")
+    scope = {"source": args.source, "conversation_id": args.conversation_id}
+    validate(SOURCE_SCOPE, scope, "source scope")
+    validate(TEXT, args.segment_id, "segment ID")
+    if args.revision is not None:
+        validate(HASH, args.revision, "revision checksum")
+    return segment_context(
+        workspace,
+        **scope,
+        segment_id=args.segment_id,
+        checksum=args.revision,
+        radius=args.context,
+        byte_budget=args.byte_budget,
+    )
+
+
 def _dispatch(args) -> tuple[dict, ToolError | None]:
     if args.command == "describe":
         return _describe(args.tool), None
@@ -586,11 +615,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                     "value": workspace.deletion_impact(preview["value"], run_id=args.run_id)
                 }, None
             if args.command == "evidence":
-                return {
-                    "value": evidence_context(
-                        workspace, args.source_line_id, args.context, byte_budget=args.byte_budget
-                    )
-                }, None
+                return {"value": _read_evidence(args, workspace)}, None
             report = query_report(Context(root, workspace, args.pipeline), supplied)
         if args.text_output:
             return {"text": render_trace(report, supplied["query"])}, None

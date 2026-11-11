@@ -253,6 +253,19 @@ def main() -> None:
         evidence = report["timeline"][0]["evidence"][0]
         detail = call("evidence", evidence["source_line_id"], workspace=recovered)["value"]
         assert detail["evidence"] == evidence and not detail["before"] and not detail["after"]
+        original = call(
+            "evidence",
+            "--source",
+            "text",
+            "--conversation-id",
+            "note",
+            "--segment-id",
+            "text-line-3",
+            "--revision",
+            evidence["revision_checksum"],
+            workspace=recovered,
+        )
+        assert original["value"] == detail
         limited = call(
             "evidence",
             evidence["source_line_id"],

@@ -44,6 +44,14 @@ kite-tool --workspace ./kite-demo query --topic "first run" --text
 
 The text report shows the timeline, reported states, and original quotes. Pass a
 source line ID from the report to `kite-tool evidence` to read nearby lines.
+You can also open a quote with its source namespace and original IDs.
+
+```sh
+kite-tool --workspace ./kite-demo evidence --source memoket --conversation-id 184 --segment-id line-b
+```
+
+For a quote from an earlier revision, pass the report's `revision_checksum`
+with `--revision`.
 Omit `--text` for the complete JSON report. The save operation requires a new
 destination directory. Use
 `kite-tool --workspace ./kite-demo artifact trace report` to read the saved

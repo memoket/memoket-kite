@@ -82,6 +82,17 @@ referenced source revision and whether it is still active. Older source
 revisions remain readable by ID while retained. Deleted revisions are
 unavailable. Evidence reads save no checkpoint or artifact.
 
+To open a citation by its original IDs, use the source namespace,
+conversation ID and segment ID.
+
+```sh
+kite-tool evidence --source memoket --conversation-id 184 --segment-id line-b
+```
+
+This looks up the current revision. Pass the citation's `revision_checksum`
+as `--revision` to open the exact historical revision, even if a later revision
+keeps the same segment ID. Both forms support `--context` and `--byte-budget`.
+
 Use `--byte-budget 4096` to limit the compact JSON for `evidence`, `before`,
 and `after`. KITE adds the closest neighbors first, alternating sides when
 both have room. Each side stays contiguous. `context_budget` reports the

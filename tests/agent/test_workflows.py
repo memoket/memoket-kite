@@ -2748,6 +2748,25 @@ def test_evidence_context_reads_the_cited_revision_until_deletion(work):
     assert exact["evidence"] == citation
     assert exact["before"] == exact["after"] == []
     assert exact["source_revision_active"] and exact["source_time"] == "2026-06-01T10:00:00Z"
+    by_segment = (
+        "evidence",
+        "--source",
+        "transcript",
+        "--conversation-id",
+        "handoff",
+        "--segment-id",
+        "owner",
+    )
+    assert call(*by_segment)["value"] == exact
+    for name, value in (("--context", "1"), ("--byte-budget", "128")):
+        assert (
+            call(*by_segment, name, value)["value"]
+            == call("evidence", line_id, name, value)["value"]
+        )
+    call("evidence", line_id, "--source", "transcript", error="invalid_input")
+    call("evidence", "--segment-id", "owner", error="invalid_input")
+    call(*by_segment, "--revision", "invalid", error="invalid_input")
+    call(*by_segment[:-1], "unknown", error="not_found")
     context = call("evidence", line_id, "--context", "20")["value"]
     before, after = context["before"][0], context["after"][0]
     assert [row["segment_id"] for row in (before, context["evidence"], after)] == [
@@ -2773,6 +2792,13 @@ def test_evidence_context_reads_the_cited_revision_until_deletion(work):
     old = call("evidence", line_id, "--context", "1")["value"]
     assert old["evidence"] == citation and not old["source_revision_active"]
     assert old["before"] == context["before"] and old["after"] == context["after"]
+    assert call(*by_segment, "--revision", first["checksum"], "--context", "1")["value"] == old
+    active = call(*by_segment)["value"]
+    assert (
+        active["source_revision_active"]
+        and active["evidence"]["revision_checksum"] == latest["checksum"]
+    )
+    assert active["evidence"]["text"] == "Rae now owns the launch."
     previous = call(*lines, "--revision", first_page["revision_checksum"], "--offset", "1")
     assert not previous["source_revision_active"]
     assert previous["segments"][0]["source_line_id"] == line_id
@@ -2807,8 +2833,11 @@ def test_evidence_context_reads_the_cited_revision_until_deletion(work):
 
     other = ingest(call, "unrelated", text_input("handoff", "Separate source namespace."))
     call(*lines, "--revision", other["checksum"], error="not_found")
+    call(*by_segment, "--revision", other["checksum"], error="not_found")
     _delete_source(call, "delete", {"source": "transcript", "conversation_id": "handoff"})
     call("evidence", line_id, error="not_found")
+    call(*by_segment, error="not_found")
+    call(*by_segment, "--revision", first["checksum"], error="not_found")
     call("source-history", "transcript", "handoff", error="not_found")
     call(*lines, error="not_found")
     call(*lines, "--revision", first["checksum"], error="not_found")
