@@ -26,6 +26,20 @@ KITE turns meeting notes, transcripts, and Memoket conversations into
 evidence-backed memory. Codex and Claude Code use the same YAML workflows and
 skills to trace decisions, recover task history, and resume interrupted imports.
 
+### Install KITE in Codex desktop
+
+Add the Memoket plugin directory once, then open **Plugins → Memoket → KITE →
+Install** in Codex desktop. Start a new chat and ask **“Run the KITE demo.”**
+
+```sh
+codex plugin marketplace add memoket/memoket-kite --ref codex/agent-native-memory
+```
+
+See the [Codex installation guide](docs/codex.md) for first-run setup, import,
+and citation examples.
+
+### Try the command line
+
 From a KITE checkout, install the package and try the offline demo with two synthetic meetings.
 
 ```bash

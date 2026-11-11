@@ -1,0 +1,167 @@
+"""Install KITE via Codex app-server and run its packaged launcher in a fresh project."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+
+def install_plugin(codex: str, source: str, ref: str | None, project: Path, env: dict) -> Path:
+    with subprocess.Popen(
+        [codex, "app-server"],
+        cwd=project,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    ) as server:
+        request_id = 0
+
+        def request(method: str, **params):
+            nonlocal request_id
+            request_id += 1
+            server.stdin.write(json.dumps({"id": request_id, "method": method, "params": params}))
+            server.stdin.write("\n")
+            server.stdin.flush()
+            for line in server.stdout:
+                response = json.loads(line)
+                if response.get("id") == request_id:
+                    assert "error" not in response, (method, response)
+                    return response["result"]
+            raise RuntimeError(f"Codex app-server closed while handling {method}")
+
+        try:
+            request("initialize", clientInfo={"name": "kite-smoke", "version": "0.1.0"})
+            server.stdin.write('{"method":"initialized"}\n')
+            server.stdin.flush()
+            selector = {"refName": ref} if ref else {}
+            added = request("marketplace/add", source=source, **selector)
+            assert added["marketplaceName"] == "memoket", added
+
+            def marketplace():
+                listing = request("plugin/list", cwds=[str(project)], marketplaceKinds=["local"])
+                return next(
+                    entry for entry in listing["marketplaces"] if entry["name"] == "memoket"
+                )
+
+            entry = marketplace()
+            plugin = next(item for item in entry["plugins"] if item["name"] == "kite")
+            assert entry["interface"]["displayName"] == "Memoket", entry
+            assert plugin["interface"]["displayName"] == "KITE", plugin
+            assert not plugin["installed"] and plugin["installPolicy"] == "AVAILABLE", plugin
+            installed = request("plugin/install", marketplacePath=entry["path"], pluginName="kite")
+            assert installed["appsNeedingAuth"] == [], installed
+            plugin = next(item for item in marketplace()["plugins"] if item["name"] == "kite")
+            assert plugin["installed"] and plugin["enabled"], plugin
+
+            catalog = request("skills/list", cwds=[str(project)], forceReload=True)["data"][0]
+            skill = next(item for item in catalog["skills"] if item["name"] == "kite:kite")
+            path = Path(skill["path"])
+            assert skill["enabled"] and Path(env["CODEX_HOME"]) in path.parents, skill
+            launcher = path.parent / "scripts" / "kite.sh"
+            assert launcher.is_file(), launcher
+            return launcher
+        finally:
+            server.terminate()
+            server.wait(timeout=15)
+
+
+def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) -> None:
+    def run(*args: str | Path, cwd: Path = project, data: dict | None = None, check: bool = True):
+        return subprocess.run(
+            ["bash", str(launcher), *map(str, args)],
+            cwd=cwd,
+            env=env,
+            input=json.dumps(data) if data is not None else None,
+            text=True,
+            stdout=subprocess.PIPE,
+            check=check,
+            timeout=300,
+        )
+
+    demo = run("demo", "--text").stdout
+    assert "short checklist" in demo and "memoket/184#line-b" in demo, demo
+    env["UV_OFFLINE"] = "1"
+
+    notes = scratch / "Launch review.md"
+    quote = "We decided to ship a short checklist."
+    notes.write_text(f"Launch review\n\n{quote}\n", encoding="utf-8")
+    source = json.loads(
+        run(
+            "file-source", notes, "--format", "text", "--source-id", "launch", "--split-lines"
+        ).stdout
+    )
+    assert json.loads(run("source-check", "--input", "-", data=source).stdout)["state"] == "new"
+    pipeline = json.loads(run("validate-pipeline", "memory-ingestion").stdout)["definition"]
+    run("start", pipeline["id"], "--run-id", "launch", "--input", "-", data=source)
+    normalized = json.loads(run("stage", "launch", "normalize").stdout)["value"]["conversation"]
+    segment = next(item for item in normalized["segments"] if item["text"] == quote)
+    annotations = {
+        "annotations": {
+            "taxonomy": [{"name": "onboarding"}],
+            "facts": [
+                {
+                    "content": quote,
+                    "segment_ids": [segment["segment_id"]],
+                    "topics": ["onboarding"],
+                    "status": "confirmed",
+                    "state_key": "onboarding-design",
+                    "state": "short checklist",
+                }
+            ],
+        }
+    }
+    run("stage", "launch", "annotate", "--input", "-", data=annotations)
+    run("stage", "launch", "commit")
+    verified = json.loads(run("stage", "launch", "verify").stdout)
+    assert verified["checkpoint"]["state"] == "completed", verified
+    replay = json.loads(run("source-check", "--input", "-", data=source).stdout)
+    assert replay["state"] == "unchanged", replay
+
+    subdirectory = project / "subdirectory"
+    subdirectory.mkdir()
+    report = json.loads(run("query", "--topic", "onboarding", cwd=subdirectory).stdout)["value"]
+    assert report["current_reported_states"]["onboarding-design"]["value"] == "short checklist"
+    citation = report["timeline"][0]["evidence"][0]
+    assert (citation["conversation_id"], citation["segment_id"], citation["text"]) == (
+        "launch",
+        "text-line-3",
+        quote,
+    ), citation
+    other_project = scratch / "Other project"
+    other_project.mkdir()
+    empty = run("query", "--topic", "onboarding", cwd=other_project, check=False)
+    assert empty.returncode == 2 and json.loads(empty.stdout)["error"]["code"] == "not_found"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--codex", default="codex", help="Codex CLI or desktop-bundled executable")
+    parser.add_argument("--marketplace", default=str(Path(__file__).resolve().parents[2]))
+    parser.add_argument("--ref", help="Git branch for a remote marketplace")
+    args = parser.parse_args()
+    with TemporaryDirectory(prefix="kite-codex-smoke-") as directory:
+        scratch = Path(directory).resolve()
+        project = scratch / "Sample project"
+        project.mkdir()
+        codex_home = scratch / "codex"
+        codex_home.mkdir()
+        env = {
+            **os.environ,
+            "CODEX_HOME": str(codex_home),
+            "XDG_DATA_HOME": str(scratch / "data"),
+        }
+        env.pop("KITE_DATA_DIR", None)
+        subprocess.run(["git", "init", "-q", str(project)], check=True)
+        launcher = install_plugin(args.codex, args.marketplace, args.ref, project, env)
+        print("KITE installed and discoverable in Codex", flush=True)
+        verify_workflows(launcher, project, scratch, env)
+        print("KITE demo, transcript import, replay, project isolation, and cited query passed")
+
+
+if __name__ == "__main__":
+    main()

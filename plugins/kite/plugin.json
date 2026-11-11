@@ -1,0 +1,30 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "kite",
+  "version": "0.1.0",
+  "description": "Import meeting notes and query conversation memory with original citations.",
+  "author": { "name": "Memoket Inc.", "url": "https://github.com/memoket" },
+  "homepage": "https://github.com/memoket/memoket-kite",
+  "repository": "https://github.com/memoket/memoket-kite",
+  "license": "Apache-2.0",
+  "keywords": ["meetings", "memory", "citations"],
+  "extensions": {
+    "com.openai": {
+      "onboardingSkill": "./skills/kite/SKILL.md",
+      "interface": {
+        "displayName": "KITE",
+        "shortDescription": "Find decisions and action items in your meetings.",
+        "longDescription": "Import selected meeting notes, transcripts, or Memoket exports. Query your project's conversation memory and cite the original evidence.",
+        "developerName": "Memoket",
+        "category": "Productivity",
+        "capabilities": ["Read", "Write"],
+        "websiteURL": "https://github.com/memoket/memoket-kite",
+        "defaultPrompt": [
+          "Run the KITE demo with sample meetings.",
+          "Import the attached meeting notes into KITE.",
+          "Use KITE to trace the latest onboarding decision."
+        ]
+      }
+    }
+  }
+}
