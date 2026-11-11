@@ -2256,6 +2256,9 @@ def test_follow_state_history_preserves_scope_and_pagination(work):
     before = database.read_bytes()
     assert call(*flags)["value"] == result
     readable = call(*flags, "--text")
+    assert "Projects  pilot" in readable and "Source  text" in readable
+    assert "Phrase clue  David owns" in readable
+    assert "Showing 3 of 3 facts by source date through 2026-05-07" in readable
     assert "Followed states  checklist-owner" in readable
     assert "checklist-owner  Confirmed  Rae  [2]" in readable
     assert "2026-05-06  Proposal  [3]" in readable
@@ -2477,6 +2480,32 @@ def test_query_text_keeps_terminal_controls_visible(work):
     assert "    > Open discussion\\u202e[9]\\x9b2J\n    > Second line" in output
     assert "\u202e" not in output and "\u009b" not in output
     assert call(*args)["value"]["timeline"][0]["evidence"][0]["text"] == quote
+
+
+def test_empty_text_trace_identifies_its_scope(work):
+    _, call = work
+    ingest(call, "quoted", text_input("quoted", "A recorded decision.", date="2026-01-01"))
+    args = (
+        "query",
+        "--pipeline",
+        "timeline-reconstruction",
+        "--source",
+        "text",
+        "--conversation-id",
+        "quoted",
+        "--speaker",
+        "Unlisted speaker",
+        "--contains",
+        "No match\u202e\nTimeline",
+        "--start-date",
+        "2026-02-01",
+    )
+    assert call(*args)["value"]["timeline"] == []
+    output = call(*args, "--text")
+    assert "Speakers  Unlisted speaker\nSource  text\nConversation  quoted" in output
+    assert "Contains  No match\\u202e\\nTimeline" in output
+    assert "Showing 0 of 0 facts by source date from 2026-02-01" in output
+    assert "\u202e" not in output and "\nTimeline\n" not in output
 
 
 def test_direct_topic_arguments_match_json_without_writing_memory(work):
@@ -2892,10 +2921,11 @@ def test_inferred_dates_are_separate_from_explicit_and_unknown_dates(work):
         pipeline,
         payload={"query": {**query, "start_date": "2026-03-01", "end_date": "2026-03-31"}},
     )
-    assert "Showing 1 of 1 facts by event date through 2026-03-31" in bounded_text
+    assert "Showing 1 of 1 facts by event date from 2026-03-01 through 2026-03-31" in bounded_text
+    assert "State key  owner" in bounded_text
     assert "Excluded by date filter  1 with unknown event dates" in bounded_text
     assert "Excluded by date filter  1 with inferred event dates" in bounded_text
-    assert "owner  Partial  [1]" in bounded_text
+    assert "owner  Partial (evidence date uncertain)  [1]" in bounded_text
     limited = trace(call, "limited", {**query, "limit": 1}, pipeline)
     assert [row["state"] for row in limited["timeline"]] == ["Explicit"]
     assert limited["truncated"]

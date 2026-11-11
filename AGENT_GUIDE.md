@@ -50,8 +50,11 @@ date window, and `--limit` and `--cursor` to page. Run `kite-tool query --help`
 for the available flags. For the full query schema, pass the `query` input object
 with `--input` and omit the filter flags. The command uses the built-in trace
 tools in one read transaction and saves no checkpoint or artifact.
-For a terminal view, add `--text` to read the timeline, reported states, and
-numbered quotations with source line IDs.
+For a terminal view, add `--text` to read the applied filters, inclusive date
+bounds, reported states and numbered quotations with source line IDs. When
+following states, the terminal labels the person, speaker, event and phrase
+filters as clues because subsequent evidence can match the discovered state
+key. Affected states identify evidence excluded because its date was uncertain.
 
 ```sh
 kite-tool query --input - <<'JSON'

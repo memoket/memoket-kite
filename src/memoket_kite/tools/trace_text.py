@@ -31,22 +31,43 @@ def _references(numbers: Iterable[int]) -> str:
     return " ".join(f"[{number}]" for number in sorted(set(numbers)))
 
 
-def render_trace(report: dict) -> str:
+def render_trace(report: dict, query: dict) -> str:
     timeline = report["timeline"]
     axis = report["time_axis"]
     lines = [_HEADINGS[report["trace"]]]
+    follow = query.get("follow_states", False)
     for field in ("topics", "entities", "events"):
         resolved = ", ".join(_inline(value) for value in report[f"resolved_{field}"])
         unresolved = ", ".join(_inline(value) for value in report[f"unresolved_{field}"])
         if resolved:
-            lines.append(f"{field.capitalize()}  {resolved}")
+            label = (
+                f"{field.capitalize()} clues"
+                if follow and field != "topics"
+                else field.capitalize()
+            )
+            lines.append(f"{label}  {resolved}")
         if unresolved:
             lines.append(f"Unresolved {field}  {unresolved}")
+    for field, label in (
+        ("projects", "Projects"),
+        ("speakers", "Speaker clues" if follow else "Speakers"),
+    ):
+        if field in query:
+            lines.append(f"{label}  {', '.join(_inline(value) for value in query[field])}")
+    for field, label in (
+        ("source", "Source"),
+        ("conversation_id", "Conversation"),
+        ("state_key", "State key"),
+        ("text", "Phrase clue" if follow else "Contains"),
+    ):
+        if field in query:
+            lines.append(f"{label}  {_inline(query[field])}")
     if keys := report.get("followed_state_keys"):
         lines.append(f"Followed states  {', '.join(_inline(key) for key in keys)}")
-    cutoff = f" through {report['end_date']}" if "end_date" in report else ""
+    start = f" from {query['start_date']}" if "start_date" in query else ""
+    end = f" through {query['end_date']}" if "end_date" in query else ""
     lines.append(
-        f"Showing {len(timeline)} of {report['matched_count']} facts by {axis} date{cutoff}"
+        f"Showing {len(timeline)} of {report['matched_count']} facts by {axis} date{start}{end}"
     )
     for basis in ("unknown", "inferred"):
         count = report[f"omitted_{basis}_time"]
@@ -61,6 +82,7 @@ def render_trace(report: dict) -> str:
     }
 
     states = report["current_reported_states"]
+    uncertain_times = set(report.get("uncertain_time_state_keys", []))
     if states:
         lines.extend(("", "Reported states"))
         for key, state in states.items():
@@ -68,6 +90,8 @@ def render_trace(report: dict) -> str:
                 number for fact_id in state["fact_ids"] for number in references[fact_id]
             )
             status = state["status"].capitalize()
+            if key in uncertain_times:
+                status += " (evidence date uncertain)"
             value = f"  {_inline(state['value'])}" if state["status"] == "confirmed" else ""
             lines.append(f"  {_inline(key)}  {status}{value}  {refs}")
 

@@ -578,7 +578,10 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                         workspace, args.source_line_id, args.context, byte_budget=args.byte_budget
                     )
                 }, None
-            return {"value": query_report(Context(root, workspace, args.pipeline), supplied)}, None
+            report = query_report(Context(root, workspace, args.pipeline), supplied)
+        if args.text_output:
+            return {"text": render_trace(report, supplied["query"])}, None
+        return {"value": report}, None
     open_workspace = (
         Workspace.inspect(args.workspace, initialize=True)
         if args.command in {"runs", "status", "artifact", "segments"}
@@ -661,7 +664,7 @@ def main(argv=None) -> int:
     elif args.command == "demo" and args.text:
         print(render_demo(result["value"]))
     elif args.command == "query" and args.text_output:
-        print(render_trace(result["value"]))
+        print(result["text"])
     elif args.command in {"audio-source", "file-source"}:
         print(encode(result))
     else:
