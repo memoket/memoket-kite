@@ -497,8 +497,15 @@ def _bound_definition(context: Context, row, checkpoint: dict) -> tuple[dict, st
     stale_error = ToolError(
         "stale_snapshot", "memory changed; start a new run against the current snapshot"
     )
-    if stale and checkpoint["state"] == "completed":
-        raise stale_error
+    if stale:
+        if checkpoint["state"] == "completed":
+            raise stale_error
+        # A stale run without a receipt cannot be waiting on commit verification.
+        if checkpoint["pipeline_id"] != "memory-ingestion" and not any(
+            stage.get("artifact", {}).get("kind") == "receipt"
+            for stage in checkpoint["stages"].values()
+        ):
+            raise stale_error
     definition, fingerprint, _ = load_pipeline(
         context.root, checkpoint["pipeline_id"], extension_root=context.extension_root
     )

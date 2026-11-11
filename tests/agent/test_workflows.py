@@ -24,7 +24,7 @@ import pytest
 from memoket_kite import Memory
 from memoket_kite.pipeline import extract
 from memoket_kite.research import Codebook, SymbolicQuery
-from memoket_kite.tools import audio, cli, operations, workspace
+from memoket_kite.tools import audio, cli, operations, workflow, workspace
 from memoket_kite.tools.contracts import ToolError, digest, encode, validate
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -495,7 +495,7 @@ def test_run_listing_filters_before_paginating_in_creation_order(work):
     assert "private" not in json.dumps(call("runs"))
 
 
-def test_resumable_run_listing_checks_snapshots_and_artifacts_before_paging(work):
+def test_resumable_run_listing_checks_snapshots_and_artifacts_before_paging(work, monkeypatch):
     directory, call = work
     seed = text_input("seed", "Original note")
     baseline = ingest(call, "seed", seed)
@@ -515,6 +515,13 @@ def test_resumable_run_listing_checks_snapshots_and_artifacts_before_paging(work
     with sqlite3.connect(database) as db:
         db.execute("UPDATE artifacts SET value='{}' WHERE run_id='damaged'")
     before = database.read_bytes()
+    original_load = workflow.load_pipeline
+
+    def load_pipeline(root, name, **options):
+        assert name != "memory-update", "stale update without a receipt should be skipped"
+        return original_load(root, name, **options)
+
+    monkeypatch.setattr(workflow, "load_pipeline", load_pipeline)
     assert call("status", "stale")["resume"]["reason"] == "stale_snapshot"
     assert call("status", "damaged")["resume"]["reason"] == "integrity_error"
     assert [row["run_id"] for row in call("runs", "--unfinished")["runs"]] == [
