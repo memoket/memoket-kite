@@ -439,6 +439,20 @@ def _replaceable_stage_input(definition: dict, checkpoint: dict, stage: dict) ->
     return name
 
 
+def _check_stage_inputs(
+    definition: dict, checkpoint: dict, stage: dict, supplied: dict, extra: dict
+) -> None:
+    changes = {key for key, value in extra.items() if key in supplied and supplied[key] != value}
+    if not extra.keys() <= _stage_input_names(stage) or (
+        changes and changes != {_replaceable_stage_input(definition, checkpoint, stage)}
+    ):
+        raise ToolError(
+            "conflict", "stage input can fill an unset value or replace a rejected stage input"
+        )
+    if checkpoint["stages"][stage["id"]]["state"] == "completed" and extra.keys() - supplied.keys():
+        raise ToolError("conflict", "cannot change a completed stage")
+
+
 def _resume(context: Context, row, checkpoint: dict) -> dict:
     try:
         definition, _ = _bound_definition(context, row, checkpoint)
@@ -557,7 +571,7 @@ def artifact(context: Context, run_id: str, stage_id: str) -> dict:
     return _artifact(context, checkpoint, stage_id)
 
 
-def resume_ingestion(context: Context, run_id: str) -> dict:
+def resume_ingestion(context: Context, run_id: str, annotations: dict) -> dict:
     row, checkpoint = _run(context.workspace, run_id)
     expected_stages = SCRIPTED_IMPORT_STAGES.get(checkpoint["pipeline_id"])
     if expected_stages is None:
@@ -566,9 +580,17 @@ def resume_ingestion(context: Context, run_id: str) -> dict:
         )
     definition, _ = _bound_definition(context, row, checkpoint)
     _require_stage_sequence(definition, expected_stages)
-    if _stored_inputs(row, checkpoint).keys() != {"source", "annotations"}:
+    supplied = _stored_inputs(row, checkpoint)
+    if (supplied.keys() | annotations.keys()) != {"source", "annotations"}:
+        if supplied.keys() == {"source"}:
+            raise ToolError("missing_input", "supply reviewed annotations with --annotations FILE")
         raise ToolError(
             "missing_input", "supply the missing source or annotations with kite-tool stage"
+        )
+    if annotations:
+        stage = next(stage for stage in definition["stages"] if stage["id"] == "annotate")
+        _check_stage_inputs(
+            definition, checkpoint, stage, supplied, _inputs(context, definition, annotations)
         )
     return checkpoint
 
@@ -746,16 +768,8 @@ def advance(
     state = checkpoint["stages"][stage_id]
     supplied = _stored_inputs(row, checkpoint)
     extra = _inputs(context, definition, extra)
-    changes = {key for key, value in extra.items() if key in supplied and supplied[key] != value}
-    if not extra.keys() <= _stage_input_names(stage) or (
-        changes and changes != {_replaceable_stage_input(definition, checkpoint, stage)}
-    ):
-        raise ToolError(
-            "conflict", "stage input can fill an unset value or replace a rejected stage input"
-        )
+    _check_stage_inputs(definition, checkpoint, stage, supplied, extra)
     if state["state"] == "completed":
-        if extra.keys() - supplied.keys():
-            raise ToolError("conflict", "cannot change a completed stage")
         return {"checkpoint": checkpoint, **_artifact(context, checkpoint, stage_id)}, None
     if state["state"] in ("invalidated", "redacted"):
         raise ToolError("invalidated_run", "this stage's artifacts were redacted after deletion")

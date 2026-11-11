@@ -173,6 +173,9 @@ the `annotate` stage's `replaceable_inputs` in `status`. Supply the corrected
 The successful retry saves the corrected input and reuses the normalized source.
 After annotation succeeds, use `kite-tool ingest --resume RUN_ID` to finish a
 standard local ingestion run, or advance the remaining stages individually.
+To supply missing or corrected annotations and finish in one command, use
+`kite-tool ingest --resume RUN_ID --annotations FILE`. The checkpoint supplies
+the source. This works for standard local ingestion and update runs.
 
 For a rejected query on the current memory snapshot, look for `query` in the
 `resolve` stage's `replaceable_inputs`. Retry that stage with a corrected

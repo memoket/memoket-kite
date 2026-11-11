@@ -226,17 +226,13 @@ def main() -> None:
                 {"content": quote, "segment_ids": ["text-line-3"], "topics": ["launch review"]}
             ]
         }
+        reviewed = directory / "reviewed annotations.json"
+        reviewed.write_text(json.dumps({"annotations": annotations}), encoding="utf-8")
         result = call(
-            "stage",
-            run_id,
-            "annotate",
-            "--summary",
-            payload={"annotations": annotations},
-            workspace=recovered,
+            "ingest", "--resume", run_id, "--annotations", str(reviewed), workspace=recovered
         )
-        assert result["retry_count"] == 1
-        for stage in ("commit", "verify"):
-            call("stage", run_id, stage, "--summary", workspace=recovered)
+        assert result["run_id"] == run_id and result["receipt"]["changed"]
+        assert call("status", run_id, workspace=recovered)["stages"]["annotate"]["retry_count"] == 1
         inventory = call(
             "sources", "--project", "Launch pilot", "--limit", "1", workspace=recovered
         )

@@ -76,10 +76,8 @@ def _query_object(args: argparse.Namespace) -> dict:
 def _ingest_input(args: argparse.Namespace) -> dict:
     if args.annotations is None:
         return _object(args.input)
-    if args.input is None:
-        raise ToolError("invalid_arguments", "--annotations requires --input")
     source = _object(args.input)
-    if source.keys() != {"source"}:
+    if args.resume is None and source.keys() != {"source"}:
         raise ToolError(
             "invalid_input", "with --annotations, --input must contain only a source field"
         )
@@ -266,7 +264,7 @@ def _parser() -> argparse.ArgumentParser:
         "--annotations",
         type=Path,
         metavar="FILE",
-        help="annotate stage JSON for a source-only input",
+        help="annotate stage JSON for a source-only input or a resumed run",
     )
     begin = commands.add_parser("start", help="create a checkpoint for a pipeline run")
     begin.add_argument("pipeline")
@@ -440,18 +438,19 @@ def _ingest(
                 resume_existing=resume_existing,
             )
         else:
-            checkpoint = resume_ingestion(context, resume_id)
+            checkpoint = resume_ingestion(context, resume_id, supplied)
         if checkpoint["state"] == "completed":
             return _replay_ingest(context, checkpoint)
     run_id = checkpoint["run_id"]
     pipeline = checkpoint["pipeline_id"]
     output = {"run_id": run_id}
     for stage_id, _ in SCRIPTED_IMPORT_STAGES[pipeline]:
+        extra = supplied if resume_id is not None and stage_id == "annotate" else {}
         try:
             # Each successful stage is durable before the next stage begins.
             with Workspace.open(directory) as workspace:
                 context = Context(root, workspace, pipeline, extension_root=extension_root)
-                result, error = advance(context, run_id, stage_id, {})
+                result, error = advance(context, run_id, stage_id, extra)
         except ToolError as exc:
             return {**output, "stage_id": stage_id}, exc
         if error:

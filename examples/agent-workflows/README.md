@@ -150,8 +150,10 @@ before advancing. With `--resume-existing`, rerun the same command to continue
 or retrieve the receipt from a completed run at the current snapshot. KITE
 checks that the pipeline and inputs match. Run `kite-tool ingest --resume meeting-a`
 to use the saved inputs without reading the input file again. Use
-`kite-tool status meeting-a` to inspect the checkpoint. Use a new run ID for
-corrected annotations or other input changes.
+`kite-tool status meeting-a` to inspect the checkpoint. If the annotate stage
+is missing annotations or lists them under `replaceable_inputs`, resume with
+`kite-tool ingest --resume meeting-a --annotations annotations.json`. The
+command reuses the source and any successful stages from the same run.
 Use the stage-by-stage workflow when the agent still needs to extract or review
 annotations.
 

@@ -2007,13 +2007,60 @@ def test_ingest_rejects_conflicting_or_malformed_annotations_files(work, tmp_pat
     path = tmp_path / "annotations.json"
     path.write_text(json.dumps({"facts": payload["annotations"]["facts"]}), encoding="utf-8")
     args = ("ingest", "--annotations", str(path))
-    call(*args, "--resume", "review", error="invalid_arguments")
+    call(*args, "--resume", "review", error="invalid_input")
     conflict = call(*args, payload=payload, error="invalid_input")
     assert "only a source field" in conflict["error"]["message"]
     malformed = call(*args, payload={"source": payload["source"]}, error="invalid_input")
     assert "only an annotations field" in malformed["error"]["message"]
     assert "Private source text" not in json.dumps([conflict, malformed])
     assert not directory.exists()
+
+
+@pytest.mark.parametrize("with_rejected_annotations", [False, True])
+@pytest.mark.parametrize("pipeline", ["memory-ingestion", "memory-update"])
+def test_ingest_resumes_with_reviewed_annotations(
+    work, tmp_path, pipeline, with_rejected_annotations
+):
+    _, call = work
+    payload = text_input("review", "The launch review is Tuesday.")
+    corrected = {"annotations": copy.deepcopy(payload["annotations"])}
+    path = tmp_path / "reviewed annotations.json"
+    path.write_text(json.dumps(corrected), encoding="utf-8")
+    resume = ("ingest", "--resume", "review", "--annotations", str(path))
+    call(*resume, error="not_found")
+    expected_revisions = 1
+    if pipeline == "memory-update":
+        initial = call("ingest", payload=text_input("review", "The review date is still open."))
+        payload["source"]["expected_checksum"] = initial["receipt"]["checksum"]
+        expected_revisions = 2
+
+    if with_rejected_annotations:
+        payload["annotations"]["facts"][0]["segment_ids"] = ["wrong-id"]
+        call("start", pipeline, "--run-id", "review", payload=payload)
+        checkpoint = call("status", "review")
+        call(*resume, error="conflict")
+        assert call("status", "review") == checkpoint
+        call("stage", "review", "normalize")
+        call("stage", "review", "annotate", error="invalid_evidence")
+    else:
+        call("start", pipeline, "--run-id", "review", payload={"source": payload["source"]})
+        call("stage", "review", "normalize")
+        failure = call("ingest", "--resume", "review", error="missing_input")
+        assert "--annotations FILE" in failure["error"]["message"]
+
+    normalized = call("artifact", "review", "normalize")["manifest"]
+    receipt = call(*resume)
+    assert receipt["run_id"] == "review" and receipt["receipt"]["changed"]
+    assert receipt["integrity"]["facts"] == receipt["integrity"]["revisions"] == expected_revisions
+    assert call("artifact", "review", "normalize")["manifest"] == normalized
+    final = call("status", "review")
+    assert final["stages"]["annotate"]["attempts"] == (2 if with_rejected_annotations else 1)
+    assert call(*resume) == receipt
+    corrected["annotations"]["facts"][0]["content"] = "Different private annotation"
+    path.write_text(json.dumps(corrected), encoding="utf-8")
+    conflict = call(*resume, error="conflict")
+    assert "Different private annotation" not in json.dumps(conflict)
+    assert call("status", "review") == final
 
 
 def test_ingest_command_rejects_a_different_write_tool(work, tmp_path):
