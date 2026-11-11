@@ -32,6 +32,7 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
 | Task | Pipeline |
 | --- | --- |
 | Import text, a transcript or a Memoket record | `memory-ingestion` |
+| Compile a task and find original passages | `context-search` |
 | Propose facts with an authorized model endpoint | `memory-provider-ingestion` |
 | Recover discussions, proposals and decisions by topic | `topic-tracing` |
 | Recover assignments, blockers and status reported in conversation | `task-tracing` |
@@ -52,6 +53,10 @@ Each `direct_fact_count` counts retained facts assigned to that exact topic,
 including historical source revisions. A parent with zero direct facts can still
 match its descendants in `query`. Pass `next_cursor` as `--cursor` with the
 same search and limit to continue the listing at the same memory version.
+
+For original-text tasks, run `kite-tool context --question "$QUESTION" --text`.
+It compiles the task and returns cited passages in one local call. Use
+`context-search` if you need separate, saved compile and search stages.
 
 For a direct read from an existing workspace, use `kite-tool query --topic "first run"`.
 Repeat `--topic` to supply several topic names or aliases. Use `--source` and
@@ -87,16 +92,21 @@ referenced source revision and whether it is still active. Older source
 revisions remain readable by ID while retained. Deleted revisions are
 unavailable. Evidence reads save no checkpoint or artifact.
 
-To open a citation by its original IDs, use the source namespace,
-conversation ID and segment ID.
+Open the short citation from `context --text` directly. Add `--context` for
+neighboring lines and `--text` for compact output. If a conversation ID occurs
+in multiple source namespaces, use the `SOURCE/CONVERSATION#SEGMENT` form.
 
 ```sh
-kite-tool evidence --source memoket --conversation-id 184 --segment-id line-b
+kite-tool evidence 'memoket/184#line-b' --context 2 --text
 ```
 
 This looks up the current revision. Pass the citation's `revision_checksum`
 as `--revision` to open the exact historical revision, even if a later revision
 keeps the same segment ID. Both forms support `--context` and `--byte-budget`.
+
+When a result identifies the right conversation and you need another passage,
+pass its original ID to `kite-tool context --conversation-id ID --term PHRASE`.
+Add `--source` to restrict the namespace when IDs overlap.
 
 Use `--byte-budget 4096` to limit the compact JSON for `evidence`, `before`,
 and `after`. KITE adds the closest neighbors first, alternating sides when

@@ -213,7 +213,7 @@
     result = compare(example);
     byId('title').textContent = t('title');
     document.documentElement.lang = chinese ? 'zh-CN' : 'en';
-    renderViewerNavigation(chinese ? 'zh' : 'en', 'changes', query);
+    renderViewerNavigation(chinese ? 'zh' : 'en', 'changes', query, true);
     byId('language').textContent = chinese ? 'English' : '中文';
     byId('compare-title').textContent = example.title;
     byId('compare-snapshot').textContent = t('snapshot');

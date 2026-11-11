@@ -16,10 +16,11 @@
       noFacets: 'No facet values have been indexed for these memories.',
       sourceCatalog: 'Sources', noSources: 'No sources are available.', filterCatalog: 'Filter this list',
       noMatches: 'No matching items.', more: 'Show more', scanned: 'sources with entity or facet labels',
+      compile: 'Compiled phrases', candidates: 'candidate spans', quoteBytes: 'quote bytes',
       cooccurrence: 'Same annotated passage', relatedEntities: 'Co-occurring entities', relatedFacets: 'Co-occurring facets',
       sharedPassages: 'shared passages', sharedEvidence: 'Shared quotes with', linkedTopics: 'Topics in these passages',
       annotated: 'Indexed passages with labels', unannotated: 'No entity or facet labels on this source',
-      search: 'Search', placeholder: 'Search original text', invalid: 'Enter up to three phrases, each up to 128 characters.',
+      search: 'Search', placeholder: 'Ask a question or enter comma-separated phrases', invalid: 'Enter a question or up to three phrases of 128 characters each.',
       refresh: 'Refresh', gesture: 'Drag to rotate · Shift + drag to pan', hierarchy: 'Parent → child',
       shared: 'Shared memory', cites: 'Cites', correction: 'Correction', original: 'Original evidence', memories: 'Memories',
       related: 'Related memories', relatedTopics: 'Topics with shared memories', sources: 'Source revisions', parents: 'Parent topics', children: 'Child topics',
@@ -44,10 +45,11 @@
       noFacets: '当前工作区还没有标注对象、地点、事件或时长。',
       sourceCatalog: '来源', noSources: '当前工作区没有来源。', filterCatalog: '筛选当前列表',
       noMatches: '没有匹配项。', more: '显示更多', scanned: '份来源有实体或 Facet 标注',
+      compile: '编译出的检索词', candidates: '个候选片段', quoteBytes: '字节原文',
       cooccurrence: '同段共现', relatedEntities: '同段出现的实体', relatedFacets: '同段出现的 Facets',
       sharedPassages: '个共同片段', sharedEvidence: '与此节点共现的引用', linkedTopics: '这些片段涉及的主题',
       annotated: '个片段有实体或 Facet 标注', unannotated: '此来源暂无实体或 Facet 标注。',
-      search: '检索', placeholder: '搜索转写原文', invalid: '最多输入三个检索词，每个不超过 128 个字符。',
+      search: '检索', placeholder: '输入问题，或用逗号分隔检索词', invalid: '请输入问题，或最多三个不超过 128 字符的检索词。',
       refresh: '刷新', gesture: '拖动旋转 · Shift + 拖动平移', hierarchy: '父主题 → 子主题',
       shared: '共享记忆', cites: '引用', correction: '更正关系', original: '引用原文', memories: '原文记忆',
       related: '相关记忆', relatedTopics: '共享记忆的主题', sources: '来源版本', parents: '上级主题', children: '下级主题',
@@ -604,7 +606,7 @@
   }
 
   function renderViewLinks() {
-    if (snapshot.comparison_available) renderViewerNavigation(language, 'graph', graphQuery());
+    renderViewerNavigation(language, 'graph', graphQuery(), snapshot.comparison_available);
   }
 
   function citation(line, interactive = false) {
@@ -768,6 +770,18 @@
     byId('search-terms').placeholder = t('placeholder');
     byId('search-terms').setAttribute('aria-label', t('placeholder'));
     byId('search-submit').textContent = t('search');
+    const trace = byId('search-trace');
+    trace.hidden = !snapshot.search_trace;
+    if (snapshot.search_trace) {
+      const stats = snapshot.search_trace;
+      trace.replaceChildren(
+        element('strong', snapshot.search_question ? t('compile') : t('terms')),
+        element('p', stats.terms.join(' · ')),
+        element('p', [number.format(stats.candidate_spans) + ' ' + t('candidates'),
+          number.format(stats.sources) + ' ' + t('sourceCatalog'),
+          number.format(stats.quotes) + ' ' + t('quotes'), number.format(stats.quote_bytes) + ' ' + t('quoteBytes')].join(' · ')),
+      );
+    }
     byId('refresh').textContent = t('refresh');
     byId('language').textContent = language === 'zh' ? 'English' : '中文';
     byId('gesture').textContent = t('gesture');
@@ -794,12 +808,14 @@
     view.show(displayed, selected, mode);
   }
 
-  byId('search-terms').value = (snapshot.search_terms || []).join('，');
+  byId('search-terms').value = snapshot.search_question || (snapshot.search_terms || []).join('，');
   byId('search-terms').addEventListener('input', event => event.target.setCustomValidity(''));
   byId('search').addEventListener('submit', event => {
     event.preventDefault();
     const input = byId('search-terms');
-    const terms = [...new Set(input.value.split(/[,，、]+/u).map(term => term.trim()).filter(Boolean))];
+    const value = input.value.trim();
+    const terms = /[,，、]/u.test(value) && !/[?？。]/u.test(value)
+      ? [...new Set(value.split(/[,，、]+/u).map(term => term.trim()).filter(Boolean))] : [];
     if (terms.length > 3 || terms.some(term => term.length > 128)) {
       input.setCustomValidity(t('invalid'));
       input.reportValidity();
@@ -808,7 +824,8 @@
     const params = new URLSearchParams({ lang: language });
     if (snapshot.comparison_available) params.set('view', 'graph');
     for (const term of terms) params.append('term', term);
-    if (!terms.length && currentTopic && !searching) params.set('topic', currentTopic.code);
+    if (!terms.length && value) params.set('q', value);
+    if (!value && currentTopic && !searching) params.set('topic', currentTopic.code);
     location.search = params.toString();
   });
   byId('overview').addEventListener('click', () => {

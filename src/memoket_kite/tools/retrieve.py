@@ -204,7 +204,7 @@ def evidence_context(
 def segment_context(
     workspace,
     *,
-    source: str,
+    source: str | None,
     conversation_id: str,
     segment_id: str,
     checksum: str | None,

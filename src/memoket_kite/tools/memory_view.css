@@ -196,6 +196,15 @@ summary { color: var(--teal); cursor: pointer; font-size: 12px; }
 .compare-grid canvas:active { cursor: grabbing; }
 .compare-results { margin-top: 12px; }
 .compare-results .detail { max-height: 360px; }
+.activity-grid { display: grid; grid-template-columns: minmax(220px, .85fr) minmax(280px, 1.35fr); gap: 14px; margin-top: 18px; }
+.activity-grid .detail { align-content: start; }
+.activity-row { display: grid; gap: 7px; }
+.activity-row p, .activity-stage { color: var(--muted); font-size: 12px; }
+.activity-stages { display: flex; flex-wrap: wrap; gap: 6px; padding: 0; margin: 0; list-style: none; }
+.activity-stage { padding: 4px 7px; border-radius: 5px; background: var(--paper); }
+.activity-stage[data-state="completed"] { background: #e3efe8; color: #125c50; }
+.search-trace { display: grid; gap: 4px; margin-top: 10px; padding: 10px; background: var(--paper); border-radius: 7px; font-size: 12px; }
+.search-trace p { color: var(--muted); overflow-wrap: anywhere; }
 .compare-change-line { font-size: 13px; }
 .compare-changes-count { font-size: 12px; color: var(--muted); }
 .compare-change-key { font-size: 12px; font-weight: 650; }
@@ -215,7 +224,7 @@ summary { color: var(--teal); cursor: pointer; font-size: 12px; }
   #catalog-items { max-height: 168px; }
   #graph { height: clamp(350px, 60vh, 530px); }
   .detail { max-height: none; }
-  .compare-grid, .compare-results { grid-template-columns: minmax(0, 1fr); }
+  .compare-grid, .compare-results, .activity-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 530px) {
   .topbar { flex-wrap: wrap; gap: 8px; padding: 9px 12px; }

@@ -13,7 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
-from .context import context_enabled, enable_context, rebuild_context
+from .context import context_current, context_enabled, enable_context, rebuild_context
 from .contracts import (
     CURSOR,
     TEXT,
@@ -79,6 +79,10 @@ CREATE TABLE IF NOT EXISTS artifacts (
 CREATE TABLE IF NOT EXISTS deletion_audit (
     operation TEXT PRIMARY KEY, version INTEGER NOT NULL, revision_count INTEGER NOT NULL,
     fact_count INTEGER NOT NULL, committed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS memory_activity (
+    version INTEGER PRIMARY KEY, kind TEXT NOT NULL, changed_count INTEGER NOT NULL,
+    source_count INTEGER NOT NULL, committed_at TEXT NOT NULL
 );
 """
 
@@ -457,7 +461,9 @@ class Workspace:
             raise ToolError("not_found", "source revision was not found")
         return self._records(rows)[0]
 
-    def source_revision(self, source: str, conversation_id: str, checksum: str | None) -> dict:
+    def source_revision(
+        self, source: str | None, conversation_id: str, checksum: str | None
+    ) -> dict:
         rows = self._revision_rows(
             source=source,
             conversation_id=conversation_id,
@@ -466,6 +472,8 @@ class Workspace:
         )
         if not rows:
             raise ToolError("not_found", "no revision matches the requested conversation")
+        if source is None and len({row["source"] for row in rows}) > 1:
+            raise ToolError("ambiguous_source", "this conversation ID needs a source namespace")
         if len(rows) != 1:
             raise ToolError("integrity_error", "conversation must have one current revision")
         return self._records(rows)[0]
@@ -868,8 +876,17 @@ class Workspace:
         self._require_current_index()
         receipt = self._write_revision(record, append_annotations=append_annotations)
         if receipt["changed"]:
-            return {**receipt, **self.replace_index(force=append_annotations)}
+            result = self.replace_index(force=append_annotations)
+            self.record_activity(result, "update" if append_annotations else "ingest", 1, 1)
+            return {**receipt, **result}
         return receipt
+
+    def record_activity(self, receipt: dict, kind: str, changed: int, seen: int) -> None:
+        if receipt["changed"]:
+            self.db.execute(
+                "INSERT INTO memory_activity VALUES(?, ?, ?, ?, ?)",
+                (receipt["memory_version"], kind, changed, seen, now()),
+            )
 
     def index_sources(self, records: list[dict]) -> dict:
         """Commit a batch of source-only records as one searchable snapshot."""
@@ -878,12 +895,16 @@ class Workspace:
         if any(record["facts"] for record in records):
             raise ToolError("invalid_input", "index-sources accepts original spans without facts")
         receipts = [self._write_revision(record, append_annotations=True) for record in records]
-        result = self.replace_index(
-            force=any(row["changed"] for row in receipts), refresh_context=True
-        )
+        changed = sum(row["changed"] for row in receipts)
+        version = self.version()
+        if receipts and not changed and context_current(self.db, version):
+            result = {"changed": False, "memory_version": version}
+        else:
+            result = self.replace_index(force=bool(changed), refresh_context=True)
+        self.record_activity(result, "index", changed, len(receipts))
         return {
             **result,
-            "sources_changed": sum(row["changed"] for row in receipts),
+            "sources_changed": changed,
             "sources_seen": len(receipts),
         }
 

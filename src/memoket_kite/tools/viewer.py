@@ -14,7 +14,8 @@ from secrets import token_urlsafe
 from time import monotonic
 from urllib.parse import parse_qs, urlencode
 
-from .context import context_enabled, context_pack
+from .activity import memory_activity
+from .context import compile_question, context_enabled, context_pack, search_question
 from .contracts import ToolError
 from .retrieve import memory_snapshot
 from .workspace import Workspace
@@ -22,12 +23,20 @@ from .workspace import Workspace
 IDLE_TIMEOUT = 3600
 
 
-def _search_snapshot(workspace: Workspace, terms: list[str]) -> dict:
+def _search_snapshot(workspace: Workspace, terms: list[str], question: str | None = None) -> dict:
     passages = {}
     sources = {}
     evidence = {}
-    for term in terms:
-        pack = context_pack(workspace, {"terms": [term]}, limit=4, max_bytes=3600, neighbors=1)
+    if question is not None:
+        compiled = compile_question(workspace, {"question": question})
+        terms = [question]
+        packs = [(question, search_question(workspace, compiled))]
+    else:
+        packs = [
+            (term, context_pack(workspace, {"terms": [term]}, limit=4, max_bytes=3600, neighbors=1))
+            for term in terms
+        ]
+    for term, pack in packs:
         for span in pack["spans"]:
             lines = span["evidence"]
             first, last = lines[0], lines[-1]
@@ -58,16 +67,24 @@ def _search_snapshot(workspace: Workspace, terms: list[str]) -> dict:
         "evidence": evidence,
         "search_available": True,
         "search_terms": terms,
+        "search_question": question,
+        "search_trace": {
+            "terms": compiled["terms"] if question is not None else terms,
+            "candidate_spans": sum(pack["candidate_spans"] for _, pack in packs),
+            "quote_bytes": sum(pack["quote_bytes"] for _, pack in packs),
+            "sources": len(sources),
+            "quotes": len(evidence),
+        },
         "passages": list(passages.values()),
     }
 
 
-def _snapshot(directory: Path, terms: list[str]) -> dict:
+def _snapshot(directory: Path, terms: list[str], question: str | None = None) -> dict:
     try:
         with Workspace.open(directory, read_only=True) as workspace:
             searchable = context_enabled(workspace.db)
-            if terms and searchable:
-                return _search_snapshot(workspace, terms)
+            if (terms or question is not None) and searchable:
+                return _search_snapshot(workspace, terms, question)
             return {**memory_snapshot(workspace), "search_available": searchable}
     except ToolError as exc:
         if (
@@ -109,6 +126,20 @@ def _read_comparison(path: Path) -> dict:
         raise ToolError("invalid_input", "could not read graph comparison snapshots") from exc
 
 
+def _activity_snapshot(directory: Path) -> dict:
+    try:
+        with Workspace.open(directory, read_only=True) as workspace:
+            return memory_activity(workspace)
+    except ToolError as exc:
+        if (
+            exc.code != "not_found"
+            or (directory.exists() and not directory.is_dir())
+            or (directory / "kite.sqlite3").exists()
+        ):
+            raise
+        return {"version": 0, "events": [], "runs": []}
+
+
 def _serve(directory: Path, comparison: Path | None = None) -> None:
     assets = Path(__file__).parent
     comparison_data = _read_comparison(comparison) if comparison is not None else None
@@ -120,8 +151,12 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
         template = template.replace(marker, (assets / asset).read_text(encoding="utf-8"), 1)
     templates = {
         view: template.replace("__KITE_SCRIPT__", (assets / asset).read_text(encoding="utf-8"), 1)
-        for view, asset in (("graph", "memory_view.js"), ("changes", "memory_compare.js"))
-        if view == "graph" or comparison_data is not None
+        for view, asset in (
+            ("graph", "memory_view.js"),
+            ("activity", "memory_activity.js"),
+            ("changes", "memory_compare.js"),
+        )
+        if view != "changes" or comparison_data is not None
     }
     route = f"/{token_urlsafe(24)}/"
     last_access = monotonic()
@@ -144,17 +179,25 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
             try:
                 params = parse_qs(query, max_num_fields=12)
                 terms = list(dict.fromkeys(params.get("term", ())))
-                if len(terms) > 3 or any(len(term) > 128 for term in terms):
+                question = params.get("q", [None])[0]
+                if (
+                    len(terms) > 3
+                    or any(len(term) > 128 for term in terms)
+                    or (question is not None and (len(question) > 512 or terms))
+                ):
                     raise ValueError("invalid terms")
                 requested_view = params.get("view", [None])[0]
-                if comparison_data is not None and (
-                    requested_view == "changes" or (requested_view is None and not terms)
+                if requested_view == "activity":
+                    view, snapshot = "activity", _activity_snapshot(directory)
+                elif comparison_data is not None and (
+                    requested_view == "changes"
+                    or (requested_view is None and not terms and not question)
                 ):
                     view, snapshot = "changes", comparison_data
                 else:
-                    view, snapshot = "graph", _snapshot(directory, terms)
-                    if comparison_data is not None:
-                        snapshot["comparison_available"] = True
+                    view, snapshot = "graph", _snapshot(directory, terms, question)
+                if comparison_data is not None:
+                    snapshot = {**snapshot, "comparison_available": True}
             except (ValueError, ToolError) as exc:
                 if isinstance(exc, ValueError) or exc.code == "invalid_input":
                     self.send_error(HTTPStatus.BAD_REQUEST, "Use up to three search phrases")

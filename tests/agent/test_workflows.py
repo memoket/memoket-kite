@@ -49,7 +49,8 @@ def work(tmp_path, capsys, monkeypatch):
         output = capsys.readouterr().out
         assert code == (2 if error else 0), output
         if not error and (
-            args[0] == "codebook" or (args[0] in {"query", "status"} and "--text" in args)
+            args[0] == "codebook"
+            or (args[0] in {"query", "status", "evidence"} and "--text" in args)
         ):
             return output
         data = json.loads(output)
@@ -247,6 +248,26 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
             assert graph["comparison_available"] and graph["sources"] == 1
             search = read("?view=graph&term=checklist")
             assert search["search_terms"] == ["checklist"] and search["comparison_available"]
+            request = {"question": "Review the release checklist"}
+            question = read("?view=graph&q=Review+the+release+checklist")
+            assert question["search_trace"]["quotes"] == 1
+            assert question["search_trace"]["terms"]
+            call(
+                "start", "context-search", "--run-id", "visual-search", payload={"request": request}
+            )
+            compiled = call("stage", "visual-search", "compile")["value"]
+            assert compiled["terms"] == question["search_trace"]["terms"]
+            searched = call("stage", "visual-search", "search")["value"]
+            assert searched["spans"][0]["evidence"][0]["conversation_id"] == "release"
+            activity = read("?view=activity")
+            assert activity["comparison_available"] and activity["events"][0]["kind"] == "ingest"
+            assert activity["runs"][0]["kind"] == "search"
+            assert [stage["name"] for stage in activity["runs"][0]["stages"]] == [
+                "compile",
+                "search",
+            ]
+            assert all(stage["state"] == "completed" for stage in activity["runs"][0]["stages"])
+            assert request["question"] not in json.dumps(activity)
         finally:
             process.terminate()
             process.wait(timeout=10)
@@ -335,7 +356,8 @@ def test_cli_help_still_prints_usage(capsys):
 
 def test_discovery_and_invalid_pipeline(work, tmp_path):
     _, call = work
-    assert len(call("pipelines")["pipelines"]) == 12
+    pipelines = call("pipelines")["pipelines"]
+    assert len(pipelines) == 13 and "context-search" in {entry["id"] for entry in pipelines}
     assert call("describe", "delete")["delete"]["effect"] == "delete"
     repo = tmp_path / "definitions"
     for folder in ("schemas", "skills", "pipeline_defs"):
@@ -372,7 +394,7 @@ def test_installable_extension_and_custom_connector(work, tmp_path):
 
     assert custom_call("resources")["extension_root"] == str(extension)
     catalog = custom_call("pipelines")
-    assert len(catalog["pipelines"]) == 13
+    assert len(catalog["pipelines"]) == 14
     assert "invalid_extensions" not in catalog
     built_in = "memory-ingestion"
     assert custom_call("validate-pipeline", built_in) == call("validate-pipeline", built_in)
@@ -3153,6 +3175,16 @@ def test_evidence_context_reads_the_cited_revision_until_deletion(work):
         "owner",
     )
     assert call(*by_segment)["value"] == exact
+    assert call("evidence", "handoff#owner")["value"] == exact
+    assert call("evidence", "[transcript/handoff#owner]")["value"] == exact
+    compact = call("evidence", "handoff#owner", "--context", "1", "--text")
+    assert "[handoff#owner] Ada: I own the launch." in compact
+    assert (
+        compact.index("[handoff#intro]")
+        < compact.index("[handoff#owner]")
+        < compact.index("[handoff#close]")
+    )
+    call("evidence", "transcript/handoff#owner", "--source", "text", error="invalid_input")
     for name, value in (("--context", "1"), ("--byte-budget", "128")):
         assert (
             call(*by_segment, name, value)["value"]
@@ -3188,12 +3220,22 @@ def test_evidence_context_reads_the_cited_revision_until_deletion(work):
     assert old["evidence"] == citation and not old["source_revision_active"]
     assert old["before"] == context["before"] and old["after"] == context["after"]
     assert call(*by_segment, "--revision", first["checksum"], "--context", "1")["value"] == old
+    assert (
+        call("evidence", "handoff#owner", "--revision", first["checksum"], "--context", "1")[
+            "value"
+        ]
+        == old
+    )
+    assert call("evidence", "handoff#owner", "--revision", first["checksum"], "--text").startswith(
+        f"Historical revision: {first['checksum']}\n"
+    )
     active = call(*by_segment)["value"]
     assert (
         active["source_revision_active"]
         and active["evidence"]["revision_checksum"] == latest["checksum"]
     )
     assert active["evidence"]["text"] == "Rae now owns the launch."
+    assert call("evidence", "handoff#owner")["value"] == active
     previous = call(*lines, "--revision", first_page["revision_checksum"], "--offset", "1")
     assert not previous["source_revision_active"]
     assert previous["segments"][0]["source_line_id"] == line_id
@@ -3227,6 +3269,11 @@ def test_evidence_context_reads_the_cited_revision_until_deletion(work):
     assert database.read_bytes() == before_history
 
     other = ingest(call, "unrelated", text_input("handoff", "Separate source namespace."))
+    call("evidence", "handoff#owner", error="ambiguous_source")
+    assert (
+        call("evidence", "handoff#owner", "--source", "transcript")["value"]["evidence"]
+        == active["evidence"]
+    )
     call(*lines, "--revision", other["checksum"], error="not_found")
     call(*by_segment, "--revision", other["checksum"], error="not_found")
     _delete_source(call, "delete", {"source": "transcript", "conversation_id": "handoff"})
@@ -5660,7 +5707,7 @@ def test_provider_result_is_discarded_if_the_definition_changes(work, tmp_path, 
     assert call("status", "provider", repo=repo)["stages"]["extract"]["attempts"] == 0
 
 
-def test_context_index_source_revision_merge_and_delete(work):
+def test_context_index_source_revision_merge_and_delete(work, monkeypatch):
     directory, call = work
 
     def entry(text, day, expected=None):
@@ -5686,6 +5733,17 @@ def test_context_index_source_revision_merge_and_delete(work):
 
     first = entry("确认周五交付。", "2026-10-02")
     assert call("index-sources", payload={"sources": [first]})["sources_changed"] == 1
+    with monkeypatch.context() as patch:
+
+        def unexpected_rebuild(*args):
+            pytest.fail("an unchanged batch with a current context index must not rebuild it")
+
+        patch.setattr(workspace, "rebuild_context", unexpected_rebuild)
+        assert call("index-sources", payload={"sources": [first]})["sources_changed"] == 0
+    with closing(sqlite3.connect(directory / "kite.sqlite3")) as db:
+        db.execute("DROP TABLE context_spans")
+        db.commit()
+    call("context", "--question", "确认何时交付？", error="stale_index")
     assert call("index-sources", payload={"sources": [first]})["sources_changed"] == 0
     call(
         "start",
@@ -5733,3 +5791,63 @@ def test_context_transcript_import_retains_file_lines_and_neighbor_turns(work, t
     assert pack["quote_bytes"] == sum(len(line["text"].encode()) for line in lines)
     prepared = call("file-source", str(source), "--format", "transcript-text")
     assert call("source-check", payload=prepared)["state"] == "unchanged"
+    distractor = tmp_path / "43_transcript.txt"
+    distractor.write_text("00:01\nSpeaker C\n\n另一场会议讨论相机采样率。\n", encoding="utf-8")
+    assert call("index-sources", "--transcripts", str(tmp_path))["sources_changed"] == 1
+    scoped = call("context", "--term", "采样率", "--conversation-id", "42")
+    assert {row["conversation_id"] for span in scoped["spans"] for row in span["evidence"]} == {
+        "42"
+    }
+    assert call("context", "--term", "采样率", "--conversation-id", "missing")["spans"] == []
+
+
+def test_compiled_context_prioritizes_source_hits_within_quote_budget(work, tmp_path):
+    _, call = work
+    transcript = tmp_path / "44_transcript.txt"
+    transcript.write_text(
+        "00:00\nSpeaker A\n" + "闲聊" * 65 + "\n" + "附带说明" * 30 + "\n确认升级决定。\n",
+        encoding="utf-8",
+    )
+    call("index-sources", "--transcripts", str(tmp_path))
+    pack = call(
+        "context", "--question", "升级决定是什么？", "--neighbors", "0", "--max-bytes", "512"
+    )
+    lines = [line for span in pack["spans"] for line in span["evidence"]]
+    assert [(line["segment_id"], line["text"]) for line in lines] == [("L5", "确认升级决定。")]
+    assert pack["quote_bytes"] == len(lines[0]["text"].encode())
+
+
+def test_transcript_recording_dates_backfill_matching_sources_with_annotations(work, tmp_path):
+    _, call = work
+    source = tmp_path / "42_transcript.txt"
+    source.write_text("00:01\nSpeaker A\n原文讨论交付。\n", encoding="utf-8")
+    prepared = call("file-source", str(source), "--format", "transcript-text")["source"]
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {
+                    "source": prepared,
+                    "annotations": {
+                        "facts": [],
+                        "index_spans": [{"segment_ids": ["L3"], "topics": ["上线计划"]}],
+                    },
+                }
+            ]
+        },
+    )
+    undated = call("context", "--term", "上线计划")["spans"][0]["evidence"][0]
+    cmd = ("index-sources", "--transcripts", str(tmp_path), "--recording-metadata", str(tmp_path))
+    metadata = tmp_path / "42.json"
+    metadata.write_text('{"conversation_id": 43, "started_at": "2026-01-14 08:20:15"}')
+    call(*cmd, error="invalid_input")
+    metadata.write_text('{"conversation_id": 42, "started_at": "2026-01-14 08:20:15"}')
+    assert call(*cmd)["sources_changed"] == 1
+    assert call(*cmd)["sources_changed"] == 0
+    dated = call("context", "--term", "上线计划", "--start-date", "2026-01-14")["spans"][0]
+    assert dated["source_date"] == "2026-01-14"
+    assert dated["evidence"][0]["segment_id"] == undated["segment_id"] == "L3"
+    assert dated["evidence"][0]["text"] == undated["text"]
+    assert (
+        call("evidence", undated["source_line_id"])["value"]["evidence"]["text"] == undated["text"]
+    )

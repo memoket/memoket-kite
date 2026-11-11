@@ -368,7 +368,9 @@ def reclassify(context, merge: dict) -> dict:
         topic: sorted({new if parent == old else parent for parent in parents} - {topic})
         for topic, parents in hierarchy.items()
     }
-    return context.workspace.replace_index(merges, hierarchy=hierarchy)
+    result = context.workspace.replace_index(merges, hierarchy=hierarchy)
+    context.workspace.record_activity(result, "merge", 1, 0)
+    return result
 
 
 def move_topic(context, move: dict) -> dict:

@@ -1,11 +1,17 @@
-function renderViewerNavigation(language, activeView, parameters) {
+function renderViewerNavigation(language, activeView, parameters, comparisonAvailable = false) {
   const zh = language === 'zh';
   const nav = document.getElementById('workspace-views');
   nav.hidden = false;
   nav.setAttribute('aria-label', zh ? '工作区视图' : 'Workspace views');
   document.getElementById('title').textContent = zh ? '记忆工作区' : 'Memory workspace';
-  for (const [view, label] of [['graph', zh ? '记忆图谱' : 'Memory graph'], ['changes', zh ? '变更对照' : 'Compare changes']]) {
+  const views = [
+    ['graph', zh ? '记忆图谱' : 'Memory graph'],
+    ['activity', zh ? '工作流' : 'Workflows'],
+    ['changes', zh ? '变更对照' : 'Compare changes'],
+  ];
+  for (const [view, label] of views) {
     const link = document.getElementById('workspace-' + view);
+    link.hidden = view === 'changes' && !comparisonAvailable;
     const query = new URLSearchParams(parameters);
     query.set('view', view);
     query.set('lang', language);

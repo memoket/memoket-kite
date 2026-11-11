@@ -16,12 +16,13 @@
     </div>
     <nav id="workspace-views" class="workspace-views" aria-label="Workspace views" hidden>
       <a id="workspace-graph"></a>
+      <a id="workspace-activity"></a>
       <a id="workspace-changes"></a>
     </nav>
     <div class="top-actions">
       <form id="search" role="search" hidden>
         <span class="search-icon" aria-hidden="true"></span>
-        <input id="search-terms" type="search" aria-label="Search original evidence" maxlength="386">
+        <input id="search-terms" type="search" aria-label="Search original evidence" maxlength="512">
         <button id="search-submit" type="submit">Search</button>
       </form>
       <button id="language" type="button" class="quiet">中文</button>
@@ -68,6 +69,7 @@
           <button id="facet-catalog" type="button" data-kind="facet" aria-controls="catalog-panel"></button>
           <button id="source-catalog" type="button" data-kind="source" aria-controls="catalog-panel"></button>
         </div>
+        <section id="search-trace" class="search-trace" hidden></section>
       </header>
       <div class="viewport">
         <canvas id="graph" tabindex="0" aria-describedby="gesture" aria-label="Three-dimensional memory graph"></canvas>
@@ -86,6 +88,17 @@
     </section>
 
     <aside class="detail" id="detail" aria-live="polite"></aside>
+  </main>
+
+  <main id="activity" class="comparison" hidden>
+    <header class="compare-header">
+      <h2 id="activity-title"></h2>
+      <p id="activity-version"></p>
+    </header>
+    <div class="activity-grid">
+      <section class="detail" id="activity-events"></section>
+      <section class="detail" id="activity-runs"></section>
+    </div>
   </main>
 
   <main id="comparison" class="comparison" hidden>

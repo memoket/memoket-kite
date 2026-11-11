@@ -88,15 +88,25 @@ as writing a handoff, checking a requirement, or explaining a changed plan.
 
 ```sh
 kite-tool --workspace ./team-memory index-sources --transcripts ./transcripts
-kite-tool --workspace ./team-memory context --term 'release plan' --term 'rollout' --text
+kite-tool --workspace ./team-memory context --question 'What changed in the rollout plan?' --text
 ```
 
 KITE keeps the source turns, speaker labels, offsets, and exact line IDs in
-its local workspace. Context queries return bounded original passages. An
+its local workspace. Context queries return bounded original passages. Use
+`--term` to search for a specific phrase, or `--conversation-id` to stay in
+one conversation. An
 agent can use new terms found in a passage to follow the discussion across
 meetings. Source revisions and deletion also update the search index. Use the
 [conversation benchmark](benchmarks/agent/README.md#evaluate-original-conversation-context)
 to compare this workflow with giving Codex the transcript directory to search.
+
+If a TXT export has recording metadata in separate files, add
+`--recording-metadata ./recordings` to the import. For `42_transcript.txt`,
+KITE checks `42.json` for a matching `conversation_id` and uses `started_at`
+for date-scoped search. Reimporting matching source-only transcripts can add
+missing dates while preserving their line citations and index annotations.
+Open `kite-tool view` and choose **Workflows** to inspect committed changes
+and recent pipeline stages.
 
 <a id="news"></a>
 

@@ -13,11 +13,35 @@ from .ingest import source_day
 from .retrieve import _citation
 
 _SPAN_CHARS = 320
+_QUESTION_BYTES = 3800
 _SEARCH_TERMS = re.compile(r"[\u3400-\u9fff]+|[^\W_]+", re.UNICODE)
 _HAN = re.compile(r"([\u3400-\u9fff])")
+_QUERY_WORDS = re.compile(r"[\u3400-\u9fff]+|[a-z0-9]+(?:\s+[a-z0-9]+)*", re.I)
+_QUERY_FILLERS = re.compile(
+    r"(?:请问|根据|查找|查询|哪些|哪个|哪里|什么|如何|怎么|为什么|分别|"
+    r"这场|那场|会上|那次|当时|原文|给出|引用|请|是否|有没有|的|了|吗|呢)"
+)
 _CONTEXT_SCHEMA = object_schema(
     {"terms": array({**TEXT, "maxLength": 128}, 1, 12)},
-    {"source": TEXT, "start_date": DATE, "end_date": DATE, "latest": {"type": "boolean"}},
+    {
+        "source": TEXT,
+        "conversation_id": TEXT,
+        "start_date": DATE,
+        "end_date": DATE,
+        "latest": {"type": "boolean"},
+    },
+)
+CONTEXT_REQUEST = object_schema(
+    {"question": {**TEXT, "maxLength": 512}},
+    {
+        **{key: value for key, value in _CONTEXT_SCHEMA["properties"].items() if key != "terms"},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+        "max_bytes": {"type": "integer", "minimum": 512, "maximum": 65536},
+        "neighbors": {"type": "integer", "minimum": 0, "maximum": 5},
+    },
+)
+CONTEXT_PLAN = object_schema(
+    {"request": CONTEXT_REQUEST, "terms": array(TEXT, 1, 8), "memory_version": {"type": "integer"}}
 )
 
 
@@ -30,6 +54,94 @@ def _tokens(text: str) -> str:
 
 def context_enabled(db) -> bool:
     return bool(db.execute("SELECT 1 FROM sqlite_master WHERE name='context_snapshot'").fetchone())
+
+
+def context_current(db, version: int) -> bool:
+    return (
+        db.execute(
+            "SELECT 1 FROM context_snapshot WHERE version=? "
+            "AND EXISTS (SELECT 1 FROM sqlite_master WHERE name='context_spans' AND type='table')",
+            (version,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _require_context(workspace) -> int:
+    if not context_enabled(workspace.db):
+        raise ToolError(
+            "index_unavailable", "run kite-tool index-sources to build the context index"
+        )
+    version = workspace.version()
+    if not context_current(workspace.db, version):
+        raise ToolError("stale_index", "run kite-tool index-sources to rebuild the context index")
+    return version
+
+
+def _question_phrases(question: str):
+    normalized = unicodedata.normalize("NFKC", question).casefold()
+    normalized = re.sub(r"\b(\d+)\s*k(?:hz)?\b", r"\1 k", normalized)
+    for block in _QUERY_WORDS.findall(normalized):
+        if _HAN.search(block):
+            for fragment in _QUERY_FILLERS.split(block):
+                for start in range(len(fragment) - 1):
+                    for width in range(2, min(7, len(fragment) - start) + 1):
+                        yield fragment[start : start + width]
+        else:
+            words = block.split()
+            for start, word in enumerate(words):
+                if len(word) > 1 and not word.isdecimal():
+                    yield word
+                for width in (2, 3):
+                    if start + width <= len(words):
+                        yield " ".join(words[start : start + width])
+
+
+def compile_question(workspace, request: dict) -> dict:
+    validate(CONTEXT_REQUEST, request, "context request")
+    version = _require_context(workspace)
+    candidates = []
+    for phrase in dict.fromkeys(_question_phrases(request["question"])):
+        expression = f'"{_tokens(phrase)}"'
+        frequency = workspace.db.execute(
+            "SELECT count(*) FROM (SELECT rowid FROM context_spans "
+            "WHERE context_spans MATCH ? LIMIT 32)",
+            (expression,),
+        ).fetchone()[0]
+        if frequency:
+            labeled = workspace.db.execute(
+                "SELECT 1 FROM context_spans WHERE labels MATCH ? LIMIT 1", (expression,)
+            ).fetchone()
+            length = len(phrase.replace(" ", ""))
+            score = min(length, 7) * (2 - frequency / 32) + (3 if labeled else 0)
+            candidates.append((score, phrase))
+    selected = []
+    for _, phrase in sorted(candidates, key=lambda row: -row[0]):
+        if not any(phrase in current or current in phrase for current in selected):
+            selected.append(phrase)
+        if len(selected) == 8:
+            break
+    return {
+        "request": request,
+        "terms": selected or [request["question"][:128]],
+        "memory_version": version,
+    }
+
+
+def search_question(workspace, compiled: dict) -> dict:
+    if compiled["memory_version"] != workspace.version():
+        raise ToolError("stale_snapshot", "memory changed; compile the question again")
+    request = compiled["request"]
+    filters = {key: request[key] for key in _CONTEXT_SCHEMA["properties"] if key in request}
+    result = context_pack(
+        workspace,
+        {"terms": compiled["terms"], **filters},
+        limit=request.get("limit", 8),
+        max_bytes=request.get("max_bytes", _QUESTION_BYTES),
+        neighbors=request.get("neighbors", 1),
+        focus=True,
+    )
+    return {**result, "compilation": {"question": request["question"], "terms": compiled["terms"]}}
 
 
 def enable_context(db) -> None:
@@ -138,6 +250,11 @@ def _candidates(db, plan: dict, limit: int) -> list:
         if key in plan:
             filters.append(f"{field} {operator} ?")
             args.append(plan[key])
+    if "conversation_id" in plan:
+        filters.append(
+            "checksum IN (SELECT checksum FROM revisions WHERE conversation_id=? AND active=1)"
+        )
+        args.append(plan["conversation_id"])
     if "start_date" in plan or "end_date" in plan:
         filters.append("day <> ''")
     where = " AND ".join(filters)
@@ -172,7 +289,23 @@ def _candidates(db, plan: dict, limit: int) -> list:
     return results
 
 
-def _pack(workspace, rows: list, limit: int, max_bytes: int, neighbors: int):
+def _positions(segments: list[dict], start: int, stop: int, neighbors: int, phrases: tuple):
+    window = range(max(0, start - neighbors), min(len(segments), stop + neighbors))
+    if phrases:
+        hits = []
+        for pos in range(start, stop):
+            text = f" {_tokens(segments[pos]['text'])} "
+            if any(phrase in text for phrase in phrases):
+                hits.append(pos)
+        if hits:
+            return sorted(
+                (pos for pos in window if any(abs(pos - hit) <= neighbors for hit in hits)),
+                key=lambda pos: (min(abs(pos - hit) for hit in hits), pos),
+            )
+    return [*range(start, stop), *(pos for pos in window if not start <= pos < stop)]
+
+
+def _pack(workspace, rows: list, limit: int, max_bytes: int, neighbors: int, phrases: tuple):
     records = {}
     seen = defaultdict(set)
     packed = []
@@ -189,11 +322,8 @@ def _pack(workspace, rows: list, limit: int, max_bytes: int, neighbors: int):
         start, stop = row["start"], row["stop"]
         if not record["active"] or not 0 <= start < stop <= len(segments):
             raise ToolError("integrity_error", "context index does not match its source revision")
-        window = range(max(0, start - neighbors), min(len(segments), stop + neighbors))
-        # Fill from the matched span first, then add optional context.
-        positions = [*range(start, stop), *(i for i in window if not start <= i < stop)]
         chosen = []
-        for pos in positions:
+        for pos in _positions(segments, start, stop, neighbors, phrases):
             if pos in seen[checksum]:
                 continue
             segment = segments[pos]
@@ -218,7 +348,9 @@ def _pack(workspace, rows: list, limit: int, max_bytes: int, neighbors: int):
     return packed, size, omitted
 
 
-def context_pack(workspace, plan: dict, *, limit: int, max_bytes: int, neighbors: int) -> dict:
+def context_pack(
+    workspace, plan: dict, *, limit: int, max_bytes: int, neighbors: int, focus: bool = False
+) -> dict:
     validate(_CONTEXT_SCHEMA, plan, "context plan")
     if plan.get("start_date", "") > plan.get("end_date", "9999-12-31"):
         raise ToolError("invalid_input", "start date must not follow end date")
@@ -228,16 +360,12 @@ def context_pack(workspace, plan: dict, *, limit: int, max_bytes: int, neighbors
         )
     if not any(map(_tokens, plan["terms"])):
         raise ToolError("invalid_input", "context needs an indexable term")
-    if not context_enabled(workspace.db):
-        raise ToolError(
-            "index_unavailable", "run kite-tool index-sources to build the context index"
-        )
-    version = workspace.version()
-    stamp = workspace.db.execute("SELECT version FROM context_snapshot").fetchone()
-    if stamp is None or stamp["version"] != version:
-        raise ToolError("stale_index", "run kite-tool index-sources to rebuild the context index")
+    version = _require_context(workspace)
     candidates = _candidates(workspace.db, plan, limit)
-    spans, size, omitted = _pack(workspace, candidates, limit, max_bytes, neighbors)
+    phrases = (
+        tuple(f" {tokens} " for term in plan["terms"] if (tokens := _tokens(term))) if focus else ()
+    )
+    spans, size, omitted = _pack(workspace, candidates, limit, max_bytes, neighbors, phrases)
     return {
         "memory_version": version,
         "plan": plan,

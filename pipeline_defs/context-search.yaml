@@ -1,0 +1,22 @@
+id: context-search
+version: 1
+description: Compile a task locally and search original conversation evidence.
+inputs:
+  request: context_request
+stages:
+  - id: compile
+    skill: skills/memory/context-search/SKILL.md
+    tool: compile_context
+    needs: []
+    inputs:
+      request: input.request
+    output: context_plan
+    acceptance: The question is bound to the current workspace version and has search phrases.
+  - id: search
+    skill: skills/memory/context-search/SKILL.md
+    tool: search_context
+    needs: [compile]
+    inputs:
+      compiled: stage.compile
+    output: context_evidence
+    acceptance: Any returned passage retains its source line and revision.

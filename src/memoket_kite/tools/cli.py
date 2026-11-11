@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .audio import audio_source
 from .captions import CAPTION_FORMATS
-from .context import context_pack, render_context
+from .context import compile_question, context_pack, render_context, search_question
 from .contracts import (
     HASH,
     TEXT,
@@ -32,7 +32,7 @@ from .resources import resource_root
 from .retrieve import evidence_context, segment_context, topic_inventory
 from .source_diff import source_changes
 from .trace_text import render_status, render_trace
-from .transcript_text import transcript_text_source
+from .transcript_text import transcript_recording_day, transcript_text_source
 from .viewer import view_memory
 from .workflow import (
     SCRIPTED_IMPORT_STAGES,
@@ -178,14 +178,22 @@ def _parser() -> argparse.ArgumentParser:
     index_input.add_argument(
         "--transcripts", type=Path, help="directory of timestamped TXT transcripts"
     )
+    source_index.add_argument(
+        "--recording-metadata",
+        type=Path,
+        help="directory of same-ID JSON recording dates for TXT import",
+    )
     context = commands.add_parser("context", help="pack cited original passages for an agent task")
-    context.add_argument("--term", action="append", required=True, help="search phrase, repeatable")
+    context_input = context.add_mutually_exclusive_group(required=True)
+    context_input.add_argument("--term", action="append", help="search phrase, repeatable")
+    context_input.add_argument("--question", help="compile a task into search phrases locally")
     context.add_argument("--source", help="restrict search to one source namespace")
+    context.add_argument("--conversation-id", help="search within an original conversation ID")
     context.add_argument("--start-date", help="earliest source date, inclusive")
     context.add_argument("--end-date", help="latest source date, inclusive")
     context.add_argument("--latest", action="store_true", help="give newer dated sources priority")
     context.add_argument("--limit", type=int, default=8, help="maximum matched spans")
-    context.add_argument("--max-bytes", type=int, default=6000, help="original quote byte budget")
+    context.add_argument("--max-bytes", type=int, help="original quote byte budget")
     context.add_argument("--neighbors", type=int, default=1, help="adjacent turns on either side")
     context.add_argument(
         "--text", action="store_true", help="compact original quotes and citation IDs"
@@ -243,12 +251,15 @@ def _parser() -> argparse.ArgumentParser:
         "evidence", help="read an original cited line and nearby context"
     )
     evidence_id = evidence.add_mutually_exclusive_group(required=True)
-    evidence_id.add_argument("source_line_id", nargs="?", help="line ID from a KITE trace")
+    evidence_id.add_argument(
+        "source_line_id", nargs="?", help="citation such as 184#L4 or a revision-bound line ID"
+    )
     evidence_id.add_argument("--segment-id", help="original segment ID in a conversation")
-    evidence.add_argument("--source", help="source namespace for --segment-id")
+    evidence.add_argument("--source", help="source namespace for a short citation or --segment-id")
     evidence.add_argument("--conversation-id", help="original conversation ID for --segment-id")
     evidence.add_argument("--revision", metavar="CHECKSUM", help="select a retained revision")
     evidence.add_argument("--context", type=int, default=0, help="lines on either side (0–20)")
+    evidence.add_argument("--text", action="store_true", help="compact quotes and citation IDs")
     evidence.add_argument(
         "--byte-budget",
         type=int,
@@ -537,23 +548,38 @@ def _ingest(
 
 
 def _read_evidence(args: argparse.Namespace, workspace: Workspace) -> dict:
-    if args.source_line_id is not None:
+    reference = args.source_line_id
+    if reference is not None and "#" not in reference:
         if any(value is not None for value in (args.source, args.conversation_id, args.revision)):
             raise ToolError("invalid_input", "source and revision options require --segment-id")
-        return evidence_context(
-            workspace, args.source_line_id, args.context, byte_budget=args.byte_budget
-        )
-    if args.source is None or args.conversation_id is None:
+        return evidence_context(workspace, reference, args.context, byte_budget=args.byte_budget)
+    source, conversation, segment = args.source, args.conversation_id, args.segment_id
+    if reference is not None:
+        if conversation is not None:
+            raise ToolError(
+                "invalid_input", "the short citation already includes a conversation ID"
+            )
+        if reference.startswith("[") and reference.endswith("]"):
+            reference = reference[1:-1]
+        conversation, _, segment = reference.rpartition("#")
+        if "/" in conversation:
+            namespace, conversation = conversation.split("/", 1)
+            if source is not None and source != namespace:
+                raise ToolError("invalid_input", "the citation and --source namespaces differ")
+            source = namespace
+    elif source is None or conversation is None:
         raise ToolError("invalid_input", "--segment-id requires --source and --conversation-id")
-    scope = {"source": args.source, "conversation_id": args.conversation_id}
-    validate(SOURCE_SCOPE, scope, "source scope")
-    validate(TEXT, args.segment_id, "segment ID")
+    validate(TEXT, conversation, "conversation ID")
+    validate(TEXT, segment, "segment ID")
+    if source is not None:
+        validate(SOURCE_SCOPE, {"source": source, "conversation_id": conversation}, "source scope")
     if args.revision is not None:
         validate(HASH, args.revision, "revision checksum")
     return segment_context(
         workspace,
-        **scope,
-        segment_id=args.segment_id,
+        source=source,
+        conversation_id=conversation,
+        segment_id=segment,
         checksum=args.revision,
         radius=args.context,
         byte_budget=args.byte_budget,
@@ -606,16 +632,35 @@ def _check_source(args: argparse.Namespace, root: Path) -> dict:
     return result
 
 
-def _index_sources(root: Path, workspace: Workspace, value: dict) -> dict:
+def _index_sources(
+    root: Path, workspace: Workspace, value: dict, *, backfill_dates: bool = False
+) -> dict:
     item = object_schema({"source": SCHEMAS["source"]}, {"annotations": SCHEMAS["annotations"]})
     validate(object_schema({"sources": array(item, maximum=1000)}), value, "source batch")
     context = Context(root, workspace, "")
     records = []
     for entry in value["sources"]:
+        normalized = normalize(context, entry["source"])
         annotations = entry.get("annotations", {"facts": []})
+        conversation = normalized["conversation"]
+        if backfill_dates and "source_date" in conversation:
+            previous = workspace.records(
+                source=conversation["source"],
+                conversation_id=conversation["conversation_id"],
+                active_only=True,
+            )
+            undated = {key: value for key, value in conversation.items() if key != "source_date"}
+            if previous and previous[0]["conversation"] == undated:
+                prior = previous[0]
+                annotations = {
+                    key: prior[key]
+                    for key in ("facts", "taxonomy", "entity_aliases", "index_spans")
+                    if key in prior
+                }
+                normalized["expected_checksum"] = prior["checksum"]
         if annotations["facts"]:
             raise ToolError("invalid_input", "index-sources accepts original spans without facts")
-        records.append(annotate(context, normalize(context, entry["source"]), annotations))
+        records.append(annotate(context, normalized, annotations))
     return workspace.index_sources(records)
 
 
@@ -666,6 +711,13 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
 
     if args.command == "index-sources":
         payload = _object(args.input) if args.input is not None else {"sources": []}
+        metadata = args.recording_metadata
+        if metadata is not None:
+            metadata = metadata.expanduser()
+            if args.transcripts is None or not metadata.is_dir():
+                raise ToolError(
+                    "invalid_input", "recording metadata needs a directory and --transcripts"
+                )
         if args.transcripts is not None:
             files = sorted(args.transcripts.expanduser().glob("*.txt"))
             if (
@@ -682,26 +734,43 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 ]
             except UnicodeError as exc:
                 raise ToolError("invalid_input", "transcript must be valid UTF-8") from exc
+            if metadata is not None:
+                for entry in payload["sources"]:
+                    conversation = entry["source"]["payload"]
+                    if day := transcript_recording_day(metadata, conversation["conversation_id"]):
+                        conversation["source_date"] = day
         with Workspace.open(args.workspace) as workspace:
-            return _index_sources(root, workspace, payload), None
+            return _index_sources(
+                root, workspace, payload, backfill_dates=metadata is not None
+            ), None
 
     if args.command == "context":
-        plan = {"terms": args.term}
+        plan = {}
         if args.latest:
             plan["latest"] = True
         plan.update(
             {
                 key: value
-                for key in ("source", "start_date", "end_date")
+                for key in ("source", "conversation_id", "start_date", "end_date")
                 if (value := getattr(args, key)) is not None
             }
         )
         with Workspace.open(args.workspace, read_only=True) as workspace:
+            if args.question is not None:
+                request = {
+                    **plan,
+                    "question": args.question,
+                    "limit": args.limit,
+                    "neighbors": args.neighbors,
+                }
+                if args.max_bytes is not None:
+                    request["max_bytes"] = args.max_bytes
+                return search_question(workspace, compile_question(workspace, request)), None
             return context_pack(
                 workspace,
-                plan,
+                {**plan, "terms": args.term},
                 limit=args.limit,
-                max_bytes=args.max_bytes,
+                max_bytes=args.max_bytes if args.max_bytes is not None else 6000,
                 neighbors=args.neighbors,
             ), None
 
@@ -916,6 +985,22 @@ def main(argv=None) -> int:
         print(result["text"])
     elif args.command == "context" and args.text:
         print(render_context(result))
+    elif args.command == "evidence" and args.text:
+        window = result["value"]
+        if not window["source_revision_active"]:
+            print(f"Historical revision: {window['evidence']['revision_checksum']}")
+        print(
+            render_context(
+                {
+                    "spans": [
+                        {
+                            "source_date": window["source_time"],
+                            "evidence": [*window["before"], window["evidence"], *window["after"]],
+                        }
+                    ]
+                }
+            )
+        )
     elif args.command == "status" and args.text_output:
         print(render_status(result))
     elif args.command in {"audio-source", "file-source", "memoket-source"}:
