@@ -70,8 +70,11 @@ evidence view, topics, entities, facets, passages, quoted lines, and source
 revisions occupy separate levels. Select a passage to see its original quotes,
 or follow a co-occurrence connection to see the passage shared by two entities
 or facet values. **Sources** includes transcripts with no annotations. When the
-workspace has an original-text index, use the search field or start the viewer
-with `kite-tool view --term PHRASE`.
+workspace has an original-text index, enter a question in the search field
+to see the compiled terms and cited passages, or start the viewer with
+`kite-tool view --term PHRASE` for a phrase search. Open **Workflows** to see
+committed imports, updates, merges, and deletions alongside recent pipeline
+stages. An existing workspace starts recording new changes on upgrade.
 
 To browse a live graph alongside saved before-and-after snapshots, start the
 viewer with `kite-tool view --compare PATH`. The JSON file contains an `examples`

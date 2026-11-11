@@ -63,6 +63,8 @@ def install_plugin(codex: str, marketplace: dict, project: Path, env: dict) -> P
             assert skill["enabled"] and Path(env["CODEX_HOME"]) in path.parents, skill
             launcher = path.parent / "scripts" / "kite.sh"
             assert launcher.is_file(), launcher
+            for name in ("import.md", "query.md"):
+                assert (path.parent / "references" / name).is_file(), name
             return launcher
         finally:
             server.terminate()
@@ -141,10 +143,30 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
     (transcripts / "handoff_transcript.txt").write_text(
         "00:01\nSpeaker A\n\nRollout depends on the checklist.\n", encoding="utf-8"
     )
-    indexed = json.loads(run("index-sources", "--transcripts", transcripts).stdout)
+    (transcripts / "handoff.json").write_text(
+        '{"conversation_id":"handoff","started_at":"2026-01-14 08:00:00"}', encoding="utf-8"
+    )
+    indexed = json.loads(
+        run(
+            "index-sources", "--transcripts", transcripts, "--recording-metadata", transcripts
+        ).stdout
+    )
     assert indexed["sources_changed"] == 1, indexed
-    context = run("context", "--term", "rollout", "--text", cwd=subdirectory).stdout
+    context = run(
+        "context",
+        "--question",
+        "What does rollout depend on?",
+        "--start-date",
+        "2026-01-14",
+        "--text",
+        cwd=subdirectory,
+    ).stdout
     assert "[handoff#L4] Speaker A: Rollout depends on the checklist." in context, context
+    assert "Date: 2026-01-14" in context, context
+    assert (
+        json.loads(run("validate-pipeline", "context-search").stdout)["definition"]["id"]
+        == "context-search"
+    )
     viewer = run("view", "--help").stdout
     assert "--compare" in viewer and "--term" in viewer, viewer
     other_project = scratch / "Other project"
