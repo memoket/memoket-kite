@@ -17,6 +17,7 @@ from .retrieve import _citation
 _SPAN_CHARS = 320
 _QUESTION_BYTES = 3800
 _TERM_BYTES = 6000
+_TRACE_CANDIDATES = 80
 _SEARCH_TERMS = re.compile(r"[\u3400-\u9fff]+|[^\W_]+", re.UNICODE)
 _HAN = re.compile(r"([\u3400-\u9fff])")
 _QUERY_WORDS = re.compile(r"[\u3400-\u9fff]+|[a-z0-9]+(?:\s+[a-z0-9]+)*", re.I)
@@ -57,6 +58,7 @@ _CONTEXT_SCHEMA = object_schema(
         "end_date": DATE,
         "latest": {"type": "boolean"},
         "matching_lines": {"type": "boolean"},
+        "explain": {"type": "boolean"},
         "at_version": {"type": "integer", "minimum": 0, "maximum": 2**63 - 1},
         "known_at": {"type": "string", "format": "date-time"},
     },
@@ -726,6 +728,7 @@ def _pack(
     matching_lines: bool = False,
     historical_records: dict | None = None,
     compact_sources: dict | None = None,
+    trace: dict | None = None,
 ):
     compact_sources = compact_sources or {}
     records = historical_records if historical_records is not None else dict(compact_sources)
@@ -734,11 +737,26 @@ def _pack(
             {"checksum": checksum, "start": 0, "stop": len(record["conversation"]["segments"])}
             for checksum, record in compact_sources.items()
         ] + [row for row in rows if row["checksum"] not in compact_sources]
+    traced = []
+    if trace is not None:
+        traced = [
+            {
+                "rank": rank,
+                "revision_checksum": row["checksum"],
+                "start_offset": row["start"],
+                "end_offset": row["stop"],
+                "reason": "span_limit",
+                "quoted_lines": 0,
+                "lines_over_budget": 0,
+            }
+            for rank, row in enumerate(rows[:_TRACE_CANDIDATES], 1)
+        ]
+        trace.update(total=len(rows), candidates=traced)
     seen = defaultdict(set)
     packed = []
     size = omitted = 0
     anchored = tuple(f" {anchor} " for anchor in anchors)
-    for row in rows:
+    for index, row in enumerate(rows):
         if len(packed) == limit:
             break
         checksum = row["checksum"]
@@ -753,6 +771,7 @@ def _pack(
         if not 0 <= start < stop <= len(segments):
             raise ToolError("integrity_error", "context index does not match its source revision")
         chosen = []
+        previously_omitted = omitted
         positions = (
             range(start, stop)
             if checksum in compact_sources
@@ -769,6 +788,16 @@ def _pack(
             size += weight
             chosen.append(pos)
             seen[checksum].add(pos)
+        if index < len(traced):
+            over_budget = omitted - previously_omitted
+            reason = "already_quoted" if positions else "no_matching_line"
+            if chosen:
+                reason = "quoted"
+            elif over_budget:
+                reason = "quote_budget"
+            traced[index].update(
+                reason=reason, quoted_lines=len(chosen), lines_over_budget=over_budget
+            )
         if chosen:
             packed.append(
                 {
@@ -834,6 +863,23 @@ def _term_coverage(terms: list[str], candidates: dict[str, int], spans: list[dic
     return list(coverage.values())
 
 
+def _trace_sources(workspace, trace: dict) -> None:
+    checksums = tuple(dict.fromkeys(row["revision_checksum"] for row in trace["candidates"]))
+    if not checksums:
+        return
+    sources = {
+        row["checksum"]: {"source": row["source"], "conversation_id": row["conversation_id"]}
+        for row in workspace.db.execute(
+            f"SELECT checksum, source, conversation_id FROM revisions WHERE checksum IN ({','.join('?' for _ in checksums)})",
+            checksums,
+        )
+    }
+    if len(sources) != len(checksums):
+        raise ToolError("integrity_error", "context candidate refers to an unavailable revision")
+    for row in trace["candidates"]:
+        row.update(sources[row["revision_checksum"]])
+
+
 def _context_evidence(workspace, plan, *, limit, max_bytes, neighbors, focus, _index, _question):
     validate(_CONTEXT_SCHEMA, plan, "context plan")
     if not any(map(_tokens, plan["terms"])):
@@ -846,6 +892,7 @@ def _context_evidence(workspace, plan, *, limit, max_bytes, neighbors, focus, _i
         if focus or matching_lines
         else ()
     )
+    trace = {} if plan.get("explain") else None
     with nullcontext(_index) if _index is not None else _search_index(workspace, plan) as index:
         compact = (
             _compact_sources(workspace, index, plan, _question, max_bytes // 2)
@@ -882,7 +929,10 @@ def _context_evidence(workspace, plan, *, limit, max_bytes, neighbors, focus, _i
             matching_lines=matching_lines,
             historical_records=index.records,
             compact_sources=compact,
+            trace=trace,
         )
+        if trace is not None:
+            _trace_sources(workspace, trace)
     return {
         "memory_version": workspace.version(),
         "plan": plan,
@@ -893,6 +943,7 @@ def _context_evidence(workspace, plan, *, limit, max_bytes, neighbors, focus, _i
         "candidate_spans": len(candidates),
         "candidate_sources": len({row["checksum"] for row in candidates}),
         "span_limit": limit,
+        **({"packing_trace": trace} if trace is not None else {}),
         **(
             {"term_coverage": _term_coverage(plan["terms"], term_candidates, spans)}
             if term_candidates is not None

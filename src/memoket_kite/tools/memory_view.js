@@ -8,6 +8,7 @@
   const recordingBounds = snapshot.search_recording_bounds || {};
   const sourceScope = snapshot.search_source_scope || {};
   let searchAllSources = false;
+  let explainCandidates = Boolean(snapshot.search_trace?.packing?.length);
   const copy = {
     en: {
       title: 'Memory Graph', searchTitle: 'Search Evidence', topics: 'Topics', terms: 'Search terms',
@@ -26,6 +27,10 @@
       readRevision: 'Read this revision',
       anchorSources: 'sources matching the name',
       matchedTerms: 'Terms in this quote',
+      inspectCandidates: 'Rerun with candidate details', packingOrder: 'Packing order',
+      packingSegments: 'Segments',
+      packingReasons: { quoted: 'Quoted', span_limit: 'Span limit reached', quote_budget: 'Quote budget',
+        already_quoted: 'Already quoted', no_matching_line: 'No matching original line' },
       sourceScope: 'Source scope', allSources: 'Search all sources',
       invalidMatching: 'Enter up to twelve phrases of at most 128 characters.',
       versionFilter: 'Version', versionFilterLabel: 'Search at a workspace version', history: 'Workspace snapshot',
@@ -69,6 +74,10 @@
       readRevision: '查看此版本原文',
       anchorSources: '份来源命中名称',
       matchedTerms: '原文命中',
+      inspectCandidates: '重查并查看候选', packingOrder: '引文选取顺序',
+      packingSegments: '原文段',
+      packingReasons: { quoted: '已引用', span_limit: '片段数已达上限', quote_budget: '引文预算不足',
+        already_quoted: '已在前面引用', no_matching_line: '原文行无完整命中' },
       sourceScope: '限定来源', allSources: '搜索全部来源',
       invalidMatching: '请输入最多十二个检索词，每个不超过 128 字符。',
       versionFilter: '版本', versionFilterLabel: '按工作区版本检索', history: '工作区快照',
@@ -841,6 +850,31 @@
     return list;
   }
 
+  function candidateTrace(packing, label) {
+    const details = element('details', undefined, 'packing-trace');
+    details.append(element('summary', [t('packingOrder'), label,
+      `${number.format(packing.candidates.length)}/${number.format(packing.total)} ${t('candidates')}`].filter(Boolean).join(' · ')));
+    const list = element('div', undefined, 'packing-candidates');
+    paged(list, packing.candidates, 12, candidate => {
+      const row = element('div');
+      const label = `#${candidate.rank} · ${candidate.source}/${candidate.conversation_id} · ${t('packingSegments')} ${candidate.start_offset + 1}–${candidate.end_offset}`;
+      const link = element('a', label, 'citation-link');
+      const params = new URLSearchParams({ view: 'source', checksum: candidate.revision_checksum,
+        offset: candidate.start_offset, lang: language });
+      if (query.has('run')) params.set('run', query.get('run'));
+      link.href = '?' + params.toString();
+      const status = [t('packingReasons')[candidate.reason]];
+      if (candidate.quoted_lines) status.push(`${number.format(candidate.quoted_lines)} ${t('quotes')}`);
+      if (candidate.reason === 'quoted' && candidate.lines_over_budget) {
+        status.push(`${t('packingReasons').quote_budget} ${number.format(candidate.lines_over_budget)}`);
+      }
+      row.append(link, element('span', status.join(' · ')));
+      return row;
+    });
+    details.append(list);
+    return details;
+  }
+
   function render() {
     displayed = mode === 'all' ? allTopicScene() : mode === 'topic' ? topicScene(currentTopic) : memoryScene(selected);
     document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en';
@@ -901,6 +935,16 @@
           number.format(stats.quotes) + ' ' + t('quotes'),
           stats.shared_quotes ? number.format(stats.shared_quotes) + ' ' + t('sharedQuotes') : null,
           number.format(stats.quote_bytes) + ' ' + t('quoteBytes')].filter(Boolean).join(' · ')));
+      if (stats.packing?.length) {
+        for (const packing of stats.packing) {
+          trace.append(candidateTrace(packing, stats.packing.length > 1 ? packing.label : ''));
+        }
+      } else if (stats.candidate_spans) {
+        trace.append(button(t('inspectCandidates'), () => {
+          explainCandidates = true;
+          byId('search').requestSubmit();
+        }, 'citation-link'));
+      }
       if (snapshot.search_matching_lines) trace.prepend(element('p', t('matchingLines')));
       if (sourceScope.source || sourceScope.conversation_id) {
         const scope = element('p', `${t('sourceScope')} · ${[sourceScope.source, sourceScope.conversation_id].filter(Boolean).join('/')}`);
@@ -987,8 +1031,13 @@
       recordingEnd.reportValidity();
       return;
     }
-    const terms = !compareWith && value !== snapshot.search_question && /[,，、]/u.test(value) && !/[?？。]/u.test(value)
-      ? [...new Set(value.split(/[,，、]+/u).map(term => term.trim()).filter(Boolean))] : [];
+    const previousTerms = snapshot.search_question ? [] : (snapshot.search_terms || []);
+    let terms = [];
+    if (!compareWith && value && value === previousTerms.join('，')) {
+      terms = previousTerms;
+    } else if (!compareWith && value !== snapshot.search_question && /[,，、]/u.test(value) && !/[?？。]/u.test(value)) {
+      terms = [...new Set(value.split(/[,，、]+/u).map(term => term.trim()).filter(Boolean))];
+    }
     if (terms.length > (matchingLines.checked ? 12 : 3) || terms.some(term => term.length > 128)) {
       input.setCustomValidity(t(matchingLines.checked ? 'invalidMatching' : 'invalid'));
       input.reportValidity();
@@ -1000,6 +1049,7 @@
     if (!terms.length && value) params.set('q', value);
     if (compareWith) params.set('q2', compareWith);
     if (value && matchingLines.checked) params.set('matching_lines', '1');
+    if (value && explainCandidates) params.set('explain', '1');
     if (value && byId('search-version').value) params.set('at', byId('search-version').value);
     if (value && recordingStart.value) params.set('start_date', recordingStart.value);
     if (value && recordingEnd.value) params.set('end_date', recordingEnd.value);

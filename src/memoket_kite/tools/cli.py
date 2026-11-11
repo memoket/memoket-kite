@@ -207,6 +207,9 @@ def _parser() -> argparse.ArgumentParser:
     context.add_argument(
         "--matching-lines", action="store_true", help="return only original lines matching a phrase"
     )
+    context.add_argument(
+        "--explain", action="store_true", help="include packing order in JSON and saved searches"
+    )
     history_scope = context.add_mutually_exclusive_group()
     history_scope.add_argument("--at-version", type=int, help="search a tracked workspace snapshot")
     history_scope.add_argument(
@@ -798,6 +801,8 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             plan["latest"] = True
         if args.matching_lines:
             plan["matching_lines"] = True
+        if args.explain:
+            plan["explain"] = True
         neighbors = args.neighbors if args.neighbors is not None else int(not args.matching_lines)
         plan.update(
             {

@@ -229,6 +229,10 @@ summary { color: var(--teal); cursor: pointer; font-size: 12px; }
 .term-coverage li { display: flex; flex-wrap: wrap; column-gap: 5px; overflow-wrap: anywhere; }
 .term-coverage span { color: var(--muted); }
 .term-coverage [data-empty] { color: var(--muted); }
+.packing-trace summary { cursor: pointer; }
+.packing-candidates { display: grid; gap: 4px; margin: 6px 0; }
+.packing-candidates > div { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.packing-candidates > div > span { color: var(--muted); }
 .recording-timeline > section { padding-left: 10px; border-left: 2px solid var(--line); }
 .recording-timeline > section h4 { margin: 0 0 6px; color: var(--muted); font-size: 12px; }
 .revision-change { margin-top: 16px; }

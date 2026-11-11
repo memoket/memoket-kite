@@ -5863,6 +5863,50 @@ def test_context_keeps_an_explicit_quote_ahead_of_generic_matches(work):
     ]
 
 
+def test_context_explains_packing_without_adding_unquoted_text(work):
+    directory, call = work
+    sources = [
+        text_input("oversized", "target " + "x" * 700, date="2026-01-03"),
+        text_input("quoted", "target can be cited.", date="2026-01-02"),
+        text_input("later", "target in a deferred source.", date="2026-01-01"),
+    ]
+    call("index-sources", payload={"sources": [{"source": entry["source"]} for entry in sources]})
+    args = ("context", "--term", "target", "--latest", "--limit", "1", "--max-bytes", "512")
+    direct = call(*args)
+    assert "packing_trace" not in direct
+    assert call(*args, "--text") == call(*args, "--explain", "--text")
+    traced = call(*args, "--explain", "--save", "packing")
+    assert direct["spans"] == traced["spans"]
+    trace = traced["packing_trace"]
+    assert trace["total"] == 3
+    assert [
+        (
+            item["rank"],
+            item["conversation_id"],
+            item["reason"],
+            item["quoted_lines"],
+            item["lines_over_budget"],
+        )
+        for item in trace["candidates"]
+    ] == [
+        (1, "oversized", "quote_budget", 0, 1),
+        (2, "quoted", "quoted", 1, 0),
+        (3, "later", "span_limit", 0, 0),
+    ]
+    assert "target in a deferred source." not in json.dumps(trace)
+    snapshot = viewer._snapshot(directory, [], run_id="packing")
+    assert snapshot["search_trace"]["packing"] == [{"label": None, **trace}]
+    candidate = trace["candidates"][2]
+    with workspace.Workspace.open(directory, read_only=True) as store:
+        source = workflow.source_revision_page(
+            store, candidate["revision_checksum"], offset=candidate["start_offset"]
+        )
+    assert source["segments"][0]["text"] == "target in a deferred source."
+    _delete_source(call, "delete-candidate", {"source": "text", "conversation_id": "later"})
+    with pytest.raises(ToolError, match="deletion removed this saved search"):
+        viewer._snapshot(directory, [], run_id="packing")
+
+
 def test_context_matching_lines_checks_the_original_segment_and_saved_plan(work):
     directory, call = work
     sources = []
@@ -5908,6 +5952,10 @@ def test_context_matching_lines_checks_the_original_segment_and_saved_plan(work)
         "--matching-lines",
     )
     assert missing["spans"] == []
+    split_candidate = call(
+        "context", "--term", "amber needle replacement", "--matching-lines", "--explain"
+    )
+    assert split_candidate["packing_trace"]["candidates"][0]["reason"] == "no_matching_line"
 
     terms = ["amber needle", "implementation notes", "amber needle replacement", "silver needle"]
     batch = ("context", "--matching-lines", *(arg for term in terms for arg in ("--term", term)))

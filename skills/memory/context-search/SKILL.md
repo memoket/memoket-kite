@@ -16,6 +16,9 @@ per-phrase candidate spans and cited lines in the viewer. A candidate span can
 be left out by the quote budget or can match across original line boundaries.
 In a pipeline, use `request.terms` or `request.question` and optionally set
 `request.matching_lines: true`.
+Set `request.explain: true` to retain packing order and inclusion reasons.
+For a saved search, the graph opens each candidate at its original source
+position. Its list shows up to 80 candidates per question.
 Open nearby lines with `kite-tool evidence 'CONVERSATION#SEGMENT' --context 2 --text`.
 Use `--at-version VERSION` or `--known-at TIMESTAMP` for what the workspace
 knew at a historical point. Use recording dates for meeting windows. Keep

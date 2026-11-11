@@ -68,6 +68,10 @@ For missing or conditional evidence, repeat `--term` in one matching-line
 lookup. Use `--conversation-id` when the relevant recording is already known.
 Add `--save` to inspect each phrase's candidate spans and cited lines in the
 graph. A phrase with zero cited lines may still have candidate spans.
+Use `--explain --save` to retain the first 80 packing candidates for each
+search. The viewer links each candidate to its original source position and
+shows whether it contributed quotes or met a packing limit. Without `--text`,
+the command also returns these details in JSON.
 For two independent questions, use `--question "$FIRST" --compare-with "$SECOND"`.
 The two searches share the snapshot, date filters and total quote budget. The
 pipeline accepts the second question as `request.compare_with`.

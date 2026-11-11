@@ -175,12 +175,14 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
             "--term",
             "no matching words",
             "--matching-lines",
+            "--explain",
             "--save",
             "installed-terms",
         ).stdout
     )
     assert saved_terms["saved_run"] == "installed-terms"
     assert [row["quoted_lines"] for row in saved_terms["term_coverage"]] == [1, 0]
+    assert saved_terms["packing_trace"]["candidates"][0]["reason"] == "quoted"
     comparison = run(
         "context",
         "--question",

@@ -174,6 +174,11 @@ def _search_snapshot(
         "search_trace": {
             "terms": packs[0][1]["compilation"]["terms"] if question is not None else terms,
             "term_coverage": packs[0][1].get("term_coverage", []) if not comparison else [],
+            "packing": [
+                {"label": pack.get("compilation", {}).get("question", key), **pack["packing_trace"]}
+                for key, pack in packs
+                if "packing_trace" in pack
+            ],
             "candidate_spans": sum(pack["candidate_spans"] for _, pack in packs),
             "candidate_sources": packs[0][1]["candidate_sources"]
             if question and not comparison
@@ -200,6 +205,7 @@ def _snapshot(
     source_scope: dict | None = None,
     compare_with: str | None = None,
     matching_lines: bool = False,
+    explain: bool = False,
     run_id: str | None = None,
 ) -> dict:
     try:
@@ -236,6 +242,8 @@ def _snapshot(
                     scope["compare_with"] = compare_with
                 if matching_lines:
                     scope["matching_lines"] = True
+                if explain:
+                    scope["explain"] = True
                 return {
                     **_search_snapshot(workspace, terms, question, scope),
                     "history_origin": origin,
@@ -353,9 +361,11 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                 compare_with = params.get("q2", [None])[0]
                 run_id = params.get("run", [None])[0]
                 matching_lines = params.get("matching_lines", ["0"])
+                explain = params.get("explain", ["0"])
                 if (
                     len(terms) > (12 if matching_lines == ["1"] else 3)
                     or matching_lines not in (["0"], ["1"])
+                    or explain not in (["0"], ["1"])
                     or any(len(term) > 128 for term in terms)
                     or (question is not None and (len(question) > 512 or terms))
                     or (compare_with is not None and (question is None or len(compare_with) > 512))
@@ -371,6 +381,7 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                                     "start_date",
                                     "end_date",
                                     "matching_lines",
+                                    "explain",
                                     "source",
                                     "conversation_id",
                                 )
@@ -433,6 +444,7 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                             source_scope=source_scope,
                             compare_with=compare_with,
                             matching_lines=matching_lines == ["1"],
+                            explain=explain == ["1"],
                             run_id=run_id,
                         ),
                     )
