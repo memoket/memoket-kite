@@ -5,6 +5,7 @@
   const number = new Intl.NumberFormat();
   const searching = Boolean(snapshot.search_terms?.length);
   const comparison = snapshot.search_comparison || [];
+  const versionComparison = snapshot.search_version_comparison;
   const recordingBounds = snapshot.search_recording_bounds || {};
   const compareDateOverrides = snapshot.search_comparison_recording_overrides || {};
   const sourceScope = snapshot.search_source_scope || {};
@@ -50,6 +51,8 @@
       sourceScope: 'Source scope', allSources: 'Search all sources',
       invalidMatching: 'Enter up to twelve phrases of at most 128 characters.',
       versionFilter: 'Version', versionFilterLabel: 'Search at a workspace version', history: 'Workspace snapshot',
+      baselineVersion: 'Earlier workspace version', comparisonQuestionRequired: 'Enter the question to compare.',
+      invalidVersionOrder: 'The earlier version must precede the target version.',
       recordingDates: 'Recording dates', recordingFrom: 'From', recordingThrough: 'Through',
       evidenceRecordingDates: 'Cited recording dates',
       secondRecordingDates: 'Second question recording dates (blank uses first range)', allRecordingDates: 'All recording dates',
@@ -113,6 +116,8 @@
       sourceScope: '限定来源', allSources: '搜索全部来源',
       invalidMatching: '请输入最多十二个检索词，每个不超过 128 字符。',
       versionFilter: '版本', versionFilterLabel: '按工作区版本检索', history: '工作区快照',
+      baselineVersion: '对照起始版本', comparisonQuestionRequired: '请输入要对照的问题。',
+      invalidVersionOrder: '对照起始版本必须早于目标版本。',
       recordingDates: '录制日期', recordingFrom: '起始日期', recordingThrough: '截止日期',
       evidenceRecordingDates: '引文录制日期',
       secondRecordingDates: '第二问录制日期（留空沿用第一问）', allRecordingDates: '全部录制日期',
@@ -168,7 +173,8 @@
     });
   }
   for (const term of snapshot.search_terms || []) {
-    const label = comparison.find(part => part.key === term)?.question || term;
+    const part = comparison.find(part => part.key === term);
+    const label = part?.history ? `v${part.history.version}` : part?.question || term;
     topics.set(term, { id: 'term:' + term, kind: 'topic', code: term, label, parents: [], aliases: [], children: [], memories: [] });
   }
   for (const topic of topics.values()) {
@@ -987,6 +993,7 @@
     byId('recording-end-label').textContent = t('recordingThrough');
     byId('comparison-filter-label').textContent = t('compareQuestions');
     byId('comparison-question-label').textContent = t('secondQuestion');
+    byId('comparison-version-label').textContent = t('baselineVersion');
     byId('comparison-recording-label').textContent = t('secondRecordingDates');
     byId('compare-recording-start-label').textContent = t('recordingFrom');
     byId('compare-recording-end-label').textContent = t('recordingThrough');
@@ -999,6 +1006,11 @@
       versionFilter.placeholder = t('versionFilter');
       versionFilter.setAttribute('aria-label', t('versionFilterLabel'));
     }
+    byId('comparison-version-label').hidden = byId('comparison-version').hidden = versionFilter.hidden;
+    if (!versionFilter.hidden) {
+      byId('comparison-version').min = snapshot.history_origin;
+      byId('comparison-version').max = snapshot.version - 1;
+    }
     const trace = byId('search-trace');
     trace.hidden = !snapshot.search_trace;
     if (snapshot.search_trace) {
@@ -1008,7 +1020,13 @@
         const branches = element('div', undefined, 'comparison-trace');
         for (const part of comparison) {
           const branch = element('div');
-          branch.append(button(part.question, () => choose(topics.get(part.key)), 'citation-link'));
+          const history = part.history;
+          branch.append(button(history ? `${t('history')} v${history.version}` : part.question,
+            () => choose(topics.get(part.key)), 'citation-link'));
+          if (history) {
+            branch.append(element('p', new Date(history.committed_at).toLocaleString(language)));
+            if (history.later_deletions) branch.append(element('p', t('historyDeletes')));
+          }
           if (part.recording_bounds) {
             branch.append(element('p', recordingScope(part.recording_bounds) || t('allRecordingDates')));
           }
@@ -1109,7 +1127,8 @@
   }
 
   byId('search-terms').value = snapshot.search_question || (snapshot.search_terms || []).join('，');
-  byId('search-version').value = query.get('at') ?? snapshot.search_history?.version ?? '';
+  const targetVersion = byId('search-version');
+  targetVersion.value = query.get('at') ?? (versionComparison ? comparison[1]?.history.version : snapshot.search_history?.version) ?? '';
   const recordingStart = byId('recording-start');
   const recordingEnd = byId('recording-end');
   recordingStart.value = recordingBounds.start_date ?? query.get('start_date') ?? '';
@@ -1117,6 +1136,8 @@
   const recordingFilter = byId('recording-filter');
   recordingFilter.toggleAttribute('data-active', Boolean(recordingStart.value || recordingEnd.value));
   const secondQuestion = byId('comparison-question');
+  const earlierVersion = byId('comparison-version');
+  earlierVersion.value = query.get('from') ?? (versionComparison ? comparison[0]?.history.version : '') ?? '';
   const compareStart = byId('compare-recording-start');
   const compareEnd = byId('compare-recording-end');
   compareStart.value = compareDateOverrides.start_date ?? query.get('compare_start_date') ?? '';
@@ -1127,16 +1148,25 @@
   recordingFilter.addEventListener('input', clearDateErrors);
   const matchingLines = byId('matching-lines');
   matchingLines.checked = Boolean(snapshot.search_matching_lines);
-  secondQuestion.value = comparison[1]?.question ?? query.get('q2') ?? '';
-  function enableCompareDates() {
+  secondQuestion.value = versionComparison ? '' : comparison[1]?.question ?? query.get('q2') ?? '';
+  function enableComparisonControls() {
+    secondQuestion.disabled = earlierVersion.value !== '';
+    earlierVersion.disabled = Boolean(secondQuestion.value.trim());
     compareStart.disabled = compareEnd.disabled = !secondQuestion.value.trim();
+    earlierVersion.setCustomValidity('');
   }
-  enableCompareDates();
-  byId('comparison-filter').toggleAttribute('data-active', Boolean(secondQuestion.value));
+  enableComparisonControls();
+  byId('comparison-filter').toggleAttribute('data-active', Boolean(secondQuestion.value || earlierVersion.value));
+  if (earlierVersion.value && !snapshot.search_question) byId('comparison-filter').open = true;
   byId('comparison-filter').addEventListener('input', clearDateErrors);
+  earlierVersion.addEventListener('input', () => {
+    byId('search-terms').setCustomValidity('');
+    enableComparisonControls();
+  });
+  targetVersion.addEventListener('input', () => earlierVersion.setCustomValidity(''));
   secondQuestion.addEventListener('input', () => {
     byId('search-terms').setCustomValidity('');
-    enableCompareDates();
+    enableComparisonControls();
   });
   byId('search-terms').addEventListener('input', event => event.target.setCustomValidity(''));
   byId('search').addEventListener('submit', event => {
@@ -1144,9 +1174,15 @@
     const input = byId('search-terms');
     const value = input.value.trim();
     const compareWith = secondQuestion.value.trim();
-    if (compareWith && !value) {
-      input.setCustomValidity(t('firstQuestionRequired'));
+    const from = earlierVersion.value;
+    if ((compareWith || from) && !value) {
+      input.setCustomValidity(t(from ? 'comparisonQuestionRequired' : 'firstQuestionRequired'));
       input.reportValidity();
+      return;
+    }
+    if (from && Number(from) >= Number(targetVersion.value || snapshot.version)) {
+      earlierVersion.setCustomValidity(t('invalidVersionOrder'));
+      earlierVersion.reportValidity();
       return;
     }
     if (recordingStart.value && recordingEnd.value && recordingStart.value > recordingEnd.value) {
@@ -1164,9 +1200,9 @@
     }
     const previousTerms = snapshot.search_question ? [] : (snapshot.search_terms || []);
     let terms = [];
-    if (!compareWith && value && value === previousTerms.join('，')) {
+    if (!compareWith && !from && value && value === previousTerms.join('，')) {
       terms = previousTerms;
-    } else if (!compareWith && value !== snapshot.search_question && /[,，、]/u.test(value) && !/[?？。]/u.test(value)) {
+    } else if (!compareWith && !from && value !== snapshot.search_question && /[,，、]/u.test(value) && !/[?？。]/u.test(value)) {
       terms = [...new Set(value.split(/[,，、]+/u).map(term => term.trim()).filter(Boolean))];
     }
     if (terms.length > (matchingLines.checked ? 12 : 3) || terms.some(term => term.length > 128)) {
@@ -1183,9 +1219,10 @@
       if (compareStart.value) params.set('compare_start_date', compareStart.value);
       if (compareEnd.value) params.set('compare_end_date', compareEnd.value);
     }
+    if (from) params.set('from', from);
     if (value && matchingLines.checked) params.set('matching_lines', '1');
     if (value && explainCandidates) params.set('explain', '1');
-    if (value && byId('search-version').value) params.set('at', byId('search-version').value);
+    if (value && targetVersion.value) params.set('at', targetVersion.value);
     if (value && recordingStart.value) params.set('start_date', recordingStart.value);
     if (value && recordingEnd.value) params.set('end_date', recordingEnd.value);
     if (value && !searchAllSources) {

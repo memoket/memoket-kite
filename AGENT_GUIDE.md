@@ -127,6 +127,14 @@ the whole note within its quote budget.
 Historical searches use the original text and titles of the selected revisions.
 Read any stated effective date and approval status from the quoted text. Use
 the revision checksum with `evidence` to read an exact historical quote.
+Use `context --question "$QUESTION" --from-version BEFORE --at-version AFTER --text`
+to ask the same question before and after a change. Omit `--at-version` to use
+the current version. Both sides search retained original text with the same
+recording and source filters and share the quote budget. The output labels
+each snapshot and cites its exact source revisions. In the graph, open a
+committed change under **Workflows** and choose **Compare search before and after**.
+A topic merge can affect current label lookup. Both sides of a workspace
+version comparison use original text.
 When a question refers to an earlier or later discussion, check the dates
 and wording of the cited recordings before drawing a sequence or change.
 Upgrading a workspace starts tracking its current version. A later permanent

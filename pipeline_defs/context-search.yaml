@@ -1,6 +1,6 @@
 id: context-search
 version: 3
-description: Compile a question or use supplied phrases to search original conversation evidence.
+description: Search cited original passages, including the same question across two workspace versions.
 inputs:
   request: context_request
 stages:
@@ -11,7 +11,7 @@ stages:
     inputs:
       request: input.request
     output: context_plan
-    acceptance: Supplied phrases or compiled questions are bound to the selected workspace snapshot.
+    acceptance: Search phrases are bound to the selected workspace snapshot or comparison snapshots.
   - id: search
     skill: skills/memory/context-search/SKILL.md
     tool: search_context

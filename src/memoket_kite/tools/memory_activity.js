@@ -10,6 +10,7 @@
       verify: '校验', preview: '预览', apply: '执行', compile: '编译检索', search: '搜索',
       compare: '原文版本对照',
       searchVersion: '在此版本检索',
+      compareVersions: '对照变更前后的检索',
       savedSearch: '打开当次检索原文',
       changeDetails: '查看变更', back: '返回所有变更', searchPrevious: '检索提交前版本',
       sourceRevisions: '保留的来源变更', openSource: '查看此版本原文', compareSource: '对照提交前后的原文',
@@ -28,6 +29,7 @@
       verify: 'Verify', preview: 'Preview', apply: 'Apply', compile: 'Compile query', search: 'Search',
       compare: 'Compare source revisions',
       searchVersion: 'Search this version',
+      compareVersions: 'Compare search before and after',
       savedSearch: 'Open saved search evidence',
       changeDetails: 'View change', back: 'Back to all changes', searchPrevious: 'Search before this change',
       sourceRevisions: 'Retained source changes', openSource: 'Read this revision', compareSource: 'Compare before and after this commit',
@@ -108,6 +110,9 @@
       if (!details) row.append(link('changeDetails', { view: 'activity', event: event.version }));
       if (details && event.can_search_previous) {
         row.append(link('searchPrevious', { view: 'graph', at: event.version - 1 }));
+        if (event.can_search_version) {
+          row.append(link('compareVersions', { view: 'graph', from: event.version - 1, at: event.version }));
+        }
       }
       if (event.can_search_version) {
         row.append(link('searchVersion', { view: 'graph', at: event.version }));

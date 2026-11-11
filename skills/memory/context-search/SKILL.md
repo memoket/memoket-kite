@@ -41,6 +41,9 @@ Open nearby lines with `kite-tool evidence 'CONVERSATION#SEGMENT' --context 2 --
 Use `--at-version VERSION` or `--known-at TIMESTAMP` for what the workspace
 knew at a historical point. Use recording dates for meeting windows. Keep
 historical revision checksums with their quotes.
+Add `--from-version BEFORE` to compare the same question with an earlier
+tracked version. Both sides search retained original text under the same
+filters. Use the version heading and revision checksum with each citation.
 For questions about earlier or later discussions, check the recording dates
 and the quoted wording for each answer. Keep the sequence uncertain when
 the citations leave competing recordings or tied times.
@@ -54,5 +57,7 @@ Quote a topic or project name to search its full phrase first.
 When the user wants a saved inspection of compilation and search, use the
 `context-search` pipeline with `{"request":{"question":"…"}}`. Inspect the
 compiled phrases before searching. For a comparison add `compare_with` to the
-request, with optional `compare_start_date` and `compare_end_date`. The plan is
-bound to one workspace version.
+request, with optional `compare_start_date` and `compare_end_date`. For a
+version comparison set `request.from_version` with an optional target
+`request.at_version` or `request.known_at`. The plan is bound to the workspace
+version used for compilation.

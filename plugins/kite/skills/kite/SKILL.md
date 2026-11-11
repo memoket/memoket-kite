@@ -21,7 +21,7 @@ Add `--conversation-id` when you know the recording. Read nearby lines with
 State any unresolved gaps.
 When asked to save the exact search for inspection, add `--save` and open the
 returned ID with `view --run ID`.
-For two-question comparisons, date filters, revision differences, and decision history, read
+For comparisons across questions or workspace versions, date filters, and decision history, read
 [query.md](references/query.md).
 
 ## Choose a workflow

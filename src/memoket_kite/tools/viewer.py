@@ -44,6 +44,7 @@ def _search_snapshot(
     quote_occurrences = 0
     comparison = []
     compare_date_overrides = {}
+    version_comparison = False
     if question is not None:
         result = (
             saved["value"]
@@ -53,10 +54,12 @@ def _search_snapshot(
         if "parts" in result:
             packs = [(f"question-{i}", part) for i, part in enumerate(result["parts"], 1)]
             compare_date_overrides = result.get("compare_recording_overrides", {})
+            version_comparison = result.get("version_comparison", False)
             comparison = [
                 {
                     "key": key,
                     **part["compilation"],
+                    **({"history": part["history"]} if version_comparison else {}),
                     "passages": len(part["spans"]),
                     "quote_bytes": part["quote_bytes"],
                     "quote_budget_bytes": part["quote_budget_bytes"],
@@ -159,7 +162,7 @@ def _search_snapshot(
                 [term] if term is not None else [phrase for phrase in terms if phrase in matched]
             )
             passage["terms"].extend(branches or terms)
-    history = packs[0][1].get("history")
+    history = None if version_comparison else packs[0][1].get("history")
     if saved is not None and sources:
         retained = {
             row["checksum"]: bool(row["active"])
@@ -172,7 +175,9 @@ def _search_snapshot(
             raise ToolError("integrity_error", "saved search cites an unavailable source revision")
         for checksum, active in retained.items():
             sources[checksum]["active"] = active
-    if history is not None:
+    if version_comparison:
+        source_count = packs[-1][1]["history"]["retained_sources"]
+    elif history is not None:
         source_count = history["retained_sources"]
     elif saved is not None:
         version = saved["manifest"]["memory_version"]
@@ -197,6 +202,7 @@ def _search_snapshot(
         "search_terms": terms,
         "search_question": question,
         "search_comparison": comparison,
+        "search_version_comparison": version_comparison,
         "search_history": history,
         "search_matching_lines": packs[0][1]["plan"].get("matching_lines", False),
         "search_source_scope": {
@@ -213,7 +219,12 @@ def _search_snapshot(
             "change_phases": packs[0][1].get("compilation", {}).get("change_phases", []),
             "term_coverage": packs[0][1].get("term_coverage", []) if not comparison else [],
             "packing": [
-                {"label": pack.get("compilation", {}).get("question", key), **pack["packing_trace"]}
+                {
+                    "label": f"v{pack['history']['version']}"
+                    if version_comparison
+                    else pack.get("compilation", {}).get("question", key),
+                    **pack["packing_trace"],
+                }
                 for key, pack in packs
                 if "packing_trace" in pack
             ],
@@ -243,6 +254,7 @@ def _snapshot(
     recording_bounds: dict | None = None,
     source_scope: dict | None = None,
     compare_with: str | None = None,
+    from_version: int | None = None,
     matching_lines: bool = False,
     explain: bool = False,
     run_id: str | None = None,
@@ -272,13 +284,19 @@ def _snapshot(
                         "searched_at": saved["manifest"]["created_at"],
                     },
                 }
-            historical_search = at_version is not None and origin is not None
-            if (terms or question is not None) and (searchable or at_version is not None):
+            historical_search = (
+                at_version is not None or from_version is not None
+            ) and origin is not None
+            if (terms or question is not None) and (
+                searchable or at_version is not None or from_version is not None
+            ):
                 scope = {**(recording_bounds or {}), **(source_scope or {})}
                 if at_version is not None:
                     scope["at_version"] = at_version
                 if compare_with is not None:
                     scope["compare_with"] = compare_with
+                if from_version is not None:
+                    scope["from_version"] = from_version
                 if matching_lines:
                     scope["matching_lines"] = True
                 if explain:
@@ -398,6 +416,7 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                 terms = list(dict.fromkeys(params.get("term", ())))
                 question = params.get("q", [None])[0]
                 compare_with = params.get("q2", [None])[0]
+                from_version = _version_parameter(params, "from")
                 run_id = params.get("run", [None])[0]
                 matching_lines = params.get("matching_lines", ["0"])
                 explain = params.get("explain", ["0"])
@@ -408,6 +427,7 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                     or any(len(term) > 128 for term in terms)
                     or (question is not None and (len(question) > 512 or terms))
                     or (compare_with is not None and (question is None or len(compare_with) > 512))
+                    or (from_version is not None and (terms or compare_with is not None))
                     or (
                         compare_with is None
                         and any(key in params for key in _RECORDING_DATE_PARAMS[2:])
@@ -421,6 +441,7 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                                 key in params
                                 for key in (
                                     "at",
+                                    "from",
                                     *_RECORDING_DATE_PARAMS,
                                     "matching_lines",
                                     "explain",
@@ -485,6 +506,7 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                             recording_bounds=bounds,
                             source_scope=source_scope,
                             compare_with=compare_with,
+                            from_version=from_version,
                             matching_lines=matching_lines == ["1"],
                             explain=explain == ["1"],
                             run_id=run_id,

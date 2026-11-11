@@ -340,6 +340,23 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
                 overlap["search_trace"]["quotes"] == overlap["search_trace"]["shared_quotes"] == 1
             )
             assert overlap["passages"][0]["terms"] == ["question-1", "question-2"]
+            version_search = f"?view=graph&q=checklist&from={question['version']}"
+            versions = read(f"{version_search}&at={update['memory_version']}&explain=1")
+            assert versions["search_version_comparison"] and versions["search_history"] is None
+            assert [part["history"]["version"] for part in versions["search_comparison"]] == [
+                question["version"],
+                update["memory_version"],
+            ]
+            assert [part["label"] for part in versions["search_trace"]["packing"]] == [
+                f"v{question['version']}",
+                f"v{update['memory_version']}",
+            ]
+            assert {line["revision_checksum"] for line in versions["evidence"].values()} == {
+                baseline,
+                updated,
+            }
+            read(version_search + "&q2=other", status=400)
+            read(f"{saved_query}&from={question['version']}", status=400)
             third = text_input("release", "Sign off the checklist.", date="2026-02-07")["source"]
             third["expected_checksum"] = updated
             call("index-sources", payload={"sources": [{"source": third}]})
@@ -6376,7 +6393,7 @@ def test_change_questions_reserve_original_evidence_for_separate_subquestions(wo
     initial = "We decided the library wayfinding prototype would use gray card and embossed arrows."
     approved = "At the accessibility review we approve yellow vinyl for the signage."
     retained = "We decided to keep the print quantity at 500 copies."
-    call(
+    baseline = call(
         "index-sources",
         payload={
             "sources": [
@@ -6461,6 +6478,19 @@ def test_change_questions_reserve_original_evidence_for_separate_subquestions(wo
         row.get("selection", {}).get("reason") == "change_phase"
         for row in latest["packing_trace"]["candidates"]
     )
+    comparison = call(*implicit_args, "--from-version", str(baseline["memory_version"]))
+    first, second = comparison["parts"]
+    before = {line["text"] for span in first["spans"] for line in span["evidence"]}
+    after = {line["text"] for span in second["spans"] for line in span["evidence"]}
+    assert initial in before and approved + " " + retained not in before
+    assert approved + " " + retained in after
+    assert second["first_lines_prioritized"]
+    assert any(
+        row["conversation_id"] == "production"
+        and row.get("selection", {}).get("reason") == "change_phase"
+        for row in second["packing_trace"]["candidates"]
+    )
+    assert comparison["quote_bytes"] <= comparison["quote_budget_bytes"] == 3800
 
 
 def test_context_quotes_identical_transcripts_once_and_retains_both_clocks(work):
@@ -7067,7 +7097,7 @@ def test_historical_context_separates_recording_date_and_knowledge_time(
     corrected,
     late,
 ):
-    _, call = work
+    directory, call = work
     moment = "2026-07-02T01:00:00+00:00"
     monkeypatch.setattr(workspace, "now", lambda: moment)
 
@@ -7166,10 +7196,51 @@ def test_historical_context_separates_recording_date_and_knowledge_time(
     compiled = call("stage", "historical", "compile")["value"]
     assert compiled["request"]["at_version"] == version
     assert quotes(call("stage", "historical", "search")["value"]) == {original}
+    args = (
+        "--question",
+        phrase,
+        "--from-version",
+        str(version),
+        "--conversation-id",
+        "handoff",
+        "--end-date",
+        "2026-07-01",
+    )
+    compared = call("context", *args, "--known-at", "2026-07-02T05:30:00Z", "--save", "change")
+    assert compared["version_comparison"] and "history" not in compared
+    parts = compared["parts"]
+    assert [quotes(part) for part in parts] == [{original}, {corrected}]
+    versions = [version, update["memory_version"]]
+    assert [part["history"]["version"] for part in parts] == versions
+    assert [part["plan"]["at_version"] for part in parts] == versions
+    assert sum(part["quote_budget_bytes"] for part in parts) == compared["quote_budget_bytes"]
+    assert sum(part["quote_bytes"] for part in parts) == compared["quote_bytes"]
+    first, second = [part["spans"][0]["evidence"][0] for part in parts]
+    assert first["segment_id"] == second["segment_id"]
+    assert first["source_line_id"] != second["source_line_id"]
+    rendered = call("context", *args, "--at-version", str(versions[1]), "--text")
+    assert rendered.index(f"Workspace v{version}") < rendered.index(original)
+    assert rendered.index(original) < rendered.index(f"Workspace v{versions[1]}")
+    assert rendered.index(second["revision_checksum"]) < rendered.index(corrected)
+    replay = viewer._snapshot(directory, [], run_id="change")
+    assert replay["search_version_comparison"]
+    assert [part["history"]["version"] for part in replay["search_comparison"]] == versions
+    assert set(replay["evidence"]) == {first["source_line_id"], second["source_line_id"]}
+    assert [part["history"]["version"] for part in call("context", *args)["parts"]] == [
+        version,
+        versions[1] + 1,
+    ]
+    call("context", *args, "--at-version", str(version), error="invalid_input")
+    call("context", *args, "--compare-with", phrase, error="invalid_input")
+    call("context", "--term", phrase, "--from-version", str(version), error="invalid_input")
     _delete_source(call, "erase-history", {"source": "text", "conversation_id": "handoff"})
     remaining = call("context", "--term", phrase, "--at-version", str(version))
     assert quotes(remaining) == set() and remaining["history"]["later_deletions"] == 1
     assert call("status", "historical")["state"] == "invalidated"
+    assert call("status", "change")["state"] == "invalidated"
+    erased = call("context", *args, "--at-version", str(versions[1]))
+    assert not any(part["spans"] for part in erased["parts"])
+    assert all(part["history"]["later_deletions"] == 1 for part in erased["parts"])
 
 
 def test_historical_context_preserves_upgrade_boundary_and_uses_raw_evidence(work):

@@ -9,7 +9,11 @@ or `context --known-at TIMESTAMP` with the original question. Supply an offset
 with the timestamp. Use `--start-date` and `--end-date` for recording dates and
 retain the shown revision checksum with historical citations.
 The question itself can include `workspace v12` or `workspace as of TIMESTAMP`.
-Use one workspace snapshot per query.
+For the same question across a workspace change, run
+`context --question "$QUESTION" --from-version BEFORE --at-version AFTER --text`.
+The target defaults to the current version. Both sides use retained original
+text and the same source and recording filters. Add `--save` to inspect both
+snapshots in the graph. A permanent deletion can remove evidence from both.
 
 For a recording window such as “the last 30 days,” resolve the dates in the
 user's timezone and pass them as inclusive recording bounds. If there are no

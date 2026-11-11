@@ -196,6 +196,11 @@ def _parser() -> argparse.ArgumentParser:
     context_input.add_argument("--term", action="append", help="search phrase, repeatable")
     context_input.add_argument("--question", help="compile a task into search phrases locally")
     context.add_argument("--compare-with", help="search a second question within the same budget")
+    context.add_argument(
+        "--from-version",
+        type=int,
+        help="compare the same question with an earlier workspace version",
+    )
     context.add_argument("--compare-start-date", help="second question's earliest recording date")
     context.add_argument("--compare-end-date", help="second question's latest recording date")
     context.add_argument(
@@ -851,8 +856,10 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             ), None
 
     if args.command == "context":
-        if args.compare_with is not None and args.question is None:
-            raise ToolError("invalid_input", "--compare-with requires --question")
+        if args.question is None and (
+            args.compare_with is not None or args.from_version is not None
+        ):
+            raise ToolError("invalid_input", "a comparison requires --question")
         if args.compare_with is None and (
             args.compare_start_date is not None or args.compare_end_date is not None
         ):
@@ -892,6 +899,8 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 request["question"] = args.question
             if args.max_bytes is not None:
                 request["max_bytes"] = args.max_bytes
+            if args.from_version is not None:
+                request["from_version"] = args.from_version
             if args.compare_with is not None:
                 request["compare_with"] = args.compare_with
                 for key in ("compare_start_date", "compare_end_date"):

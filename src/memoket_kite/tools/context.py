@@ -165,6 +165,7 @@ CONTEXT_REQUEST = {
             "compare_with": {**TEXT, "maxLength": 512},
             "compare_start_date": DATE,
             "compare_end_date": DATE,
+            "from_version": _CONTEXT_SCHEMA["properties"]["at_version"],
             "limit": {"type": "integer", "minimum": 1, "maximum": 50},
             "max_bytes": {"type": "integer", "minimum": 512, "maximum": 65536},
             "neighbors": {"type": "integer", "minimum": 0, "maximum": 5},
@@ -447,15 +448,20 @@ def _context_scope(request: dict) -> tuple[dict, str | None, str | None]:
     if _comparison_dates(request) and "compare_with" not in request:
         raise ToolError("invalid_input", "comparison recording dates require compare_with")
     if "terms" in request:
-        if "compare_with" in request:
-            raise ToolError("invalid_input", "compare_with requires a question")
+        if "compare_with" in request or "from_version" in request:
+            raise ToolError("invalid_input", "a comparison requires a question")
         return request, None, None
     request, search = _question_scope(request)
     compare = request.get("compare_with")
-    if compare is None:
+    from_version = request.get("from_version")
+    if compare is None and from_version is None:
         return request, search, None
     if request.get("limit", 8) < 2:
         raise ToolError("invalid_input", "a comparison needs at least two spans")
+    if from_version is not None:
+        if compare is not None:
+            raise ToolError("invalid_input", "compare either workspace versions or questions")
+        return request, search, search
     scoped, compare_search = _question_scope({**request, "question": compare})
     return {**scoped, "question": request["question"]}, search, compare_search
 
@@ -515,15 +521,20 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
     question = request.get("question")
     budget = request.get("max_bytes", _QUESTION_BYTES if question is not None else _TERM_BYTES)
     compare_terms = compiled.get("comparison_terms")
-    if (compare_terms is not None) != ("compare_with" in request):
+    version_comparison = "from_version" in request
+    if (compare_terms is not None) != ("compare_with" in request or version_comparison):
         raise ToolError("invalid_input", "compile both comparison questions before searching")
 
     def search(
-        question, terms, span_limit, quote_budget, search_index, forms, phases, date_overrides=None
+        question, terms, span_limit, quote_budget, search_index, forms, phases, overrides=None
     ):
+        plan = {**filters, **(overrides or {}), "terms": terms}
+        if version_comparison:
+            plan.pop("known_at", None)
+            plan["at_version"] = search_index.history["version"]
         result = _context_evidence(
             workspace,
-            {**filters, **(date_overrides or {}), "terms": terms},
+            plan,
             limit=span_limit,
             max_bytes=quote_budget,
             neighbors=request.get("neighbors", 0 if request.get("matching_lines") else 1),
@@ -533,6 +544,7 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
             prioritize_first_lines=compare_terms is not None and "limit" not in request,
             word_forms=forms,
             change_phases=phases,
+            reserve_change_phases=version_comparison,
         )
         if question is not None:
             result["compilation"] = {"question": question, "terms": terms}
@@ -557,7 +569,7 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
     parts = [
         search(question, compiled["terms"], first_limit, first_budget, index, forms, phases),
         search(
-            request["compare_with"],
+            question if version_comparison else request["compare_with"],
             compare_terms,
             limit - first_limit,
             budget - first_budget,
@@ -573,7 +585,12 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
         "quote_bytes": sum(part["quote_bytes"] for part in parts),
         "parts": parts,
         **({"compare_recording_overrides": date_overrides} if date_overrides else {}),
-        **({"history": index.history} if index.history is not None else {}),
+        **({"version_comparison": True} if version_comparison else {}),
+        **(
+            {"history": index.history}
+            if index.history is not None and not version_comparison
+            else {}
+        ),
     }
 
 
@@ -722,13 +739,13 @@ def _history_snapshot(workspace, plan: dict) -> dict:
 
 
 @contextmanager
-def _search_index(workspace, plan: dict, *, recording_windows: tuple[dict, ...] = ()):
+def _search_index(workspace, plan: dict, *, recording_windows: tuple[dict, ...] = (), history=None):
     if "at_version" not in plan and "known_at" not in plan:
         _require_context(workspace)
         yield _SearchIndex(workspace.db, plan)
         return
     _search_scope(plan)
-    history = _history_snapshot(workspace, plan)
+    history = history if history is not None else _history_snapshot(workspace, plan)
     visible = workspace.records_at(history["version"], plan)
     windows = [
         (window.get("start_date"), window.get("end_date"))
@@ -766,6 +783,25 @@ def _comparison_dates(request: dict) -> dict:
 
 @contextmanager
 def _comparison_indexes(workspace, request: dict):
+    if "from_version" in request:
+        after = (
+            {**request, "at_version": workspace.version()}
+            if "at_version" not in request and "known_at" not in request
+            else request
+        )
+        before = {**after, "at_version": request["from_version"]}
+        before.pop("known_at", None)
+        history = _history_snapshot(workspace, after)
+        if before["at_version"] >= history["version"]:
+            raise ToolError(
+                "invalid_input", "from version must precede the target workspace version"
+            )
+        with (
+            _search_index(workspace, before) as first,
+            _search_index(workspace, after, history=history) as second,
+        ):
+            yield first, second
+        return
     overrides = _comparison_dates(request)
     if not overrides:
         with _search_index(workspace, request) as index:
@@ -1200,9 +1236,9 @@ def _compiled_change_phases(request, question):
     return phases if 2 <= len(phases) <= 4 else []
 
 
-def _change_clause_candidates(workspace, index, clauses, limit, max_bytes, *, implicit=False):
+def _change_clause_candidates(workspace, index, clauses, slots, max_bytes, *, implicit=False):
     clauses = list(dict.fromkeys(part.strip() for part in clauses if part.strip()))
-    if not 2 <= len(clauses) <= min(4, limit - 3):
+    if not 2 <= len(clauses) <= min(4, slots):
         return []
     cleaned = [_CLAUSE_FILLERS.sub(" ", part) for part in clauses]
     words = [_tokens(part).split() for part in cleaned]
@@ -1697,6 +1733,7 @@ def _context_evidence(
     prioritize_first_lines=False,
     word_forms=(),
     change_phases=(),
+    reserve_change_phases=False,
 ):
     validate(_CONTEXT_SCHEMA, plan, "context plan")
     if not any(map(_tokens, plan["terms"])):
@@ -1760,6 +1797,7 @@ def _context_evidence(
                     neighbors,
                     repeated,
                 )
+        reserved_clauses = []
         if (
             _question
             and neighbors
@@ -1772,16 +1810,18 @@ def _context_evidence(
                 followup = _schedule_followup(workspace, index, plan, candidates, limit, max_bytes)
                 if followup:
                     candidates.insert(1, followup)
+            first = 2 if followup else 1
+            phase_slots = limit - (first if reserve_change_phases else 3)
             if _question.count("?") + _question.count("？") >= 2:
                 if not followup and sequence and _CLAUSE_CHANGE_QUESTION.search(_question):
-                    candidates[1:1] = _change_clause_candidates(
-                        workspace, index, _CLAUSE_BREAK.split(_question), limit, max_bytes
+                    reserved_clauses = _change_clause_candidates(
+                        workspace, index, _CLAUSE_BREAK.split(_question), phase_slots, max_bytes
                     )
             elif change_phases:
-                first = 2 if followup else 1
-                candidates[first:first] = _change_clause_candidates(
-                    workspace, index, change_phases, limit, max_bytes, implicit=True
+                reserved_clauses = _change_clause_candidates(
+                    workspace, index, change_phases, phase_slots, max_bytes, implicit=True
                 )
+            candidates[first:first] = reserved_clauses
         first_lines = (
             prioritize_first_lines
             and neighbors > 0
@@ -1793,6 +1833,9 @@ def _context_evidence(
             # One recording occupies the front of this comparison branch.
             # Give another passage room before expanding neighboring lines.
             limit += 1
+        # Compact version comparisons still give reserved original lines space
+        # before expanding the leading candidate with its surrounding turns.
+        first_lines = first_lines or (reserve_change_phases and bool(reserved_clauses))
         spans, size, omitted = _pack(
             workspace,
             candidates,
@@ -1868,15 +1911,24 @@ def render_context(pack: dict) -> str:
             for source in span.get("same_text_sources", ()):
                 namespaces[source["conversation_id"]].add(source["source"])
     lines = []
-    if history := pack.get("history"):
+    version_comparison = pack.get("version_comparison")
+
+    def add_history(history):
         lines.append(f"Workspace v{history['version']} · {history['committed_at']}")
         if history["later_deletions"]:
             lines.append(
                 f"Later deletions: {history['later_deletions']}. Deleted evidence is unavailable."
             )
-    first_question = {}
+
+    history = pack.get("history")
+    if history:
+        add_history(history)
+    first_quote = {}
     for number, part in enumerate(parts, 1):
-        if len(parts) > 1:
+        if version_comparison:
+            history = part["history"]
+            add_history(history)
+        elif len(parts) > 1:
             lines.append(f"Question {number}")
         if pack.get("compare_recording_overrides"):
             scope = part["plan"]
@@ -1921,8 +1973,13 @@ def render_context(pack: dict) -> str:
                 speaker = f" {line['speaker_id']}:" if "speaker_id" in line else ""
                 quote = f"{speaker} {line['text']}"
                 if len(parts) > 1:
-                    earlier = first_question.setdefault(line["source_line_id"], number)
-                    reference = f" (quoted in Question {earlier})"
+                    earlier = first_quote.setdefault(line["source_line_id"], number)
+                    label = (
+                        f"workspace v{parts[earlier - 1]['history']['version']}"
+                        if version_comparison
+                        else f"Question {earlier}"
+                    )
+                    reference = f" (quoted in {label})"
                     if earlier < number and len(reference.encode()) < len(quote.encode()):
                         quote = reference
                 lines.append(f"[{ref}]{quote}")
