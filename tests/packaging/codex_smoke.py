@@ -184,6 +184,16 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
     difference = run("source-compare", baseline, "--text").stdout
     assert "− [handoff#L4] Rollout depends on the checklist." in difference, difference
     assert "+ [handoff#L4] Rollout depends on QA signoff." in difference, difference
+    historical = run(
+        "context",
+        "--question",
+        "What does rollout depend on?",
+        "--at-version",
+        str(indexed["memory_version"]),
+        "--text",
+    ).stdout
+    assert "[handoff#L4] Speaker A: Rollout depends on the checklist." in historical
+    assert "QA signoff" not in historical
     viewer = run("view", "--help").stdout
     assert "--compare" in viewer and "--term" in viewer, viewer
     other_project = scratch / "Other project"

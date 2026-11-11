@@ -15,8 +15,9 @@ Use the cited original lines. If evidence is missing, search a precise
 `--term`, scope to a discovered `--conversation-id`, or inspect neighbors with
 `evidence 'ID#SEGMENT' --context 2 --text`. Apply explicit date bounds with
 `--start-date` and `--end-date`. Distinguish proposals from confirmed decisions.
-If coverage is incomplete, say which answer is unresolved. For stored decisions,
-assignments, or original revision differences, read [query.md](references/query.md).
+If coverage is incomplete, say which answer is unresolved. For what was known
+at a past point, use `--at-version` or `--known-at`. For decision history and
+revision differences, read [query.md](references/query.md).
 
 ## Choose a workflow
 

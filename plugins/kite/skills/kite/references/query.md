@@ -4,6 +4,11 @@ For changes to a single transcript, run `source-history SOURCE ID` to find
 the baseline checksum, then `source-compare BEFORE --text` for changed original
 lines. The two revision checksums identify the exact evidence versions.
 
+For what the workspace knew at a given point, use `context --at-version VERSION`
+or `context --known-at TIMESTAMP` with the original question. Supply an offset
+with the timestamp. Use `--start-date` and `--end-date` for recording dates and
+retain the shown revision checksum with historical citations.
+
 Use `bash "$KITE" topics --contains PHRASE` to find indexed topics, then
 `bash "$KITE" query --topic TOPIC --text` for a readable trace. Use
 `query --pipeline task-tracing` for assignments or `decision-evolution` for

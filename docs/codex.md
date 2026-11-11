@@ -77,6 +77,9 @@ committed imports, updates, merges, and deletions alongside recent pipeline
 stages. An existing workspace starts recording new changes on upgrade.
 Select a historical source revision and choose **Compare with current version**
 to see the original lines that changed, with citations for both versions.
+Enter a workspace version next to the search question to see original evidence
+from that snapshot. Older workspaces start tracking from the first write or
+integrity check after upgrade.
 
 To browse a live graph alongside saved before-and-after snapshots, start the
 viewer with `kite-tool view --compare PATH`. The JSON file contains an `examples`
