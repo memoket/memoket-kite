@@ -53,7 +53,9 @@
       const column = element('section', undefined, 'revision-side');
       column.append(element('h4', `${copy[side]} · ${revision.date || copy.noDate}`));
       if (quote) {
-        const reference = element('p', `${quote.conversation_id}#${quote.segment_id} · ${revision.checksum.slice(0, 8)}`, 'detail-meta');
+        const metadata = [`${quote.conversation_id}#${quote.segment_id}`, quote.speaker_id,
+          formatViewerOffset(quote.start_ms), revision.checksum.slice(0, 8)];
+        const reference = element('p', metadata.filter(Boolean).join(' · '), 'detail-meta');
         reference.title = quote.source_line_id;
         column.append(reference, element('blockquote', quote.text ?? copy.omitted));
       } else column.append(element('p', copy.none, 'detail-meta'));

@@ -38,6 +38,7 @@
       recordingSelection: {
         other_recording_followup: 'Follow-up in another recording',
         selective_original_clue: 'Rare query clue matches multiple original lines',
+        dated_plan_followup: 'A later recording cites the earlier date and mentions a change',
       },
       sameTextSources: 'Sources with the same transcript text',
       duplicateLines: 'duplicate lines reused',
@@ -97,6 +98,7 @@
       recordingSelection: {
         other_recording_followup: '另一份录制有匹配的后续原文',
         selective_original_clue: '低频检索词命中多行原文',
+        dated_plan_followup: '后续录制重提原日期并讨论改期',
       },
       sameTextSources: '原文相同的来源',
       duplicateLines: '行重复原文已共用',
@@ -717,10 +719,8 @@
 
   function citation(line, interactive = false) {
     const quote = element('div', undefined, 'citation');
-    const seconds = Math.floor(line.start_ms / 1000);
-    const timestamp = Number.isFinite(seconds)
-      ? Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0') : undefined;
-    const metadata = [line.source_reference + '#' + line.segment_id, line.speaker_id, timestamp].filter(Boolean);
+    const metadata = [line.source_reference + '#' + line.segment_id, line.speaker_id,
+      formatViewerOffset(line.start_ms)].filter(Boolean);
     const label = metadata.join(' · ');
     const heading = interactive ? button(label, () => choose(line), 'citation-link') : element('p', label);
     quote.append(heading, element('blockquote', line.text));

@@ -47,6 +47,29 @@ _QUESTION_VERSION = re.compile(
     r"v(?P<at_version>[0-9]{1,19})(?![a-z0-9]|\.[0-9])",
     re.I,
 )
+_SCHEDULE_QUESTION = re.compile(
+    r"日期|哪天|哪日|排期|改期|延期|推迟|提前|"
+    r"\b(?:dates?|deadlines?|schedule[ds]?|reschedule\w*|postpon\w*|which day|what day)\b",
+    re.I,
+)
+_SCHEDULE_SEQUENCE = re.compile(
+    r"最初|原定|原本|早先|后来|后续|从什么|从哪|"
+    r"\b(?:original\w*|initial\w*|earlier|later|subsequently|previous\w*)\b",
+    re.I,
+)
+_CALENDAR_DAY = re.compile(
+    r"(?<!\d)(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|"
+    r"(?:1[0-2]|0?[1-9])\s*月\s*(?:3[01]|[12][0-9]|0?[1-9]))(?!\d)|"
+    r"\b(?:january|february|march|april|may|june|july|august|september|"
+    r"october|november|december)\s+(?:3[01]|[12][0-9]|0?[1-9])\b",
+    re.I,
+)
+_SCHEDULE_CHANGE = re.compile(
+    r"改成|改到|改上|改了|改为|推迟|延期|延后|提前到|挪到|调整到|重新定|"
+    r"\b(?:reschedul\w*|postpon\w*|bring forward|brought forward|"
+    r"mov(?:e|ed|ing) to|chang(?:e|ed|ing) to|push(?:ed|ing)? back)\b",
+    re.I,
+)
 _QUERY_FILLERS = re.compile(
     r"(?:请问|根据|查找|查询|哪些|哪个|哪里|什么|如何|怎么|为什么|分别|"
     r"这场|那场|会上|那次|当时|原文|给出|引用|请|是否|有没有|的|了|吗|呢)"
@@ -1005,6 +1028,79 @@ def _balance_recordings(
     return _promote_alternative(rows, row, "selective_original_clue", term, direct_positions=hits)
 
 
+def _schedule_followup(workspace, index, plan, rows, limit, max_bytes):
+    records = {}
+
+    def segments(row):
+        checksum = row["checksum"]
+        if checksum not in records:
+            record = (
+                index.records[checksum] if index.records is not None else workspace.record(checksum)
+            )
+            records[checksum] = record["conversation"]["segments"]
+        return records[checksum]
+
+    terms = set(map(_tokens, plan["terms"]))
+    # A spoken recap can retain only the last part of a question phrase.
+    # For example, "begin the review" may be shortened to "the review".
+    clues = {
+        clue
+        for term in terms
+        for clue in (term, " ".join(term.split()[-2:]))
+        if len(clue.replace(" ", "")) >= 2
+    }
+    pivots = {}
+    for row in rows[: min(limit, 5)]:
+        if not row["day"]:
+            continue
+        for line in segments(row)[row["start"] : row["stop"]]:
+            text = f" {_tokens(line['text'])} "
+            if not any(f" {term} " in text for term in terms):
+                continue
+            for date in _CALENDAR_DAY.finditer(line["text"]):
+                pivot = _tokens(date[0])
+                if pivot not in pivots:
+                    shared = tuple(clue for clue in clues if f" {clue} " in text)
+                    pivots[pivot] = (date[0], row["day"], shared)
+                if len(pivots) == 3:
+                    break
+            if len(pivots) == 3:
+                break
+        if len(pivots) == 3:
+            break
+    where, args = _search_scope(index.filters)
+    for pivot, (display, day, shared) in pivots.items():
+        matches = index.db.execute(
+            f"SELECT checksum, start, stop, day FROM context_spans WHERE {where} AND day > ? "
+            "ORDER BY day DESC, checksum, start LIMIT 32",
+            (f'text : "{pivot}"', *args, day),
+        )
+        for row in matches:
+            original = segments(row)
+            for pos in range(row["start"], row["stop"]):
+                text = original[pos]["text"]
+                if pivot not in {_tokens(date[0]) for date in _CALENDAR_DAY.finditer(text)}:
+                    continue
+                if not any(f" {clue} " in f" {_tokens(text)} " for clue in shared):
+                    continue
+                for changed in range(pos, min(pos + 3, len(original))):
+                    statement = original[changed]["text"]
+                    dates = {_tokens(date[0]) for date in _CALENDAR_DAY.finditer(statement)}
+                    if (
+                        dates - {pivot}
+                        and _SCHEDULE_CHANGE.search(statement)
+                        and len(statement.encode("utf-8")) <= max_bytes // 4
+                    ):
+                        return {
+                            **dict(row),
+                            "start": pos,
+                            "stop": changed + 1,
+                            "direct_positions": [changed],
+                            "selection": {"reason": "dated_plan_followup", "term": display},
+                        }
+    return None
+
+
 def _compact_sources(
     workspace, index: _SearchIndex, plan: dict, question: str, budget: int
 ) -> tuple[dict, dict]:
@@ -1442,6 +1538,19 @@ def _context_evidence(
                     neighbors,
                     repeated,
                 )
+        if (
+            _question
+            and not (preferred or anchors or matching_lines or plan.get("latest"))
+            and limit >= 2
+            and neighbors
+            and candidates
+            and _SCHEDULE_QUESTION.search(_question)
+            and _SCHEDULE_SEQUENCE.search(_question)
+            and (
+                followup := _schedule_followup(workspace, index, plan, candidates, limit, max_bytes)
+            )
+        ):
+            candidates.insert(1, followup)
         first_lines = (
             prioritize_first_lines
             and neighbors > 0

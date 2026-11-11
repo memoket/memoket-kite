@@ -17,6 +17,8 @@ matches, check whether the relevant recordings have dates before reporting an
 empty period. For an index-only workspace, use `context` for decision changes.
 Read the surrounding quotes for approval, explicit effective dates, and later
 corrections. Report unknown dates or unresolved conflicts with their citations.
+For schedule changes, the first search can use an earlier date mentioned again
+alongside the topic in a later recording to surface the nearby change.
 Use times marked timezone unknown for within-day ordering only when the
 sources are known to use the same local clock. Keep ties and unknown order
 explicit in the answer.

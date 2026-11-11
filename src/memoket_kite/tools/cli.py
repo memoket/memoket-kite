@@ -38,7 +38,7 @@ from .retrieve import (
 )
 from .source_diff import source_changes
 from .trace_text import render_status, render_trace
-from .transcript_text import transcript_recording_time, transcript_text_source
+from .transcript_text import transcript_recording_time, transcript_text_reimport
 from .viewer import view_memory
 from .workflow import (
     SCRIPTED_IMPORT_STAGES,
@@ -672,42 +672,90 @@ def _check_source(args: argparse.Namespace, root: Path) -> dict:
     return result
 
 
+def _preserve_transcript_revision(
+    context: Context, normalized: dict, prior: dict, legacy: list[dict] | None
+) -> tuple[dict, dict, bool] | None:
+    conversation = normalized["conversation"]
+    previous = prior["conversation"]
+    clock_fields = {"source_date", *RECORDING_CLOCK_FIELDS}
+    repair = legacy is not None and legacy == previous["segments"] and not prior["facts"]
+    if (
+        legacy is not None
+        and (repair or conversation["segments"] == previous["segments"])
+        and not clock_fields.intersection(conversation)
+    ):
+        conversation = {
+            **conversation,
+            **{key: previous[key] for key in clock_fields if key in previous},
+        }
+        if not repair and conversation == previous:
+            return (
+                {**normalized, "conversation": conversation, "checksum": prior["checksum"]},
+                {"facts": []},
+                False,
+            )
+    missing = set(conversation) - previous.keys()
+    comparable = {key: value for key, value in conversation.items() if key not in missing}
+    if repair:
+        comparable["segments"] = legacy
+    if (not missing and not repair) or not missing <= clock_fields or comparable != previous:
+        return None
+    annotations = {
+        key: prior[key]
+        for key in ("facts", "taxonomy", "entity_aliases", "index_spans")
+        if key in prior
+    }
+    if repair and "index_spans" in annotations:
+        retained = {line["segment_id"] for line in conversation["segments"]}
+        annotations["index_spans"] = [
+            {**span, "segment_ids": ids}
+            for span in annotations["index_spans"]
+            if (ids := [segment for segment in span["segment_ids"] if segment in retained])
+        ]
+    source = {
+        "format": "conversation",
+        "payload": conversation,
+        "expected_checksum": prior["checksum"],
+    }
+    return normalize(context, source), annotations, repair
+
+
 def _index_sources(
-    root: Path, workspace: Workspace, value: dict, *, backfill_recording_time: bool = False
+    root: Path,
+    workspace: Workspace,
+    value: dict,
+    *,
+    backfill_recording_time: bool = False,
+    legacy_transcripts: dict[str, list[dict]] | None = None,
 ) -> dict:
     item = object_schema({"source": SCHEMAS["source"]}, {"annotations": SCHEMAS["annotations"]})
     validate(object_schema({"sources": array(item, maximum=1000)}), value, "source batch")
     context = Context(root, workspace, "")
     records = []
+    elapsed_time_repairs = 0
     for entry in value["sources"]:
         normalized = normalize(context, entry["source"])
         annotations = entry.get("annotations", {"facts": []})
         conversation = normalized["conversation"]
-        if backfill_recording_time and "source_date" in conversation:
+        legacy = (legacy_transcripts or {}).get(conversation["metadata"]["source_reference"])
+        if legacy is not None or (backfill_recording_time and "source_date" in conversation):
             previous = workspace.records(
                 source=conversation["source"],
                 conversation_id=conversation["conversation_id"],
                 active_only=True,
             )
-            prior_conversation = previous[0]["conversation"] if previous else {}
-            missing = set(conversation) - prior_conversation.keys()
-            if (
-                missing
-                and missing <= {"source_date", *RECORDING_CLOCK_FIELDS}
-                and prior_conversation
-                == {key: value for key, value in conversation.items() if key not in missing}
+            if previous and (
+                preserved := _preserve_transcript_revision(context, normalized, previous[0], legacy)
             ):
-                prior = previous[0]
-                annotations = {
-                    key: prior[key]
-                    for key in ("facts", "taxonomy", "entity_aliases", "index_spans")
-                    if key in prior
-                }
-                normalized["expected_checksum"] = prior["checksum"]
+                normalized, annotations, repaired = preserved
+                elapsed_time_repairs += repaired
         if annotations["facts"]:
             raise ToolError("invalid_input", "index-sources accepts original spans without facts")
         records.append(annotate(context, normalized, annotations))
-    return workspace.index_sources(records)
+    receipt = workspace.index_sources(records)
+    if elapsed_time_repairs:
+        receipt["elapsed_time_repairs"] = elapsed_time_repairs
+    return receipt
 
 
 def _dispatch(args) -> tuple[dict, ToolError | None]:
@@ -761,6 +809,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
 
     if args.command == "index-sources":
         payload = _object(args.input) if args.input is not None else {"sources": []}
+        legacy_transcripts = {}
         metadata = args.recording_metadata
         if metadata is not None:
             metadata = metadata.expanduser()
@@ -779,9 +828,11 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                     "invalid_input", "provide a directory of 1–1000 regular TXT transcripts"
                 )
             try:
-                payload["sources"] = [
-                    {"source": transcript_text_source(path, read_utf8(path))} for path in files
-                ]
+                for path in files:
+                    source, legacy = transcript_text_reimport(path, read_utf8(path))
+                    payload["sources"].append({"source": source})
+                    if legacy is not None:
+                        legacy_transcripts[path.name] = legacy
             except UnicodeError as exc:
                 raise ToolError("invalid_input", "transcript must be valid UTF-8") from exc
             if metadata is not None:
@@ -792,7 +843,11 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                     )
         with Workspace.open(args.workspace) as workspace:
             return _index_sources(
-                root, workspace, payload, backfill_recording_time=metadata is not None
+                root,
+                workspace,
+                payload,
+                backfill_recording_time=metadata is not None,
+                legacy_transcripts=legacy_transcripts,
             ), None
 
     if args.command == "context":

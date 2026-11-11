@@ -172,7 +172,8 @@ commands.
 
 The source-context benchmark uses a local directory of UTF-8 TXT transcripts.
 Each turn starts with a time such as `05:14` or `01:05:14` and a label such as
-`Speaker A`. Original lines are cited as `conversation-id#Lline-number`.
+`Speaker A`. A minutes value can exceed 99, as in `151:23`.
+Original lines are cited as `conversation-id#Lline-number`.
 Keep transcripts, answer keys, workspaces, and reports under a private,
 ignored directory.
 
@@ -235,6 +236,10 @@ the original input files and dates for both arms. This mode uses only index
 annotations and imports zero facts. It records the annotation counts and
 digests for the whole corpus and each case scope. Report annotation creation
 cost separately when comparing runs with a prepared index.
+When an older workspace interpreted long timestamps as transcript text,
+reimport the exact TXT files into a copy using `index-sources --transcripts`
+before reusing its annotations. Use the recorded runtime revision to
+reproduce earlier evaluations with their original parser.
 Declared edits in `--updates` drop index spans attached to the edited line.
 
 Under `--retrieval question`, a case can supply `questions` with exactly

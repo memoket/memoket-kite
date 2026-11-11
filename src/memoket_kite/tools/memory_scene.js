@@ -2,6 +2,14 @@ window.addEventListener('pageshow', event => {
   if (event.persisted) location.reload();
 });
 
+function formatViewerOffset(milliseconds) {
+  if (!Number.isFinite(milliseconds)) return undefined;
+  const seconds = Math.floor(milliseconds / 1000);
+  const fraction = milliseconds % 1000;
+  const time = Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
+  return fraction ? time + '.' + String(fraction).padStart(3, '0') : time;
+}
+
 function renderViewerNavigation(language, activeView, parameters, comparisonAvailable = false) {
   const zh = language === 'zh';
   const nav = document.getElementById('workspace-views');

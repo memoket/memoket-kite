@@ -26,7 +26,8 @@
   panel.append(header);
   for (const line of data.segments) {
     const section = element('section', undefined, 'revision-change');
-    const label = element('h3', [data.conversation_id + '#' + line.segment_id, line.speaker_id].filter(Boolean).join(' · '));
+    const metadata = [data.conversation_id + '#' + line.segment_id, line.speaker_id, formatViewerOffset(line.start_ms)];
+    const label = element('h3', metadata.filter(Boolean).join(' · '));
     label.title = line.source_line_id;
     section.append(label, element('blockquote', line.text));
     panel.append(section);

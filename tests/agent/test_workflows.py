@@ -6290,6 +6290,82 @@ def test_context_reserves_compact_original_lines_for_an_uncovered_question_clue(
     assert prior["packing_trace"]["candidates"][1]["selection"] == candidate["selection"]
 
 
+def test_schedule_question_follows_a_repeated_calendar_date_into_a_later_recording(work):
+    directory, call = work
+
+    def source(identity, day, lines):
+        return {
+            "source": {
+                "format": "conversation",
+                "payload": {
+                    "source": "transcript",
+                    "conversation_id": identity,
+                    "source_date": day,
+                    "metadata": {"source_reference": identity},
+                    "segments": [
+                        {"segment_id": str(i), "text": text} for i, text in enumerate(lines, 1)
+                    ],
+                },
+            }
+        }
+
+    old = "The harbor rehearsal was scheduled for April 12. Attendance is optional."
+    changed = "We moved to April 19 because the auditorium is unavailable."
+    first = call(
+        "index-sources",
+        payload={
+            "sources": [
+                source("initial", "2026-03-21", [old]),
+                source(
+                    "different-project",
+                    "2026-03-29",
+                    ["April 12 was on the calendar for payroll.", "We moved to April 26."],
+                ),
+            ]
+        },
+    )
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                source(
+                    "followup",
+                    "2026-03-26",
+                    ["The harbor rehearsal still says April 12 on the calendar.", changed],
+                )
+            ]
+        },
+    )
+    args = (
+        "context",
+        "--question",
+        "What date was the harbor rehearsal originally scheduled, and what date was it moved to later?",
+        "--explain",
+    )
+    result = call(*args, "--save", "dated-schedule")
+    assert {line["text"] for span in result["spans"] for line in span["evidence"]} >= {old, changed}
+    assert result["quote_bytes"] <= result["quote_budget_bytes"] == 3800
+    (candidate,) = [
+        row
+        for row in result["packing_trace"]["candidates"]
+        if row.get("selection", {}).get("reason") == "dated_plan_followup"
+    ]
+    assert candidate["selection"]["term"] == "April 12"
+    assert candidate["conversation_id"] == "followup" and candidate["reason"] == "quoted"
+    view = viewer._snapshot(directory, [], run_id="dated-schedule")
+    assert candidate in view["search_trace"]["packing"][0]["candidates"]
+    for scope in (
+        ("--end-date", "2026-03-23"),
+        ("--at-version", str(first["memory_version"])),
+    ):
+        bounded = call(*args, *scope)
+        assert not any(
+            row.get("selection", {}).get("reason") == "dated_plan_followup"
+            for row in bounded["packing_trace"]["candidates"]
+        )
+        assert old in {line["text"] for span in bounded["spans"] for line in span["evidence"]}
+
+
 def test_context_quotes_identical_transcripts_once_and_retains_both_clocks(work):
     directory, call = work
     quotes = ["The relay calibration is 3 volts.", "The relay calibration passed."]
@@ -6689,6 +6765,90 @@ def test_context_transcript_import_retains_file_lines_and_neighbor_turns(work, t
         "42"
     }
     assert call("context", "--term", "采样率", "--conversation-id", "missing")["spans"] == []
+
+
+def test_reimport_repairs_long_elapsed_transcript_turns_with_exact_legacy_match(work, tmp_path):
+    directory, call = work
+    source = tmp_path / "long_transcript.txt"
+    original = (
+        "99:58\nSpeaker A\nOriginal handoff.\n\n100:01\nSpeaker B\n"
+        "Revised handoff.\n123:45\nThat number was read aloud.\n02:00:00\n"
+        "Speaker C\nFinal handoff.\n"
+    )
+    source.write_text(original, encoding="utf-8")
+    prepared = call("file-source", str(source), "--format", "transcript-text")["source"]
+    assert [
+        (row["segment_id"], row["speaker_id"], row["start_ms"])
+        for row in prepared["payload"]["segments"]
+    ] == [
+        ("L3", "Speaker A", 5998000),
+        ("L7", "Speaker B", 6001000),
+        ("L8", "Speaker B", 6001000),
+        ("L9", "Speaker B", 6001000),
+        ("L12", "Speaker C", 7200000),
+    ]
+    assert prepared["payload"]["segments"][2]["text"] == "123:45"
+
+    # The older importer treated the long timestamp and speaker as text
+    # and carried the previous offset and speaker through the next turns.
+    legacy_segments = [
+        {
+            "segment_id": f"L{line}",
+            "speaker_id": "Speaker A",
+            "start_ms": 5998000,
+            "text": original.splitlines()[line - 1],
+        }
+        for line in (3, 5, 6, 7, 8, 9)
+    ] + [prepared["payload"]["segments"][-1]]
+    prior = {
+        "format": "conversation",
+        "payload": {
+            **prepared["payload"],
+            "segments": legacy_segments,
+            "source_date": "2026-04-03",
+        },
+    }
+    initial = call(
+        "index-sources",
+        payload={
+            "sources": [
+                {
+                    "source": prior,
+                    "annotations": {
+                        "facts": [],
+                        "index_spans": [
+                            {"segment_ids": ["L5", "L7"], "topics": ["dispatch selection"]},
+                            {"segment_ids": ["L6"], "topics": ["speaker markup"]},
+                        ],
+                    },
+                }
+            ]
+        },
+    )
+    before = call("source-history", "transcript", "long")["current_checksum"]
+    command = ("index-sources", "--transcripts", str(tmp_path))
+    source.write_text(original.replace("Revised handoff.", "Unrelated edit."), encoding="utf-8")
+    call(*command, error="conflict")
+    source.write_text(original, encoding="utf-8")
+    receipt = call(*command)
+    assert receipt["elapsed_time_repairs"] == receipt["sources_changed"] == 1
+    assert call(*command)["sources_changed"] == 0
+    repaired = call("evidence", "long#L7")["value"]["evidence"]
+    assert (repaired["text"], repaired["speaker_id"], repaired["start_ms"]) == (
+        "Revised handoff.",
+        "Speaker B",
+        6001000,
+    )
+    historical = call("evidence", "long#L7", "--revision", before)["value"]["evidence"]
+    assert historical["text"] == repaired["text"] and historical["speaker_id"] == "Speaker A"
+    pack = call("context", "--term", "dispatch selection")
+    assert pack["spans"][0]["source_date"] == "2026-04-03"
+    assert not call("context", "--term", "speaker markup")["spans"]
+    old = call("context", "--term", "handoff", "--at-version", str(initial["memory_version"]))
+    assert any(line["segment_id"] == "L5" for span in old["spans"] for line in span["evidence"])
+    with workspace.Workspace.open(directory, read_only=True) as store:
+        page = workflow.source_revision_page(store, repaired["revision_checksum"], offset=0)
+    assert [line["segment_id"] for line in page["segments"]] == ["L3", "L7", "L8", "L9", "L12"]
 
 
 def test_compiled_context_prioritizes_source_hits_within_quote_budget(work, tmp_path):
