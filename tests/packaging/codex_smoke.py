@@ -10,7 +10,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 
-def install_plugin(codex: str, source: str, ref: str | None, project: Path, env: dict) -> Path:
+def install_plugin(codex: str, marketplace: dict, project: Path, env: dict) -> Path:
     with subprocess.Popen(
         [codex, "app-server"],
         cwd=project,
@@ -38,24 +38,23 @@ def install_plugin(codex: str, source: str, ref: str | None, project: Path, env:
             request("initialize", clientInfo={"name": "kite-smoke", "version": "0.1.0"})
             server.stdin.write('{"method":"initialized"}\n')
             server.stdin.flush()
-            selector = {"refName": ref} if ref else {}
-            added = request("marketplace/add", source=source, **selector)
+            added = request("marketplace/add", **marketplace)
             assert added["marketplaceName"] == "memoket", added
 
-            def marketplace():
+            def find_marketplace():
                 listing = request("plugin/list", cwds=[str(project)], marketplaceKinds=["local"])
                 return next(
                     entry for entry in listing["marketplaces"] if entry["name"] == "memoket"
                 )
 
-            entry = marketplace()
+            entry = find_marketplace()
             plugin = next(item for item in entry["plugins"] if item["name"] == "kite")
             assert entry["interface"]["displayName"] == "Memoket", entry
             assert plugin["interface"]["displayName"] == "KITE", plugin
             assert not plugin["installed"] and plugin["installPolicy"] == "AVAILABLE", plugin
             installed = request("plugin/install", marketplacePath=entry["path"], pluginName="kite")
             assert installed["appsNeedingAuth"] == [], installed
-            plugin = next(item for item in marketplace()["plugins"] if item["name"] == "kite")
+            plugin = next(item for item in find_marketplace()["plugins"] if item["name"] == "kite")
             assert plugin["installed"] and plugin["enabled"], plugin
 
             catalog = request("skills/list", cwds=[str(project)], forceReload=True)["data"][0]
@@ -143,6 +142,7 @@ def main() -> None:
     parser.add_argument("--codex", default="codex", help="Codex CLI or desktop-bundled executable")
     parser.add_argument("--marketplace", default=str(Path(__file__).resolve().parents[2]))
     parser.add_argument("--ref", help="Git branch for a remote marketplace")
+    parser.add_argument("--sparse", action="append", help="Sparse Git marketplace path, repeatable")
     args = parser.parse_args()
     with TemporaryDirectory(prefix="kite-codex-smoke-") as directory:
         scratch = Path(directory).resolve()
@@ -157,7 +157,12 @@ def main() -> None:
         }
         env.pop("KITE_DATA_DIR", None)
         subprocess.run(["git", "init", "-q", str(project)], check=True)
-        launcher = install_plugin(args.codex, args.marketplace, args.ref, project, env)
+        launcher = install_plugin(
+            args.codex,
+            {"source": args.marketplace, "refName": args.ref, "sparsePaths": args.sparse},
+            project,
+            env,
+        )
         print("KITE installed and discoverable in Codex", flush=True)
         verify_workflows(launcher, project, scratch, env)
         print("KITE demo, transcript import, replay, project isolation, and cited query passed")

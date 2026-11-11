@@ -32,7 +32,8 @@ Add the Memoket plugin directory once, then open **Plugins → Memoket → KITE 
 Install** in Codex desktop. Start a new chat and ask **“Run the KITE demo.”**
 
 ```sh
-codex plugin marketplace add memoket/memoket-kite --ref codex/agent-native-memory
+codex plugin marketplace add memoket/memoket-kite --ref codex/agent-native-memory \
+  --sparse .agents/plugins --sparse plugins/kite
 ```
 
 See the [Codex installation guide](docs/codex.md) for first-run setup, import,

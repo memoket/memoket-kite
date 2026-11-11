@@ -10,7 +10,8 @@ The plugin runs on macOS and Linux with Bash. From a terminal with the
 plugin directory once:
 
 ```sh
-codex plugin marketplace add memoket/memoket-kite --ref codex/agent-native-memory
+codex plugin marketplace add memoket/memoket-kite --ref codex/agent-native-memory \
+  --sparse .agents/plugins --sparse plugins/kite
 ```
 
 If you already opened the KITE checkout as a Codex project, its local Memoket
