@@ -473,6 +473,20 @@ def status(context: Context, run_id: str) -> dict:
     }
 
 
+def _only_commit_verification_remains(definition: dict, checkpoint: dict) -> bool:
+    stages = definition["stages"]
+    pending = [
+        stage for stage in stages if checkpoint["stages"][stage["id"]]["state"] != "completed"
+    ]
+    if len(pending) != 1 or pending[0]["tool"] != "validate_commit":
+        return False
+    receipt = pending[0]["inputs"]["receipt"]
+    return any(
+        receipt == f"stage.{stage['id']}" and stage["tool"] in {"commit", "amend"}
+        for stage in stages
+    )
+
+
 def _bound_definition(context: Context, row, checkpoint: dict) -> tuple[dict, str]:
     if checkpoint["state"] == "invalidated":
         raise ToolError("invalidated_run", "deletion invalidated this run")
@@ -483,21 +497,23 @@ def _bound_definition(context: Context, row, checkpoint: dict) -> tuple[dict, st
     stale_error = ToolError(
         "stale_snapshot", "memory changed; start a new run against the current snapshot"
     )
-    if stale:
-        if checkpoint["pipeline_id"] != "memory-ingestion" or checkpoint["state"] == "completed":
-            raise stale_error
-        source = _stored_inputs(row, checkpoint).get("source")
-        if not isinstance(source, dict) or "expected_checksum" in source:
-            raise stale_error
+    if stale and checkpoint["state"] == "completed":
+        raise stale_error
     definition, fingerprint, _ = load_pipeline(
         context.root, checkpoint["pipeline_id"], extension_root=context.extension_root
     )
     if fingerprint != row["definition"]:
         raise ToolError("stale_definition", "pipeline, skill or tool changed; start a new run")
-    if stale and any(stage["tool"] not in LOCAL_IMPORT_TOOLS for stage in definition["stages"]):
-        raise stale_error
-    # Local preprocessing only depends on the source and annotations. Commit
-    # and verification still check the current records in the same transaction.
+    if stale and not _only_commit_verification_remains(definition, checkpoint):
+        # Local preparation for a new source is independent of intervening imports.
+        # The commit still validates the current records in its write transaction.
+        if checkpoint["pipeline_id"] != "memory-ingestion" or any(
+            stage["tool"] not in LOCAL_IMPORT_TOOLS for stage in definition["stages"]
+        ):
+            raise stale_error
+        source = _stored_inputs(row, checkpoint).get("source")
+        if not isinstance(source, dict) or "expected_checksum" in source:
+            raise stale_error
     return definition, fingerprint
 
 

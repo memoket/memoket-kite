@@ -1039,6 +1039,40 @@ def test_pending_import_reuses_artifacts_after_interleaved_commits(work):
     assert status["stages"]["annotate"]["attempts"] == status["stages"]["commit"]["attempts"] == 1
 
 
+@pytest.mark.parametrize("replace_source", [False, True], ids=["annotations", "revision"])
+def test_committed_update_can_verify_after_an_interleaved_import(work, replace_source):
+    _, call = work
+    original = text_input("handoff", "Rae offered to own the review.", date="2026-10-10")
+    initial = ingest(call, "initial", original)
+    update = copy.deepcopy(original)
+    update["source"]["expected_checksum"] = initial["checksum"]
+    if replace_source:
+        update["source"]["payload"]["text"] += " Rae confirmed it at the end."
+    update["annotations"]["facts"][0]["content"] = "Rae confirmed ownership of the review."
+    call("start", "memory-update", "--run-id", "update", payload=update)
+    call("stage", "update", "normalize")
+    call("stage", "update", "annotate")
+    committed = call("stage", "update", "commit")
+    latest = ingest(call, "other", text_input("other", "A separate conversation."))
+
+    pending = call("status", "update")
+    assert not pending["snapshot_current"]
+    assert [stage["id"] for stage in pending["resume"]["stages"]] == ["verify"]
+    assert call("artifact", "update", "commit")["manifest"] == committed["manifest"]
+    resumed = call("ingest", "--resume", "update")
+    assert resumed["receipt"] == committed["value"]
+    assert call("integrity") == {"ok": True, **resumed["integrity"]}
+    assert resumed["integrity"]["memory_version"] == latest["memory_version"]
+    assert resumed["integrity"]["revisions"] == (3 if replace_source else 2)
+    assert resumed["integrity"]["facts"] == 3
+    completed = call("status", "update")
+    assert completed["state"] == "completed" and completed["snapshot_current"]
+    assert (
+        completed["stages"]["commit"]["attempts"] == completed["stages"]["verify"]["attempts"] == 1
+    )
+    assert call("ingest", "--resume", "update") == resumed
+
+
 def test_interleaved_import_preserves_source_conflict_and_update_guards(work):
     _, call = work
     original = text_input("same", "Original record")
@@ -4567,8 +4601,17 @@ def test_provider_authentication_failure_can_resume_without_reimporting(
     assert call("artifact", "provider", "normalize") == normalized
     assert call("stage", "provider", "extract")["manifest"] == candidate["manifest"]
     assert requests.empty()
-    for stage_id in ("annotate", "commit", "verify"):
-        call("stage", "provider", stage_id)
+    call("stage", "provider", "annotate")
+    committed = call("stage", "provider", "commit")
+    latest = ingest(call, "other", text_input("other", "Another source.", topic="elsewhere"))
+    pending = call("status", "provider")
+    assert not pending["snapshot_current"]
+    assert [stage["id"] for stage in pending["resume"]["stages"]] == ["verify"]
+    assert call("stage", "provider", "commit")["manifest"] == committed["manifest"]
+    verified = call("stage", "provider", "verify")
+    assert verified["value"]["memory_version"] == latest["memory_version"]
+    assert verified["checkpoint"]["stages"]["commit"]["attempts"] == 1
+    assert requests.empty()
     report = call("query", "--topic", "general")["value"]
     (evidence,) = report["timeline"][0]["evidence"]
     assert (evidence["conversation_id"], evidence["segment_id"], evidence["text"]) == (
@@ -4576,7 +4619,7 @@ def test_provider_authentication_failure_can_resume_without_reimporting(
         "text-1",
         "We proposed a guided tour. It is still open for discussion.",
     )
-    assert call("integrity")["revisions"] == 1
+    assert call("integrity")["revisions"] == 2
 
 
 def test_provider_request_releases_workspace_and_keeps_other_labels_local(work, blocked_provider):

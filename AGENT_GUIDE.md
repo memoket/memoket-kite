@@ -133,8 +133,12 @@ A pending `memory-ingestion` run for a new source can resume after another
 import commits. Its normalized conversation and annotations remain available
 when `snapshot_current` is false and `resume.state` is `available`. Commit
 validates the source identity, revision and annotation references against the
-current memory. Source updates with an expected checksum still require a
-current snapshot. Deletion invalidates pending imports and clears their artifacts.
+current memory. A source update with an expected checksum requires a current
+snapshot before committing. Once a source commit has completed, a run with
+only `validate_commit` left can verify its original receipt against the current
+index after another write. The commit receipt keeps its original memory version.
+The integrity result reports the version that was verified. Deletion
+invalidates pending imports and clears their artifacts.
 
 KITE validates a source before storing it in a checkpoint. If a source
 supplied to `start` is invalid, correct the input and reuse the run ID.
