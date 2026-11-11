@@ -17,6 +17,7 @@ from .contracts import (
     object_schema,
     page_cursor,
     page_offset,
+    validate,
 )
 from .index import event_date_basis, revision_id
 from .ingest import source_day
@@ -44,6 +45,41 @@ QUERY = object_schema(
     },
 )
 QUERY["dependentRequired"] = {"conversation_id": ["source"]}
+
+
+def topic_inventory(workspace, *, contains: str | None, limit: int, cursor: str | None) -> dict:
+    if not 1 <= limit <= 1000:
+        raise ToolError("invalid_input", "topic limit must be between 1 and 1000")
+    search = norm_code(contains) if contains is not None else ""
+    if contains is not None and not search:
+        raise ToolError("invalid_input", "topic search must contain an indexable character")
+    if cursor is not None:
+        validate(CURSOR, cursor, "topic cursor")
+    identity, version = workspace.snapshot_identity()
+    scope = [identity, version, "topics-v1", search, limit]
+    offset = page_offset(scope, cursor, name="topic listing")
+    index = workspace.index()
+    matches = [
+        topic
+        for code, topic in sorted(index.vocab.topics.items())
+        if topic.status != "deprecated"
+        and (search in code or any(search in alias for alias in topic.aliases))
+    ]
+    end = offset + limit
+    return {
+        "topics": [
+            {
+                "code": topic.code,
+                "aliases": sorted(topic.aliases),
+                "parents": sorted(topic.parents),
+                "direct_fact_count": len(index.store.by_topic.get(topic.code, ())),
+            }
+            for topic in matches[offset:end]
+        ],
+        "matched_count": len(matches),
+        "memory_version": version,
+        "next_cursor": page_cursor(scope, end) if end < len(matches) else None,
+    }
 
 
 def _page_scope(context, query: dict) -> list:

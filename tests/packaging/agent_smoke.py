@@ -134,6 +134,9 @@ def main() -> None:
         assert "We decided to ship a short checklist. Ravi will implement it." in demo
         saved = call("integrity", "--include-workflows", workspace=demo_workspace)
         assert saved["revisions"] == 2 and saved["verified_runs"] == 3
+        topics = call("topics", "--contains", "first run", workspace=demo_workspace)
+        (onboarding,) = topics["topics"]
+        assert onboarding["code"] == "onboarding" and onboarding["direct_fact_count"] == 4
         report = call("query", "--topic", "first run", workspace=demo_workspace)["value"]
         assert report == call("artifact", "trace", "report", workspace=demo_workspace)["value"]
         readable = subprocess.check_output(

@@ -2428,6 +2428,56 @@ def test_trace_cursor_reads_all_windows_without_repeating_evidence(work):
     assert len({state for page in pages for state in page}) == 7
 
 
+def test_topic_inventory_discovers_aliases_and_pages_a_committed_snapshot(work):
+    directory, call = work
+    call("topics", error="not_found")
+    assert not directory.exists()
+    payload = text_input("checklist", "Private source text.", topic="checklist")
+    payload["annotations"]["taxonomy"] = [
+        {"name": "onboarding", "aliases": ["First Run"]},
+        {"name": "checklist", "parents": ["onboarding"]},
+    ]
+    initial = ingest(call, "initial", payload)
+    before = (directory / "kite.sqlite3").read_bytes()
+    entries = [
+        {"code": "checklist", "aliases": [], "parents": ["onboarding"], "direct_fact_count": 1},
+        {"code": "onboarding", "aliases": ["first_run"], "parents": [], "direct_fact_count": 0},
+    ]
+    assert call("topics") == {
+        "ok": True,
+        "topics": entries,
+        "memory_version": initial["memory_version"],
+        "matched_count": 2,
+        "next_cursor": None,
+    }
+    alias = call("topics", "--contains", " FIRST  RUN ")["topics"]
+    assert alias == entries[1:]
+    report = call("query", "--topic", alias[0]["code"])["value"]
+    assert report["matched_count"] == 1
+    assert call("topics", "--contains", "no match")["topics"] == []
+    call("topics", "--contains", "!", error="invalid_input")
+    call("topics", "--limit", "0", error="invalid_input")
+    call("topics", "--cursor", "bad", error="invalid_input")
+
+    first = call("topics", "--limit", "1")
+    args = ("topics", "--limit", "1", "--cursor", first["next_cursor"])
+    second = call(*args)
+    assert first["topics"] + second["topics"] == entries
+    assert first["matched_count"] == second["matched_count"] == 2 and second["next_cursor"] is None
+    call(*args, "--contains", "onboard", error="invalid_input")
+    call("topics", "--limit", "2", "--cursor", first["next_cursor"], error="invalid_input")
+    assert (directory / "kite.sqlite3").read_bytes() == before
+
+    revised = copy.deepcopy(payload)
+    revised["source"]["expected_checksum"] = initial["checksum"]
+    revised["source"]["payload"]["text"] = "Updated private source text."
+    ingest(call, "revised", revised, pipeline="memory-update")
+    call(*args, error="stale_snapshot")
+    assert call("topics", "--contains", "check")["topics"] == [
+        {**entries[0], "direct_fact_count": 2}
+    ]
+
+
 def test_direct_query_matches_staged_report_and_creates_no_workflow_data(work, monkeypatch):
     directory, call = work
     query = {"topics": ["onboarding"], "limit": 1}

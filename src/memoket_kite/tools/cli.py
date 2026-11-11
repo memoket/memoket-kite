@@ -15,7 +15,7 @@ from .demo import render_demo, run_demo
 from .ingest import file_source
 from .operations import SCHEMAS, SOURCE_SCOPE, TOOLS, Context
 from .resources import resource_root
-from .retrieve import evidence_context
+from .retrieve import evidence_context, topic_inventory
 from .trace_text import render_trace
 from .workflow import (
     SCRIPTED_IMPORT_STAGES,
@@ -134,6 +134,10 @@ def _parser() -> argparse.ArgumentParser:
     demo.add_argument(
         "--save-workspace", type=Path, metavar="PATH", help="save the demo to a new workspace"
     )
+    topics = commands.add_parser("topics", help="list queryable topic codes and aliases")
+    topics.add_argument("--contains", metavar="PHRASE", help="filter topic codes and aliases")
+    topics.add_argument("--limit", type=int, default=50, help="topics per page (1–1000)")
+    topics.add_argument("--cursor", help="continue with the previous page's next_cursor")
     query = commands.add_parser("query", help="run a read-only trace without saving a checkpoint")
     query.add_argument("--pipeline", choices=TRACE_PIPELINES, default="topic-tracing")
     query.add_argument(
@@ -476,6 +480,12 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
         return {"definition": definition, "digest": checksum, "skill_root": str(skill_root)}, None
     if args.command == "pipelines":
         return discover_pipelines(root, extension_root=extension_root), None
+
+    if args.command == "topics":
+        with Workspace.open(args.workspace, read_only=True) as workspace:
+            return topic_inventory(
+                workspace, contains=args.contains, limit=args.limit, cursor=args.cursor
+            ), None
 
     if args.command == "file-source":
         return file_source(

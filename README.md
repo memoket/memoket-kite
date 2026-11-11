@@ -37,7 +37,8 @@ The demo follows an early proposal through to a confirmed decision. It prints
 the decision, owner, and original quotes with conversation and segment IDs.
 It runs without an API key. The installed CLI carries its workflows, skills,
 and demo data. Add `--save-workspace ./kite-demo` to keep the example data
-and run `kite-tool --workspace ./kite-demo query --topic "first run" --text`
+and run `kite-tool --workspace ./kite-demo topics` to find queryable topics.
+Use `kite-tool --workspace ./kite-demo query --topic "first run" --text`
 to read the decision timeline and its citations. Use `kite-tool ingest --input FILE`
 to import a prepared source and its annotations in one command.
 See the [agent quickstart](examples/agent-workflows/README.md) for stage-by-stage

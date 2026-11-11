@@ -38,6 +38,7 @@ without a checkout.
 
 ```sh
 kite-tool demo --text --save-workspace ./kite-demo
+kite-tool --workspace ./kite-demo topics --contains "first run"
 kite-tool --workspace ./kite-demo query --topic "first run" --text
 ```
 

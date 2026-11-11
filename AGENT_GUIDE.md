@@ -43,6 +43,13 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
 
 ## Advance and recover
 
+Use `kite-tool topics` to find queryable topic codes, aliases and parent topics.
+`kite-tool topics --contains "first run"` searches normalized codes and aliases.
+Each `direct_fact_count` counts retained facts assigned to that exact topic,
+including historical source revisions. A parent with zero direct facts can still
+match its descendants in `query`. Pass `next_cursor` as `--cursor` with the
+same search and limit to continue the listing at the same memory version.
+
 For a direct read from an existing workspace, use `kite-tool query --topic "first run"`.
 Repeat `--topic` to supply several topic names or aliases. Use `--source` and
 `--conversation-id` to scope a trace, `--start-date` and `--end-date` to set a
