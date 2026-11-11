@@ -550,6 +550,51 @@ def _supersession(index, time_axis: str, end_date: str | None) -> tuple[set[str]
     return superseded, _correction_targets(index, uncertain) - superseded
 
 
+def memory_snapshot(workspace) -> dict:
+    """Read all retained memories, with the same state semantics as a complete trace."""
+    index = workspace.index()
+    superseded, _ = _supersession(index, "source", None)
+    timeline = [_evidence(index, fid) for fid in index.facts]
+    for row in timeline:
+        row["effective"] = row["source_revision_active"] and row["fact_id"] not in superseded
+        row["supersession_uncertain"] = False
+    states = _states(timeline, True, "source", set())
+
+    evidence = {}
+    for row in timeline:
+        for line in row["evidence"]:
+            evidence.setdefault(line["source_line_id"], line)
+        row["evidence"] = [line["source_line_id"] for line in row["evidence"]]
+
+    return {
+        "version": workspace.version(),
+        "sources": len(
+            {
+                (record["conversation"]["source"], record["conversation"]["conversation_id"])
+                for record in index.revisions.values()
+            }
+        ),
+        "topics": [
+            {"code": topic.code, "aliases": sorted(topic.aliases)}
+            for topic in index.vocab.topics.values()
+            if topic.status != "deprecated"
+        ],
+        "facts": timeline,
+        "states": states,
+        "revisions": [
+            {
+                "checksum": record["checksum"],
+                "reference": record["conversation"]["metadata"]["source_reference"],
+                "title": record["conversation"].get("title"),
+                "day": source_day(record["conversation"]),
+                "active": record["active"],
+            }
+            for record in index.revisions.values()
+        ],
+        "evidence": evidence,
+    }
+
+
 def _related_labels(timeline: list[dict], field: str, excluded: set[str]) -> list[dict]:
     support = defaultdict(list)
     for row in timeline:

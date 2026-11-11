@@ -29,6 +29,7 @@ from .resources import resource_root
 from .retrieve import evidence_context, segment_context, topic_inventory
 from .source_diff import source_changes
 from .trace_text import render_status, render_trace
+from .viewer import view_memory
 from .workflow import (
     SCRIPTED_IMPORT_STAGES,
     TRACE_PIPELINES,
@@ -158,6 +159,10 @@ def _parser() -> argparse.ArgumentParser:
     topics.add_argument("--contains", metavar="PHRASE", help="filter topic codes and aliases")
     topics.add_argument("--limit", type=int, default=50, help="topics per page (1–1000)")
     topics.add_argument("--cursor", help="continue with the previous page's next_cursor")
+    viewer = commands.add_parser("view", help="open the workspace memory in a local browser")
+    viewer.add_argument(
+        "--no-open", action="store_true", help="print the local URL without opening it"
+    )
     query = commands.add_parser("query", help="run a read-only trace without saving a checkpoint")
     query.add_argument("--pipeline", choices=TRACE_PIPELINES, default="topic-tracing")
     query.add_argument(
@@ -573,6 +578,8 @@ def _check_source(args: argparse.Namespace, root: Path) -> dict:
 
 
 def _dispatch(args) -> tuple[dict, ToolError | None]:
+    if args.command == "view":
+        return view_memory(args.workspace, open_browser=not args.no_open), None
     if args.command == "describe":
         return _describe(args.tool), None
     root = resource_root(args.repo)

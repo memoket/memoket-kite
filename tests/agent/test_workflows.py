@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -19,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from queue import Queue
 from threading import Event, Thread
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -63,6 +65,58 @@ def work(tmp_path, capsys, monkeypatch):
 
 def fixture(name):
     return json.loads((EXAMPLES / f"{name}.json").read_text())
+
+
+def test_memory_viewer_reads_fresh_committed_state(work):
+    directory, call = work
+    with subprocess.Popen(
+        [sys.executable, "-m", "memoket_kite.tools.viewer", str(directory)],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as process:
+        try:
+            url = urlsplit(process.stdout.readline().strip())
+            assert url.scheme == "http" and url.hostname == "127.0.0.1"
+
+            def get(path, headers=None):
+                with closing(HTTPConnection(url.hostname, url.port, timeout=10)) as client:
+                    client.request("GET", path, headers=headers or {})
+                    response = client.getresponse()
+                    return response.status, response.getheader("Cache-Control"), response.read()
+
+            def snapshot():
+                status, cache, body = get(url.path)
+                assert (status, cache) == (200, "no-store")
+                match = re.search(rb'id="kite-memory-data"[^>]*>(.*?)</script>', body, re.S)
+                return json.loads(match[1])
+
+            assert get("/")[0] == 404
+            assert get(url.path, {"Host": "example.test"})[0] == 404
+            assert snapshot()["facts"] == []
+            assert not directory.exists()
+
+            original = "Ravi owns the release. </script><p>literal transcript text</p>"
+            call("ingest", payload=text_input("kickoff", original, date="2026-11-03"))
+            first = snapshot()
+            assert first["version"] == first["sources"] == 1
+            assert first["states"]["owner"]["value"] == original
+
+            handoff = "Maya owns the release now."
+            call("ingest", payload=text_input("handoff", handoff, date="2026-11-05"))
+            current = snapshot()
+            assert current["version"] == current["sources"] == 2
+            assert current["states"]["owner"]["value"] == handoff
+            assert {row["content"] for row in current["facts"]} == {original, handoff}
+            assert {row["text"] for row in current["evidence"].values()} == {original, handoff}
+            assert len(current["revisions"]) == 2
+            assert {row["checksum"] for row in current["revisions"]} == {
+                row["revision_checksum"] for row in current["evidence"].values()
+            }
+        finally:
+            process.terminate()
+            process.wait(timeout=10)
 
 
 def text_input(identity, body, *, date=None, status="confirmed", topic="onboarding"):

@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>KITE · Memory Graph</title>
+  <style nonce="__KITE_NONCE__">
+    :root {
+      color-scheme: light dark;
+      --page: #f1f4ee; --panel: #fcfdfa; --ink: #1a3028; --muted: #52645a; --line: #d5ded6;
+      --topic: #76e1ac; --fact: #ffda8c; --state: #d5b2ff; --source: #88d8ff;
+      font: 15px/1.55 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --page: #101c17; --panel: #182820; --ink: #e7f2eb; --muted: #adbbb1; --line: #35493e; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--page); color: var(--ink); }
+    header, main { margin-inline: auto; max-width: 1470px; padding-inline: clamp(12px, 3vw, 30px); }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; padding-block: 21px 15px; }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: clamp(21px, 3vw, 28px); letter-spacing: -.03em; }
+    h2 { font-size: 18px; line-height: 1.4; }
+    h3 { font-size: 14px; }
+    .brand, .controls, .legend { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .brand strong { letter-spacing: .14em; }
+    button, select { color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; font: inherit; padding: 5px 9px; }
+    button { cursor: pointer; }
+    button:hover { border-color: var(--muted); }
+    select { max-width: min(51vw, 270px); text-overflow: ellipsis; }
+    :focus-visible { outline: 2px solid #60b88f; outline-offset: 3px; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(265px, 330px); align-items: start; gap: 14px; padding-bottom: 20px; }
+    .stage { position: relative; isolation: isolate; min-width: 0; border-radius: 17px; overflow: hidden; color: #e7faf0; background: radial-gradient(ellipse at 42% 44%, #1b4039, transparent 56%), radial-gradient(ellipse at 86% 58%, #182e45, transparent 45%), #0c1a1b; border: 1px solid #305347; }
+    .stage-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 15px 17px 4px; font-size: 13px; color: #c0d7cc; }
+    canvas { display: block; width: 100%; height: clamp(365px, 55vh, 660px); touch-action: none; cursor: grab; }
+    canvas:active { cursor: grabbing; }
+    .legend { padding: 6px 15px 13px; gap: 8px 17px; color: #d0e5db; font-size: 12px; }
+    .legend-item { display: inline-flex; align-items: center; gap: 6px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--node-color); }
+    [data-kind="topic"] { --node-color: var(--topic); }
+    [data-kind="fact"] { --node-color: var(--fact); }
+    [data-kind="state"] { --node-color: var(--state); }
+    [data-kind="source"] { --node-color: var(--source); }
+    .detail { display: grid; gap: 13px; min-width: 0; padding: 17px; background: var(--panel); border: 1px solid var(--line); border-radius: 17px; overflow-wrap: anywhere; }
+    .detail-section { display: grid; gap: 7px; }
+    .muted, dt { color: var(--muted); font-size: 13px; }
+    .status { display: flex; flex-wrap: wrap; gap: 7px; font-size: 13px; color: var(--muted); }
+    .status strong { color: var(--ink); }
+    dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 8px; margin: 0; }
+    dd { margin: 0; }
+    .connections { display: flex; flex-wrap: wrap; gap: 5px; }
+    .connections button { display: flex; align-items: center; gap: 6px; font-size: 13px; text-align: start; overflow-wrap: anywhere; max-width: 100%; }
+    .connections .dot { flex: 0 0 8px; box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 21%, transparent); }
+    .citation { display: grid; gap: 4px; }
+    .citation + .citation { border-top: 1px solid var(--line); padding-top: 8px; }
+    blockquote { margin: 0; padding-inline-start: 9px; border-inline-start: 2px solid var(--line); white-space: pre-wrap; }
+    code { overflow-wrap: anywhere; }
+    @media (max-width: 710px) {
+      .layout { grid-template-columns: minmax(0, 1fr); }
+      canvas { height: clamp(345px, 56vh, 490px); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand"><strong>KITE</strong><h1 id="title">Memory Graph</h1></div>
+    <div class="controls">
+      <select id="locate" aria-label="Locate a memory"></select>
+      <button id="language" type="button">中文</button>
+      <button id="refresh" type="button">Refresh</button>
+    </div>
+  </header>
+  <main class="layout">
+    <section class="stage" aria-labelledby="graph-title">
+      <div class="stage-heading"><strong id="graph-title"></strong><span id="gesture"></span></div>
+      <canvas id="graph" tabindex="0" aria-describedby="gesture" aria-label="Three-dimensional memory graph"></canvas>
+      <div class="legend" id="legend"></div>
+    </section>
+    <aside class="detail" id="detail" aria-live="polite"></aside>
+  </main>
+  <script type="application/json" id="kite-memory-data" nonce="__KITE_NONCE__">__KITE_DATA__</script>
+  <script nonce="__KITE_NONCE__">
+    (() => {
+      const $ = id => document.getElementById(id);
+      const memory = JSON.parse($('kite-memory-data').textContent);
+      const languages = {
+        en: { title:'Memory Graph', refresh:'Refresh', locate:'Locate a memory', topic:'Topics', fact:'Memories', state:'State keys', source:'Source revisions', gesture:'Drag to rotate · Click a node', open:'Open', proposal:'Proposed', confirmed:'Confirmed', rejected:'Rejected', inference:'Inference', statement:'Recorded', unknown:'Date unknown', historical:'Historical', current:'Current state', ambiguous:'Conflicting state', connections:'Connected records', evidence:'Original evidence', date:'Source date', value:'State value', revision:'Version', empty:'Import conversations in KITE to see their memory graph.' },
+        zh: { title:'记忆关系图', refresh:'刷新', locate:'定位一条记忆', topic:'主题', fact:'记忆', state:'状态键', source:'来源版本', gesture:'拖动旋转 · 点击节点查看', open:'待确认', proposal:'提议', confirmed:'已确认', rejected:'已否决', inference:'推测', statement:'记载', unknown:'日期未知', historical:'历史记录', current:'当前状态', ambiguous:'状态有分歧', connections:'相连记录', evidence:'原文证据', date:'来源日期', value:'状态值', revision:'记忆版本', empty:'在 KITE 导入对话后，这里会显示记忆关系图。' },
+      };
+      let language = (navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+      const t = key => languages[language][key];
+      const relationships = {
+        en: { topic: 'Filed under', state: 'Tracks state', source: 'Cites revision' },
+        zh: { topic: '归入主题', state: '跟踪状态', source: '引用版本' },
+      };
+      const make = (tag, text, className) => {
+        const node = document.createElement(tag);
+        if (text !== undefined) node.textContent = text;
+        if (className) node.className = className;
+        return node;
+      };
+
+      // Four separate planes show the relationships stored in KITE's index.
+      const groups = {
+        topic: { center: [-2.04, .50, -.75], width: 1.38, height: 2.07, entries: [] },
+        fact: { center: [-.28, .07, .26], width: 1.73, height: 2.52, entries: [] },
+        state: { center: [1.67, .96, -.42], width: 1.25, height: 1.22, entries: [] },
+        source: { center: [1.72, -.87, .61], width: 1.32, height: 1.41, entries: [] },
+      };
+      const colors = getComputedStyle(document.documentElement);
+      for (const [kind, group] of Object.entries(groups)) group.color = colors.getPropertyValue(`--${kind}`).trim();
+      const nodes = new Map();
+      const edges = [];
+      const states = new Map(Object.entries(memory.states));
+      function add(kind, key, data) {
+        const id = `${kind}:${key}`;
+        if (nodes.has(id)) return nodes.get(id);
+        const node = { id, kind, key, data, neighbors: new Set() };
+        nodes.set(id, node);
+        groups[kind].entries.push(node);
+        return node;
+      }
+      function link(first, second) {
+        if (first.neighbors.has(second)) return;
+        first.neighbors.add(second);
+        second.neighbors.add(first);
+        edges.push([first, second]);
+      }
+      for (const topic of memory.topics) add('topic', topic.code, topic);
+      for (const revision of memory.revisions) add('source', revision.checksum, revision);
+      for (const fact of memory.facts) {
+        const node = add('fact', fact.fact_id, fact);
+        for (const code of fact.topics) link(node, add('topic', code, { code, aliases: [] }));
+        if (fact.state_key) link(node, add('state', fact.state_key, states.get(fact.state_key)));
+        for (const id of fact.evidence) {
+          const line = memory.evidence[id];
+          link(node, add('source', line.revision_checksum, { reference: line.source_reference }));
+        }
+      }
+      for (const group of Object.values(groups)) {
+        const count = group.entries.length;
+        group.entries.forEach((node, index) => {
+          const angle = index * Math.PI * (3 - Math.sqrt(5));
+          const radius = count > 1 ? Math.sqrt((index + .35) / count) : 0;
+          node.position = [
+            group.center[0] + Math.cos(angle) * radius * group.width / 2,
+            group.center[1] + Math.sin(angle) * radius * group.height / 2,
+            group.center[2] + Math.sin(angle * 1.4) * radius * .38,
+          ];
+        });
+      }
+
+      let selected = groups.fact.entries.find(node => node.data.status === 'open' && node.data.evidence.length > 1)
+        || groups.fact.entries[0];
+      let yaw = -.17;
+      let pitch = .13;
+      let width = 0;
+      let height = 0;
+      let projected = [];
+      const canvas = $('graph');
+      const ctx = canvas.getContext('2d');
+      const number = new Intl.NumberFormat();
+      function label(node) {
+        if (node.kind === 'fact') return node.data.content;
+        if (node.kind === 'source') return node.data.title || node.data.reference;
+        if (node.kind === 'state') return node.key.replace(/[-_]/g, ' ');
+        const local = [node.key, ...node.data.aliases].find(value => /\p{Script=Han}/u.test(value));
+        return (language === 'zh' && local ? local : node.key).replaceAll('_', ' ');
+      }
+
+      function project([x, y, z]) {
+        const horizontal = x * Math.cos(yaw) + z * Math.sin(yaw);
+        const depth = z * Math.cos(yaw) - x * Math.sin(yaw);
+        const vertical = y * Math.cos(pitch) - depth * Math.sin(pitch);
+        const toward = depth * Math.cos(pitch) + y * Math.sin(pitch);
+        const perspective = 6 / (6 - toward);
+        const unit = Math.min(width / 6.0, height / 4.55);
+        return { x: width / 2 + horizontal * unit * perspective,
+          y: height / 2 - vertical * unit * perspective, toward, perspective };
+      }
+
+      function line(a, b, color, alpha, weight = 1) {
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = weight;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
+
+      function arc(first, second, color) {
+        const a = first.position, b = second.position;
+        const through = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2 + .34, (a[2] + b[2]) / 2 + .4];
+        const start = project(a), middle = project(through), end = project(b);
+        ctx.globalAlpha = .93;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(start.x, start.y);
+        ctx.quadraticCurveTo(middle.x, middle.y, end.x, end.y);
+        ctx.stroke();
+        return { x: (start.x + 2 * middle.x + end.x) / 4, y: (start.y + 2 * middle.y + end.y) / 4 };
+      }
+
+      function orbit(group, multiplier, alpha) {
+        const [x, y, z] = group.center;
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = group.color;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let step = 0; step <= 48; step++) {
+          const angle = step * Math.PI / 24;
+          const point = project([x + Math.cos(angle) * group.width * multiplier / 2,
+            y + Math.sin(angle) * group.height * multiplier / 2, z + Math.sin(angle) * .27]);
+          if (step === 0) ctx.moveTo(point.x, point.y);
+          else ctx.lineTo(point.x, point.y);
+        }
+        ctx.stroke();
+      }
+
+      function draw() {
+        if (!ctx || !width || !height) return;
+        ctx.clearRect(0, 0, width, height);
+        for (let step = -6; step <= 6; step++) {
+          line(project([step / 2, -1.91, -1.8]), project([step / 2, -1.91, 1.8]), '#a6d8c3', .09);
+          if (Math.abs(step) <= 4) line(project([-3, -1.91, step / 2]), project([3, -1.91, step / 2]), '#a6d8c3', .09);
+        }
+        for (const group of Object.values(groups)) if (group.entries.length) orbit(group, 1.18, .25);
+        const points = new Map([...nodes.values()].map(node => [node, project(node.position)]));
+        for (const [first, second] of edges) {
+          if (first === selected || second === selected) continue;
+          line(points.get(first), points.get(second), groups[second.kind].color, .08);
+        }
+        const annotations = new Map();
+        for (const neighbor of selected?.neighbors || []) {
+          const point = arc(selected, neighbor, groups[neighbor.kind].color);
+          if (selected.kind === 'fact' && !annotations.has(neighbor.kind)) annotations.set(neighbor.kind, point);
+        }
+        projected = [...points].map(([node, point]) => ({ node, ...point })).sort((a,b) => a.toward - b.toward);
+        for (const point of projected) {
+          const focus = point.node === selected;
+          const neighbor = selected?.neighbors.has(point.node);
+          const radius = (focus ? 8.5 : neighbor ? 5.8 : 3.2) * point.perspective;
+          ctx.beginPath();
+          ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+          ctx.fillStyle = groups[point.node.kind].color;
+          ctx.globalAlpha = focus || neighbor ? 1 : .58;
+          ctx.fill();
+          if (focus) {
+            const glow = ctx.createRadialGradient(point.x, point.y, radius, point.x, point.y, radius * 3.6);
+            glow.addColorStop(0, groups[point.node.kind].color);
+            glow.addColorStop(1, 'transparent');
+            ctx.globalAlpha = .38;
+            ctx.fillStyle = glow;
+            ctx.beginPath();
+            ctx.arc(point.x, point.y, radius * 3.6, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            ctx.beginPath();
+            ctx.arc(point.x, point.y, radius + 4, 0, Math.PI * 2);
+            ctx.strokeStyle = '#f4fff8';
+            ctx.lineWidth = 1.4;
+            ctx.stroke();
+          }
+        }
+        ctx.globalAlpha = 1;
+        ctx.font = '600 13px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.textAlign = 'center';
+        for (const [kind, group] of Object.entries(groups)) {
+          const [x, y, z] = group.center;
+          const point = project([x, y + group.height / 2 + .23, z]);
+          ctx.fillStyle = group.color;
+          ctx.fillText(t(kind), Math.max(46, Math.min(width - 46, point.x)), Math.max(15, point.y));
+        }
+        if (width >= 390) {
+          ctx.font = '500 11px -apple-system, BlinkMacSystemFont, sans-serif';
+          for (const [kind, point] of annotations) {
+            const name = relationships[language][kind];
+            const size = ctx.measureText(name).width + 10;
+            const x = Math.max(size / 2, Math.min(width - size / 2, point.x));
+            ctx.fillStyle = '#112423';
+            ctx.fillRect(x - size / 2, point.y - 11, size, 16);
+            ctx.fillStyle = groups[kind].color;
+            ctx.fillText(name, x, point.y);
+          }
+        }
+      }
+
+      function resize() {
+        if (!ctx) return;
+        const bounds = canvas.getBoundingClientRect();
+        width = bounds.width;
+        height = bounds.height;
+        const density = Math.min(2, window.devicePixelRatio || 1);
+        canvas.width = Math.round(width * density);
+        canvas.height = Math.round(height * density);
+        ctx.setTransform(density, 0, 0, density, 0, 0);
+        draw();
+      }
+
+      function fields(rows) {
+        const dl = make('dl');
+        for (const [name, value] of rows) if (value) dl.append(make('dt', name), make('dd', value));
+        return dl;
+      }
+
+      function drawDetails() {
+        const panel = $('detail');
+        panel.replaceChildren();
+        if (!selected) {
+          panel.append(make('p', t('empty')));
+          return;
+        }
+        const { kind, data } = selected;
+        panel.append(make('p', t(kind), 'muted'), make('h2', label(selected)));
+        if (kind === 'fact') {
+          const effective = states.get(data.state_key);
+          const isCurrent = effective?.fact_ids.includes(data.fact_id);
+          const status = make('div', undefined, 'status');
+          status.append(make('strong', t(data.status)));
+          if (!data.effective || (!isCurrent && data.status === 'confirmed' && effective?.status === 'confirmed')) {
+            status.append(make('span', t('historical')));
+          } else if (isCurrent) status.append(make('span', t(effective.status === 'ambiguous' ? 'ambiguous' : 'current')));
+          panel.append(status, fields([[t('date'), data.source_day || t('unknown')], [t('value'), data.state]]));
+        } else if (kind === 'state') {
+          panel.append(fields([[t('value'), data?.value || (data?.status === 'ambiguous' ? t('ambiguous') : '')]]));
+        } else if (kind === 'source') {
+          panel.append(fields([[t('date'), data.day || t('unknown')]]), make('code', selected.key, 'muted'));
+        }
+
+        if (selected.neighbors.size) {
+          const section = make('section', undefined, 'detail-section');
+          const links = make('div', undefined, 'connections');
+          section.append(make('h3', t('connections')), links);
+          for (const node of selected.neighbors) {
+            const button = make('button');
+            button.type = 'button';
+            button.dataset.kind = node.kind;
+            button.append(make('span', undefined, 'dot'), make('span', label(node)));
+            button.addEventListener('click', () => select(node));
+            links.append(button);
+          }
+          panel.append(section);
+        }
+        if (kind === 'fact' && data.evidence.length) {
+          const section = make('section', undefined, 'detail-section');
+          section.append(make('h3', t('evidence')));
+          for (const id of data.evidence) {
+            const line = memory.evidence[id];
+            const quote = make('div', undefined, 'citation');
+            quote.append(make('p', `${line.source_reference} · ${line.segment_id}`, 'muted'), make('blockquote', line.text));
+            section.append(quote);
+          }
+          panel.append(section);
+        }
+      }
+
+      function select(node) {
+        selected = node;
+        $('locate').value = node.kind === 'fact' ? node.id : '';
+        draw();
+        drawDetails();
+      }
+
+      let drag;
+      canvas.addEventListener('pointerdown', event => {
+        if (!event.isPrimary || event.button !== 0) return;
+        drag = { x: event.clientX, y: event.clientY, yaw, pitch, moved: false };
+        canvas.setPointerCapture(event.pointerId);
+      });
+      canvas.addEventListener('pointermove', event => {
+        if (!drag) return;
+        const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+        if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+        drag.moved = true;
+        yaw = drag.yaw + dx * .011;
+        pitch = Math.max(-1.15, Math.min(1.15, drag.pitch + dy * .009));
+        draw();
+      });
+      canvas.addEventListener('pointerup', event => {
+        if (drag && !drag.moved) {
+          const bounds = canvas.getBoundingClientRect();
+          const x = event.clientX - bounds.left, y = event.clientY - bounds.top;
+          const nearest = [...projected].reverse().find(point => Math.hypot(x - point.x, y - point.y) <= 11);
+          if (nearest) select(nearest.node);
+        }
+        drag = undefined;
+      });
+      canvas.addEventListener('pointercancel', () => { drag = undefined; });
+      canvas.addEventListener('keydown', event => {
+        const direction = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
+        if (!direction) return;
+        event.preventDefault();
+        yaw += direction * .13;
+        draw();
+      });
+
+      function drawLabels() {
+        document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en';
+        $('title').textContent = t('title');
+        $('graph-title').textContent = `${number.format(memory.facts.length)} ${t('fact')} · ${number.format(memory.sources)} ${language === 'zh' ? '来源' : 'sources'}`;
+        $('gesture').textContent = t('gesture');
+        $('language').textContent = language === 'zh' ? 'English' : '中文';
+        $('refresh').textContent = t('refresh');
+        $('locate').setAttribute('aria-label', t('locate'));
+        $('locate').replaceChildren(new Option(t('locate'), ''));
+        for (const node of groups.fact.entries) $('locate').append(new Option(label(node), node.id));
+        $('locate').value = selected?.kind === 'fact' ? selected.id : '';
+        $('legend').replaceChildren();
+        for (const [kind, group] of Object.entries(groups)) {
+          const item = make('span', undefined, 'legend-item');
+          item.dataset.kind = kind;
+          item.append(make('span', undefined, 'dot'), `${t(kind)} ${number.format(group.entries.length)}`);
+          $('legend').append(item);
+        }
+        draw();
+        drawDetails();
+      }
+
+      $('locate').addEventListener('change', event => {
+        const node = nodes.get(event.target.value);
+        if (node) select(node);
+      });
+      $('language').addEventListener('click', () => { language = language === 'zh' ? 'en' : 'zh'; drawLabels(); });
+      $('refresh').addEventListener('click', () => location.reload());
+      new ResizeObserver(resize).observe(canvas);
+      drawLabels();
+    })();
+  </script>
+</body>
+</html>

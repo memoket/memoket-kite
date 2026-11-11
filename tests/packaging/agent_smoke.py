@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+from importlib.resources import files
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -15,6 +16,7 @@ import memoket_kite
 
 
 def main() -> None:
+    assert files("memoket_kite.tools").joinpath("memory_view.html").is_file()
     name = "kite-tool.exe" if os.name == "nt" else "kite-tool"
     command = Path(sysconfig.get_path("scripts")) / name
     with TemporaryDirectory(prefix="kite-installed-") as temporary:
