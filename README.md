@@ -17,7 +17,7 @@ Open-source and vector-free, KITE is **conversation memory infrastructure** that
 <br>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/kite-hero.png" width="100%" alt="KITE as conversation memory infrastructure. At the top, your agent, Claude Code, Codex, Muse, Grok Bot, or any agent with a terminal, reads from KITE and writes back. At the bottom, meetings, calls, recordings, and transcripts are tied into the kite's string. Across the middle, one memory thread runs through the kite and is laid out six ways, each in its own card: Recall, Summary, Timeline, Business lines, Change lines, and Topics, with room for more views, agents, and sources at every edge.">
+  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/kite-2.0/assets/kite-hero.png" width="100%" alt="KITE as conversation memory infrastructure. At the top, your agent, Claude Code, Codex, Muse, Grok Bot, or any agent with a terminal, reads from KITE and writes back. At the bottom, meetings, calls, recordings, and transcripts are tied into the kite's string. Across the middle, one memory thread runs through the kite and is laid out six ways, each in its own card: Recall, Summary, Timeline, Business lines, Change lines, and Topics, with room for more views, agents, and sources at every edge.">
 </p>
 
 <a id="news"></a>
@@ -36,16 +36,16 @@ One memory, laid out the way each question needs. Your meetings go in once, and 
 reads the same thread back in whichever view the question calls for.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/views/recall.png" width="49%" alt="Recall, from kite search: a question answered by three lines, each hanging a receipt from the moment it was said.">
-  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/views/summary.png" width="49%" alt="Summary, from kite overview: everything said, distilled into one short card your agent keeps in mind, the rest expanded on demand.">
+  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/kite-2.0/assets/views/recall.png" width="49%" alt="Recall, from kite search: a question answered by three lines, each hanging a receipt from the moment it was said.">
+  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/kite-2.0/assets/views/summary.png" width="49%" alt="Summary, from kite overview: everything said, distilled into one short card your agent keeps in mind, the rest expanded on demand.">
 </p>
 <p align="center">
-  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/views/timeline.png" width="49%" alt="Timeline, from kite events: decisions and other events in time, up to now.">
-  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/views/lanes.png" width="49%" alt="Business lines, from kite view lanes: every line of work across the meetings, with what changed and what holds now.">
+  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/kite-2.0/assets/views/timeline.png" width="49%" alt="Timeline, from kite events: decisions and other events in time, up to now.">
+  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/kite-2.0/assets/views/lanes.png" width="49%" alt="Business lines, from kite view lanes: every line of work across the meetings, with what changed and what holds now.">
 </p>
 <p align="center">
-  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/views/chain.png" width="49%" alt="Change lines, from kite view chain: one line of work through time, with what changed and the conflict still open.">
-  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/views/topics.png" width="49%" alt="Topics, from kite vocab: a topic tree sized by how much is filed under each topic, and different words gathered under one name.">
+  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/kite-2.0/assets/views/chain.png" width="49%" alt="Change lines, from kite view chain: one line of work through time, with what changed and the conflict still open.">
+  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/kite-2.0/assets/views/topics.png" width="49%" alt="Topics, from kite vocab: a topic tree sized by how much is filed under each topic, and different words gathered under one name.">
 </p>
 
 Each picture shows the shape of what the command in its corner returns. `kite view lanes`
