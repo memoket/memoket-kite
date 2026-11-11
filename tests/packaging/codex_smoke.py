@@ -145,6 +145,8 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
     assert indexed["sources_changed"] == 1, indexed
     context = run("context", "--term", "rollout", "--text", cwd=subdirectory).stdout
     assert "[handoff#L4] Speaker A: Rollout depends on the checklist." in context, context
+    viewer = run("view", "--help").stdout
+    assert "--compare" in viewer and "--term" in viewer, viewer
     other_project = scratch / "Other project"
     other_project.mkdir()
     empty = run("query", "--topic", "onboarding", cwd=other_project, check=False)
@@ -180,7 +182,7 @@ def main() -> None:
         )
         print("KITE installed and discoverable in Codex", flush=True)
         verify_workflows(launcher, project, scratch, env)
-        print("KITE demo, transcript import, replay, project isolation, and cited query passed")
+        print("KITE demo, transcript import, cited query, and viewer entry point passed")
 
 
 if __name__ == "__main__":

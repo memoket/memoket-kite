@@ -14,11 +14,16 @@ destination the user selects.
 ## Memory graph
 
 When asked to open, browse, or visualize KITE memory in a browser, run
-`bash "$KITE" view` and give the user the returned local URL. The graph shows
-the workspace's retained memories and their links to topics, state keys, and
-source revisions. Refresh the page to read the latest committed records.
-Selecting a topic or memory reveals its related nodes and the basis for each
-relationship. Use the mouse wheel or the zoom buttons to change scale.
+`bash "$KITE" view` and give the user the returned local URL. **All topics**
+opens the workspace map. The sidebar keeps the topic tree visible while the
+**Entities**, **Facets**, and **Sources** directories are open. Select a node to
+follow its relationships to the supporting passages and original quotes. Use the
+mouse wheel or zoom buttons to change scale. Refresh to read the latest
+committed records.
+
+Use `bash "$KITE" view --term PHRASE` to open original-text search. When the
+user supplies saved comparison snapshots, use `bash "$KITE" view --compare FILE`
+to show the live graph and the snapshots in one tab.
 
 If `viewer_unavailable` reports that the host blocks loopback access, use the
 host's normal command approval when available. The same command can also be run
@@ -45,9 +50,11 @@ without extracting facts. For an individual note, run `file-source --format text
 `sources` array passed to `index-sources --input FILE`. Use `--format
 transcript-text` for one timestamped transcript. A batch may include
 `annotations` with `facts: []`, taxonomy, entity aliases, and `index_spans` that
-attach topics or entities to original segment IDs. When updating a source, get
-its current checksum with `source-check` and include it as `expected_checksum`
-in the source input. Reuse the original source identity.
+attach topics, entities, or facets to original segment IDs. The optional
+`facets` object accepts `object`, `place`, and `event` label arrays and an ISO
+`duration` string. When updating a source, get its current checksum with
+`source-check` and include it as `expected_checksum` in the source input. Reuse
+the original source identity.
 
 ## Supply evidence for a task
 
