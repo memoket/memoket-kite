@@ -3901,6 +3901,15 @@ def test_cli_resources_are_independent_of_the_working_directory(tmp_path, monkey
     assert Path(resources["root"]) == ROOT
     assert Path(resources["agent_instructions"]).name == "AGENTS.md"
     assert Path(resources["agent_guide"]).is_file()
+    local_instructions = cwd / "AGENTS.md"
+    local_instructions.write_text("# Existing project instructions\n", encoding="utf-8")
+    workspace_dir = cwd / "memory"
+    assert cli.main(["--workspace", str(workspace_dir), "resources", "--project-instructions"]) == 0
+    instructions = capsys.readouterr().out
+    assert instructions == (EXAMPLES / "project-instructions.md").read_text(encoding="utf-8")
+    assert "`kite-tool resources`" in instructions and str(ROOT) not in instructions
+    assert local_instructions.read_text(encoding="utf-8") == "# Existing project instructions\n"
+    assert not workspace_dir.exists()
     assert cli.main(["validate-pipeline", "memory-ingestion"]) == 0
     assert json.loads(capsys.readouterr().out)["definition"]["id"] == "memory-ingestion"
     assert cli.main(["--repo", str(cwd), "validate-pipeline", "memory-ingestion"]) == 2

@@ -42,7 +42,8 @@ Use `kite-tool --workspace ./kite-demo query --topic "first run" --text`
 to read the decision timeline and its citations. Use `kite-tool ingest --input FILE`
 to import a prepared source and its annotations in one command.
 See the [agent quickstart](examples/agent-workflows/README.md) for stage-by-stage
-commands and the [operating guide](AGENT_GUIDE.md) for integration details.
+commands, or [add KITE to your project's agent instructions](examples/agent-workflows/README.md#give-your-agent-a-task).
+The [operating guide](AGENT_GUIDE.md) describes the workflow and tool contracts.
 
 <a id="news"></a>
 

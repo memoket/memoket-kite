@@ -122,7 +122,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("pipelines", help="list validated pipelines")
-    commands.add_parser("resources", help="show paths to agent instructions and workflows")
+    catalog = commands.add_parser(
+        "resources", help="show paths to agent instructions and workflows"
+    )
+    catalog.add_argument(
+        "--project-instructions",
+        action="store_true",
+        help="print a Markdown section for another project's AGENTS.md",
+    )
     demo = commands.add_parser("demo", help="run the offline text and Memoket quickstart")
     demo_output = demo.add_mutually_exclusive_group()
     demo_output.add_argument(
@@ -494,13 +501,16 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
         if not (extension_root / "pipeline_defs").is_dir():
             raise ToolError("invalid_input", "extension directory must contain pipeline_defs/")
     if args.command == "resources":
+        examples = root / "examples" / "agent-workflows"
+        if args.project_instructions:
+            return {"markdown": read_utf8(examples / "project-instructions.md")}, None
         result = {
             "root": str(root),
             "agent_instructions": str(root / "AGENTS.md"),
             "agent_guide": str(root / "AGENT_GUIDE.md"),
             "pipeline_definitions": str(root / "pipeline_defs"),
             "skills": str(root / "skills"),
-            "examples": str(root / "examples" / "agent-workflows"),
+            "examples": str(examples),
         }
         if extension_root is not None:
             result["extension_root"] = str(extension_root)
@@ -706,6 +716,8 @@ def main(argv=None) -> int:
         return 2
     if args.command == "codebook":
         sys.stdout.buffer.write(result["xml"] + b"\n")
+    elif args.command == "resources" and args.project_instructions:
+        print(result["markdown"], end="")
     elif args.command == "demo" and args.text:
         print(render_demo(result["value"]))
     elif args.command == "query" and args.text_output:

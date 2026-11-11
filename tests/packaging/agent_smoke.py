@@ -58,6 +58,15 @@ def main() -> None:
             "examples/agent-workflows/extensions.md",
         ):
             assert (assets / path).is_file(), path
+        instructions = subprocess.check_output(
+            [str(command), "--workspace", str(original), "resources", "--project-instructions"],
+            cwd=directory,
+            text=True,
+            timeout=15,
+        )
+        template = assets / "examples" / "agent-workflows" / "project-instructions.md"
+        assert instructions == template.read_text(encoding="utf-8")
+        assert "`kite-tool resources`" in instructions and not original.exists()
         extension = directory / "incident project"
         shutil.copytree(assets / "examples" / "agent-workflows" / "incident-log", extension)
         incident_workspace = directory / "incident workspace"

@@ -206,6 +206,22 @@ two original lines. For approval and deletion, follow the
 
 ## Give your agent a task
 
+For a project that uses an installed KITE wheel, generate a portable section
+for its root `AGENTS.md`.
+
+```sh
+kite-tool resources --project-instructions
+```
+
+Review the output and add it to the existing file, or create `AGENTS.md` if
+the project has none. Put `kite-tool` on the agent's `PATH` and set
+`KITE_DATA_DIR` to the intended local workspace before starting the agent.
+For Claude Code, add `@AGENTS.md` on its own line in `CLAUDE.md` beside it
+when using a `CLAUDE.md` or an older Claude Code version. Start a new session
+in the project to load the instructions. [Claude Code project instructions](https://code.claude.com/docs/en/memory#share-one-file-with-other-coding-tools)
+
+For an initial trial, give the agent this task.
+
 > Run kite-tool resources and read the agent instructions it points to. Use the
 > synthetic meeting inputs in the example directory.
 > Run memory-ingestion for both meetings and use topic-tracing to tell me what

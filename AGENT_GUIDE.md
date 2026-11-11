@@ -6,6 +6,9 @@ Codex reads [AGENTS.md](AGENTS.md). Claude Code imports the same file via
 The installed CLI uses the workflow resources shipped with the package. Run
 `kite-tool resources` to locate the instruction files and skills from any
 directory. Use `kite-tool --extensions DIR` to add trusted project workflows.
+Use `kite-tool resources --project-instructions` to print a Markdown section
+for another project's `AGENTS.md`. See the
+[project setup example](examples/agent-workflows/README.md#give-your-agent-a-task).
 If a project definition fails validation, `pipelines` lists the other
 available workflows and reports the rejected ID under `invalid_extensions`.
 Inspect those diagnostics before selecting a workflow.
