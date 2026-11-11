@@ -28,7 +28,8 @@ Add `--save` to a phrase lookup and open the run in **Workflows** to see
 candidate spans and cited lines per phrase.
 Use `--explain --save` when the user wants to inspect which candidates supplied
 quotes. The graph shows the packing order and links to each original source,
-including candidates skipped by the quote budget or span limit. A passage
+including candidates skipped by the quote budget or span limit. Sort this
+list by recording date to compare those candidates with the quoted evidence. A passage
 from another recording can move up when it matches the leading clues plus
 an additional clue in its original text. The graph shows those matches.
 The compile trace also shows when a question word was matched through an

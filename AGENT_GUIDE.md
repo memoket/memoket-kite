@@ -70,8 +70,9 @@ Add `--save` to inspect each phrase's candidate spans and cited lines in the
 graph. A phrase with zero cited lines may still have candidate spans.
 Use `--explain --save` to retain the first 80 packing candidates for each
 search. The viewer links each candidate to its original source position and
-shows whether it contributed quotes or met a packing limit. Without `--text`,
-the command also returns these details in JSON.
+shows its recording date and whether it contributed quotes or met a packing
+limit. Order candidates by date to compare recordings while retaining their
+original packing ranks. Without `--text`, these details are returned in JSON.
 When an unquoted English word has no match, question compilation can select
 a common plural or verb form found in the scoped original text. The graph
 shows the search word and the indexed form. Use `--matching-lines` to look

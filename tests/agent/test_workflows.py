@@ -6426,6 +6426,8 @@ def test_context_prioritizes_a_passage_with_topic_and_original_text_clues(work):
     )
     first, second = result["parts"]
     assert first["spans"][0]["evidence"][0]["text"] == target
+    assert first["packing_trace"]["candidates"][0]["source_date"] == "2026-02-03"
+    assert second["packing_trace"]["candidates"][0]["source_date"] is None
     assert first["packing_trace"]["candidates"][0]["corroborating_terms"] == [
         "calibration",
         "actuator",
@@ -6438,7 +6440,8 @@ def test_context_prioritizes_a_passage_with_topic_and_original_text_clues(work):
     assert "2026-02-03" in first["evidence_recording_dates"]
     assert not first["has_undated_evidence"]
     assert not second["evidence_recording_dates"] and second["has_undated_evidence"]
-    assert saved["search_trace"]["packing"][0]["candidates"][0]["conversation_id"] == "followup"
+    lead = saved["search_trace"]["packing"][0]["candidates"][0]
+    assert lead["conversation_id"] == "followup" and lead["source_date"] == "2026-02-03"
 
 
 def test_context_comparison_recording_dates_are_independent_of_the_workspace_snapshot(work):

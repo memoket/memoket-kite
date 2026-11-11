@@ -1141,7 +1141,12 @@ def _pack(
         covered = set(compact_sources)
         covered.update(copy["checksum"] for group in compact_copies.values() for copy in group)
         rows = [
-            {"checksum": checksum, "start": 0, "stop": len(record["conversation"]["segments"])}
+            {
+                "checksum": checksum,
+                "start": 0,
+                "stop": len(record["conversation"]["segments"]),
+                "day": source_day(record["conversation"]),
+            }
             for checksum, record in compact_sources.items()
         ] + [row for row in rows if row["checksum"] not in covered]
     traced = []
@@ -1150,6 +1155,7 @@ def _pack(
             {
                 "rank": rank,
                 "revision_checksum": row["checksum"],
+                "source_date": row["day"] or None,
                 "start_offset": row["start"],
                 "end_offset": row["stop"],
                 "reason": "span_limit",

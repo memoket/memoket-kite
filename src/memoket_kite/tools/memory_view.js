@@ -29,6 +29,7 @@
       anchorSources: 'sources matching the name',
       matchedTerms: 'Terms in this quote',
       inspectCandidates: 'Rerun with candidate details', packingOrder: 'Packing order',
+      sortCandidatesByDate: 'Order by recording date',
       wordForms: 'English word forms',
       repeatedTerms: 'Repeated query terms', followupQuote: 'Follow-up quote', followupQuotes: 'follow-up quotes',
       firstLinesPrioritized: 'More passages from the leading source',
@@ -91,7 +92,7 @@
       wordForms: '英文词形匹配',
       repeatedTerms: '问题中重复出现', followupQuote: '后续原文命中', followupQuotes: '行后续引文',
       firstLinesPrioritized: '先取同一来源的多个片段',
-      packingSegments: '原文段',
+      packingSegments: '原文段', sortCandidatesByDate: '按录制日期排列',
       corroboratingTerms: '同一片段命中多个线索',
       recordingSelection: {
         other_recording_followup: '另一份录制有匹配的后续原文',
@@ -909,10 +910,12 @@
     details.append(element('summary', [t('packingOrder'), label,
       `${number.format(packing.candidates.length)}/${number.format(packing.total)} ${t('candidates')}`].filter(Boolean).join(' · ')));
     const list = element('div', undefined, 'packing-candidates');
-    paged(list, packing.candidates, 12, candidate => {
+    function renderCandidate(candidate) {
       const row = element('div');
-      const label = `#${candidate.rank} · ${candidate.source}/${candidate.conversation_id} · ${t('packingSegments')} ${candidate.start_offset + 1}–${candidate.end_offset}`;
-      const link = element('a', label, 'citation-link');
+      const labels = [`#${candidate.rank}`, `${candidate.source}/${candidate.conversation_id}`];
+      if ('source_date' in candidate) labels.push(candidate.source_date || t('noDate'));
+      labels.push(`${t('packingSegments')} ${candidate.start_offset + 1}–${candidate.end_offset}`);
+      const link = element('a', labels.join(' · '), 'citation-link');
       const params = new URLSearchParams({ view: 'source', checksum: candidate.revision_checksum,
         offset: candidate.start_offset, lang: language });
       if (query.has('run')) params.set('run', query.get('run'));
@@ -931,7 +934,23 @@
       }
       row.append(link, element('span', status.join(' · ')));
       return row;
-    });
+    }
+    if (new Set(packing.candidates.map(candidate => candidate.source_date)).size > 1) {
+      const toggle = element('input');
+      toggle.type = 'checkbox';
+      const control = element('label', undefined, 'packing-sort');
+      control.append(toggle, t('sortCandidatesByDate'));
+      details.append(control);
+      toggle.addEventListener('change', () => {
+        const entries = toggle.checked ? [...packing.candidates].sort((left, right) =>
+          Number(!left.source_date) - Number(!right.source_date)
+          || (left.source_date || '').localeCompare(right.source_date || '')
+          || left.rank - right.rank) : packing.candidates;
+        list.replaceChildren();
+        paged(list, entries, 12, renderCandidate);
+      });
+    }
+    paged(list, packing.candidates, 12, renderCandidate);
     details.append(list);
     return details;
   }

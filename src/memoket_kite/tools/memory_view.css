@@ -230,6 +230,7 @@ summary { color: var(--teal); cursor: pointer; font-size: 12px; }
 .term-coverage span { color: var(--muted); }
 .term-coverage [data-empty] { color: var(--muted); }
 .packing-trace summary { cursor: pointer; }
+.packing-sort { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; cursor: pointer; }
 .packing-candidates { display: grid; gap: 4px; margin: 6px 0; }
 .packing-candidates > div { display: flex; flex-wrap: wrap; gap: 4px 12px; }
 .packing-candidates > div > span { color: var(--muted); }
