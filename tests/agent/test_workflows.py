@@ -5845,6 +5845,21 @@ def test_context_latest_prioritizes_recording_date_across_terms(work):
     assert ordinary["spans"][0]["evidence"][0]["conversation_id"] == "older"
 
 
+def test_context_keeps_an_explicit_quote_ahead_of_generic_matches(work):
+    _, call = work
+    sources = [
+        text_input("quoted", "We call it the copper needle."),
+        text_input("decoy", "Calendar timestamps, implementation notes and discussion history."),
+    ]
+    call("index-sources", payload={"sources": [{"source": entry["source"]} for entry in sources]})
+    question = 'Find "copper needle" with calendar timestamps, implementation notes and discussion history.'
+    pack = call("context", "--question", question, "--limit", "1", "--neighbors", "0")
+    assert pack["candidate_sources"] == 2
+    assert [line["conversation_id"] for span in pack["spans"] for line in span["evidence"]] == [
+        "quoted"
+    ]
+
+
 def test_context_comparison_keeps_both_questions_in_one_budget_and_snapshot(work):
     _, call = work
     receipt = call(
@@ -6379,7 +6394,7 @@ def test_transcript_recording_times_backfill_matching_sources_with_annotations(
     assert dated["source_date"] == "2026-01-14"
     assert dated["local_started_at"] == "2026-01-14T08:20:15"
     assert "started_at" not in dated
-    assert "Date: 2026-01-14 08:20:15 (timezone unknown)" in call(
+    assert "Recording started at: 2026-01-14 08:20:15 (timezone unknown)" in call(
         "context", "--term", "上线计划", "--text"
     )
     assert dated["evidence"][0]["segment_id"] == undated["segment_id"] == "L3"
@@ -6401,6 +6416,11 @@ def test_transcript_recording_times_backfill_matching_sources_with_annotations(
         )
     assert page["local_started_at"] == dated["local_started_at"]
     assert page["segments"][0]["segment_id"] == "L3"
+    comparison = call("source-compare", undated["revision_checksum"])
+    assert comparison["segments"] == []
+    assert "local_started_at" in comparison["conversation_fields"]
+    assert "local_started_at" not in comparison["before"]
+    assert comparison["after"]["local_started_at"] == dated["local_started_at"]
     metadata.write_text('{"conversation_id": 42, "started_at": "2026-01-14 08:23:15"}')
     call(*cmd, error="conflict")
 
@@ -6424,7 +6444,7 @@ def test_transcript_recording_offset_preserves_date_bounds_and_original_clock(wo
     assert same_day["source_date"] == "2026-01-13"
     assert same_day["started_at"] == "2026-01-14T01:20:15+08:00"
     assert "local_started_at" not in same_day
-    assert "2026-01-13 UTC · 2026-01-14T01:20:15+08:00" in call(
+    assert "Date: 2026-01-13 UTC\nRecording started at: 2026-01-14T01:20:15+08:00" in call(
         "context", "--term", "release", "--text"
     )
     assert not call("context", "--term", "release", "--start-date", "2026-01-14")["spans"]

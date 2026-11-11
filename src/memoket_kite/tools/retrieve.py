@@ -231,11 +231,13 @@ def compare_revisions(workspace, request: dict) -> dict:
             "checksum": before["checksum"],
             "date": source_day(original),
             "active": before["active"],
+            **{key: original[key] for key in RECORDING_CLOCK_FIELDS if key in original},
         },
         "after": {
             "checksum": after["checksum"],
             "date": source_day(target),
             "active": after["active"],
+            **{key: target[key] for key in RECORDING_CLOCK_FIELDS if key in target},
         },
     }
 
@@ -245,7 +247,9 @@ def render_revision_comparison(report: dict) -> str:
     for side in ("before", "after"):
         revision = report[side]
         label = "current" if revision["active"] else "retained"
-        date = revision["date"] or "undated"
+        date = revision.get("started_at") or revision["date"] or "undated"
+        if local := revision.get("local_started_at"):
+            date = f"{local.replace('T', ' ')} · timezone unknown"
         lines.append(f"{side.title()} {revision['checksum']} ({label}, {date})")
     for field in report["conversation_fields"]:
         lines.append(f"Changed metadata: {field}")

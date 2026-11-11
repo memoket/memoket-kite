@@ -271,9 +271,9 @@ TOOLS = {
         _compile_context, {"request": "context_request"}, "context_plan", version=7
     ),
     "search_context": Tool(
-        _search_context, {"compiled": "context_plan"}, "context_evidence", version=9
+        _search_context, {"compiled": "context_plan"}, "context_evidence", version=10
     ),
     "compare_revisions": Tool(
-        _compare_revisions, {"request": "revision_comparison"}, "revision_difference"
+        _compare_revisions, {"request": "revision_comparison"}, "revision_difference", version=2
     ),
 }

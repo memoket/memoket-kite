@@ -7,11 +7,11 @@
   const copy = zh ? {
     title: '原文版本对照', before: '对照基准', after: '对照版本', added: '新增', removed: '移除', modified: '修改',
     metadata: '变更字段', order: '原文行顺序有变动', empty: '原文行无改动', none: '此版本没有这行',
-    noDate: '日期未知', omitted: '此引文超过本页预算', next: '下一页', refresh: '刷新',
+    noDate: '日期未知', timezoneUnknown: '时区未知', recording: '录制时间', omitted: '此引文超过本页预算', next: '下一页', refresh: '刷新',
   } : {
     title: 'Source revision comparison', before: 'Baseline', after: 'Compared version', added: 'Added', removed: 'Removed', modified: 'Modified',
     metadata: 'Changed fields', order: 'Source line order changed', empty: 'No changed source lines', none: 'Line absent in this revision',
-    noDate: 'Date unknown', omitted: 'Quote exceeds this page’s budget', next: 'Next page', refresh: 'Refresh',
+    noDate: 'Date unknown', timezoneUnknown: 'timezone unknown', recording: 'Recording time', omitted: 'Quote exceeds this page’s budget', next: 'Next page', refresh: 'Refresh',
   };
   function element(tag, value, className) {
     const node = document.createElement(tag);
@@ -26,6 +26,22 @@
   if (data.conversation_fields.length) header.append(element('p', `${copy.metadata} · ${data.conversation_fields.join(' · ')}`));
   if (data.segment_order_changed) header.append(element('p', copy.order));
   panel.append(header);
+  if (data.conversation_fields.some(field => ['source_date', 'started_at', 'local_started_at'].includes(field))) {
+    const section = element('section', undefined, 'revision-change');
+    section.append(element('h3', copy.recording));
+    const pair = element('div', undefined, 'compare-grid');
+    for (const side of ['before', 'after']) {
+      const revision = data[side];
+      const clock = revision.local_started_at
+        ? `${revision.local_started_at.replace('T', ' ')} · ${copy.timezoneUnknown}`
+        : revision.started_at?.replace('T', ' ') || revision.date || copy.noDate;
+      const column = element('section', undefined, 'revision-side');
+      column.append(element('h4', copy[side]), element('p', clock));
+      pair.append(column);
+    }
+    section.append(pair);
+    panel.append(section);
+  }
   if (!data.segments.length) panel.append(element('p', copy.empty, 'detail-meta'));
   for (const change of data.segments) {
     const row = element('section', undefined, 'revision-change');

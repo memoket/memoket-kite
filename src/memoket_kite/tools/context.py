@@ -553,6 +553,7 @@ def _candidates(
     *,
     focus: bool = False,
     preferred_sources: set[str] | None = None,
+    anchors: tuple[str, ...] = (),
 ) -> list:
     where, args = _search_scope(plan)
     order = "bm25(context_spans, 1.0, 0.35, 1.2), day DESC"
@@ -561,6 +562,7 @@ def _candidates(
     coherent = focus and not plan.get("latest")
     stream_limit = max(limit, min(limit * 6, 30)) if coherent else limit * 6
     matches = []
+    exact = []
     for phrase in dict.fromkeys(map(_tokens, plan["terms"])):
         if not phrase:
             continue
@@ -571,8 +573,21 @@ def _candidates(
                 (f'"{phrase}"', *args, stream_limit),
             ).fetchall()
         )
+        if phrase in anchors:
+            row = db.execute(
+                f"SELECT checksum, start, stop, day FROM context_spans WHERE {where} "
+                f"ORDER BY {order}, checksum, start LIMIT 1",
+                (f'text : "{phrase}"', *args),
+            ).fetchone()
+            if row is not None:
+                exact.append(row)
     if coherent:
-        return _coherent_order(matches, preferred_sources)
+        ranked = _coherent_order(matches, preferred_sources)
+        if not exact:
+            return ranked
+        # Reserve a place for an explicit quote in original text before scoring
+        # looser clues. Title and label matches still use the ordinary ranking.
+        return list({(row["checksum"], row["start"]): row for row in (*exact, *ranked)}.values())
     # Give each term a turn before breaking ties within a recording date.
     streams = [iter(rows) for rows in matches]
     results = []
@@ -594,18 +609,28 @@ def _candidates(
     )
 
 
-def _positions(segments: list[dict], start: int, stop: int, neighbors: int, phrases: tuple):
+def _positions(
+    segments: list[dict],
+    start: int,
+    stop: int,
+    neighbors: int,
+    phrases: tuple,
+    anchors: tuple[str, ...],
+):
     window = range(max(0, start - neighbors), min(len(segments), stop + neighbors))
     if phrases:
         hits = []
+        exact = set()
         for pos in range(start, stop):
             text = f" {_tokens(segments[pos]['text'])} "
             if any(phrase in text for phrase in phrases):
                 hits.append(pos)
+                if any(anchor in text for anchor in anchors):
+                    exact.add(pos)
         if hits:
             return sorted(
                 (pos for pos in window if any(abs(pos - hit) <= neighbors for hit in hits)),
-                key=lambda pos: (min(abs(pos - hit) for hit in hits), pos),
+                key=lambda pos: (pos not in exact, min(abs(pos - hit) for hit in hits), pos),
             )
     return [*range(start, stop), *(pos for pos in window if not start <= pos < stop)]
 
@@ -666,6 +691,7 @@ def _pack(
     neighbors: int,
     phrases: tuple,
     *,
+    anchors: tuple[str, ...] = (),
     historical_records: dict | None = None,
     compact_sources: dict | None = None,
 ):
@@ -679,6 +705,7 @@ def _pack(
     seen = defaultdict(set)
     packed = []
     size = omitted = 0
+    anchored = tuple(f" {anchor} " for anchor in anchors)
     for row in rows:
         if len(packed) == limit:
             break
@@ -697,7 +724,7 @@ def _pack(
         positions = (
             range(start, stop)
             if checksum in compact_sources
-            else _positions(segments, start, stop, neighbors, phrases)
+            else _positions(segments, start, stop, neighbors, phrases, anchored)
         )
         for pos in positions:
             if pos in seen[checksum]:
@@ -775,14 +802,21 @@ def _context_evidence(workspace, plan, *, limit, max_bytes, neighbors, focus, _i
             else {}
         )
         preferred = set(compact)
+        anchors = ()
         if _question and not plan.get("latest"):
-            preferred.update(_quoted_sources(index, _question, plan["terms"], limit))
+            quoted_sources = _quoted_sources(index, _question, plan["terms"], limit)
+            if quoted_sources:
+                preferred.update(quoted_sources)
+                anchors = tuple(
+                    map(_tokens, _quoted_phrases(_question).intersection(plan["terms"]))
+                )
         candidates = _candidates(
             index.db,
             {**index.filters, "terms": plan["terms"]},
             limit,
             focus=focus,
             preferred_sources=preferred,
+            anchors=anchors,
         )
         spans, size, omitted = _pack(
             workspace,
@@ -791,6 +825,7 @@ def _context_evidence(workspace, plan, *, limit, max_bytes, neighbors, focus, _i
             max_bytes,
             neighbors,
             phrases,
+            anchors=anchors,
             historical_records=index.records,
             compact_sources=compact,
         )
@@ -833,11 +868,14 @@ def render_context(pack: dict) -> str:
             revision = span["evidence"][0]["revision_checksum"]
             if revision != previous_revision:
                 if local := span.get("local_started_at"):
-                    lines.append(f"Date: {local.replace('T', ' ')} (timezone unknown)")
+                    lines.append(
+                        f"Recording started at: {local.replace('T', ' ')} (timezone unknown)"
+                    )
                 elif started := span.get("started_at"):
                     day = span["source_date"]
-                    clock = started if started[:10] == day else f"{day} UTC · {started}"
-                    lines.append(f"Date: {clock}")
+                    if started[:10] != day:
+                        lines.append(f"Date: {day} UTC")
+                    lines.append(f"Recording started at: {started}")
                 elif span["source_date"]:
                     lines.append(f"Date: {span['source_date']}")
                 if history:
