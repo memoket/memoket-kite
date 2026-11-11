@@ -27,6 +27,7 @@ from .memoket_source import memoket_source
 from .operations import SCHEMAS, SOURCE_SCOPE, TOOLS, Context
 from .resources import resource_root
 from .retrieve import evidence_context, segment_context, topic_inventory
+from .source_diff import source_changes
 from .trace_text import render_status, render_trace
 from .workflow import (
     SCRIPTED_IMPORT_STAGES,
@@ -372,6 +373,9 @@ def _parser() -> argparse.ArgumentParser:
     source_check.add_argument(
         "--input", required=True, metavar="FILE", help="source-only JSON or - for stdin"
     )
+    source_check.add_argument("--changes", action="store_true", help="show changed segment IDs")
+    source_check.add_argument("--limit", type=int, help="changed segments per page (1–200)")
+    source_check.add_argument("--cursor", help="continue the source comparison")
     history = commands.add_parser(
         "source-history", help="list one conversation's stored revisions without transcript text"
     )
@@ -520,6 +524,9 @@ def _read_evidence(args: argparse.Namespace, workspace: Workspace) -> dict:
 
 
 def _check_source(args: argparse.Namespace, root: Path) -> dict:
+    if not args.changes and (args.limit is not None or args.cursor is not None):
+        raise ToolError("invalid_input", "source comparison paging requires --changes")
+    limit = args.limit if args.limit is not None else 50
     supplied = _object(args.input)
     validate(object_schema({"source": SCHEMAS["source"]}), supplied, "source check input")
     source, conversation = prepare_source(root, supplied["source"])
@@ -531,7 +538,14 @@ def _check_source(args: argparse.Namespace, root: Path) -> dict:
     }
     try:
         with Workspace.open(args.workspace, read_only=True) as workspace:
-            result.update(workspace.check_source(conversation, checksum))
+            result.update(
+                workspace.check_source(
+                    conversation,
+                    checksum,
+                    changes_limit=limit if args.changes else None,
+                    cursor=args.cursor,
+                )
+            )
     except ToolError as exc:
         if exc.code != "not_found":
             raise
@@ -539,6 +553,15 @@ def _check_source(args: argparse.Namespace, root: Path) -> dict:
         if (directory.exists() and not directory.is_dir()) or (directory / "kite.sqlite3").exists():
             raise
         result.update(state="new", current_checksum=None, memory_version=None)
+        if args.changes:
+            result["changes"] = source_changes(
+                conversation,
+                None,
+                snapshot=(None, 0),
+                checksum=checksum,
+                limit=limit,
+                cursor=args.cursor,
+            )
     if "expected_checksum" in source:
         result["expected_checksum_matches"] = (
             source["expected_checksum"] == result["current_checksum"]

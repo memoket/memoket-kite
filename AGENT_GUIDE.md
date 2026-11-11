@@ -392,6 +392,15 @@ source. If the input already supplies an expected checksum, the result reports
 whether it matches the current checksum. The check creates no run or workspace.
 The commit stage verifies the expected checksum again before writing.
 
+Add `--changes` to inspect a candidate against the current revision. The
+comparison lists added, removed, and modified segment IDs, names of changed
+fields, and how many current facts cite a modified or removed segment. It also
+reports whether shared segments changed relative order. Use a changed segment's
+`current_source_line_id` with `kite-tool evidence` to review the original line.
+For another page, keep the same input and `--limit` and pass
+`changes.next_cursor` as `--cursor`. After a workspace change, begin again at
+the first page.
+
 Use `kite-tool source-history SOURCE CONVERSATION_ID` to look up the current
 checksum and inspect retained revisions without loading transcript text into
 the agent context. The current revision appears first, followed by prior

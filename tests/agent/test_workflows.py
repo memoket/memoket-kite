@@ -4166,6 +4166,129 @@ def test_source_check_classifies_revisions_without_opening_a_write(work, tmp_pat
     call(*check, payload=source, error="deleted_source")
 
 
+def test_source_check_pages_changed_segments_and_links_prior_evidence(work):
+    directory, call = work
+    original = {
+        "source": {
+            "format": "conversation",
+            "payload": {
+                "source": "memoket",
+                "conversation_id": "notes",
+                "title": "Private title",
+                "metadata": {"source_reference": "notes", "project": "Private project"},
+                "segments": [
+                    {"segment_id": segment_id, "text": f"Private original {segment_id}."}
+                    for segment_id in ("a", "b", "c", "d")
+                ],
+            },
+        },
+        "annotations": {
+            "facts": [
+                {"content": "Private unchanged fact.", "segment_ids": ["a"], "topics": ["notes"]},
+                {
+                    "content": "Private modified fact.",
+                    "segment_ids": ["b", "c"],
+                    "topics": ["notes"],
+                },
+                {"content": "Private removed fact.", "segment_ids": ["c"], "topics": ["notes"]},
+            ]
+        },
+    }
+    before_source = {"source": original["source"]}
+    check = ("source-check", "--changes", "--limit", "1")
+    fresh = call(*check, payload=before_source)
+    fresh_next = call(*check, "--cursor", fresh["changes"]["next_cursor"], payload=before_source)
+    assert fresh_next["changes"]["segments"] == [{"segment_id": "b", "change": "added"}]
+    assert fresh["changes"]["counts"] == {"added": 4, "removed": 0, "modified": 0, "unchanged": 0}
+    assert not directory.exists()
+
+    initial = ingest(call, "initial", original)
+    call(
+        *check,
+        "--cursor",
+        fresh["changes"]["next_cursor"],
+        payload=before_source,
+        error="stale_snapshot",
+    )
+    metadata_only = copy.deepcopy(before_source)
+    metadata_only["source"]["payload"]["title"] = "Private revised title"
+    metadata_only["source"]["payload"]["metadata"]["project"] = "Private new project"
+    details = call("source-check", "--changes", payload=metadata_only)["changes"]
+    assert details["conversation_fields"] == ["metadata", "title"]
+    assert details["segments"] == [] and not details["segment_order_changed"]
+    assert details["affected_current_facts"] == 0
+
+    candidate = copy.deepcopy(metadata_only)
+    conversation = candidate["source"]["payload"]
+    a, b, _, d = conversation["segments"]
+    conversation["segments"] = [
+        d,
+        {**b, "text": "Private updated line.", "speaker_id": "Private speaker"},
+        a,
+        {"segment_id": "e", "text": "Private added line."},
+    ]
+    path = directory / "kite.sqlite3"
+    before = path.read_bytes()
+    first = call(*check, payload=candidate)
+    second = call(*check, "--cursor", first["changes"]["next_cursor"], payload=candidate)
+    last = call(*check, "--cursor", second["changes"]["next_cursor"], payload=candidate)
+    line_b = initial["revision_id"] + "L2"
+    line_c = initial["revision_id"] + "L3"
+    assert first["state"] == "changed" and first["current_checksum"] == initial["checksum"]
+    assert first["changes"]["segments"] == [
+        {
+            "segment_id": "b",
+            "change": "modified",
+            "fields": ["speaker_id", "text"],
+            "current_source_line_id": line_b,
+        }
+    ]
+    assert second["changes"]["segments"] == [{"segment_id": "e", "change": "added"}]
+    assert last["changes"]["segments"] == [
+        {
+            "segment_id": "c",
+            "change": "removed",
+            "current_source_line_id": line_c,
+        }
+    ]
+    assert last["changes"]["next_cursor"] is None and path.read_bytes() == before
+    for page in (first, second, last):
+        assert page["changes"]["counts"] == {
+            "added": 1,
+            "removed": 1,
+            "modified": 1,
+            "unchanged": 2,
+        }
+        assert page["changes"]["segment_order_changed"]
+        assert page["changes"]["affected_current_facts"] == 2
+        assert "Private" not in json.dumps(page)
+    cursor = first["changes"]["next_cursor"]
+    call(*check, "--cursor", cursor, payload=metadata_only, error="invalid_input")
+    call(
+        "source-check",
+        "--changes",
+        "--limit",
+        "2",
+        "--cursor",
+        cursor,
+        payload=candidate,
+        error="invalid_input",
+    )
+    call("source-check", "--cursor", cursor, payload=candidate, error="invalid_input")
+    call("source-check", "--changes", "--limit", "0", payload=candidate, error="invalid_input")
+
+    candidate["source"]["expected_checksum"] = initial["checksum"]
+    updated = ingest(
+        call, "update", {**candidate, "annotations": {"facts": []}}, pipeline="memory-update"
+    )
+    assert updated["checksum"] == first["checksum"]
+    historical_evidence = call("evidence", line_b)["value"]
+    assert historical_evidence["evidence"]["revision_checksum"] == initial["checksum"]
+    assert historical_evidence["evidence"]["text"] == "Private original b."
+    assert not historical_evidence["source_revision_active"]
+    call(*check, "--cursor", cursor, payload=candidate, error="stale_snapshot")
+
+
 def test_file_source_imports_subrip_cues_without_inferring_speakers(work, tmp_path):
     directory, call = work
     path = tmp_path / "captions.srt"

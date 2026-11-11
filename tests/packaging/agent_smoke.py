@@ -262,6 +262,11 @@ def main() -> None:
         repeat = call("source-check", payload=source, workspace=recovered)
         assert repeat["state"] == "unchanged"
         assert repeat["checksum"] == preflight["checksum"] == result["receipt"]["checksum"]
+        differences = call("source-check", "--changes", payload=source, workspace=recovered)[
+            "changes"
+        ]
+        assert differences["counts"] == {"added": 0, "removed": 0, "modified": 0, "unchanged": 2}
+        assert differences["segments"] == [] and differences["next_cursor"] is None
         assert call("status", run_id, workspace=recovered)["stages"]["annotate"]["retry_count"] == 1
         inventory = call(
             "sources", "--project", "Launch pilot", "--limit", "1", workspace=recovered

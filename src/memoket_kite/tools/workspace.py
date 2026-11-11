@@ -27,6 +27,7 @@ from .contracts import (
 )
 from .index import Index, build_index, fact_entries, load_index, revision_id, source_key
 from .ingest import source_day, source_identity
+from .source_diff import source_changes
 from .timing import precedes, source_timing
 
 _DELETION_IMPACT_ID_LIMIT = 100
@@ -816,20 +817,37 @@ class Workspace:
             return "historical", key, prior
         return "changed" if prior else "new", key, prior
 
-    def check_source(self, conversation: dict, checksum: str) -> dict:
+    def check_source(
+        self,
+        conversation: dict,
+        checksum: str,
+        *,
+        changes_limit: int | None = None,
+        cursor: str | None = None,
+    ) -> dict:
         self.require_source_allowed(
             conversation["source"],
             conversation["conversation_id"],
             conversation["metadata"]["source_reference"],
         )
         state, _, prior = self._classify_source(conversation, checksum)
-        if prior is not None:
-            self._decode_revision(prior)
-        return {
+        current = self._decode_revision(prior) if prior is not None else None
+        snapshot = self.snapshot_identity()
+        result = {
             "state": state,
-            "current_checksum": prior["checksum"] if prior is not None else None,
-            "memory_version": self.version(),
+            "current_checksum": current["checksum"] if current else None,
+            "memory_version": snapshot[1],
         }
+        if changes_limit is not None:
+            result["changes"] = source_changes(
+                conversation,
+                current,
+                snapshot=snapshot,
+                checksum=checksum,
+                limit=changes_limit,
+                cursor=cursor,
+            )
+        return result
 
     def commit(self, record: dict, *, append_annotations: bool = False) -> dict:
         conversation = record["conversation"]
