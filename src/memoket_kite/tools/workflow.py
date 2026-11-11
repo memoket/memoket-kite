@@ -23,7 +23,7 @@ from .contracts import (
     validate,
 )
 from .index import revision_id
-from .ingest import prepare_source, source_identity
+from .ingest import RECORDING_CLOCK_FIELDS, prepare_source, source_identity
 from .operations import EXTERNAL, SCHEMAS, TOOLS, Context
 
 SNAPSHOT_KINDS = {"resolved", "matches", "report", "deletion_plan", "integrity"}
@@ -774,7 +774,7 @@ def _source_line_page(
         "memory_version": workspace.version(),
         **{
             key: conversation[key]
-            for key in ("started_at", "source_date", "language", "title")
+            for key in (*RECORDING_CLOCK_FIELDS, "source_date", "language", "title")
             if key in conversation
         },
     }

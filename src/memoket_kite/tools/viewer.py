@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlencode
 from .activity import memory_activity
 from .context import _tokens, context_enabled, context_pack, question_pack
 from .contracts import ToolError
+from .ingest import RECORDING_CLOCK_FIELDS
 from .retrieve import compare_revisions, memory_snapshot
 from .workflow import saved_context_search, source_revision_page
 from .workspace import Workspace
@@ -84,6 +85,7 @@ def _search_snapshot(
                 "reference": first["source_reference"],
                 "title": span["title"],
                 "day": span["source_date"],
+                **{key: span[key] for key in RECORDING_CLOCK_FIELDS if key in span},
                 "active": span.get("source_revision_active", True),
             }
             ids = tuple(line["source_line_id"] for line in lines)

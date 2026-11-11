@@ -9,6 +9,7 @@
     "source": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
     "title": {"type": "string"},
     "started_at": {"type": "string", "format": "date-time"},
+    "local_started_at": {"type": "string", "format": "local-date-time"},
     "source_date": {"type": "string", "format": "date"},
     "language": {"$ref": "#/$defs/text"},
     "segments": {

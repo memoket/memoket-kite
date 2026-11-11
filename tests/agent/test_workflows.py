@@ -6343,12 +6343,17 @@ def test_historical_context_preserves_upgrade_boundary_and_uses_raw_evidence(wor
         assert pack["spans"][0]["evidence"][0]["revision_checksum"] == baseline
 
 
-def test_transcript_recording_dates_backfill_matching_sources_with_annotations(work, tmp_path):
-    _, call = work
+@pytest.mark.parametrize("existing_date", [None, "2026-01-14"])
+def test_transcript_recording_times_backfill_matching_sources_with_annotations(
+    work, tmp_path, existing_date
+):
+    directory, call = work
     source = tmp_path / "42_transcript.txt"
     source.write_text("00:01\nSpeaker A\n原文讨论交付。\n", encoding="utf-8")
     prepared = call("file-source", str(source), "--format", "transcript-text")["source"]
-    call(
+    if existing_date is not None:
+        prepared["payload"]["source_date"] = existing_date
+    initial = call(
         "index-sources",
         payload={
             "sources": [
@@ -6372,8 +6377,54 @@ def test_transcript_recording_dates_backfill_matching_sources_with_annotations(w
     assert call(*cmd)["sources_changed"] == 0
     dated = call("context", "--term", "上线计划", "--start-date", "2026-01-14")["spans"][0]
     assert dated["source_date"] == "2026-01-14"
+    assert dated["local_started_at"] == "2026-01-14T08:20:15"
+    assert "started_at" not in dated
+    assert "Date: 2026-01-14 08:20:15 (timezone unknown)" in call(
+        "context", "--term", "上线计划", "--text"
+    )
     assert dated["evidence"][0]["segment_id"] == undated["segment_id"] == "L3"
     assert dated["evidence"][0]["text"] == undated["text"]
     assert (
         call("evidence", undated["source_line_id"])["value"]["evidence"]["text"] == undated["text"]
     )
+    assert (
+        "local_started_at"
+        not in call("context", "--term", "交付", "--at-version", str(initial["memory_version"]))[
+            "spans"
+        ][0]
+    )
+    snapshot = viewer._snapshot(directory, ["上线计划"])
+    assert snapshot["revisions"][0]["local_started_at"] == dated["local_started_at"]
+    with workspace.Workspace.open(directory, read_only=True) as store:
+        page = workflow.source_revision_page(
+            store, dated["evidence"][0]["revision_checksum"], offset=0
+        )
+    assert page["local_started_at"] == dated["local_started_at"]
+    assert page["segments"][0]["segment_id"] == "L3"
+    metadata.write_text('{"conversation_id": 42, "started_at": "2026-01-14 08:23:15"}')
+    call(*cmd, error="conflict")
+
+
+def test_transcript_recording_offset_preserves_date_bounds_and_original_clock(work, tmp_path):
+    _, call = work
+    (tmp_path / "42_transcript.txt").write_text("00:01\nSpeaker A\nRelease review.\n")
+    sidecar = tmp_path / "42.json"
+    command = (
+        "index-sources",
+        "--transcripts",
+        str(tmp_path),
+        "--recording-metadata",
+        str(tmp_path),
+    )
+    sidecar.write_text('{"conversation_id": 42, "started_at": "2026-01-13"}')
+    call(*command)
+    sidecar.write_text('{"conversation_id": 42, "started_at": "2026-01-14T01:20:15+08:00"}')
+    assert call(*command)["sources_changed"] == 1
+    same_day = call("context", "--term", "release", "--end-date", "2026-01-13")["spans"][0]
+    assert same_day["source_date"] == "2026-01-13"
+    assert same_day["started_at"] == "2026-01-14T01:20:15+08:00"
+    assert "local_started_at" not in same_day
+    assert "2026-01-13 UTC · 2026-01-14T01:20:15+08:00" in call(
+        "context", "--term", "release", "--text"
+    )
+    assert not call("context", "--term", "release", "--start-date", "2026-01-14")["spans"]

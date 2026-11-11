@@ -161,7 +161,7 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
         cwd=subdirectory,
     ).stdout
     assert "[handoff#L4] Speaker A: Rollout depends on the checklist." in context, context
-    assert "Date: 2026-01-14" in context, context
+    assert "Date: 2026-01-14 08:00:00 (timezone unknown)" in context, context
     comparison = run(
         "context",
         "--question",

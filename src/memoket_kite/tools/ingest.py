@@ -24,6 +24,8 @@ from .contracts import (
 from .memoket_transcript import api_transcript
 from .transcript_text import transcript_text_source
 
+RECORDING_CLOCK_FIELDS = ("started_at", "local_started_at")
+
 SOURCE = object_schema(
     {
         "format": {"enum": ["text", "memoket", "conversation", "transcript", "audio-transcript"]},
@@ -239,6 +241,12 @@ def file_source(
 
 def validate_conversation(root, conversation: dict) -> None:
     validate(schema_file(root, "conversation"), conversation, "conversation")
+    if local := conversation.get("local_started_at"):
+        if (
+            "started_at" in conversation
+            or conversation.get("source_date", local[:10]) != local[:10]
+        ):
+            raise ToolError("invalid_input", "local_started_at needs a consistent recording date")
     segment_ids = set()
     for segment in conversation["segments"]:
         sid = segment["segment_id"]
@@ -254,4 +262,6 @@ def validate_conversation(root, conversation: dict) -> None:
 def source_day(conversation: dict) -> str | None:
     if stamp := conversation.get("started_at"):
         return utc_timestamp(stamp).date().isoformat()
+    if local := conversation.get("local_started_at"):
+        return local[:10]
     return conversation.get("source_date")

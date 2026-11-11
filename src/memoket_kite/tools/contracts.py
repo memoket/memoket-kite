@@ -77,6 +77,15 @@ _TIMESTAMP = re.compile(
 )
 
 
+_LOCAL_TIMESTAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}")
+
+
+def local_timestamp(value: str) -> datetime:
+    if not _LOCAL_TIMESTAMP.fullmatch(value):
+        raise ValueError("expected a local timestamp without an offset")
+    return datetime.fromisoformat(value)
+
+
 def utc_timestamp(value: str) -> datetime:
     match = _TIMESTAMP.fullmatch(value)
     if not match:
@@ -126,6 +135,12 @@ def validate(schema: dict, value, label: str) -> None:
     def is_timestamp(item):
         if isinstance(item, str):
             utc_timestamp(item)
+        return True
+
+    @checker.checks("local-date-time", raises=ValueError)
+    def is_local_timestamp(item):
+        if isinstance(item, str):
+            local_timestamp(item)
         return True
 
     problem = next(Draft202012Validator(schema, format_checker=checker).iter_errors(value), None)

@@ -103,8 +103,10 @@ to compare this workflow with giving Codex the transcript directory to search.
 If a TXT export has recording metadata in separate files, add
 `--recording-metadata ./recordings` to the import. For `42_transcript.txt`,
 KITE checks `42.json` for a matching `conversation_id` and uses `started_at`
-for date-scoped search. Reimporting matching source-only transcripts can add
-missing dates while preserving their line citations and index annotations.
+for date-scoped search. Search and the graph display the original recording
+clock when available. A timestamp with no offset is labeled as having an
+unknown timezone. Reimporting matching source-only transcripts can fill in
+missing recording times while preserving their line citations and annotations.
 Open `kite-tool view` and choose **Workflows** to inspect committed changes
 and recent pipeline stages.
 

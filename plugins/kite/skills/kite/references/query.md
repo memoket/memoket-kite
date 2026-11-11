@@ -17,6 +17,9 @@ matches, check whether the relevant recordings have dates before reporting an
 empty period. For an index-only workspace, use `context` for decision changes.
 Read the surrounding quotes for approval, explicit effective dates, and later
 corrections. Report unknown dates or unresolved conflicts with their citations.
+Use times marked timezone unknown for within-day ordering only when the
+sources are known to use the same local clock. Keep ties and unknown order
+explicit in the answer.
 Use `--latest` when the task needs newer recordings first. For two independent
 questions, run `context --question "$FIRST" --compare-with "$SECOND" --text`.
 Restate the subject where needed so each question can retrieve its own quotes.

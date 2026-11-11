@@ -5,9 +5,9 @@
   const language = (params.get('lang') || navigator.language).startsWith('zh') ? 'zh' : 'en';
   const zh = language === 'zh';
   const copy = zh ? {
-    original: '来源原文', historical: '历史版本', current: '当前版本', next: '下一页', refresh: '刷新',
+    original: '来源原文', historical: '历史版本', current: '当前版本', next: '下一页', refresh: '刷新', timezoneUnknown: '时区未知',
   } : {
-    original: 'Original source', historical: 'Historical revision', current: 'Current revision', next: 'Next page', refresh: 'Refresh',
+    original: 'Original source', historical: 'Historical revision', current: 'Current revision', next: 'Next page', refresh: 'Refresh', timezoneUnknown: 'timezone unknown',
   };
   function element(tag, value, className) {
     const node = document.createElement(tag);
@@ -19,7 +19,10 @@
   const header = element('header', undefined, 'compare-header');
   header.append(element('h2', data.title || data.source_reference));
   const status = data.source_revision_active ? copy.current : copy.historical;
-  header.append(element('p', [copy.original, status, data.revision_checksum.slice(0, 12), data.source_date || data.started_at].filter(Boolean).join(' · ')));
+  const recordingTime = data.local_started_at
+    ? `${data.local_started_at.replace('T', ' ')} · ${copy.timezoneUnknown}`
+    : data.started_at?.replace('T', ' ') || data.source_date;
+  header.append(element('p', [copy.original, status, data.revision_checksum.slice(0, 12), recordingTime].filter(Boolean).join(' · ')));
   panel.append(header);
   for (const line of data.segments) {
     const section = element('section', undefined, 'revision-change');

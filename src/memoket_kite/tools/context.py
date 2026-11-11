@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from .contracts import DATE, TEXT, ToolError, array, object_schema, utc_timestamp, validate
 from .index import SPAN_FACET_AXES, revision_id
-from .ingest import source_day
+from .ingest import RECORDING_CLOCK_FIELDS, source_day
 from .retrieve import _citation
 
 _SPAN_CHARS = 320
@@ -715,6 +715,11 @@ def _pack(
                 {
                     "source_date": source_day(conversation),
                     "title": conversation.get("title", ""),
+                    **{
+                        key: conversation[key]
+                        for key in RECORDING_CLOCK_FIELDS
+                        if key in conversation
+                    },
                     **(
                         {"source_revision_active": record["active"]}
                         if historical_records is not None
@@ -827,7 +832,13 @@ def render_context(pack: dict) -> str:
         for span in part["spans"]:
             revision = span["evidence"][0]["revision_checksum"]
             if revision != previous_revision:
-                if span["source_date"]:
+                if local := span.get("local_started_at"):
+                    lines.append(f"Date: {local.replace('T', ' ')} (timezone unknown)")
+                elif started := span.get("started_at"):
+                    day = span["source_date"]
+                    clock = started if started[:10] == day else f"{day} UTC · {started}"
+                    lines.append(f"Date: {clock}")
+                elif span["source_date"]:
                     lines.append(f"Date: {span['source_date']}")
                 if history:
                     lines.append(f"Revision: {revision}")

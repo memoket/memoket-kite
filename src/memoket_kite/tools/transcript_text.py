@@ -3,22 +3,25 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
-from .contracts import ToolError, decode_object, read_utf8, utc_timestamp
+from .contracts import ToolError, decode_object, local_timestamp, read_utf8, utc_timestamp
 
 _TIMESTAMP = re.compile(r"([0-9]{2}:[0-9]{2}(?::[0-9]{2})?)[ \t]*")
-_LOCAL_START = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}")
 
 
 def transcript_recording_day(directory: Path, conversation_id: str) -> str | None:
-    """Read only the date from an optional same-ID recording export."""
+    return transcript_recording_time(directory, conversation_id).get("source_date")
+
+
+def transcript_recording_time(directory: Path, conversation_id: str) -> dict[str, str]:
+    """Read a same-ID sidecar, retaining its original time precision."""
     sidecar = directory / f"{conversation_id}.json"
     if sidecar.is_symlink():
         raise ToolError("invalid_input", "recording metadata must be a regular JSON file")
     if not sidecar.exists():
-        return None
+        return {}
     if not sidecar.is_file():
         raise ToolError("invalid_input", "recording metadata must be a regular JSON file")
     metadata = decode_object(read_utf8(sidecar))
@@ -31,13 +34,13 @@ def transcript_recording_day(directory: Path, conversation_id: str) -> str | Non
     if not isinstance(started, str):
         raise ToolError("invalid_input", "recording metadata requires started_at")
     try:
-        if _LOCAL_START.fullmatch(started):
-            # A local calendar day is known even when the source lacks a timezone.
-            return datetime.fromisoformat(started).date().isoformat()
         if len(started) == 10:
-            return date.fromisoformat(started).isoformat()
-        return utc_timestamp(started).date().isoformat()
-    except ValueError as exc:
+            return {"source_date": date.fromisoformat(started).isoformat()}
+        if len(started) == 19:
+            local = local_timestamp(started)
+            return {"source_date": local.date().isoformat(), "local_started_at": local.isoformat()}
+        return {"source_date": utc_timestamp(started).date().isoformat(), "started_at": started}
+    except (ValueError, OverflowError) as exc:
         raise ToolError("invalid_input", "invalid recording metadata started_at") from exc
 
 

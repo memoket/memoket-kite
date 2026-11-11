@@ -21,7 +21,7 @@ from .contracts import (
     validate,
 )
 from .index import event_date_basis, revision_id
-from .ingest import source_day
+from .ingest import RECORDING_CLOCK_FIELDS, source_day
 from .source_diff import source_changes
 from .timing import precedes, source_timing
 
@@ -740,6 +740,11 @@ def memory_snapshot(workspace) -> dict:
                 "reference": record["conversation"]["metadata"]["source_reference"],
                 "title": record["conversation"].get("title"),
                 "day": source_day(record["conversation"]),
+                **{
+                    key: record["conversation"][key]
+                    for key in RECORDING_CLOCK_FIELDS
+                    if key in record["conversation"]
+                },
                 "active": record["active"],
             }
             for record in index.revisions.values()

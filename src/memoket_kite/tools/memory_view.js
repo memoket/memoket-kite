@@ -27,7 +27,7 @@
       versionFilter: 'Version', versionFilterLabel: 'Search at a workspace version', history: 'Workspace snapshot',
       recordingDates: 'Recording dates', recordingFrom: 'From', recordingThrough: 'Through',
       recordingTimeline: 'Evidence by recording date', invalidDateRange: 'Start date must not follow end date.',
-      noDatedResults: 'No matching passages in this recording window.',
+      noDatedResults: 'No matching passages in this recording window.', timezoneUnknown: 'timezone unknown',
       compareQuestions: 'Compare', secondQuestion: 'Second question', firstQuestionRequired: 'Enter the first question.',
       savedSearch: 'Saved search', currentWorkspace: 'Current workspace',
       historyDeletes: 'Later deletions affected the evidence available for this snapshot.',
@@ -68,7 +68,7 @@
       versionFilter: '版本', versionFilterLabel: '按工作区版本检索', history: '工作区快照',
       recordingDates: '录制日期', recordingFrom: '起始日期', recordingThrough: '截止日期',
       recordingTimeline: '按录制日期查看原文', invalidDateRange: '起始日期应早于或等于截止日期。',
-      noDatedResults: '这个录制日期范围内没有命中的原文片段。',
+      noDatedResults: '这个录制日期范围内没有命中的原文片段。', timezoneUnknown: '时区未知',
       compareQuestions: '对比', secondQuestion: '第二个问题', firstQuestionRequired: '请输入第一个问题。',
       savedSearch: '已保存的检索', currentWorkspace: '当前工作区',
       historyDeletes: '后来执行的删除可能影响此快照可见的原文。',
@@ -609,12 +609,19 @@
     return group;
   }
 
+  function recordingClock(source) {
+    if (source.local_started_at) return `${source.local_started_at.replace('T', ' ')} · ${t('timezoneUnknown')}`;
+    return source.started_at?.replace('T', ' ');
+  }
+
   function recordingTimeline(panel, entries) {
     const days = new Map();
     for (const node of entries) {
-      const day = node.sources[0]?.day || '';
+      const source = node.sources[0];
+      const day = source?.day || '';
       if (!days.has(day)) days.set(day, []);
-      days.get(day).push({ node, note: node.sources[0]?.label });
+      const note = source ? [recordingClock(source), source.label].filter(Boolean).join(' · ') : '';
+      days.get(day).push({ node, note });
     }
     if (!days.size || (days.size === 1 && days.has(''))) return false;
     const timeline = element('section', undefined, 'recording-timeline');
@@ -725,7 +732,10 @@
 
     if (kind === 'memory') {
       const metadata = [];
-      if (searching && selected.sources[0]) metadata.push(selected.sources[0].day || t('noDate'));
+      if (searching && selected.sources[0]) {
+        const source = selected.sources[0];
+        metadata.push(recordingClock(source) || source.day || t('noDate'));
+      }
       if (selected.status) metadata.push(t(selected.status));
       if (selected.active === false || selected.effective === false) metadata.push(t('historical'));
       if (selected.state?.value) metadata.push(t('current') + ' · ' + selected.state.value);
@@ -747,7 +757,7 @@
       panel.append(original);
       section(panel, 'sources', [sources.get(selected.revision_checksum)].filter(Boolean));
     } else if (kind === 'source') {
-      const metadata = [selected.day || t('noDate'), selected.active === false ? t('historical') : t('active')];
+      const metadata = [recordingClock(selected) || selected.day || t('noDate'), selected.active === false ? t('historical') : t('active')];
       header.append(element('p', metadata.join(' · '), 'detail-meta'));
       const count = selected.memories.filter(memory => memory.entities.length || memory.facets.length).length;
       header.append(element('p', count ? number.format(count) + ' ' + t('annotated') : t('unannotated'), 'detail-meta'));

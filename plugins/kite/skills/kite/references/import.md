@@ -5,7 +5,7 @@ and `Speaker …` labels, run `bash "$KITE" index-sources --transcripts DIR`.
 This preserves original file line numbers and makes the batch searchable
 without extracting facts. If the user supplies a separate directory of
 same-ID recording JSON files, add `--recording-metadata DIR`. This can fill
-missing dates on matching source-only revisions while retaining annotations
+missing recording dates and clocks on matching source-only revisions while retaining annotations
 and original line numbers. For an individual note, run `file-source --format text
 --source-id STABLE_ID --split-lines` and place its returned object in the
 `sources` array passed to `index-sources --input FILE`. Use `--format

@@ -25,7 +25,7 @@ from .contracts import (
 )
 from .demo import render_decision_story, render_demo, run_demo
 from .index import annotate
-from .ingest import file_source, normalize, prepare_source
+from .ingest import RECORDING_CLOCK_FIELDS, file_source, normalize, prepare_source
 from .memoket_source import memoket_source
 from .operations import SCHEMAS, SOURCE_SCOPE, TOOLS, Context
 from .resources import resource_root
@@ -38,7 +38,7 @@ from .retrieve import (
 )
 from .source_diff import source_changes
 from .trace_text import render_status, render_trace
-from .transcript_text import transcript_recording_day, transcript_text_source
+from .transcript_text import transcript_recording_time, transcript_text_source
 from .viewer import view_memory
 from .workflow import (
     SCRIPTED_IMPORT_STAGES,
@@ -189,7 +189,7 @@ def _parser() -> argparse.ArgumentParser:
     source_index.add_argument(
         "--recording-metadata",
         type=Path,
-        help="directory of same-ID JSON recording dates for TXT import",
+        help="directory of same-ID JSON recording times for TXT import",
     )
     context = commands.add_parser("context", help="pack cited original passages for an agent task")
     context_input = context.add_mutually_exclusive_group(required=True)
@@ -665,7 +665,7 @@ def _check_source(args: argparse.Namespace, root: Path) -> dict:
 
 
 def _index_sources(
-    root: Path, workspace: Workspace, value: dict, *, backfill_dates: bool = False
+    root: Path, workspace: Workspace, value: dict, *, backfill_recording_time: bool = False
 ) -> dict:
     item = object_schema({"source": SCHEMAS["source"]}, {"annotations": SCHEMAS["annotations"]})
     validate(object_schema({"sources": array(item, maximum=1000)}), value, "source batch")
@@ -675,14 +675,20 @@ def _index_sources(
         normalized = normalize(context, entry["source"])
         annotations = entry.get("annotations", {"facts": []})
         conversation = normalized["conversation"]
-        if backfill_dates and "source_date" in conversation:
+        if backfill_recording_time and "source_date" in conversation:
             previous = workspace.records(
                 source=conversation["source"],
                 conversation_id=conversation["conversation_id"],
                 active_only=True,
             )
-            undated = {key: value for key, value in conversation.items() if key != "source_date"}
-            if previous and previous[0]["conversation"] == undated:
+            prior_conversation = previous[0]["conversation"] if previous else {}
+            missing = set(conversation) - prior_conversation.keys()
+            if (
+                missing
+                and missing <= {"source_date", *RECORDING_CLOCK_FIELDS}
+                and prior_conversation
+                == {key: value for key, value in conversation.items() if key not in missing}
+            ):
                 prior = previous[0]
                 annotations = {
                     key: prior[key]
@@ -773,11 +779,12 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             if metadata is not None:
                 for entry in payload["sources"]:
                     conversation = entry["source"]["payload"]
-                    if day := transcript_recording_day(metadata, conversation["conversation_id"]):
-                        conversation["source_date"] = day
+                    conversation.update(
+                        transcript_recording_time(metadata, conversation["conversation_id"])
+                    )
         with Workspace.open(args.workspace) as workspace:
             return _index_sources(
-                root, workspace, payload, backfill_dates=metadata is not None
+                root, workspace, payload, backfill_recording_time=metadata is not None
             ), None
 
     if args.command == "context":
