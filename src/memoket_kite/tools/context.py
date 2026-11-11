@@ -63,13 +63,15 @@ CONTEXT_REQUEST = object_schema(
     {"question": {**TEXT, "maxLength": 512}},
     {
         **{key: value for key, value in _CONTEXT_SCHEMA["properties"].items() if key != "terms"},
+        "compare_with": {**TEXT, "maxLength": 512},
         "limit": {"type": "integer", "minimum": 1, "maximum": 50},
         "max_bytes": {"type": "integer", "minimum": 512, "maximum": 65536},
         "neighbors": {"type": "integer", "minimum": 0, "maximum": 5},
     },
 )
 CONTEXT_PLAN = object_schema(
-    {"request": CONTEXT_REQUEST, "terms": array(TEXT, 1, 8), "memory_version": {"type": "integer"}}
+    {"request": CONTEXT_REQUEST, "terms": array(TEXT, 1, 8), "memory_version": {"type": "integer"}},
+    {"comparison_terms": array(TEXT, 1, 8)},
 )
 
 
@@ -226,39 +228,85 @@ def _question_scope(request: dict) -> tuple[dict, str]:
     return prepared, search
 
 
-def compile_question(workspace, request: dict) -> dict:
+def _comparison_scope(request: dict) -> tuple[dict, str, str | None]:
     request, search = _question_scope(request)
+    compare = request.get("compare_with")
+    if compare is None:
+        return request, search, None
+    if request.get("limit", 8) < 2:
+        raise ToolError("invalid_input", "a comparison needs at least two spans")
+    scoped, compare_search = _question_scope({**request, "question": compare})
+    return {**scoped, "question": request["question"]}, search, compare_search
+
+
+def _compile_questions(workspace, index, request, search, compare_search):
+    result = {
+        "request": request,
+        "terms": _compile_terms(index.db, index.filters, search),
+        "memory_version": workspace.version(),
+    }
+    if compare_search is not None:
+        result["comparison_terms"] = _compile_terms(index.db, index.filters, compare_search)
+    return result
+
+
+def compile_question(workspace, request: dict) -> dict:
+    request, search, compare_search = _comparison_scope(request)
     with _search_index(workspace, request) as index:
-        terms = _compile_terms(index.db, index.filters, search)
-    return {"request": request, "terms": terms, "memory_version": workspace.version()}
+        return _compile_questions(workspace, index, request, search, compare_search)
 
 
 def question_pack(workspace, request: dict) -> dict:
-    request, search = _question_scope(request)
+    request, search, compare_search = _comparison_scope(request)
     with _search_index(workspace, request) as index:
-        terms = _compile_terms(index.db, index.filters, search)
-        return _search_question(workspace, request, terms, index=index)
+        compiled = _compile_questions(workspace, index, request, search, compare_search)
+        return _search_questions(workspace, compiled, index)
 
 
 def search_question(workspace, compiled: dict) -> dict:
     if compiled["memory_version"] != workspace.version():
         raise ToolError("stale_snapshot", "memory changed; compile the question again")
-    return _search_question(workspace, compiled["request"], compiled["terms"])
+    request = compiled["request"]
+    with _search_index(workspace, request) as index:
+        return _search_questions(workspace, compiled, index)
 
 
-def _search_question(workspace, request: dict, terms: list, *, index=None) -> dict:
+def _search_questions(workspace, compiled: dict, index) -> dict:
+    request = compiled["request"]
     filters = {key: request[key] for key in _CONTEXT_SCHEMA["properties"] if key in request}
-    result = context_pack(
-        workspace,
-        {"terms": terms, **filters},
-        limit=request.get("limit", 8),
-        max_bytes=request.get("max_bytes", _QUESTION_BYTES),
-        neighbors=request.get("neighbors", 1),
-        focus=True,
-        _index=index,
-        _question=request["question"],
-    )
-    return {**result, "compilation": {"question": request["question"], "terms": terms}}
+    limit = request.get("limit", 8)
+    budget = request.get("max_bytes", _QUESTION_BYTES)
+    compare_terms = compiled.get("comparison_terms")
+    if (compare_terms is not None) != ("compare_with" in request):
+        raise ToolError("invalid_input", "compile both comparison questions before searching")
+
+    def search(question, terms, span_limit, quote_budget):
+        result = _context_evidence(
+            workspace,
+            {"terms": terms, **filters},
+            limit=span_limit,
+            max_bytes=quote_budget,
+            neighbors=request.get("neighbors", 1),
+            focus=True,
+            _index=index,
+            _question=question,
+        )
+        return {**result, "compilation": {"question": question, "terms": terms}}
+
+    if compare_terms is None:
+        return search(request["question"], compiled["terms"], limit, budget)
+    first_limit, first_budget = (limit + 1) // 2, (budget + 1) // 2
+    parts = [
+        search(request["question"], compiled["terms"], first_limit, first_budget),
+        search(request["compare_with"], compare_terms, limit - first_limit, budget - first_budget),
+    ]
+    return {
+        "memory_version": compiled["memory_version"],
+        "quote_budget_bytes": budget,
+        "quote_bytes": sum(part["quote_bytes"] for part in parts),
+        "parts": parts,
+        **({"history": index.history} if index.history is not None else {}),
+    }
 
 
 def enable_context(db) -> None:
@@ -692,11 +740,24 @@ def context_pack(
     _index: _SearchIndex | None = None,
     _question: str | None = None,
 ) -> dict:
-    validate(_CONTEXT_SCHEMA, plan, "context plan")
     if not 1 <= limit <= 50 or not 512 <= max_bytes <= 65536 or not 0 <= neighbors <= 5:
         raise ToolError(
             "invalid_input", "context needs limit 1–50, max bytes 512–65536, neighbors 0–5"
         )
+    return _context_evidence(
+        workspace,
+        plan,
+        limit=limit,
+        max_bytes=max_bytes,
+        neighbors=neighbors,
+        focus=focus,
+        _index=_index,
+        _question=_question,
+    )
+
+
+def _context_evidence(workspace, plan, *, limit, max_bytes, neighbors, focus, _index, _question):
+    validate(_CONTEXT_SCHEMA, plan, "context plan")
     if not any(map(_tokens, plan["terms"])):
         raise ToolError("invalid_input", "context needs an indexable term")
     phrases = (
@@ -746,9 +807,11 @@ def context_pack(
 
 def render_context(pack: dict) -> str:
     namespaces = defaultdict(set)
-    for span in pack["spans"]:
-        for line in span["evidence"]:
-            namespaces[line["conversation_id"]].add(line["source"])
+    parts = pack.get("parts", [pack])
+    for part in parts:
+        for span in part["spans"]:
+            for line in span["evidence"]:
+                namespaces[line["conversation_id"]].add(line["source"])
     lines = []
     if history := pack.get("history"):
         lines.append(f"Workspace v{history['version']} · {history['committed_at']}")
@@ -756,18 +819,21 @@ def render_context(pack: dict) -> str:
             lines.append(
                 f"Later deletions: {history['later_deletions']}. Deleted evidence is unavailable."
             )
-    for span in pack["spans"]:
-        if span["source_date"]:
-            lines.append(f"Date: {span['source_date']}")
-        if history:
-            lines.append(f"Revision: {span['evidence'][0]['revision_checksum']}")
-        for line in span["evidence"]:
-            ref = f"{line['conversation_id']}#{line['segment_id']}"
-            if len(namespaces[line["conversation_id"]]) > 1:
-                ref = f"{line['source']}/{ref}"
-            speaker = f" {line['speaker_id']}:" if "speaker_id" in line else ""
-            lines.append(f"[{ref}]{speaker} {line['text']}")
-        lines.append("")
-    if not pack["spans"]:
-        lines.append("No evidence matched.")
+    for number, part in enumerate(parts, 1):
+        if len(parts) > 1:
+            lines.append(f"Question {number}")
+        for span in part["spans"]:
+            if span["source_date"]:
+                lines.append(f"Date: {span['source_date']}")
+            if history:
+                lines.append(f"Revision: {span['evidence'][0]['revision_checksum']}")
+            for line in span["evidence"]:
+                ref = f"{line['conversation_id']}#{line['segment_id']}"
+                if len(namespaces[line["conversation_id"]]) > 1:
+                    ref = f"{line['source']}/{ref}"
+                speaker = f" {line['speaker_id']}:" if "speaker_id" in line else ""
+                lines.append(f"[{ref}]{speaker} {line['text']}")
+            lines.append("")
+        if not part["spans"]:
+            lines.append("No evidence matched.")
     return "\n".join(lines).strip()

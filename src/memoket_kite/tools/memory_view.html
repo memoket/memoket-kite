@@ -24,11 +24,18 @@
         <span class="search-icon" aria-hidden="true"></span>
         <input id="search-terms" type="search" aria-label="Search original evidence" maxlength="512">
         <input id="search-version" type="number" aria-label="Workspace version" step="1" hidden>
-        <details id="recording-filter">
+        <details id="recording-filter" class="search-option">
           <summary id="recording-filter-label">Recording dates</summary>
-          <div class="recording-filter-fields">
+          <div class="search-option-fields recording-filter-fields">
             <label><span id="recording-start-label">From</span><input id="recording-start" type="date" aria-labelledby="recording-start-label"></label>
             <label><span id="recording-end-label">Through</span><input id="recording-end" type="date" aria-labelledby="recording-end-label"></label>
+          </div>
+        </details>
+        <details id="comparison-filter" class="search-option">
+          <summary id="comparison-filter-label">Compare</summary>
+          <div class="search-option-fields">
+            <label id="comparison-question-label" for="comparison-question">Second question</label>
+            <input id="comparison-question" type="search" maxlength="512">
           </div>
         </details>
         <button id="search-submit" type="submit">Search</button>

@@ -32,9 +32,24 @@ def _search_snapshot(
     passages = {}
     sources = {}
     evidence = {}
+    comparison = []
     if question is not None:
-        terms = [question]
-        packs = [(question, question_pack(workspace, {"question": question, **scope}))]
+        result = question_pack(workspace, {"question": question, **scope})
+        if "parts" in result:
+            packs = [(f"question-{i}", part) for i, part in enumerate(result["parts"], 1)]
+            comparison = [
+                {
+                    "key": key,
+                    **part["compilation"],
+                    "passages": len(part["spans"]),
+                    "quote_bytes": part["quote_bytes"],
+                    "quote_budget_bytes": part["quote_budget_bytes"],
+                }
+                for key, part in packs
+            ]
+        else:
+            packs = [(question, result)]
+        terms = [key for key, _ in packs]
     else:
         packs = [
             (
@@ -90,12 +105,17 @@ def _search_snapshot(
         "search_available": True,
         "search_terms": terms,
         "search_question": question,
+        "search_comparison": comparison,
         "search_history": history,
         "search_trace": {
             "terms": packs[0][1]["compilation"]["terms"] if question is not None else terms,
             "candidate_spans": sum(pack["candidate_spans"] for _, pack in packs),
-            "candidate_sources": packs[0][1]["candidate_sources"] if question is not None else None,
-            "anchor_sources": packs[0][1].get("anchor_sources", 0) if question is not None else 0,
+            "candidate_sources": packs[0][1]["candidate_sources"]
+            if question and not comparison
+            else None,
+            "anchor_sources": packs[0][1].get("anchor_sources", 0)
+            if question and not comparison
+            else 0,
             "quote_bytes": sum(pack["quote_bytes"] for _, pack in packs),
             "sources": len(sources),
             "quotes": len(evidence),
@@ -111,6 +131,7 @@ def _snapshot(
     at_version: int | None = None,
     *,
     recording_bounds: dict | None = None,
+    compare_with: str | None = None,
 ) -> dict:
     try:
         with Workspace.open(directory, read_only=True) as workspace:
@@ -128,6 +149,8 @@ def _snapshot(
                 scope = {**(recording_bounds or {})}
                 if at_version is not None:
                     scope["at_version"] = at_version
+                if compare_with is not None:
+                    scope["compare_with"] = compare_with
                 return {
                     **_search_snapshot(workspace, terms, question, scope),
                     "history_origin": origin,
@@ -232,10 +255,12 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                 params = parse_qs(query, max_num_fields=12)
                 terms = list(dict.fromkeys(params.get("term", ())))
                 question = params.get("q", [None])[0]
+                compare_with = params.get("q2", [None])[0]
                 if (
                     len(terms) > 3
                     or any(len(term) > 128 for term in terms)
                     or (question is not None and (len(question) > 512 or terms))
+                    or (compare_with is not None and (question is None or len(compare_with) > 512))
                 ):
                     raise ValueError("invalid terms")
                 requested_view = params.get("view", [None])[0]
@@ -266,7 +291,14 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                     }
                     view, snapshot = (
                         "graph",
-                        _snapshot(directory, terms, question, at_version, recording_bounds=bounds),
+                        _snapshot(
+                            directory,
+                            terms,
+                            question,
+                            at_version,
+                            recording_bounds=bounds,
+                            compare_with=compare_with,
+                        ),
                     )
                 if comparison_data is not None:
                     snapshot = {**snapshot, "comparison_available": True}

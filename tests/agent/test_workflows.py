@@ -301,6 +301,13 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
             assert in_window["revisions"][0]["day"] == "2026-02-07"
             assert not read("?term=checklist&start_date=2026-02-08")["passages"]
             assert not read("?q=checklist&end_date=2026-02-06")["passages"]
+            compared = read(f"?q=review&q2=unmentioned&at={question['version']}")
+            assert [part["question"] for part in compared["search_comparison"]] == [
+                "review",
+                "unmentioned",
+            ]
+            assert [part["passages"] for part in compared["search_comparison"]] == [1, 0]
+            assert compared["passages"][0]["terms"] == ["question-1"]
         finally:
             process.terminate()
             process.wait(timeout=10)
@@ -5769,6 +5776,68 @@ def test_context_latest_prioritizes_recording_date_across_terms(work):
     ]
     ordinary = call("context", *terms, "--limit", "1")
     assert ordinary["spans"][0]["evidence"][0]["conversation_id"] == "older"
+
+
+def test_context_comparison_keeps_both_questions_in_one_budget_and_snapshot(work):
+    _, call = work
+    receipt = call(
+        "index-sources",
+        payload={
+            "sources": [
+                {
+                    "source": text_input(
+                        "old", "The Northwind delivery was approved for Monday.", date="2026-03-04"
+                    )["source"]
+                },
+                {
+                    "source": text_input(
+                        "new", "The rain contingency moved loading to Pier 3.", date="2026-04-09"
+                    )["source"]
+                },
+            ]
+        },
+    )
+    version = receipt["memory_version"]
+    args = (
+        "--question",
+        "When was Northwind delivery approved?",
+        "--compare-with",
+        f"Where was loading moved in workspace v{version}?",
+        "--max-bytes",
+        "513",
+        "--limit",
+        "3",
+    )
+    direct = call("context", *args)
+    assert direct["history"]["version"] == version
+    assert [part["quote_budget_bytes"] for part in direct["parts"]] == [257, 256]
+    assert direct["quote_bytes"] == sum(part["quote_bytes"] for part in direct["parts"]) <= 513
+    assert [part["spans"][0]["evidence"][0]["conversation_id"] for part in direct["parts"]] == [
+        "old",
+        "new",
+    ]
+    call(
+        "start",
+        "context-search",
+        "--run-id",
+        "compare-questions",
+        payload={
+            "request": {
+                "question": args[1],
+                "compare_with": args[3],
+                "max_bytes": 513,
+                "limit": 3,
+            }
+        },
+    )
+    compiled = call("stage", "compare-questions", "compile")["value"]
+    assert compiled["request"]["at_version"] == version
+    assert compiled["terms"] != compiled["comparison_terms"]
+    assert call("stage", "compare-questions", "search")["value"] == {
+        key: value for key, value in direct.items() if key != "ok"
+    }
+    call("context", *args, "--at-version", str(version + 1), error="invalid_input")
+    call("context", "--term", "northwind", "--compare-with", "loading", error="invalid_input")
 
 
 def test_context_index_source_revision_merge_and_delete(work, monkeypatch):

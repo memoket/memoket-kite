@@ -84,6 +84,9 @@ Open **Recording dates** beside the search field to set an inclusive meeting
 window. You can combine it with a workspace version. The search detail panel
 groups the returned passages by recording day and opens each cited passage in
 the graph. Effective dates and approval status are in the original wording.
+Open **Compare** next to search to add a second question. Each question shows
+its own compiled phrases and original passages under the shared date and
+version filters.
 
 To browse a live graph alongside saved before-and-after snapshots, start the
 viewer with `kite-tool view --compare PATH`. The JSON file contains an `examples`

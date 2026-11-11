@@ -193,6 +193,7 @@ def _parser() -> argparse.ArgumentParser:
     context_input = context.add_mutually_exclusive_group(required=True)
     context_input.add_argument("--term", action="append", help="search phrase, repeatable")
     context_input.add_argument("--question", help="compile a task into search phrases locally")
+    context.add_argument("--compare-with", help="search a second question within the same budget")
     context.add_argument("--source", help="restrict search to one source namespace")
     context.add_argument("--conversation-id", help="search within an original conversation ID")
     context.add_argument("--start-date", help="earliest source date, inclusive")
@@ -771,6 +772,8 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             ), None
 
     if args.command == "context":
+        if args.compare_with is not None and args.question is None:
+            raise ToolError("invalid_input", "--compare-with requires --question")
         plan = {}
         if args.latest:
             plan["latest"] = True
@@ -798,6 +801,8 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 }
                 if args.max_bytes is not None:
                     request["max_bytes"] = args.max_bytes
+                if args.compare_with is not None:
+                    request["compare_with"] = args.compare_with
                 return question_pack(workspace, request), None
             return context_pack(
                 workspace,

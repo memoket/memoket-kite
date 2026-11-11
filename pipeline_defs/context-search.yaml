@@ -1,6 +1,6 @@
 id: context-search
-version: 1
-description: Compile a task locally and search original conversation evidence.
+version: 2
+description: Compile one question or a comparison locally and search original conversation evidence.
 inputs:
   request: context_request
 stages:
@@ -11,7 +11,7 @@ stages:
     inputs:
       request: input.request
     output: context_plan
-    acceptance: The question is bound to the current workspace version and has search phrases.
+    acceptance: Each question has its own search phrases and shares the same workspace snapshot.
   - id: search
     skill: skills/memory/context-search/SKILL.md
     tool: search_context
@@ -19,4 +19,4 @@ stages:
     inputs:
       compiled: stage.compile
     output: context_evidence
-    acceptance: Any returned passage retains its source line and revision.
+    acceptance: Each question returns cited passages within its share of the context budget.

@@ -58,6 +58,9 @@ same search and limit to continue the listing at the same memory version.
 For original-text tasks, run `kite-tool context --question "$QUESTION" --text`.
 It compiles the task and returns cited passages in one local call. Use
 `context-search` if you need separate, saved compile and search stages.
+For two independent questions, use `--question "$FIRST" --compare-with "$SECOND"`.
+The two searches share the snapshot, date filters and total quote budget. The
+pipeline accepts the second question as `request.compare_with`.
 
 Use `--at-version VERSION` or `--known-at 2026-05-14T10:30:00+08:00` to search
 the source revisions visible in a tracked workspace snapshot. `--start-date`

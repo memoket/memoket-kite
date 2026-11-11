@@ -162,6 +162,18 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
     ).stdout
     assert "[handoff#L4] Speaker A: Rollout depends on the checklist." in context, context
     assert "Date: 2026-01-14" in context, context
+    comparison = run(
+        "context",
+        "--question",
+        'What did we decide to "ship a short checklist" for?',
+        "--compare-with",
+        'What does "rollout depends" refer to?',
+        "--text",
+        cwd=subdirectory,
+    ).stdout
+    first, second = comparison.split("Question 2", 1)
+    assert "Question 1" in first and "[launch#text-line-3]" in first, comparison
+    assert "[handoff#L4]" in second, comparison
     assert (
         json.loads(run("validate-pipeline", "context-search").stdout)["definition"]["id"]
         == "context-search"

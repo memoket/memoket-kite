@@ -4,6 +4,7 @@
   const query = new URLSearchParams(location.search);
   const number = new Intl.NumberFormat();
   const searching = Boolean(snapshot.search_terms?.length);
+  const comparison = snapshot.search_comparison || [];
   const copy = {
     en: {
       title: 'Memory Graph', searchTitle: 'Search Evidence', topics: 'Topics', terms: 'Search terms',
@@ -24,6 +25,7 @@
       recordingDates: 'Recording dates', recordingFrom: 'From', recordingThrough: 'Through',
       recordingTimeline: 'Evidence by recording date', invalidDateRange: 'Start date must not follow end date.',
       noDatedResults: 'No matching passages in this recording window.',
+      compareQuestions: 'Compare', secondQuestion: 'Second question', firstQuestionRequired: 'Enter the first question.',
       historyDeletes: 'Later deletions affected the evidence available for this snapshot.',
       cooccurrence: 'Same annotated passage', relatedEntities: 'Co-occurring entities', relatedFacets: 'Co-occurring facets',
       sharedPassages: 'shared passages', sharedEvidence: 'Shared quotes with', linkedTopics: 'Topics in these passages',
@@ -61,6 +63,7 @@
       recordingDates: '录制日期', recordingFrom: '起始日期', recordingThrough: '截止日期',
       recordingTimeline: '按录制日期查看原文', invalidDateRange: '起始日期应早于或等于截止日期。',
       noDatedResults: '这个录制日期范围内没有命中的原文片段。',
+      compareQuestions: '对比', secondQuestion: '第二个问题', firstQuestionRequired: '请输入第一个问题。',
       historyDeletes: '后来执行的删除可能影响此快照可见的原文。',
       cooccurrence: '同段共现', relatedEntities: '同段出现的实体', relatedFacets: '同段出现的 Facets',
       sharedPassages: '个共同片段', sharedEvidence: '与此节点共现的引用', linkedTopics: '这些片段涉及的主题',
@@ -109,7 +112,8 @@
     });
   }
   for (const term of snapshot.search_terms || []) {
-    topics.set(term, { id: 'term:' + term, kind: 'topic', code: term, label: term, parents: [], aliases: [], children: [], memories: [] });
+    const label = comparison.find(part => part.key === term)?.question || term;
+    topics.set(term, { id: 'term:' + term, kind: 'topic', code: term, label, parents: [], aliases: [], children: [], memories: [] });
   }
   for (const topic of topics.values()) {
     for (const parent of topic.parents) topics.get(parent)?.children.push(topic);
@@ -699,6 +703,7 @@
     if (kind === 'topic') {
       const all = rankedMemories(selected);
       header.append(element('p', number.format(all.length) + ' ' + t('records'), 'detail-meta'));
+      if (searching && !all.length) panel.append(element('p', t('noMatches'), 'detail-meta'));
       section(panel, 'parents', selected.parents.map(key => topics.get(key)).filter(Boolean));
       section(panel, 'children', selected.children.map(node => ({ node, note: number.format(topicMemories(node).length) + ' ' + t('records') })));
       section(panel, 'relatedTopics', sharedTopics(selected).map(([node, count]) => ({ node, note: number.format(count) + ' ' + t('shared') })));
@@ -820,6 +825,8 @@
     byId('recording-filter-label').textContent = t('recordingDates');
     byId('recording-start-label').textContent = t('recordingFrom');
     byId('recording-end-label').textContent = t('recordingThrough');
+    byId('comparison-filter-label').textContent = t('compareQuestions');
+    byId('comparison-question-label').textContent = t('secondQuestion');
     const versionFilter = byId('search-version');
     versionFilter.hidden = snapshot.history_origin == null;
     if (!versionFilter.hidden) {
@@ -832,15 +839,25 @@
     trace.hidden = !snapshot.search_trace;
     if (snapshot.search_trace) {
       const stats = snapshot.search_trace;
-      trace.replaceChildren(
-        element('strong', snapshot.search_question ? t('compile') : t('terms')),
-        element('p', stats.terms.join(' · ')),
-        element('p', [number.format(stats.candidate_spans) + ' ' + t('candidates'),
+      trace.replaceChildren(element('strong', snapshot.search_question ? t('compile') : t('terms')));
+      if (comparison.length) {
+        const branches = element('div', undefined, 'comparison-trace');
+        for (const part of comparison) {
+          const branch = element('div');
+          branch.append(button(part.question, () => choose(topics.get(part.key)), 'citation-link'),
+            element('p', part.terms.join(' · ')),
+            element('p', `${number.format(part.passages)} ${t('record')} · ${number.format(part.quote_bytes)}/${number.format(part.quote_budget_bytes)} ${t('quoteBytes')}`));
+          branches.append(branch);
+        }
+        trace.append(branches);
+      } else {
+        trace.append(element('p', stats.terms.join(' · ')));
+      }
+      trace.append(element('p', [number.format(stats.candidate_spans) + ' ' + t('candidates'),
           stats.candidate_sources === null ? null : number.format(stats.candidate_sources) + ' ' + t('candidateSources'),
           stats.anchor_sources ? number.format(stats.anchor_sources) + ' ' + t('anchorSources') : null,
           number.format(stats.sources) + ' ' + t('sourceCatalog'),
-          number.format(stats.quotes) + ' ' + t('quotes'), number.format(stats.quote_bytes) + ' ' + t('quoteBytes')].filter(Boolean).join(' · ')),
-      );
+          number.format(stats.quotes) + ' ' + t('quotes'), number.format(stats.quote_bytes) + ' ' + t('quoteBytes')].filter(Boolean).join(' · ')));
       if (snapshot.search_history) {
         const history = snapshot.search_history;
         trace.prepend(element('p', `${t('history')} v${history.version} · ${new Date(history.committed_at).toLocaleString(language)}`));
@@ -890,17 +907,27 @@
   const recordingFilter = byId('recording-filter');
   recordingFilter.toggleAttribute('data-active', Boolean(recordingStart.value || recordingEnd.value));
   recordingFilter.addEventListener('input', () => recordingEnd.setCustomValidity(''));
+  const secondQuestion = byId('comparison-question');
+  secondQuestion.value = query.get('q2') ?? '';
+  byId('comparison-filter').toggleAttribute('data-active', Boolean(secondQuestion.value));
+  secondQuestion.addEventListener('input', () => byId('search-terms').setCustomValidity(''));
   byId('search-terms').addEventListener('input', event => event.target.setCustomValidity(''));
   byId('search').addEventListener('submit', event => {
     event.preventDefault();
     const input = byId('search-terms');
     const value = input.value.trim();
+    const compareWith = secondQuestion.value.trim();
+    if (compareWith && !value) {
+      input.setCustomValidity(t('firstQuestionRequired'));
+      input.reportValidity();
+      return;
+    }
     if (recordingStart.value && recordingEnd.value && recordingStart.value > recordingEnd.value) {
       recordingEnd.setCustomValidity(t('invalidDateRange'));
       recordingEnd.reportValidity();
       return;
     }
-    const terms = value !== snapshot.search_question && /[,，、]/u.test(value) && !/[?？。]/u.test(value)
+    const terms = !compareWith && value !== snapshot.search_question && /[,，、]/u.test(value) && !/[?？。]/u.test(value)
       ? [...new Set(value.split(/[,，、]+/u).map(term => term.trim()).filter(Boolean))] : [];
     if (terms.length > 3 || terms.some(term => term.length > 128)) {
       input.setCustomValidity(t('invalid'));
@@ -911,6 +938,7 @@
     if (snapshot.comparison_available) params.set('view', 'graph');
     for (const term of terms) params.append('term', term);
     if (!terms.length && value) params.set('q', value);
+    if (compareWith) params.set('q2', compareWith);
     if (value && byId('search-version').value) params.set('at', byId('search-version').value);
     if (value && recordingStart.value) params.set('start_date', recordingStart.value);
     if (value && recordingEnd.value) params.set('end_date', recordingEnd.value);
