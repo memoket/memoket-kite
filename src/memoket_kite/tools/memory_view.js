@@ -19,6 +19,7 @@
       compile: 'Compiled phrases', candidates: 'candidate spans', quoteBytes: 'quote bytes',
       candidateSources: 'candidate sources', compareRevision: 'Compare with current version',
       anchorSources: 'sources matching the name',
+      matchedTerms: 'Terms in this quote',
       versionFilter: 'Version', versionFilterLabel: 'Search at a workspace version', history: 'Workspace snapshot',
       historyDeletes: 'Later deletions affected the evidence available for this snapshot.',
       cooccurrence: 'Same annotated passage', relatedEntities: 'Co-occurring entities', relatedFacets: 'Co-occurring facets',
@@ -52,6 +53,7 @@
       compile: '编译出的检索词', candidates: '个候选片段', quoteBytes: '字节原文',
       candidateSources: '份候选来源', compareRevision: '与当前版本对照',
       anchorSources: '份来源命中名称',
+      matchedTerms: '原文命中',
       versionFilter: '版本', versionFilterLabel: '按工作区版本检索', history: '工作区快照',
       historyDeletes: '后来执行的删除可能影响此快照可见的原文。',
       cooccurrence: '同段共现', relatedEntities: '同段出现的实体', relatedFacets: '同段出现的 Facets',
@@ -626,6 +628,9 @@
     const label = metadata.join(' · ');
     const heading = interactive ? button(label, () => choose(line), 'citation-link') : element('p', label);
     quote.append(heading, element('blockquote', line.text));
+    if (line.matched_terms?.length) {
+      quote.append(element('p', `${t('matchedTerms')} · ${line.matched_terms.join(' · ')}`, 'detail-meta'));
+    }
     return quote;
   }
 

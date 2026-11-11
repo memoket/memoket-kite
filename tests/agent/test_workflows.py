@@ -255,6 +255,7 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
             assert question["search_trace"]["terms"]
             named = read("?view=graph&q=%22release+checklist%22")
             assert named["search_trace"]["anchor_sources"] == 1
+            assert next(iter(named["evidence"].values()))["matched_terms"] == ["release checklist"]
             call(
                 "start", "context-search", "--run-id", "visual-search", payload={"request": request}
             )
@@ -5951,6 +5952,23 @@ def test_named_context_keeps_other_passages_with_multiple_matches(work):
     }
     wide = call("context", "--term", "checklist")
     assert any(q["conversation_id"] == "noise" for span in wide["spans"] for q in span["evidence"])
+
+
+def test_question_compiler_keeps_distinct_acronym_among_topic_phrases(work):
+    _, call = work
+    topics = "成本核验、签收复核、人员调配、资源盘点、日程管理、物流系统、机器调试、录音回放"
+    entries = [
+        {"source": text_input("briefing", topics)["source"]},
+        {"source": text_input("specification", "The QXR protocol is approved.")["source"]},
+    ]
+    call("index-sources", payload={"sources": entries})
+    result = call("context", "--question", f"QXR 对应哪些资料？{topics}。")
+    assert "qxr" in result["compilation"]["terms"]
+    assert any(
+        line["conversation_id"] == "specification"
+        for span in result["spans"]
+        for line in span["evidence"]
+    )
 
 
 @pytest.mark.parametrize(

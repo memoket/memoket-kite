@@ -21,6 +21,7 @@ _HAN = re.compile(r"([\u3400-\u9fff])")
 _QUERY_WORDS = re.compile(r"[\u3400-\u9fff]+|[a-z0-9]+(?:\s+[a-z0-9]+)*", re.I)
 _QUOTED_PHRASES = re.compile(r'「([^」]+)」|『([^』]+)』|“([^”]+)”|"([^"\n]+)"')
 _NAME_WORDS = re.compile(r"\b[A-Z][A-Za-z0-9_-]{3,}\b")
+_ACRONYMS = re.compile(r"\b[A-Z][A-Z0-9]{1,8}\b")
 _QUESTION_TIME_PREFIX = (
     r"(?:\b(?:workspace|known)\s+(?:as of|at)\s+|工作区(?:记录)?\s*(?:在|截至)\s*)"
 )
@@ -138,6 +139,7 @@ def _quoted_phrases(question: str) -> set[str]:
 def _compile_terms(db, plan: dict, question: str) -> list[str]:
     where, args = _search_scope(plan)
     quoted = _quoted_phrases(question)
+    acronyms = {name.casefold() for name in _ACRONYMS.findall(question)}
     candidates = []
     for phrase in dict.fromkeys((*sorted(quoted), *_question_phrases(question))):
         expression = f'"{_tokens(phrase)}"'
@@ -154,6 +156,13 @@ def _compile_terms(db, plan: dict, question: str) -> list[str]:
             score = min(length, 7) * (2 - frequency / 32) + (3 if labeled else 0)
             if phrase in quoted:
                 score += 16
+            elif phrase in acronyms:
+                sources = db.execute(
+                    f"SELECT count(*) FROM (SELECT DISTINCT checksum FROM context_spans WHERE {where} LIMIT 32)",
+                    (expression, *args),
+                ).fetchone()[0]
+                if sources < 32:
+                    score += 4
             candidates.append((score, phrase))
     selected = []
     for _, phrase in sorted(candidates, key=lambda row: -row[0]):
@@ -455,6 +464,7 @@ def _coherent_order(matches: list[list], preferred_sources: set[str] | None = No
     span_scores = defaultdict(float)
     span_hits = defaultdict(int)
     source_scores = defaultdict(float)
+    source_hits = defaultdict(int)
     candidates = {}
     for term_rank, rows in enumerate(matches):
         seen_sources = set()
@@ -467,6 +477,7 @@ def _coherent_order(matches: list[list], preferred_sources: set[str] | None = No
             span_hits[key] += 1
             if checksum not in seen_sources:
                 source_scores[checksum] += score
+                source_hits[checksum] += 1
                 seen_sources.add(checksum)
     # A passage outside the named sources needs corroboration from a second term.
     eligible = (
@@ -474,7 +485,16 @@ def _coherent_order(matches: list[list], preferred_sources: set[str] | None = No
         if preferred_sources
         else candidates
     )
-    ordered = sorted(eligible, key=lambda key: -(span_scores[key] + 0.5 * source_scores[key[0]]))
+    ordered = sorted(
+        eligible,
+        key=lambda key: (
+            -(
+                span_scores[key]
+                + 0.5 * source_scores[key[0]]
+                + (span_hits[key] + source_hits[key[0]] - 2) / 40
+            )
+        ),
+    )
     return [candidates[key] for key in ordered]
 
 

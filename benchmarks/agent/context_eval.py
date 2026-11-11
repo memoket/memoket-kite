@@ -231,6 +231,7 @@ def run_host(
     workspace: Path | None,
     *,
     question: bool = False,
+    repetition: int = 0,
 ):
     for index, case in enumerate(cases):
         if not case.get("answer_patterns"):
@@ -265,7 +266,7 @@ def run_host(
                 "使用以下命令和你的 --term 参数。\n" + command
             )
         access = {"kite": kite_context, "files": files_context}
-        for arm in ("kite", "files") if index % 2 == 0 else ("files", "kite"):
+        for arm in ("kite", "files") if (index + repetition) % 2 == 0 else ("files", "kite"):
             prompt = task + "\n\n" + access[arm]
             with tempfile.TemporaryDirectory(prefix="kite-host-") as cwd:
                 directory = Path(cwd)
@@ -290,6 +291,7 @@ def run_host(
             yield {
                 "case": case["id"],
                 "arm": arm,
+                "repetition": repetition + 1,
                 **trial,
                 "access_prompt_bytes": len(access[arm].encode("utf-8")),
                 "prompt_bytes": len(prompt.encode("utf-8")),
@@ -313,9 +315,14 @@ def main() -> None:
         help="use explicit case terms or compile the question with the current agent entry point",
     )
     parser.add_argument(
+        "--repeat", type=int, default=1, help="number of fresh paired host runs per case"
+    )
+    parser.add_argument(
         "--updates", type=Path, help="local JSON revision cases for a disposable copy"
     )
     args = parser.parse_args()
+    if args.repeat < 1:
+        parser.error("--repeat must be positive")
     question = args.retrieval == "question"
     cases = json.loads(args.cases.read_text(encoding="utf-8"))
     args.output.mkdir(mode=0o700)
@@ -355,20 +362,23 @@ def main() -> None:
         ).strip()
         result["model"] = args.model
         result["host_context"] = args.host_context
+        result["host_repetitions"] = args.repeat
         result["codex"] = []
-        for trial in run_host(
-            args.codex,
-            args.model,
-            args.corpus.resolve(),
-            cases,
-            packs,
-            workspace if args.host_context == "tool" else None,
-            question=question,
-        ):
-            result["codex"].append(trial)
-            report.write_text(
-                json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-            )
+        for repetition in range(args.repeat):
+            for trial in run_host(
+                args.codex,
+                args.model,
+                args.corpus.resolve(),
+                cases,
+                packs,
+                workspace if args.host_context == "tool" else None,
+                question=question,
+                repetition=repetition,
+            ):
+                result["codex"].append(trial)
+                report.write_text(
+                    json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+                )
 
 
 if __name__ == "__main__":

@@ -204,6 +204,8 @@ directory. The file arm starts with a bounded `rg` instruction and chooses its
 own search terms. Compare `access_prompt_bytes`, `tool_stdout_bytes`, and Codex
 usage separately. `rendered_bytes` measures the offline context pack including
 its citation headers.
+Use `--repeat 3` to run fresh paired sessions three times per case. Each
+repetition reverses the arm order and retains its own Codex usage record.
 
 The fixed retrieval result checks exact evidence coverage and the fraction
 of tasks where all expected evidence was retrieved. A labeled citation hit

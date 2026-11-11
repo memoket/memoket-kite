@@ -15,7 +15,7 @@ from time import monotonic
 from urllib.parse import parse_qs, urlencode
 
 from .activity import memory_activity
-from .context import context_enabled, context_pack, question_pack
+from .context import _tokens, context_enabled, context_pack, question_pack
 from .contracts import ToolError
 from .retrieve import compare_revisions, memory_snapshot
 from .workspace import Workspace
@@ -47,6 +47,11 @@ def _search_snapshot(
             for term in terms
         ]
     for term, pack in packs:
+        compiled = [
+            (phrase, f" {tokens} ")
+            for phrase in pack["plan"]["terms"]
+            if (tokens := _tokens(phrase))
+        ]
         for span in pack["spans"]:
             lines = span["evidence"]
             first, last = lines[0], lines[-1]
@@ -60,7 +65,13 @@ def _search_snapshot(
             }
             ids = tuple(line["source_line_id"] for line in lines)
             for line in lines:
-                evidence[line["source_line_id"]] = line
+                quote = evidence.setdefault(line["source_line_id"], {**line, "matched_terms": []})
+                text = f" {_tokens(line['text'])} "
+                quote["matched_terms"].extend(
+                    phrase
+                    for phrase, tokens in compiled
+                    if tokens in text and phrase not in quote["matched_terms"]
+                )
             citation = f"{first['conversation_id']}#{first['segment_id']}"
             if len(lines) > 1:
                 citation += f"–{last['segment_id']}"
