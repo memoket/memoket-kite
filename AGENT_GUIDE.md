@@ -174,6 +174,11 @@ The successful retry saves the corrected input and reuses the normalized source.
 After annotation succeeds, use `kite-tool ingest --resume RUN_ID` to finish a
 standard local ingestion run, or advance the remaining stages individually.
 
+For a rejected query on the current memory snapshot, look for `query` in the
+`resolve` stage's `replaceable_inputs`. Retry that stage with a corrected
+`{"query": ...}` object. For a stale continuation cursor, remove the cursor
+from the corrected query to begin at the first page.
+
 For local scripts with a complete `source` and `annotations` object,
 `kite-tool ingest --input FILE` runs the standard local ingestion workflow
 and returns its commit receipt and integrity result. It stops at the first

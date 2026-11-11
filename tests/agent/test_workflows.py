@@ -520,7 +520,38 @@ def test_annotations_used_by_a_completed_stage_cannot_be_replaced():
             "second": {"state": "failed", "error": "invalid_evidence"},
         }
     }
-    assert workflow._replaceable_annotations(definition, checkpoint, second) is None
+    assert workflow._replaceable_stage_input(definition, checkpoint, second) is None
+
+
+def test_rejected_trace_query_can_be_replaced_on_the_same_snapshot(work):
+    directory, call = work
+    ingest(call, "first", text_input("first", "Alice owns the review.", date="2026-05-01"))
+    pipeline = "timeline-reconstruction"
+    invalid = {"query": {"start_date": "2026-05-31", "end_date": "2026-05-01"}}
+    valid = {"query": {"start_date": "2026-05-01", "end_date": "2026-05-31"}}
+    call("start", pipeline, "--run-id", "repair-query", payload=invalid)
+    rejected = call("stage", "repair-query", "resolve", error="invalid_input")["checkpoint"]
+    call("stage", "repair-query", "retrieve", error="dependency_pending")
+    status = call("status", "repair-query")
+    assert status["resume"]["stages"][0]["replaceable_inputs"] == {"query": "query"}
+    resolved = call("stage", "repair-query", "resolve", payload=valid)
+    assert resolved["value"]["query"] == valid["query"]
+    assert resolved["checkpoint"]["input_digest"] != rejected["input_digest"]
+    assert resolved["checkpoint"]["stages"]["resolve"]["retry_count"] == 1
+    call("stage", "repair-query", "resolve", payload=invalid, error="conflict")
+    call("stage", "repair-query", "retrieve")
+    report = call("stage", "repair-query", "report")["value"]
+    assert report == call("query", "--pipeline", pipeline, payload=valid)["value"]
+
+    call("start", pipeline, "--run-id", "before-write", payload=invalid)
+    call("stage", "before-write", "resolve", error="invalid_input")
+    ingest(call, "second", text_input("second", "Another conversation."))
+    database = directory / "kite.sqlite3"
+    before = database.read_bytes()
+    status = call("status", "before-write")
+    assert status["resume"]["reason"] == "stale_snapshot"
+    call("stage", "before-write", "resolve", payload=valid, error="stale_snapshot")
+    assert database.read_bytes() == before
 
 
 def test_run_listing_filters_before_paginating_in_creation_order(work):
@@ -3047,6 +3078,12 @@ def test_trace_cursor_rejects_changes_to_filters_and_snapshot(work, tmp_path):
     reject("other-workspace", {**query, "cursor": cursor}, "invalid_input", destination=copy)
     ingest(call, "third", text_input("c", "c"))
     reject("changed-memory", {**query, "cursor": cursor}, "stale_snapshot")
+    ready = call("status", "changed-memory")["resume"]["stages"][0]
+    assert ready["replaceable_inputs"] == {"query": "query"}
+    call("stage", "changed-memory", "resolve", payload={"query": query})
+    call("stage", "changed-memory", "retrieve")
+    report = call("stage", "changed-memory", "report")["value"]
+    assert report == call("query", payload={"query": query})["value"]
 
 
 def test_event_state_uses_event_dates_and_preserves_unordered_evidence(work):

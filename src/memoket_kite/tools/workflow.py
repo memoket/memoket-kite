@@ -41,6 +41,10 @@ SCRIPTED_IMPORT_STAGES = {
     ),
 }
 TRACE_PIPELINES = ("topic-tracing", "task-tracing", "timeline-reconstruction", "decision-evolution")
+_REPLACEABLE_STAGE_INPUTS = {
+    "annotate": ("annotations", {"invalid_evidence", "invalid_input", "integrity_error"}),
+    "resolve": ("query", {"invalid_input", "stale_snapshot"}),
+}
 
 
 def query_report(context: Context, supplied: dict) -> dict:
@@ -414,15 +418,15 @@ def _dependency_pending(checkpoint: dict, stage: dict) -> bool:
     return any(checkpoint["stages"][dep]["state"] != "completed" for dep in stage["needs"])
 
 
-def _replaceable_annotations(definition: dict, checkpoint: dict, stage: dict) -> str | None:
+def _replaceable_stage_input(definition: dict, checkpoint: dict, stage: dict) -> str | None:
     state = checkpoint["stages"][stage["id"]]
-    if (
-        stage["tool"] != "annotate"
-        or state["state"] != "failed"
-        or state["error"] not in {"invalid_evidence", "invalid_input", "integrity_error"}
-    ):
+    rule = _REPLACEABLE_STAGE_INPUTS.get(stage["tool"])
+    if rule is None or state["state"] != "failed":
         return None
-    reference = stage["inputs"]["annotations"]
+    argument, errors = rule
+    if state["error"] not in errors:
+        return None
+    reference = stage["inputs"][argument]
     if not reference.startswith("input."):
         return None
     name = reference[6:]
@@ -478,7 +482,7 @@ def _resume(context: Context, row, checkpoint: dict) -> dict:
             "missing_inputs": {key: definition["inputs"][key] for key in sorted(missing)},
             "required_flags": flags.get(TOOLS[stage["tool"]].effect, []),
         }
-        replacement = _replaceable_annotations(definition, checkpoint, stage)
+        replacement = _replaceable_stage_input(definition, checkpoint, stage)
         if replacement is not None and replacement in supplied:
             details["replaceable_inputs"] = {replacement: definition["inputs"][replacement]}
         eligible.append(details)
@@ -744,10 +748,10 @@ def advance(
     extra = _inputs(context, definition, extra)
     changes = {key for key, value in extra.items() if key in supplied and supplied[key] != value}
     if not extra.keys() <= _stage_input_names(stage) or (
-        changes and changes != {_replaceable_annotations(definition, checkpoint, stage)}
+        changes and changes != {_replaceable_stage_input(definition, checkpoint, stage)}
     ):
         raise ToolError(
-            "conflict", "stage input can fill an unset value or replace rejected annotations"
+            "conflict", "stage input can fill an unset value or replace a rejected stage input"
         )
     if state["state"] == "completed":
         if extra.keys() - supplied.keys():
