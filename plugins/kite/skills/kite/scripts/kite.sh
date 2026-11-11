@@ -3,7 +3,7 @@ set -euo pipefail
 umask 077
 
 # Use a fixed runtime so the packaged skill and CLI contracts stay in sync.
-runtime_revision=9b0b0db0092a329c535b959c9c0f08e1416fd31e
+runtime_revision=586e836672320e4ff7626e5573d889ae6e5244a8
 runtime="memoket-kite[agent] @ git+https://github.com/memoket/memoket-kite.git@${runtime_revision}"
 uv_version=0.11.16
 cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/kite/codex"
