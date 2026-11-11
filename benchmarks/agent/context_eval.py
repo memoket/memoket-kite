@@ -272,7 +272,10 @@ def prepare_case_corpora(
         corpus = windows[case_window]
         expected = set(case.get("evidence", ()))
         expected.update(
-            ref for spec in case.get("claims", {}).values() for ref in spec.get("refs", ())
+            ref
+            for spec in case.get("claims", {}).values()
+            for group in claim_reference_groups(spec)
+            for ref in group
         )
         if missing := expected - corpus.citations:
             raise ValueError(
@@ -311,7 +314,12 @@ def evidence_ids(pack: dict) -> set[str]:
 
 
 def retrieval_case(
-    workspace: Path, case: dict, *, question: bool = False, matching_lines: bool = False
+    workspace: Path,
+    case: dict,
+    *,
+    question: bool = False,
+    matching_lines: bool = False,
+    audit_retrieval: bool = False,
 ) -> tuple[dict, str]:
     if question:
         questions = case_questions(case)
@@ -324,6 +332,8 @@ def retrieval_case(
     else:
         args = [value for term in case["terms"] for value in ("--term", term)]
         args += ["--limit", "10", "--max-bytes", "7500"]
+    if audit_retrieval:
+        args.append("--explain")
     start = time.perf_counter()
     pack = kite(workspace, "context", *args)
     elapsed = time.perf_counter() - start
@@ -346,7 +356,35 @@ def retrieval_case(
         metrics["claims_with_evidence"] = sum(references_match(selected, spec) for spec in claims)
         metrics["claims_requiring_evidence"] = len(claims)
         metrics["complete"] = metrics["complete"] and metrics["claims_with_evidence"] == len(claims)
+    if audit_retrieval:
+        metrics["retrieval_audit"] = retrieval_audit(pack, selected, case.get("claims", {}))
     return metrics, rendered
+
+
+def retrieval_audit(pack: dict, selected: set[str], claims: dict) -> dict:
+    traces = [part["packing_trace"] for part in pack.get("parts", [pack])]
+    candidates = [row["conversation_id"] for trace in traces for row in trace["candidates"]]
+    candidate_sources = set(candidates)
+    quoted_sources = {ref.rsplit("#", 1)[0] for ref in selected}
+    # Identical recordings can share a quote with a representative in the trace.
+    located_sources = candidate_sources | quoted_sources
+    stages = {}
+    for key, spec in claims.items():
+        if spec.get("unknown"):
+            continue
+        expected_sources = [
+            {ref.rsplit("#", 1)[0] for ref in group} for group in claim_reference_groups(spec)
+        ]
+        stages[key] = {
+            "recordings_located": any(group <= located_sources for group in expected_sources),
+            "recordings_quoted": any(group <= quoted_sources for group in expected_sources),
+            "evidence_quoted": references_match(selected, spec),
+        }
+    return {
+        "candidate_spans_traced": len(candidates),
+        "candidate_spans_total": sum(trace["total"] for trace in traces),
+        "claims": stages,
+    }
 
 
 def codex_trial(
@@ -423,9 +461,30 @@ def codex_trial(
     }
 
 
+def claim_reference_groups(spec: dict) -> list[set[str]]:
+    if "ref_groups" in spec:
+        groups = spec["ref_groups"]
+        if (
+            "refs" in spec
+            or "all_refs" in spec
+            or spec.get("unknown")
+            or not isinstance(groups, list)
+            or not groups
+            or any(
+                not isinstance(group, list)
+                or not group
+                or not all(isinstance(ref, str) and ref for ref in group)
+                for group in groups
+            )
+        ):
+            raise ValueError("ref_groups requires nonempty citation lists for a known claim")
+        return [set(group) for group in groups]
+    refs = spec.get("refs", ())
+    return [set(refs)] if spec.get("all_refs") else [{ref} for ref in refs]
+
+
 def references_match(references: set[str], spec: dict) -> bool:
-    expected = set(spec["refs"])
-    return expected <= references if spec.get("all_refs") else bool(references & expected)
+    return any(group <= references for group in claim_reference_groups(spec))
 
 
 def grade_claims(answer: str | None, specs: dict, valid_refs: set[str]) -> dict:
@@ -840,6 +899,9 @@ def main() -> None:
         "--host-follow-up", action="store_true", help="include one hint for batched evidence lookup"
     )
     parser.add_argument(
+        "--audit-retrieval", action="store_true", help="report located sources and quoted evidence"
+    )
+    parser.add_argument(
         "--repeat", type=int, default=1, help="number of fresh paired host runs per case"
     )
     parser.add_argument(
@@ -862,6 +924,8 @@ def main() -> None:
     try:
         for case in cases:
             case_windows(case)
+            for claim in case.get("claims", {}).values():
+                claim_reference_groups(claim)
     except (ValueError, ToolError) as exc:
         parser.error(str(exc))
     if args.matching_lines and not question:
@@ -915,6 +979,7 @@ def main() -> None:
             case,
             question=question,
             matching_lines=args.matching_lines,
+            audit_retrieval=args.audit_retrieval,
         )
         if scope is not None:
             row.update(source_count=scope.source_count, source_sha256=scope.sha256)

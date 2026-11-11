@@ -43,6 +43,9 @@ def test_comparison_benchmark_uses_disjoint_recording_windows(tmp_path):
         "compare_start_date": "2026-04-19",
         "compare_end_date": "2026-04-21",
         "evidence": ["first#L3", "second#L3"],
+        "claims": {
+            "sequence": {"pattern": "first.*second", "ref_groups": [["first#L3", "second#L3"]]},
+        },
     }
     output = tmp_path / "evaluation"
     output.mkdir()
@@ -53,8 +56,15 @@ def test_comparison_benchmark_uses_disjoint_recording_windows(tmp_path):
         "first_transcript.txt",
         "second_transcript.txt",
     ]
-    row, rendered = context_eval.retrieval_case(scope.workspace, case, question=True)
+    row, rendered = context_eval.retrieval_case(
+        scope.workspace, case, question=True, audit_retrieval=True
+    )
     assert row["complete"]
+    assert row["retrieval_audit"]["claims"]["sequence"] == {
+        "recordings_located": True,
+        "recordings_quoted": True,
+        "evidence_quoted": True,
+    }
     launcher = output / "kite"
     context_eval.write_launcher(
         launcher, scope.workspace, case["questions"], date_args=context_eval.recording_args(case)
@@ -194,6 +204,42 @@ def test_text_benchmark_and_claim_grading_preserve_source_lines(tmp_path):
     assert not bad["full_pass"]
     answer["owner"]["citations"].pop()
     assert context_eval.grade_claims(json.dumps(answer), specs, visible)["full_pass"]
+
+
+def test_grouped_citations_require_a_complete_alternative():
+    specs = {
+        "target": {
+            "pattern": "April",
+            "ref_groups": [["planning#L8"], ["followup#L4", "followup#L9"]],
+        },
+        "cause": {"pattern": "review", "refs": ["review#L6"]},
+        "approval": {"unknown": True},
+    }
+    refs = {"followup#L9", "recap#L3"}
+    pack = {
+        "packing_trace": {
+            "total": 90,
+            "candidates": [{"conversation_id": "followup"}, {"conversation_id": "review"}],
+        }
+    }
+    audit = context_eval.retrieval_audit(pack, refs, specs)
+    assert audit["candidate_spans_traced"] == 2
+    assert audit["candidate_spans_total"] == 90
+    assert audit["claims"] == {
+        "target": {"recordings_located": True, "recordings_quoted": True, "evidence_quoted": False},
+        "cause": {"recordings_located": True, "recordings_quoted": False, "evidence_quoted": False},
+    }
+    visible = refs | {"followup#L4", "planning#L8"}
+    for citations, passed in (
+        (["followup#L9", "recap#L3"], False),
+        (["followup#L4", "followup#L9"], True),
+        (["planning#L8"], True),
+    ):
+        answer = json.dumps({"target": {"value": "April", "citations": citations}})
+        score = context_eval.grade_claims(answer, {"target": specs["target"]}, visible)
+        assert score["full_pass"] is passed
+    with pytest.raises(ValueError, match="ref_groups"):
+        context_eval.claim_reference_groups({"ref_groups": [[]]})
 
 
 def test_benchmark_copies_only_annotations_bound_to_the_same_source_lines(tmp_path):

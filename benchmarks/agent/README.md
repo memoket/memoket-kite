@@ -265,6 +265,9 @@ for follow-up retrieval.
 
 Each answer field needs its own expected citation. Use `all_refs: true` for
 claims requiring several lines and `reject` for a disallowed value pattern.
+When separate passages support the same claim, use `ref_groups` instead of
+`refs` and `all_refs`. For example, `[["handoff#L14"], ["review#L8",
+"review#L9"]]` accepts the handoff line or both lines from the review.
 The report counts cited lines outside the visible sources and records corpus,
 date, scope, case, and prompt hashes. `host_summary` compares token totals,
 uncached input, tool output, and wall time on completed pairs. It reports
@@ -280,6 +283,12 @@ references. The fixed result checks evidence coverage and the fraction
 of tasks where all expected evidence was retrieved. A labeled citation hit
 does not assess the relevance of every extra retrieved line. Review answer
 pattern failures against the original evidence, including equivalent wording.
+Use `--audit-retrieval` to report, for each known claim, whether the needed
+recordings appear in the traced candidates, whether those recordings supplied
+any quotes, and whether the complete evidence was quoted. The audit counts
+equivalent sources linked from reused quotes. The candidate trace retains up
+to 80 spans per search. The audit runs with the offline lookup and its added
+trace time is included in `lookup_seconds`.
 
 Pass `--updates revisions.json` to test edits on a disposable workspace copy.
 Each case supplies an `id`, one `evidence` citation, the exact text to
