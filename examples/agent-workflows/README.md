@@ -272,6 +272,19 @@ To change a committed source's project, prepare it with the new label and
 its current checksum and run `memory-update`. The old label remains attached
 to its historical revision.
 
+For a scheduled or repeated refresh, check the prepared source before creating
+a run or annotating it.
+
+```sh
+kite-tool file-source transcript.json --format memoket --project "Planning pilot" \
+  | kite-tool source-check --input -
+```
+
+Skip `unchanged` sources. For `changed`, use the returned `current_checksum`
+with the same source input in `memory-update`. A `historical` match identifies
+an older revision already retained in KITE. The check prints the comparison
+and leaves the workspace untouched.
+
 For a recording the user selected and authorized, set `MEMOKET_API_TOKEN` with
 `transcripts:read` in your shell and pass its exact recording ID. The command
 follows both page cursors and emits the complete source input.

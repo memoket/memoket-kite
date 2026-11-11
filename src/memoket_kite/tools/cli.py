@@ -10,9 +10,19 @@ from pathlib import Path
 
 from .audio import audio_source
 from .captions import CAPTION_FORMATS
-from .contracts import HASH, TEXT, ToolError, decode_object, encode, read_utf8, validate
+from .contracts import (
+    HASH,
+    TEXT,
+    ToolError,
+    decode_object,
+    digest,
+    encode,
+    object_schema,
+    read_utf8,
+    validate,
+)
 from .demo import render_demo, run_demo
-from .ingest import file_source
+from .ingest import file_source, prepare_source
 from .memoket_source import memoket_source
 from .operations import SCHEMAS, SOURCE_SCOPE, TOOLS, Context
 from .resources import resource_root
@@ -356,6 +366,12 @@ def _parser() -> argparse.ArgumentParser:
     sources.add_argument("--project", help="select current revisions with this exact project label")
     sources.add_argument("--limit", type=int, help="number of conversations per page (1–1000)")
     sources.add_argument("--cursor", help="continue with the previous page's next_cursor")
+    source_check = commands.add_parser(
+        "source-check", help="compare a prepared source with committed revisions before annotating"
+    )
+    source_check.add_argument(
+        "--input", required=True, metavar="FILE", help="source-only JSON or - for stdin"
+    )
     history = commands.add_parser(
         "source-history", help="list one conversation's stored revisions without transcript text"
     )
@@ -503,6 +519,33 @@ def _read_evidence(args: argparse.Namespace, workspace: Workspace) -> dict:
     )
 
 
+def _check_source(args: argparse.Namespace, root: Path) -> dict:
+    supplied = _object(args.input)
+    validate(object_schema({"source": SCHEMAS["source"]}), supplied, "source check input")
+    source, conversation = prepare_source(root, supplied["source"])
+    checksum = digest(conversation)
+    result = {
+        "source": conversation["source"],
+        "conversation_id": conversation["conversation_id"],
+        "checksum": checksum,
+    }
+    try:
+        with Workspace.open(args.workspace, read_only=True) as workspace:
+            result.update(workspace.check_source(conversation, checksum))
+    except ToolError as exc:
+        if exc.code != "not_found":
+            raise
+        directory = args.workspace.expanduser()
+        if (directory.exists() and not directory.is_dir()) or (directory / "kite.sqlite3").exists():
+            raise
+        result.update(state="new", current_checksum=None, memory_version=None)
+    if "expected_checksum" in source:
+        result["expected_checksum_matches"] = (
+            source["expected_checksum"] == result["current_checksum"]
+        )
+    return result
+
+
 def _dispatch(args) -> tuple[dict, ToolError | None]:
     if args.command == "describe":
         return _describe(args.tool), None
@@ -584,6 +627,9 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             project=args.project,
             expected_checksum=args.expected_checksum,
         ), None
+
+    if args.command == "source-check":
+        return _check_source(args, root), None
 
     if args.command == "backup":
         return Workspace.backup(

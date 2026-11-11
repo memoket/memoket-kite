@@ -4102,6 +4102,70 @@ def test_source_project_is_queryable_and_changes_with_the_revision(work, tmp_pat
     ]
 
 
+def test_source_check_classifies_revisions_without_opening_a_write(work, tmp_path):
+    directory, call = work
+    original = text_input("notes", "Private original note")
+    source = {"source": original["source"]}
+    check = ("source-check",)
+    call(*check, payload=original, error="invalid_input")
+    absent = call(*check, payload=source)
+    assert not directory.exists() and absent == {
+        "ok": True,
+        "source": "text",
+        "conversation_id": "notes",
+        "state": "new",
+        "checksum": absent["checksum"],
+        "current_checksum": None,
+        "memory_version": None,
+    }
+    invalid_workspace = tmp_path / "not-a-workspace"
+    invalid_workspace.write_text("file", encoding="utf-8")
+    call(*check, payload=source, workspace_dir=invalid_workspace, error="not_found")
+
+    first = ingest(call, "first", original)
+    assert first["checksum"] == absent["checksum"]
+    path = directory / "kite.sqlite3"
+    before = path.read_bytes()
+    same = call(*check, payload=source)
+    assert same == {
+        **absent,
+        "state": "unchanged",
+        "current_checksum": first["checksum"],
+        "memory_version": 1,
+    }
+
+    update = text_input("notes", "Private revised note")
+    update_source = {"source": update["source"]}
+    changed = call(*check, payload=update_source)
+    assert changed["state"] == "changed" and changed["current_checksum"] == first["checksum"]
+    assert changed["checksum"] != first["checksum"]
+    update["source"]["expected_checksum"] = "0" * 64
+    assert not call(*check, payload=update_source)["expected_checksum_matches"]
+    update["source"]["expected_checksum"] = changed["current_checksum"]
+    assert call(*check, payload=update_source)["expected_checksum_matches"]
+    assert path.read_bytes() == before and "Private" not in json.dumps([same, changed])
+
+    updated = ingest(call, "revise", update, pipeline="memory-update")
+    assert updated["checksum"] == changed["checksum"]
+    history = call(*check, payload=source)
+    assert history == {
+        **same,
+        "state": "historical",
+        "current_checksum": updated["checksum"],
+        "memory_version": 2,
+    }
+    assert not call(*check, payload=update_source)["expected_checksum_matches"]
+
+    conflicting = copy.deepcopy(source)
+    conflicting["source"]["payload"]["metadata"]["source_reference"] = "other-reference"
+    call(*check, payload=conflicting, error="conflict")
+    conflicting = copy.deepcopy(source)
+    conflicting["source"]["payload"]["conversation_id"] = "other-id"
+    call(*check, payload=conflicting, error="conflict")
+    _delete_source(call, "delete", {"source": "text", "conversation_id": "notes"})
+    call(*check, payload=source, error="deleted_source")
+
+
 def test_file_source_imports_subrip_cues_without_inferring_speakers(work, tmp_path):
     directory, call = work
     path = tmp_path / "captions.srt"

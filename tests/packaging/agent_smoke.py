@@ -215,6 +215,9 @@ def main() -> None:
             "--project",
             "Launch pilot",
         )
+        preflight = call("source-check", payload=source)
+        assert preflight["state"] == "new" and preflight["memory_version"] is None
+        assert not original.exists()
         run_id = call("start", "memory-ingestion", payload=source)["run_id"]
         call("stage", run_id, "normalize", "--summary")
         call("stage", run_id, "annotate", error="missing_input")
@@ -256,6 +259,9 @@ def main() -> None:
             "ingest", "--resume", run_id, "--annotations", str(reviewed), workspace=recovered
         )
         assert result["run_id"] == run_id and result["receipt"]["changed"]
+        repeat = call("source-check", payload=source, workspace=recovered)
+        assert repeat["state"] == "unchanged"
+        assert repeat["checksum"] == preflight["checksum"] == result["receipt"]["checksum"]
         assert call("status", run_id, workspace=recovered)["stages"]["annotate"]["retry_count"] == 1
         inventory = call(
             "sources", "--project", "Launch pilot", "--limit", "1", workspace=recovered

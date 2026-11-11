@@ -382,6 +382,16 @@ and avoid creating new facts. Use `memory-update` with the current checksum as
 is unchanged, the same workflow appends only new annotations. Existing fact
 IDs, source lines, and the source checksum stay stable.
 
+Before annotating a refreshed source, run `kite-tool source-check --input FILE`
+with the source-only JSON from `file-source`, `memoket-source`, or `audio-source`.
+It returns the candidate checksum and the current committed checksum, with a
+`state` of `new`, `unchanged`, `changed`, or `historical`. A historical candidate
+matches a retained older revision. Skip annotation on unchanged refreshes and
+use the returned `current_checksum` as `source.expected_checksum` for a changed
+source. If the input already supplies an expected checksum, the result reports
+whether it matches the current checksum. The check creates no run or workspace.
+The commit stage verifies the expected checksum again before writing.
+
 Use `kite-tool source-history SOURCE CONVERSATION_ID` to look up the current
 checksum and inspect retained revisions without loading transcript text into
 the agent context. The current revision appears first, followed by prior

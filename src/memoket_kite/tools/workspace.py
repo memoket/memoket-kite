@@ -790,27 +790,20 @@ class Workspace:
             ):
                 raise ToolError("deleted_source", "this conversation was permanently deleted")
 
-    def commit(self, record: dict, *, append_annotations: bool = False) -> dict:
-        conversation = record["conversation"]
+    def _classify_source(
+        self, conversation: dict, checksum: str
+    ) -> tuple[str, str, sqlite3.Row | None]:
         key = source_key(conversation)
         uid = conversation["conversation_id"]
-        self.require_source_allowed(
-            conversation["source"], uid, conversation["metadata"]["source_reference"]
-        )
-        self._require_current_index()
         prior = self.db.execute(
             "SELECT * FROM revisions WHERE source_key=? AND active=1", (key,)
         ).fetchone()
-        checksum = record["checksum"]
-        receipt = {"revision_id": revision_id(record), "checksum": checksum}
         if prior and prior["conversation_id"] != uid:
             raise ToolError(
                 "conflict", "source reference is already bound to another conversation ID"
             )
         if prior and prior["checksum"] == checksum:
-            if append_annotations:
-                return {**receipt, **self._append_annotations(prior, record)}
-            return {**receipt, "changed": False, "memory_version": self.version()}
+            return "unchanged", key, prior
         collision = self.db.execute(
             "SELECT 1 FROM revisions WHERE source=? AND conversation_id=? AND source_key<>?",
             (conversation["source"], uid, key),
@@ -819,9 +812,42 @@ class Workspace:
             raise ToolError(
                 "conflict", "conversation ID is already bound to another source reference"
             )
+        if self.db.execute("SELECT 1 FROM revisions WHERE checksum=?", (checksum,)).fetchone():
+            return "historical", key, prior
+        return "changed" if prior else "new", key, prior
+
+    def check_source(self, conversation: dict, checksum: str) -> dict:
+        self.require_source_allowed(
+            conversation["source"],
+            conversation["conversation_id"],
+            conversation["metadata"]["source_reference"],
+        )
+        state, _, prior = self._classify_source(conversation, checksum)
+        if prior is not None:
+            self._decode_revision(prior)
+        return {
+            "state": state,
+            "current_checksum": prior["checksum"] if prior is not None else None,
+            "memory_version": self.version(),
+        }
+
+    def commit(self, record: dict, *, append_annotations: bool = False) -> dict:
+        conversation = record["conversation"]
+        uid = conversation["conversation_id"]
+        self.require_source_allowed(
+            conversation["source"], uid, conversation["metadata"]["source_reference"]
+        )
+        self._require_current_index()
+        checksum = record["checksum"]
+        receipt = {"revision_id": revision_id(record), "checksum": checksum}
+        state, key, prior = self._classify_source(conversation, checksum)
+        if state == "unchanged":
+            if append_annotations:
+                return {**receipt, **self._append_annotations(prior, record)}
+            return {**receipt, "changed": False, "memory_version": self.version()}
         if (prior["checksum"] if prior else None) != record["expected_checksum"]:
             raise ToolError("conflict", "changed source requires the current expected_checksum")
-        if self.db.execute("SELECT 1 FROM revisions WHERE checksum=?", (checksum,)).fetchone():
+        if state == "historical":
             raise ToolError("conflict", "an older source revision cannot be replayed as new")
         self._validate_supersession(record)
         self.db.execute("UPDATE revisions SET active=0 WHERE source_key=? AND active=1", (key,))
