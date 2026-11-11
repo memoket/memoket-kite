@@ -6153,6 +6153,61 @@ def test_context_compiles_observed_english_word_forms_without_changing_literal_s
     assert prior["parts"][0]["spans"][0]["evidence"][0]["text"] == first
 
 
+def test_context_keeps_repeated_clues_and_quotes_a_later_matching_turn(work):
+    directory, call = work
+    first = "麦克风噪声以零输入为准。" + "这是原始校准记录。" * 36
+    followup = "用备用麦克风交换端口，再对比噪声。"
+    segments = [
+        {"segment_id": identity, "text": text}
+        for identity, text in [
+            ("start", first),
+            ("setup", "开始验证之前整理工具。"),
+            ("observe", "接下来记录观察。"),
+            ("method", followup),
+        ]
+    ]
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {
+                    "source": {
+                        "format": "conversation",
+                        "payload": {
+                            "source": "transcript",
+                            "conversation_id": "calibration",
+                            "metadata": {"source_reference": "calibration"},
+                            "segments": segments,
+                        },
+                    }
+                }
+            ]
+        },
+    )
+    query = "麦克风噪声以什么为准？用什么方法测试麦克风？"
+    args = ("context", "--question", query, "--limit", "1", "--max-bytes", "1800")
+    pack = call(*args, "--save", "repeated-clues")
+    terms = pack["compilation"]["terms"]
+    assert "麦克风" in terms and any("麦克风噪声" in term for term in terms)
+    assert {"term": "麦克风", "occurrences": 2} in pack["compilation"]["repeated_terms"]
+    (span,) = pack["spans"]
+    assert span["evidence"][0]["text"] == first
+    assert span["evidence"][-1]["text"] == followup
+    assert span["followup_quote"] == {
+        "source_line_id": span["evidence"][-1]["source_line_id"],
+        "term": "麦克风",
+    }
+    assert pack["quote_bytes"] <= 1800
+    snapshot = viewer._snapshot(directory, [], run_id="repeated-clues")
+    assert snapshot["search_trace"]["followup_quotes"] == 1
+    line = snapshot["evidence"][span["followup_quote"]["source_line_id"]]
+    assert line["followup_terms"] == ["麦克风"]
+    without_followup = call(*args, "--neighbors", "0")
+    assert "followup_quote" not in without_followup["spans"][0]
+    exact = call("context", "--term", "麦克风噪声", "--matching-lines")
+    assert [line["segment_id"] for span in exact["spans"] for line in span["evidence"]] == ["start"]
+
+
 def test_context_quotes_identical_transcripts_once_and_retains_both_clocks(work):
     directory, call = work
     quotes = ["The relay calibration is 3 volts.", "The relay calibration passed."]

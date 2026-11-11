@@ -76,6 +76,10 @@ When an unquoted English word has no match, question compilation can select
 a common plural or verb form found in the scoped original text. The graph
 shows the search word and the indexed form. Use `--matching-lines` to look
 up the original wording literally.
+When a Chinese question repeats a clue, compilation can keep it alongside a
+more specific phrase. For a task with several questions, KITE can also cite
+a nearby turn in the same recording that mentions the repeated clue. The
+graph marks that follow-up quote and links it to the original line.
 Question searches can quote identical transcripts from the same recording
 day once. Undated copies can also share a quote. The evidence pack keeps the
 source references and recording clocks. The segment IDs apply to each listed source. Use

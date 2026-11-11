@@ -121,6 +121,7 @@ def _search_snapshot(
                 "active": span.get("source_revision_active", True),
             }
             ids = tuple(line["source_line_id"] for line in lines)
+            followup = span.get("followup_quote")
             copy_checksums = []
             for copy in span.get("same_text_sources", ()):
                 copied = copy["revision_checksum"]
@@ -136,6 +137,10 @@ def _search_snapshot(
             matched = set()
             for line in lines:
                 quote = evidence.setdefault(line["source_line_id"], {**line, "matched_terms": []})
+                if followup and followup["source_line_id"] == line["source_line_id"]:
+                    followup_terms = quote.setdefault("followup_terms", [])
+                    if followup["term"] not in followup_terms:
+                        followup_terms.append(followup["term"])
                 text = f" {_tokens(line['text'])} "
                 for phrase, tokens in compiled:
                     if tokens in text:
@@ -204,6 +209,7 @@ def _search_snapshot(
         "search_trace": {
             "terms": packs[0][1]["compilation"]["terms"] if question is not None else terms,
             "word_forms": packs[0][1].get("compilation", {}).get("word_forms", []),
+            "repeated_terms": packs[0][1].get("compilation", {}).get("repeated_terms", []),
             "term_coverage": packs[0][1].get("term_coverage", []) if not comparison else [],
             "packing": [
                 {"label": pack.get("compilation", {}).get("question", key), **pack["packing_trace"]}
@@ -220,6 +226,7 @@ def _search_snapshot(
             "quote_bytes": sum(pack["quote_bytes"] for _, pack in packs),
             "sources": len(sources),
             "quotes": len(evidence),
+            "followup_quotes": sum(bool(line.get("followup_terms")) for line in evidence.values()),
             **({"shared_quotes": quote_occurrences - len(evidence)} if comparison else {}),
         },
         "passages": list(passages.values()),

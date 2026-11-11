@@ -30,6 +30,7 @@
       matchedTerms: 'Terms in this quote',
       inspectCandidates: 'Rerun with candidate details', packingOrder: 'Packing order',
       wordForms: 'English word forms',
+      repeatedTerms: 'Repeated query terms', followupQuote: 'Follow-up quote', followupQuotes: 'follow-up quotes',
       firstLinesPrioritized: 'More passages from the leading source',
       packingSegments: 'Segments',
       corroboratingTerms: 'Multiple clues match this passage',
@@ -84,6 +85,7 @@
       matchedTerms: '原文命中',
       inspectCandidates: '重查并查看候选', packingOrder: '引文选取顺序',
       wordForms: '英文词形匹配',
+      repeatedTerms: '问题中重复出现', followupQuote: '后续原文命中', followupQuotes: '行后续引文',
       firstLinesPrioritized: '先取同一来源的多个片段',
       packingSegments: '原文段',
       corroboratingTerms: '同一片段命中多个线索',
@@ -716,6 +718,9 @@
     if (line.matched_terms?.length) {
       quote.append(element('p', `${t('matchedTerms')} · ${line.matched_terms.join(' · ')}`, 'detail-meta'));
     }
+    if (line.followup_terms?.length) {
+      quote.append(element('p', `${t('followupQuote')} · ${line.followup_terms.join(' · ')}`, 'detail-meta'));
+    }
     return quote;
   }
 
@@ -871,6 +876,12 @@
     container.append(element('p', [t('wordForms'), ...pairs].join(' · ')));
   }
 
+  function renderRepeatedTerms(container, terms) {
+    if (!terms?.length) return;
+    const counts = terms.map(({term, occurrences}) => `${term} ×${number.format(occurrences)}`);
+    container.append(element('p', [t('repeatedTerms'), ...counts].join(' · ')));
+  }
+
   function termSummary(terms, coverage) {
     if (!coverage?.length) return element('p', terms.join(' · '));
     const list = element('ul', undefined, 'term-coverage');
@@ -975,6 +986,7 @@
             termSummary(part.terms, part.term_coverage),
             element('p', `${number.format(part.passages)} ${t('record')} · ${number.format(part.quote_bytes)}/${number.format(part.quote_budget_bytes)} ${t('quoteBytes')}`));
           renderWordForms(branch, part.word_forms);
+          renderRepeatedTerms(branch, part.repeated_terms);
           if (part.first_lines_prioritized) branch.append(element('p', t('firstLinesPrioritized')));
           branches.append(branch);
         }
@@ -982,12 +994,14 @@
       } else {
         trace.append(termSummary(stats.terms, stats.term_coverage));
         renderWordForms(trace, stats.word_forms);
+        renderRepeatedTerms(trace, stats.repeated_terms);
       }
       trace.append(element('p', [number.format(stats.candidate_spans) + ' ' + t('candidates'),
           stats.candidate_sources === null ? null : number.format(stats.candidate_sources) + ' ' + t('candidateSources'),
           stats.anchor_sources ? number.format(stats.anchor_sources) + ' ' + t('anchorSources') : null,
           number.format(stats.sources) + ' ' + t('sourceCatalog'),
           number.format(stats.quotes) + ' ' + t('quotes'),
+          stats.followup_quotes ? number.format(stats.followup_quotes) + ' ' + t('followupQuotes') : null,
           stats.shared_quotes ? number.format(stats.shared_quotes) + ' ' + t('sharedQuotes') : null,
           number.format(stats.quote_bytes) + ' ' + t('quoteBytes')].filter(Boolean).join(' · ')));
       if (stats.packing?.length) {

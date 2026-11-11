@@ -19,6 +19,7 @@ _QUESTION_BYTES = 3800
 _TERM_BYTES = 6000
 _TRACE_CANDIDATES = 80
 _TEXT_SOURCE_COPIES = 8
+_FOLLOWUP_LINES = 3
 _RECORDING_DATES = ("start_date", "end_date")
 _SEARCH_TERMS = re.compile(r"[\u3400-\u9fff]+|[^\W_]+", re.UNICODE)
 _HAN = re.compile(r"([\u3400-\u9fff])")
@@ -213,6 +214,17 @@ def _indexed_word_form(db, where, args, word: str) -> tuple[int, str] | None:
     return min(matches, default=None)
 
 
+def _repeated_han_terms(question: str, phrases) -> dict[str, int]:
+    normalized = unicodedata.normalize("NFKC", question).casefold()
+    return {
+        phrase: count - 1
+        for phrase in phrases
+        if 2 <= len(phrase) <= 7
+        and _HAN.fullmatch(phrase[0])
+        and (count := normalized.count(phrase)) > 1
+    }
+
+
 def _compile_terms(db, plan: dict, question: str) -> tuple[list[str], list[dict]]:
     where, args = _search_scope(plan)
     quoted = _quoted_phrases(question)
@@ -254,10 +266,32 @@ def _compile_terms(db, plan: dict, question: str) -> tuple[list[str], list[dict]
                 if sources < 32:
                     score += 4
             candidates.append((score, phrase, query_term))
+    repeats = (
+        _repeated_han_terms(question, (phrase for _, phrase, _ in candidates))
+        if not (quoted or plan.get("matching_lines"))
+        else {}
+    )
+
+    def priority(row):
+        score, phrase, form = row
+        if phrase in repeats:
+            # Keep a repeated short clue without letting it bury a more
+            # specific indexed phrase that contains it.
+            more_specific = any(
+                phrase != other and phrase in other and score <= other_score
+                for other_score, other, _ in candidates
+            )
+            score += (2 if more_specific else 4) * repeats[phrase]
+        return -score, form is not None
+
     selected = []
     word_forms = []
-    for _, phrase, query_term in sorted(candidates, key=lambda row: (-row[0], row[2] is not None)):
-        if not any(phrase in current or current in phrase for current in selected):
+    for _, phrase, query_term in sorted(candidates, key=priority):
+        if not any(
+            (phrase in current and repeats.get(phrase, 0) <= repeats.get(current, 0))
+            or current in phrase
+            for current in selected
+        ):
             selected.append(phrase)
             if query_term is not None:
                 word_forms.append({"query_term": query_term, "indexed_term": phrase})
@@ -407,6 +441,12 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
             result["compilation"] = {"question": question, "terms": terms}
             if forms:
                 result["compilation"]["word_forms"] = forms
+            if not (filters.get("matching_lines") or _quoted_phrases(question)):
+                repeats = _repeated_han_terms(question, terms)
+                if repeats:
+                    result["compilation"]["repeated_terms"] = [
+                        {"term": term, "occurrences": extra + 1} for term, extra in repeats.items()
+                    ]
         return result
 
     forms = compiled.get("word_forms", ())
@@ -819,25 +859,38 @@ def _positions(
     phrases: tuple,
     anchors: tuple[str, ...],
     matching_lines: bool,
+    repeated: dict[str, str],
 ):
     window = range(max(0, start - neighbors), min(len(segments), stop + neighbors))
     if phrases:
         hits = []
         exact = set()
+        repeated_hit = False
         for pos in range(start, stop):
             text = f" {_tokens(segments[pos]['text'])} "
             if any(phrase in text for phrase in phrases):
                 hits.append(pos)
+                repeated_hit |= any(clue in text for clue in repeated)
                 if any(anchor in text for anchor in anchors):
                     exact.add(pos)
         if matching_lines:
-            return hits
+            return hits, None
         if hits:
-            return sorted(
+            selected = sorted(
                 (pos for pos in window if any(abs(pos - hit) <= neighbors for hit in hits)),
                 key=lambda pos: (pos not in exact, min(abs(pos - hit) for hit in hits), pos),
             )
-    return [*range(start, stop), *(pos for pos in window if not start <= pos < stop)]
+            if repeated_hit:
+                for pos in range(stop, min(len(segments), stop + _FOLLOWUP_LINES)):
+                    text = f" {_tokens(segments[pos]['text'])} "
+                    clue = next((label for match, label in repeated.items() if match in text), None)
+                    if clue is not None:
+                        return [*hits, pos, *(i for i in selected if i not in hits and i != pos)], (
+                            pos,
+                            clue,
+                        )
+            return selected, None
+    return [*range(start, stop), *(pos for pos in window if not start <= pos < stop)], None
 
 
 def _compact_sources(
@@ -967,6 +1020,7 @@ def _pack(
     trace: dict | None = None,
     prioritize_first_lines: bool = False,
     reuse_identical_text: bool = False,
+    repeated: dict[str, str] | None = None,
 ):
     compact_sources = compact_sources or {}
     compact_copies = compact_copies or {}
@@ -1007,6 +1061,7 @@ def _pack(
     remaining = []
     size = omitted = 0
     anchored = tuple(f" {anchor} " for anchor in anchors)
+    repeated = repeated or {}
 
     def take(checksum, segments, positions):
         nonlocal size, omitted
@@ -1046,10 +1101,12 @@ def _pack(
         if reuse_identical_text and checksum not in group_by_checksum:
             group_by_checksum[checksum] = _quote_group(record, groups, members)
         previously_omitted = omitted
-        positions = (
-            range(start, stop)
+        positions, followup = (
+            (range(start, stop), None)
             if checksum in compact_sources
-            else _positions(segments, start, stop, neighbors, phrases, anchored, matching_lines)
+            else _positions(
+                segments, start, stop, neighbors, phrases, anchored, matching_lines, repeated
+            )
         )
         first_positions = positions
         if prioritize_first_lines:
@@ -1071,7 +1128,7 @@ def _pack(
             if duplicates:
                 traced[index]["duplicate_lines"] = duplicates
         if chosen:
-            packed.append((record, chosen))
+            packed.append((record, chosen, followup))
             if prioritize_first_lines:
                 remaining.append((index, checksum, segments, positions, chosen))
     for index, checksum, segments, positions, chosen in remaining:
@@ -1086,7 +1143,7 @@ def _pack(
                     traced[index].get("duplicate_lines", 0) + duplicates
                 )
     spans = []
-    for record, chosen in packed:
+    for record, chosen, followup in packed:
         conversation = record["conversation"]
         segments = conversation["segments"]
         revision = revision_id(record)
@@ -1096,6 +1153,12 @@ def _pack(
             copies.extend(
                 other for other in members[group] if other["checksum"] != record["checksum"]
             )
+        followup_quote = {}
+        if followup is not None and followup[0] in chosen:
+            pos, clue = followup
+            followup_quote = {
+                "followup_quote": {"source_line_id": f"{revision}L{pos + 1}", "term": clue}
+            }
         spans.append(
             {
                 "source_date": source_day(conversation),
@@ -1111,6 +1174,7 @@ def _pack(
                     if copies
                     else {}
                 ),
+                **followup_quote,
                 "evidence": [
                     _citation(record, f"{revision}L{pos + 1}", segments[pos])
                     for pos in sorted(chosen)
@@ -1241,6 +1305,15 @@ def _context_evidence(
             # One recording occupies the front of this comparison branch.
             # Give another passage room before expanding neighboring lines.
             limit += 1
+        repeated = {}
+        if (
+            _question
+            and neighbors
+            and not (anchors or matching_lines or plan.get("latest") or _quoted_phrases(_question))
+            and _question.count("?") + _question.count("？") >= 2
+        ):
+            clues = _repeated_han_terms(_question, _question_phrases(_question))
+            repeated = {f" {_tokens(clue)} ": clue for clue in sorted(clues, key=len, reverse=True)}
         spans, size, omitted = _pack(
             workspace,
             candidates,
@@ -1256,6 +1329,7 @@ def _context_evidence(
             trace=trace,
             prioritize_first_lines=first_lines,
             reuse_identical_text=focus and not (matching_lines or plan.get("latest")),
+            repeated=repeated,
         )
         if trace is not None:
             _trace_sources(workspace, trace)
