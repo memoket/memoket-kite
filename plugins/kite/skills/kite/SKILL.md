@@ -16,6 +16,8 @@ lines and distinguish confirmed decisions from proposals. Quote a known topic
 name to focus retrieval. For a missing detail,
 use `--term`, `--conversation-id`, or `evidence 'ID#SEGMENT' --context 2 --text`.
 State any unresolved gaps.
+When asked to save the exact search for inspection, add `--save` and open the
+returned ID with `view --run ID`.
 For two-question comparisons, date filters, revision differences, and decision history, read
 [query.md](references/query.md).
 
