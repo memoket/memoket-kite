@@ -1,5 +1,6 @@
 """The synthetic benchmark scores claims against verified source citations."""
 
+import hashlib
 import json
 from copy import deepcopy
 
@@ -20,6 +21,7 @@ from benchmarks.agent.__main__ import (
     _seed,
     _snapshot,
     _trace_expectations,
+    main,
     score_claims,
 )
 
@@ -292,6 +294,51 @@ def test_host_grade_counts_retries_in_an_unfinished_trace(tmp_path):
     )
     assert other["stage_attempts"] == other["stage_retries"] == 0
     assert other["stage_retry_rate"] is None
+
+
+def test_context_comparison_measures_the_prompts_only_when_both_answers_pass(tmp_path, capsys):
+    directory = tmp_path / "trial"
+    case = "format-decision"
+    assert main(["prepare-context", case, str(directory)]) == 0
+    capsys.readouterr()
+    kite_dir, pasted_dir = directory / "kite", directory / "pasted"
+    kite_prompt = (kite_dir / "TASK.md").read_bytes()
+    pasted_prompt = (pasted_dir / "TASK.md").read_bytes()
+    assert b"catering spreadsheet" in pasted_prompt and b"catering spreadsheet" not in kite_prompt
+    assert set(path.name for path in pasted_dir.iterdir()) == {"TASK.md", "ANSWER.schema.json"}
+    schema = json.loads((pasted_dir / "ANSWER.schema.json").read_text(encoding="utf-8"))
+    assert schema["required"] == ["claims"]
+
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    case_fixture = fixture["cases"][case]
+    kite = Kite(kite_dir / "memory")
+    run = "with-kite"
+    report = kite.trace(run, case_fixture)
+    answer = _reference_answer(case_fixture, run, report)
+    (kite_dir / "answer.json").write_text(json.dumps(answer), encoding="utf-8")
+    pasted_answer = pasted_dir / "answer.json"
+    pasted_answer.write_text(json.dumps({"claims": answer["claims"]}), encoding="utf-8")
+
+    command = ["score-context", case, str(directory)]
+    assert main(command) == 0
+    score = json.loads(capsys.readouterr().out)
+    assert score["kite_prompt_bytes"] == len(kite_prompt)
+    assert score["pasted_prompt_bytes"] == len(pasted_prompt)
+    assert score["pasted_prompt_sha256"] == hashlib.sha256(pasted_prompt).hexdigest()
+    saved = len(pasted_prompt) - len(kite_prompt)
+    assert score["user_prompt_bytes_saved"] == saved > 0
+    assert score["user_prompt_context_reduction"] == saved / len(pasted_prompt)
+
+    answer["claims"]["confirmed_format"]["citations"] = []
+    pasted_answer.write_text(json.dumps({"claims": answer["claims"]}), encoding="utf-8")
+    assert main(command) == 1
+    score = json.loads(capsys.readouterr().out)
+    assert score["kite"]["passed"] and not score["pasted"]["passed"]
+    assert score["user_prompt_context_reduction"] is None
+
+    (pasted_dir / "TASK.md").write_bytes(pasted_prompt + b"\n")
+    assert main(command) == 2
+    assert "prepared prompt differs" in capsys.readouterr().err
 
 
 def test_recovery_score_rejects_replacing_the_interrupted_run(tmp_path):

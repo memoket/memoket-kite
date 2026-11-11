@@ -86,6 +86,36 @@ It also verifies that the saved report's decision and task states support the
 expected claims. Recovery checks original citations and the confirmed state
 against its own fixture and allows the host to phrase the annotation in its own words.
 
+## Compare the user prompt with a pasted transcript
+
+Prepare paired prompts for a read-only case.
+
+```sh
+trial="$(mktemp -d)"
+python -m benchmarks.agent prepare-context format-decision "$trial/comparison"
+```
+
+The `kite` directory contains a seeded workspace and a task prompt. The
+`pasted` directory contains the same question and the full synthetic corpus
+with original text, source dates and citation IDs. Run the same host and model
+in fresh sessions from the respective directories. Submit each `TASK.md`
+verbatim as the user prompt and use the corresponding `ANSWER.schema.json`
+for structured output. The pasted run should answer using its prompt alone.
+Save each response as `answer.json` alongside its prompt.
+
+```sh
+python -m benchmarks.agent score-context format-decision "$trial/comparison"
+```
+
+The scorer checks the prompts against the fixture and records their SHA-256
+digests. It scores both answers against the same claims and citation
+requirements. The KITE arm
+also verifies the saved workflow and evidence. `user_prompt_context_reduction`
+is the difference in UTF-8 prompt bytes divided by the pasted prompt's bytes,
+and is `null` when either answer fails. This measures the user message. Host
+instructions, tool results and total model tokens have their own accounting.
+Report the host and model alongside the paired result.
+
 ## Read the results
 
 - `supported_claims / expected_claims` measures answer coverage. An unexpected
