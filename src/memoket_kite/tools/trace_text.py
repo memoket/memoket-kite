@@ -31,6 +31,55 @@ def _references(numbers: Iterable[int]) -> str:
     return " ".join(f"[{number}]" for number in sorted(set(numbers)))
 
 
+def _render_states(report: dict, references: dict[str, list[int]]) -> list[str]:
+    states = report["current_reported_states"]
+    if not states:
+        return []
+    facts = {row["fact_id"]: row for row in report["timeline"]}
+    uncertain_times = set(report.get("uncertain_time_state_keys", []))
+    uncertain_corrections = {
+        row["state_key"] for row in facts.values() if row["supersession_uncertain"]
+    }
+    unresolved_filters = any(
+        report[f"unresolved_{field}"] for field in ("topics", "entities", "events")
+    )
+    lines = ["", "Reported states"]
+    for key, state in states.items():
+        fact_ids = state["fact_ids"]
+        refs = _references(number for fact_id in fact_ids for number in references[fact_id])
+        label = _inline(key)
+        if state["status"] == "confirmed":
+            lines.append(f"  {label}  Confirmed  {_inline(state['value'])}  {refs}")
+            continue
+
+        reasons = []
+        if report["truncated"]:
+            reasons.append("evidence on other pages")
+        if unresolved_filters:
+            reasons.append("unresolved filters")
+        if key in uncertain_times:
+            reasons.append("evidence date uncertain")
+        if key in uncertain_corrections:
+            reasons.append("correction date uncertain")
+        if (
+            state["status"] == "partial"
+            and not reasons
+            and report["time_axis"] == "event"
+            and all(facts[fact_id]["event_date_basis"] != "explicit" for fact_id in fact_ids)
+        ):
+            reasons.append("no explicit event date")
+        status = state["status"].capitalize()
+        if reasons:
+            status += f" ({', '.join(reasons)})"
+        lines.append(f"  {label}  {status}  {refs}")
+        values: dict[str, list[int]] = {}
+        for fact_id in fact_ids:
+            values.setdefault(facts[fact_id]["state"], []).extend(references[fact_id])
+        for value, citations in values.items():
+            lines.append(f"    Reported value  {_inline(value)}  {_references(citations)}")
+    return lines
+
+
 def render_trace(report: dict, query: dict) -> str:
     timeline = report["timeline"]
     axis = report["time_axis"]
@@ -81,19 +130,7 @@ def render_trace(report: dict, query: dict) -> str:
         for row in timeline
     }
 
-    states = report["current_reported_states"]
-    uncertain_times = set(report.get("uncertain_time_state_keys", []))
-    if states:
-        lines.extend(("", "Reported states"))
-        for key, state in states.items():
-            refs = _references(
-                number for fact_id in state["fact_ids"] for number in references[fact_id]
-            )
-            status = state["status"].capitalize()
-            if key in uncertain_times:
-                status += " (evidence date uncertain)"
-            value = f"  {_inline(state['value'])}" if state["status"] == "confirmed" else ""
-            lines.append(f"  {_inline(key)}  {status}{value}  {refs}")
+    lines.extend(_render_states(report, references))
 
     if timeline:
         lines.extend(("", "Timeline"))

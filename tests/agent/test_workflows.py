@@ -918,7 +918,8 @@ def test_undated_correction_outside_the_filter_makes_only_its_state_partial(work
             "query", "--text", "--pipeline", "timeline-reconstruction", payload={"query": query}
         )
         assert readable.count("Confirmed (supersession uncertain)") == 1
-        assert "owner  Partial  [1]" in readable
+        assert "owner  Partial (correction date uncertain)  [1]" in readable
+        assert "Reported value  Alice  [1]" in readable
 
     latest = trace(call, "current", {"topics": ["launch"]})
     assert "owner" not in latest["current_reported_states"]
@@ -1120,6 +1121,19 @@ def test_unknown_and_conflicting_dates_do_not_become_final_decisions(work):
     text = call("query", "--text", "--pipeline", "decision-evolution", "--state-key", "owner")
     assert "owner  Ambiguous  [1] [2] [3]" in text
     assert "Date unknown  Confirmed" in text
+    for number, row in enumerate(result["timeline"], 1):
+        assert f"Reported value  {row['state']}  [{number}]" in text
+
+    ingest(call, "corroborating", text_input("another-a", "Alice", date="2026-01-01"))
+    args = ("query", "--pipeline", "decision-evolution", "--state-key", "owner")
+    report = call(*args)["value"]
+    alice_refs = [
+        f"[{i}]" for i, row in enumerate(report["timeline"], 1) if row["state"] == "Alice"
+    ]
+    output = call(*args, "--text")
+    assert len(alice_refs) == 2
+    assert output.count("Reported value  Alice") == 1
+    assert f"Reported value  Alice  {' '.join(alice_refs)}" in output
 
 
 def test_deletion_approval_purge_and_replay(work):
@@ -2191,6 +2205,8 @@ def test_event_filter_intersects_project_speaker_and_dates(work):
         == alternative
     )
     assert call(*flags, "--event", "release review", "--event", "missing")["value"] == report
+    readable = call(*flags, "--event", "release review", "--event", "missing", "--text")
+    assert "review  Partial (unresolved filters)" in readable
 
 
 def test_task_trace_reports_unresolved_entities_without_claiming_complete_state(work):
@@ -2554,7 +2570,10 @@ def test_query_text_preserves_evidence_and_pagination(work):
     args = (*args, "--limit", "2")
     page = call(*args)["value"]
     output = call(*args, "--text")
-    assert "Showing 2 of 4 facts" in output and "onboarding-design  Partial" in output
+    assert "Showing 2 of 4 facts" in output
+    assert "onboarding-design  Partial (evidence on other pages)" in output
+    assert "Reported value  short checklist  [1]" in output
+    assert "Reported value  guided tour" not in output
     assert f"Next cursor  {page['next_cursor']}" in output
     last = call(*args, "--text", "--cursor", page["next_cursor"])
     assert "Proposal" in last and "Next cursor" not in last
@@ -3046,6 +3065,7 @@ def test_inferred_dates_are_separate_from_explicit_and_unknown_dates(work):
     assert "Excluded by date filter  1 with unknown event dates" in bounded_text
     assert "Excluded by date filter  1 with inferred event dates" in bounded_text
     assert "owner  Partial (evidence date uncertain)  [1]" in bounded_text
+    assert "Reported value  Explicit  [1]" in bounded_text
     limited = trace(call, "limited", {**query, "limit": 1}, pipeline)
     assert [row["state"] for row in limited["timeline"]] == ["Explicit"]
     assert limited["truncated"]
@@ -3113,6 +3133,11 @@ def test_event_date_provenance_is_validated_and_cannot_assert_recency_alone(work
     assert state["current_reported_states"]["owner"]["status"] == "partial"
     assert state["current_reported_states"]["owner"]["value"] is None
     assert state["timeline"][0]["evidence"][0]["text"] == "Rae"
+    readable = call(
+        "query", "--pipeline", "timeline-reconstruction", "--text", payload={"query": query}
+    )
+    assert "owner  Partial (no explicit event date)  [1]" in readable
+    assert "Reported value  Rae  [1]" in readable
     fact["event_date_basis"] = "explicit"
     payload["source"]["expected_checksum"] = receipt["checksum"]
     assert ingest(call, "explicit-citation", payload, pipeline="memory-update")["changed"]

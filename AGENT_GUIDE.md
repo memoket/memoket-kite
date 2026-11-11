@@ -61,7 +61,9 @@ For a terminal view, add `--text` to read the applied filters, inclusive date
 bounds, reported states and numbered quotations with source line IDs. When
 following states, the terminal labels the person, speaker, event and phrase
 filters as clues because subsequent evidence can match the discovered state
-key. Affected states identify evidence excluded because its date was uncertain.
+key. Ambiguous and partial states show each reported value with its supporting
+quotes. Partial states identify gaps such as additional pages, unresolved
+filters or uncertain dates.
 
 ```sh
 kite-tool query --input - <<'JSON'
