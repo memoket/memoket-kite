@@ -17,6 +17,10 @@ matches, check whether the relevant recordings have dates before reporting an
 empty period. For an index-only workspace, use `context` for decision changes.
 Read the surrounding quotes for approval, explicit effective dates, and later
 corrections. Report unknown dates or unresolved conflicts with their citations.
+Use `--latest` when the task needs newer recordings first. For a comparison,
+check the earlier and later evidence separately if one is missing from the pack.
+In the graph, **Recording dates** limits search and the result panel groups
+passages by their recording date.
 
 Use `bash "$KITE" topics --contains PHRASE` to find indexed topics, then
 `bash "$KITE" query --topic TOPIC --text` for a readable trace. Use
