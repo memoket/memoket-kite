@@ -1442,17 +1442,18 @@ def test_a_release_is_bound_to_the_corpus_the_run_declared(tmp_path, monkeypatch
 
     result_dir = tmp_path / "run"
     result_dir.mkdir()
+    paths = {"dataset": tmp_path / "dataset.json", "codebooks": tmp_path / "codebooks"}
     (result_dir / "manifest.json").write_text(json.dumps({"corpus_sha": "1" * 16}))
     monkeypatch.setattr(manifest, "corpus_digest", lambda paths: "1" * 16)
-    assert sealed.require_same_corpus("locomo", result_dir) == "1" * 16
+    assert sealed.require_same_corpus("locomo", result_dir, **paths) == "1" * 16
 
     monkeypatch.setattr(manifest, "corpus_digest", lambda paths: "2" * 16)
     with pytest.raises(RuntimeError, match="corpus on disk is"):
-        sealed.require_same_corpus("locomo", result_dir)
+        sealed.require_same_corpus("locomo", result_dir, **paths)
 
     (result_dir / "manifest.json").write_text("{}")
     with pytest.raises(RuntimeError, match="declares no corpus_sha"):
-        sealed.require_same_corpus("locomo", result_dir)
+        sealed.require_same_corpus("locomo", result_dir, **paths)
 
 
 def test_a_budgeted_pack_refuses_an_estimated_tokenizer(monkeypatch):
@@ -1542,7 +1543,7 @@ def test_a_release_names_the_commit_that_was_measured(tmp_path, monkeypatch):
 
     manifest = {"benchmarks": {"locomo": {"result_path": "a"}, "longmemeval": {"result_path": "b"}}}
     paths = {"a": run_dir("a", measured), "b": run_dir("b", measured)}
-    monkeypatch.setattr(package, "repository_path", lambda value: paths[value])
+    monkeypatch.setattr(package, "artifact_path", lambda value: paths[value])
     assert package._released_commit(manifest) == measured
 
     # Writing the measured score into the README and into the release manifest

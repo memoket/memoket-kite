@@ -109,7 +109,11 @@ python -m benchmarks.reproduce.verify longmemeval
 ```
 
 The verifier checks the reference paths, local manifests, corpus digests,
-Codebook and row counts, and reported aggregates. To validate a new run's
+Codebook and row counts, and reported aggregates. Set the same
+`KITE_ARTIFACTS_DIR` used to build or restore the artifacts before verifying.
+When checksummed benchmark archives are available,
+`python -m benchmarks.reproduce.prepare artifacts` restores them and their
+licences into that artifact directory. To validate a new run's
 seal and recompute its own metrics, use the tag and judge from that run.
 
 ```bash

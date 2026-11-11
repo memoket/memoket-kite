@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from queue import Queue
@@ -145,6 +146,42 @@ def test_benchmark_reproduction_with_a_loopback_model(tmp_path, benchmark, selec
             run("evaluate", *evaluate, "--resume")
             assert requests.qsize() == count
             run("score", *judge)
+            verification = artifacts / "verification.json"
+            codebooks = artifacts / "codebooks" / benchmark
+            dataset = next((artifacts / "datasets" / benchmark).glob("*.json"))
+            verification.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "datasets": {
+                            benchmark: {
+                                "path": f"artifacts/{dataset.relative_to(artifacts).as_posix()}",
+                                "sha256": sha256(dataset.read_bytes()).hexdigest(),
+                            }
+                        },
+                        "benchmarks": {
+                            benchmark: {
+                                "codebook_path": f"artifacts/codebooks/{benchmark}",
+                                "result_path": f"artifacts/results/{result.name}/judged.jsonl",
+                                "codebooks": 1 if benchmark == "locomo" else len(answers),
+                                "result_rows": len(answers),
+                                "metric": "accuracy",
+                                "score": 1.0,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            verify = ("benchmarks.reproduce.verify", benchmark, "--manifest", str(verification))
+            count = requests.qsize()
+            assert "accuracy=1.000000" in run_module(*verify)
+            codebook = next(codebooks.glob("*.xml"))
+            original_book = codebook.read_bytes()
+            codebook.write_bytes(original_book + b"\n<!-- changed corpus -->\n")
+            run_module(*verify, error="corpus on disk is")
+            codebook.write_bytes(original_book)
+            assert requests.qsize() == count
             run("evaluate", *evaluate, "--answer-model", "smoke-candidate", "--tag", "candidate")
             run("score", *judge, "--tag", "candidate")
             candidate = result.with_name(f"{benchmark}-candidate")

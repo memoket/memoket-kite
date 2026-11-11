@@ -73,6 +73,36 @@ def test_archive_extraction_rejects_parent_traversal(tmp_path):
     assert not (tmp_path / "outside.txt").exists()
 
 
+def test_release_artifacts_restore_into_the_configured_root(tmp_path, monkeypatch):
+    root = tmp_path / "isolated"
+    archive = root / "downloads" / "v-test" / "locomo.tar.gz"
+    archive.parent.mkdir(parents=True)
+    with tarfile.open(archive, "w:gz") as bundle:
+        for name, value in {
+            "artifacts/codebooks/locomo/example.xml": b"<codebook />",
+            "artifacts/results/locomo-sample/judged.jsonl": b"{}\n",
+            "artifacts/cache/plans/locomo-sample/plan.json": b"{}\n",
+            "licenses/third-party/synthetic.txt": b"license fixture\n",
+            "LICENSE-DATA.md": b"license index\n",
+        }.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(value)
+            bundle.addfile(info, io.BytesIO(value))
+    monkeypatch.setattr(prepare, "ARTIFACTS_ROOT", root)
+    prepare.prepare_artifacts(
+        {
+            "release": {"version": "v-test"},
+            "benchmarks": {"locomo": {"asset": archive.name, "asset_sha256": sha256(archive)}},
+        }
+    )
+    assert (root / "codebooks/locomo/example.xml").read_bytes() == b"<codebook />"
+    assert (root / "results/locomo-sample/judged.jsonl").is_file()
+    assert (root / "cache/plans/locomo-sample/plan.json").is_file()
+    assert (root / "licenses/third-party/synthetic.txt").is_file()
+    assert (root / "LICENSE-DATA.md").is_file()
+    assert not (root / "artifacts").exists()
+
+
 def test_offline_verification_recomputes_manifest_score(corpus, tmp_path, monkeypatch):
     """Verification goes through the judge seal, not around it.
 
@@ -92,10 +122,9 @@ def test_offline_verification_recomputes_manifest_score(corpus, tmp_path, monkey
     (result_dir / "results_a.jsonl").write_text('{"qa_idx": 0}\n', encoding="utf-8")
     # a real corpus binding: the release path checks the digest, not the count
     from benchmarks.common import manifest as run_manifest
-    from benchmarks.common.paths import CODEBOOKS_ROOT
     from benchmarks.locomo.evaluate import DATASET as LOCOMO_DATASET
 
-    corpus_sha = run_manifest.corpus_digest([LOCOMO_DATASET, CODEBOOKS_ROOT / "locomo"])
+    corpus_sha = run_manifest.corpus_digest([LOCOMO_DATASET, codebooks])
     (result_dir / "manifest.json").write_text(
         json.dumps({"samples": [0], "corpus_sha": corpus_sha}) + "\n", encoding="utf-8"
     )
@@ -129,8 +158,10 @@ def test_offline_verification_recomputes_manifest_score(corpus, tmp_path, monkey
     )
 
     paths = {"codebooks": codebooks, "results": result_dir / "judged.jsonl"}
-    monkeypatch.setattr(verify, "repository_path", lambda value: paths[value])
+    monkeypatch.setattr(verify, "artifact_path", lambda value: paths[value])
+    monkeypatch.setattr(verify, "dataset_path", lambda value: LOCOMO_DATASET)
     manifest = {
+        "datasets": {"locomo": {"path": "dataset", "sha256": sha256(LOCOMO_DATASET)}},
         "benchmarks": {
             "locomo": {
                 "codebook_path": "codebooks",
@@ -140,11 +171,14 @@ def test_offline_verification_recomputes_manifest_score(corpus, tmp_path, monkey
                 "metric": "accuracy",
                 "score": 1.0,
             }
-        }
+        },
     }
 
     metrics = verify.verify_benchmark("locomo", manifest)
     assert metrics["overall"]["accuracy"] == 1.0
+    manifest["datasets"]["locomo"]["sha256"] = "0" * 64
+    with pytest.raises(RuntimeError, match="pinned dataset is missing or has the wrong checksum"):
+        verify.verify_benchmark("locomo", manifest)
 
 
 def test_longmemeval_pack_units_includes_aligned_instance_mentions():
@@ -461,7 +495,7 @@ def test_packaging_can_waive_an_unverifiable_commit(tmp_path, monkeypatch):
             json.dumps({"commit": commit, "dirty": False}), encoding="utf-8"
         )
         results[name] = directory / "judged.jsonl"
-    monkeypatch.setattr(release_package, "repository_path", lambda value: results[value])
+    monkeypatch.setattr(release_package, "artifact_path", lambda value: results[value])
     # The packager's own tree is checked first; that is a separate rule, and
     # this test is about which commits the results agree on.
     monkeypatch.setattr(release_package, "_pending_measured_changes", lambda: "")

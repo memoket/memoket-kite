@@ -26,7 +26,7 @@ from benchmarks.common.paths import ARTIFACTS_ROOT, REPO_ROOT
 from benchmarks.locomo.protocol import summarize as summarize_locomo
 from benchmarks.longmemeval.protocol import summarize as summarize_longmemeval
 from benchmarks.reproduce import sealed
-from benchmarks.reproduce.common import load_manifest, repository_path, sha256
+from benchmarks.reproduce.common import artifact_path, dataset_path, load_manifest, sha256
 
 
 def _toml_section(document: str, name: str) -> str:
@@ -317,7 +317,7 @@ def _released_commit(manifest: dict, *, allow_unreachable: bool = False) -> str:
         )
     commits = {}
     for name, specification in manifest["benchmarks"].items():
-        run = repository_path(specification["result_path"]).parent / "manifest.json"
+        run = artifact_path(specification["result_path"]).parent / "manifest.json"
         if not run.exists():
             raise RuntimeError(f"{name}: no run manifest, so what produced it is unknown")
         recorded = json.loads(run.read_text())
@@ -950,19 +950,24 @@ def _package_release_staged(
     # from, and the tag must name exactly that — otherwise the wheel on the
     # release and the source at the tag need never have matched.
     manifest["release"]["source_commit"] = _source_commit()
+    datasets = {}
     for name, dataset in manifest["datasets"].items():
-        path = repository_path(dataset["path"])
-        if not path.exists() or sha256(path) != dataset["sha256"]:
+        path = dataset_path(dataset["path"])
+        if not path.is_file() or sha256(path) != dataset["sha256"]:
             raise RuntimeError(f"{name}: pinned dataset is missing or has the wrong checksum")
+        datasets[name] = path
 
     for name, specification in manifest["benchmarks"].items():
-        result_path = repository_path(specification["result_path"])
+        result_path = artifact_path(specification["result_path"])
+        codebooks = artifact_path(specification["codebook_path"])
         # Verify the seal FIRST. Recomputing a score from an unverified verdict
         # file and then stamping the release "verified" would let a flipped
         # verdict — or a missing judge manifest — ship under that word.
         records = sealed.verified_records(name, result_path)
         specification["judge_seal"] = sealed.seal(result_path.parent)
-        sealed.require_same_corpus(name, result_path.parent)
+        sealed.require_same_corpus(
+            name, result_path.parent, dataset=datasets[name], codebooks=codebooks
+        )
         if len(records) != specification["result_rows"]:
             raise RuntimeError(
                 f"{name}: expected {specification['result_rows']} rows, found {len(records)}"
@@ -982,7 +987,6 @@ def _package_release_staged(
                 f"to {score}; re-run, or update the manifest deliberately"
             )
         specification["score"] = score
-        codebooks = repository_path(specification["codebook_path"])
         _require_loadable_codebooks(name, codebooks, specification["codebooks"])
         result_dir = result_path.parent
         _require_declared_models(name, result_dir, manifest["models"])

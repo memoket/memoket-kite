@@ -7,9 +7,10 @@ import os
 import tarfile
 import tempfile
 import urllib.request
-from pathlib import Path
+from copy import copy
+from pathlib import Path, PurePosixPath
 
-from benchmarks.common.paths import ARTIFACTS_ROOT, REPO_ROOT
+from benchmarks.common.paths import ARTIFACTS_ROOT
 from benchmarks.reproduce.common import dataset_path, load_manifest, sha256
 
 
@@ -46,14 +47,42 @@ def prepare_datasets(manifest: dict) -> None:
 
 
 def _safe_extract(archive: Path, destination: Path) -> None:
+    root = destination.resolve()
     with tarfile.open(archive, "r:gz") as bundle:
+        members = []
+        destinations = set()
         for member in bundle.getmembers():
-            if member.issym() or member.islnk():
-                raise RuntimeError(f"archive links are not allowed: {member.name}")
-            target = (destination / member.name).resolve()
-            if not target.is_relative_to(destination.resolve()):
+            name = PurePosixPath(member.name)
+            if (
+                name.is_absolute()
+                or ".." in name.parts
+                or "\\" in member.name
+                or ":" in member.name
+            ):
                 raise RuntimeError(f"unsafe archive member: {member.name}")
-        bundle.extractall(destination)
+            if not (member.isfile() or member.isdir()):
+                raise RuntimeError(
+                    f"archive member is not a regular file or directory: {member.name}"
+                )
+            if name.is_relative_to("artifacts"):
+                name = name.relative_to("artifacts")
+                if name.parts and name.parts[0] not in {"cache", "codebooks", "results"}:
+                    raise RuntimeError(f"unexpected benchmark archive member: {member.name}")
+            elif name != PurePosixPath("LICENSE-DATA.md") and not name.is_relative_to("licenses"):
+                raise RuntimeError(f"unexpected benchmark archive member: {member.name}")
+            target = (root / name).resolve()
+            if not target.is_relative_to(root) or (target == root and not member.isdir()):
+                raise RuntimeError(f"unsafe archive member: {member.name}")
+            if target == root:
+                continue
+            if target in destinations:
+                raise RuntimeError(f"duplicate benchmark archive destination: {member.name}")
+            destinations.add(target)
+            installed = copy(member)
+            installed.name = name.as_posix()
+            members.append(installed)
+        options = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
+        bundle.extractall(root, members=members, **options)
 
 
 def prepare_artifacts(manifest: dict) -> None:
@@ -69,7 +98,7 @@ def prepare_artifacts(manifest: dict) -> None:
         archive = download_dir / benchmark["asset"]
         if not archive.exists() or sha256(archive) != expected:
             _download(f"{base_url}/{benchmark['asset']}", archive, expected)
-        _safe_extract(archive, REPO_ROOT)
+        _safe_extract(archive, ARTIFACTS_ROOT)
         print(f"{name}: installed verified release artifacts")
 
 

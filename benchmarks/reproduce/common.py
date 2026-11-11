@@ -6,7 +6,7 @@ import hashlib
 import json
 from pathlib import Path, PurePosixPath
 
-from benchmarks.common.paths import ARTIFACTS_ROOT, REPO_ROOT
+from benchmarks.common.paths import ARTIFACTS_ROOT
 
 MANIFEST_PATH = Path(__file__).with_name("manifest.json")
 
@@ -19,17 +19,20 @@ def load_manifest(path: Path = MANIFEST_PATH) -> dict:
     return manifest
 
 
-def repository_path(value: str) -> Path:
-    path = (REPO_ROOT / value).resolve()
-    if not path.is_relative_to(REPO_ROOT):
-        raise ValueError(f"manifest path escapes the repository: {value}")
+def artifact_path(value: str) -> Path:
+    relative = PurePosixPath(value).relative_to("artifacts")
+    if ".." in relative.parts or "\\" in value or ":" in value:
+        raise ValueError(f"manifest path escapes the artifact directory: {value}")
+    path = (ARTIFACTS_ROOT / relative).resolve()
+    if not path.is_relative_to(ARTIFACTS_ROOT) or path == ARTIFACTS_ROOT:
+        raise ValueError(f"manifest path escapes the artifact directory: {value}")
     return path
 
 
 def dataset_path(value: str) -> Path:
-    relative = PurePosixPath(value).relative_to("artifacts/datasets")
+    PurePosixPath(value).relative_to("artifacts/datasets")
     root = ARTIFACTS_ROOT / "datasets"
-    path = (root / relative).resolve()
+    path = artifact_path(value)
     if not path.is_relative_to(root) or path == root:
         raise ValueError(f"manifest dataset path escapes the dataset directory: {value}")
     return path

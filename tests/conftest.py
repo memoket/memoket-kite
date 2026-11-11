@@ -80,7 +80,6 @@ def corpus(monkeypatch, tmp_path):
         "benchmarks.longmemeval.score",
         "benchmarks.locomo.evaluate",
         "benchmarks.locomo.score",
-        "benchmarks.reproduce.sealed",
     ):
         imported = importlib.import_module(module)
         for name, value in (
@@ -116,15 +115,6 @@ def corpus(monkeypatch, tmp_path):
         imported = importlib.import_module(module)
         if hasattr(imported, name):
             monkeypatch.setattr(imported, name, value)
-    sealed = importlib.import_module("benchmarks.reproduce.sealed")
-    monkeypatch.setattr(
-        sealed, "LOCOMO_DATASET", FIXTURE_CORPUS / "datasets" / "locomo" / "locomo10.json"
-    )
-    monkeypatch.setattr(
-        sealed,
-        "LONGMEMEVAL_DATASET",
-        FIXTURE_CORPUS / "datasets" / "longmemeval" / "longmemeval_s_cleaned.json",
-    )
     # `_load_dataset` caches, and both LoCoMo harnesses go through it.
     locomo = importlib.import_module("benchmarks.locomo.evaluate")
     if hasattr(locomo._load_dataset, "cache_clear"):

@@ -18,10 +18,7 @@ import json
 from pathlib import Path
 
 from benchmarks.common import judging
-from benchmarks.common.paths import CODEBOOKS_ROOT
-from benchmarks.locomo.evaluate import DATASET as LOCOMO_DATASET
 from benchmarks.locomo.protocol import JUDGE_PROMPT as LOCOMO_PROTOCOL
-from benchmarks.longmemeval.evaluate import DATASET as LONGMEMEVAL_DATASET
 from benchmarks.longmemeval.protocol import JUDGE_PROMPTS as LONGMEMEVAL_PROTOCOL
 
 # The rubric each benchmark's verdicts were produced under. `protocol_sha` is
@@ -78,11 +75,7 @@ def verified_run(
     return records, _seal_fields(recorded)
 
 
-#: Which dataset and codebook folder each benchmark's corpus digest covers.
-CORPORA = {"locomo": "locomo", "longmemeval": "longmemeval"}
-
-
-def require_same_corpus(name: str, result_dir: Path) -> str:
+def require_same_corpus(name: str, result_dir: Path, *, dataset: Path, codebooks: Path) -> str:
     """The corpus on disk must be the one the sealed run declares it read.
 
     Counting `*.xml` files says nothing about their contents: replacing a
@@ -98,9 +91,7 @@ def require_same_corpus(name: str, result_dir: Path) -> str:
             f"{name}: {result_dir.name} declares no corpus_sha, so what it read cannot "
             f"be verified; re-run it before release"
         )
-    folder = CORPORA[name]
-    dataset = LOCOMO_DATASET if name == "locomo" else LONGMEMEVAL_DATASET
-    current = manifest.corpus_digest([dataset, CODEBOOKS_ROOT / folder])
+    current = manifest.corpus_digest([dataset, codebooks])
     if current != recorded:
         raise RuntimeError(
             f"{name}: sealed against corpus {recorded}, but the corpus on disk is "

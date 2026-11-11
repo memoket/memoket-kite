@@ -9,15 +9,19 @@ from pathlib import Path
 from benchmarks.locomo.protocol import summarize as summarize_locomo
 from benchmarks.longmemeval.protocol import summarize as summarize_longmemeval
 from benchmarks.reproduce import sealed
-from benchmarks.reproduce.common import load_manifest, repository_path
+from benchmarks.reproduce.common import artifact_path, dataset_path, load_manifest, sha256
 
 SUMMARIZERS = {"locomo": summarize_locomo, "longmemeval": summarize_longmemeval}
 
 
 def verify_benchmark(name: str, manifest: dict) -> dict:
     specification = manifest["benchmarks"][name]
-    codebook_dir = repository_path(specification["codebook_path"])
-    result_path = repository_path(specification["result_path"])
+    pinned = manifest["datasets"][name]
+    dataset = dataset_path(pinned["path"])
+    if not dataset.is_file() or sha256(dataset) != pinned["sha256"]:
+        raise RuntimeError(f"{name}: pinned dataset is missing or has the wrong checksum")
+    codebook_dir = artifact_path(specification["codebook_path"])
+    result_path = artifact_path(specification["result_path"])
     codebook_count = len(list(codebook_dir.glob("*.xml"))) if codebook_dir.exists() else 0
     if codebook_count != specification["codebooks"]:
         raise RuntimeError(
@@ -41,7 +45,7 @@ def verify_benchmark(name: str, manifest: dict) -> dict:
     if abs(score - float(expected)) > 1e-12:
         raise RuntimeError(f"{name}: expected score {expected}, recomputed {score}")
     binding = sealed.seal(result_path.parent)
-    sealed.require_same_corpus(name, result_path.parent)
+    sealed.require_same_corpus(name, result_path.parent, dataset=dataset, codebooks=codebook_dir)
     print(
         f"{name}: {codebook_count} Codebooks, {len(records)} rows, "
         f"{specification['metric']}={score:.6f} "
@@ -56,7 +60,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("benchmark", choices=tuple(SUMMARIZERS))
     parser.add_argument("--manifest", type=Path, default=Path(__file__).with_name("manifest.json"))
     args = parser.parse_args(argv)
-    metrics = verify_benchmark(args.benchmark, load_manifest(args.manifest))
+    try:
+        metrics = verify_benchmark(args.benchmark, load_manifest(args.manifest))
+    except (OSError, KeyError, RuntimeError, TypeError, ValueError) as error:
+        parser.exit(1, f"verification failed: {error}\n")
     print(json.dumps(metrics, indent=2, sort_keys=True))
     return 0
 

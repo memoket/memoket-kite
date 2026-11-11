@@ -40,7 +40,9 @@ python -m benchmarks.reproduce.verify longmemeval
 ```
 
 The verifier checks the reference paths, local manifests, corpus digests,
-expected Codebook and row counts, and reported aggregates. For a run made with
+expected Codebook and row counts, and reported aggregates. Preparation,
+verification, and packaging use the artifact root selected by
+`KITE_ARTIFACTS_DIR`. For a run made with
 the current prompt or a custom tag or model, validate its seal and recompute its
 metrics with the corresponding scorer.
 
