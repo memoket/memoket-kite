@@ -8,6 +8,8 @@ import unicodedata
 from collections import defaultdict
 from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass, replace
+from itertools import islice
+from math import log
 
 from .contracts import DATE, TEXT, ToolError, array, object_schema, utc_timestamp, validate
 from .index import SPAN_FACET_AXES, revision_id
@@ -21,6 +23,8 @@ _TRACE_CANDIDATES = 80
 _TEXT_SOURCE_COPIES = 8
 _FOLLOWUP_LINES = 3
 _SELECTIVE_SPANS = 4
+_CLAUSE_MATCH_LIMIT = 300
+_CLAUSE_SPAN_LIMIT = 1200
 _RECORDING_DATES = ("start_date", "end_date")
 _SEARCH_TERMS = re.compile(r"[\u3400-\u9fff]+|[^\W_]+", re.UNICODE)
 _HAN = re.compile(r"([\u3400-\u9fff])")
@@ -68,6 +72,38 @@ _SCHEDULE_CHANGE = re.compile(
     r"改成|改到|改上|改了|改为|推迟|延期|延后|提前到|挪到|调整到|重新定|"
     r"\b(?:reschedul\w*|postpon\w*|bring forward|brought forward|"
     r"mov(?:e|ed|ing) to|chang(?:e|ed|ing) to|push(?:ed|ing)? back)\b",
+    re.I,
+)
+_CLAUSE_BREAK = re.compile(r"[?？。！!;；]")
+_CLAUSE_FILLERS = re.compile(
+    r"原定|原本|原先|之后|然后|团队|我们|何时|开始|准备|采用|打算|"
+    r"怎么样|怎么|如何|什么时候|什么时间|最初|早先|此前|后来|后续|什么|哪个|哪天|哪种|"
+    r"哪几|多少|分别|梳理|有没有|已经|为什么|是否|当时|刚|这个|那个|的|了|吗|呢|"
+    r"\b(?:initially|later|earlier|then|previously|originally|what|when|where|why|how|did|"
+    r"was|were|has|have|had|the|from|to|and|at|on|or|for|by|of|in)\b",
+    re.I,
+)
+_CLAUSE_DATE_QUESTION = re.compile(
+    r"哪天|日期|什么时候|何时|改期|延期|推迟|哪日|哪一日|\b(?:date|when|deadline)\b", re.I
+)
+_CLAUSE_DATE = re.compile(
+    rf"(?:{_CALENDAR_DAY.pattern})|[0-9]{{1,2}}\s*月|[一二三四五六七八九十]{{1,3}}月",
+    re.I,
+)
+_CLAUSE_TIME = re.compile(
+    r"\d{1,4}\s*[日号点周季]|今天|明天|昨天|上周|下周|这周|月底|本月|"
+    r"\b(?:today|tomorrow|yesterday|last week|next week)\b",
+    re.I,
+)
+_CLAUSE_DECISION = re.compile(
+    r"提前|延期|推迟|延后|改成|改到|改了|调整|挪到|重排|重新排|不变|没有改变|保留|"
+    r"一起|确定|决定|就按|锁[定个]|不用|还是|再选|再定|备选|同时|"
+    r"\b(?:reschedul\w*|delay\w*|postpon\w*|revis\w*|chang\w*|decid\w*|approv\w*|"
+    r"confirm\w*|switch\w*|retain\w*|replac\w*|withdraw\w*|tentative|instead|unchanged|keep)\b",
+    re.I,
+)
+_CLAUSE_CHANGE_QUESTION = re.compile(
+    rf"{_CLAUSE_DECISION.pattern}|变更|更改|改期|改锁|改用|切换|定了|选定|改为|批准|重新安排",
     re.I,
 )
 _QUERY_FILLERS = re.compile(
@@ -1101,6 +1137,121 @@ def _schedule_followup(workspace, index, plan, rows, limit, max_bytes):
     return None
 
 
+def _change_clause_candidates(workspace, index, question, limit, max_bytes):
+    clauses = list(
+        dict.fromkeys(part.strip() for part in _CLAUSE_BREAK.split(question) if part.strip())
+    )
+    if not 2 <= len(clauses) <= min(4, limit - 3):
+        return []
+    cleaned = [_CLAUSE_FILLERS.sub(" ", part) for part in clauses]
+    words = [_tokens(part).split() for part in cleaned]
+    terms = dict.fromkeys(
+        _tokens(term)
+        for part in cleaned
+        for term in islice(dict.fromkeys(_question_phrases(part)), 96)
+    )
+    where, args = _search_scope(index.filters)
+    matches = {}
+    weights = {}
+    for term in terms:
+        rows = index.db.execute(
+            f"SELECT checksum, start, stop, day FROM context_spans WHERE {where} LIMIT ?",
+            (f'text : "{term}"', *args, _CLAUSE_MATCH_LIMIT + 1),
+        ).fetchall()
+        if not 0 < len(rows) <= _CLAUSE_MATCH_LIMIT:
+            continue
+        phrase = term.split()
+        length = len(phrase)
+        positions = [
+            {
+                offset
+                for start in range(len(clause) - length + 1)
+                if clause[start : start + length] == phrase
+                for offset in range(start, start + length)
+            }
+            for clause in words
+        ]
+        weight = 1 + 0.28 * log(_CLAUSE_MATCH_LIMIT / len(rows))
+        # Han matches cover at least two character tokens. Give a substantive
+        # English word comparable weight in a mixed-language question.
+        weights[term] = (2 * weight if _ENGLISH_WORD.fullmatch(term) else weight, positions)
+        matches.update({(row["checksum"], row["start"]): row for row in rows})
+        if len(matches) > _CLAUSE_SPAN_LIMIT:
+            return []
+
+    def coverage(hits):
+        # Overlapping phrases cover the same question words only once.
+        covered = [{} for _ in clauses]
+        for term in hits:
+            weight, positions = weights[term]
+            for clause, offsets in zip(covered, positions, strict=True):
+                for offset in offsets:
+                    clause[offset] = max(clause.get(offset, 0), weight)
+        return [sum(clause.values()) for clause in covered]
+
+    records = {}
+    line_terms = {}
+    ranked = [[] for _ in clauses]
+    asks_date = [bool(_CLAUSE_DATE_QUESTION.search(clause)) for clause in clauses]
+    for row in matches.values():
+        checksum, start, stop = row["checksum"], row["start"], row["stop"]
+        if checksum not in records:
+            record = (
+                index.records[checksum] if index.records is not None else workspace.record(checksum)
+            )
+            records[checksum] = record["conversation"]["segments"]
+        segments = records[checksum]
+        for pos in range(max(0, start - 1), min(len(segments), stop + 1)):
+            if (checksum, pos) not in line_terms:
+                tokens = f" {_tokens(segments[pos]['text'])} "
+                line_terms[checksum, pos] = {term for term in weights if f" {term} " in tokens}
+        for pos in range(start, stop):
+            text = segments[pos]["text"]
+            size = len(text.encode("utf-8"))
+            if size > max_bytes // 4:
+                continue
+            dates = min(2, len(set(_CLAUSE_DATE.findall(text))))
+            changes = min(2, len(set(_CLAUSE_DECISION.findall(text))))
+            if not (dates or changes or _CLAUSE_TIME.search(text)):
+                continue
+            direct = line_terms[checksum, pos]
+            nearby = (
+                direct
+                | line_terms.get((checksum, pos - 1), set())
+                | line_terms.get((checksum, pos + 1), set())
+            )
+            own, near = coverage(direct), coverage(nearby)
+            for part, dated in enumerate(asks_date):
+                if not near[part]:
+                    continue
+                score = own[part] + 0.45 * near[part] + 0.23 * max(own)
+                score += (own[0] + 0.4 * near[0]) * (0.35 if part else 0.15)
+                score += (2 * dates + 0.5 * changes) if dated else (2 * changes + 0.25 * dates)
+                ranked[part].append((score - (0 if own[part] else 2), row, pos, size))
+
+    selected = []
+    seen = set()
+    budget = max_bytes // 2
+    for clause, options in zip(clauses, ranked, strict=True):
+        for _, row, pos, size in sorted(options, key=lambda candidate: -candidate[0]):
+            key = (row["checksum"], pos)
+            if key in seen or size > budget:
+                continue
+            selected.append(
+                {
+                    **dict(row),
+                    "start": pos,
+                    "stop": pos + 1,
+                    "direct_positions": [pos],
+                    "selection": {"reason": "change_subquestion", "term": clause},
+                }
+            )
+            seen.add(key)
+            budget -= size
+            break
+    return selected
+
+
 def _compact_sources(
     workspace, index: _SearchIndex, plan: dict, question: str, budget: int
 ) -> tuple[dict, dict]:
@@ -1551,6 +1702,18 @@ def _context_evidence(
             )
         ):
             candidates.insert(1, followup)
+        elif (
+            _question
+            and not (preferred or anchors or matching_lines or plan.get("latest"))
+            and candidates
+            and neighbors
+            and _SCHEDULE_SEQUENCE.search(_question)
+            and _CLAUSE_CHANGE_QUESTION.search(_question)
+            and _question.count("?") + _question.count("？") >= 2
+        ):
+            candidates[1:1] = _change_clause_candidates(
+                workspace, index, _question, limit, max_bytes
+            )
         first_lines = (
             prioritize_first_lines
             and neighbors > 0

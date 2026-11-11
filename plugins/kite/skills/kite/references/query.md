@@ -19,6 +19,10 @@ Read the surrounding quotes for approval, explicit effective dates, and later
 corrections. Report unknown dates or unresolved conflicts with their citations.
 For schedule changes, the first search can use an earlier date mentioned again
 alongside the topic in a later recording to surface the nearby change.
+Ask related subquestions about a decision's evolution together with
+`context --question`. The first search can reserve evidence for each part
+within a shared budget. The candidate trace links those selections to the
+original passages.
 Use times marked timezone unknown for within-day ordering only when the
 sources are known to use the same local clock. Keep ties and unknown order
 explicit in the answer.

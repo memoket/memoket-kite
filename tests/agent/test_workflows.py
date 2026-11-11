@@ -6366,6 +6366,73 @@ def test_schedule_question_follows_a_repeated_calendar_date_into_a_later_recordi
         assert old in {line["text"] for span in bounded["spans"] for line in span["evidence"]}
 
 
+def test_change_questions_reserve_original_evidence_for_separate_subquestions(work):
+    directory, call = work
+    question = (
+        "What was the original library wayfinding prototype? "
+        "What did the later accessibility review approve for signage? "
+        "Did the print quantity change?"
+    )
+    initial = "We decided the library wayfinding prototype would use gray card and embossed arrows."
+    approved = "At the accessibility review we approve yellow vinyl for the signage."
+    retained = "We decided to keep the print quantity at 500 copies."
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {"source": text_input("mockup", initial, date="2026-01-04")["source"]},
+                *[
+                    {
+                        "source": text_input(
+                            f"discussion-{i}",
+                            f"Library wayfinding prototype discussion {i}. "
+                            "Accessibility review and signage are on the agenda. " * 14,
+                            date="2026-01-12",
+                        )["source"]
+                    }
+                    for i in range(8)
+                ],
+            ]
+        },
+    )
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {
+                    "source": text_input(
+                        "production", approved + " " + retained, date="2026-02-02"
+                    )["source"]
+                }
+            ]
+        },
+    )
+    args = ("context", "--question", question, "--explain")
+    result = call(*args, "--save", "separate-change-evidence")
+    lines = {line["text"] for span in result["spans"] for line in span["evidence"]}
+    assert {initial, approved + " " + retained} <= lines
+    assert result["quote_bytes"] <= result["quote_budget_bytes"] == 3800
+    selections = [
+        row
+        for row in result["packing_trace"]["candidates"]
+        if row.get("selection", {}).get("reason") == "change_subquestion"
+    ]
+    assert any(
+        row["conversation_id"] == "production"
+        and row["selection"]["term"]
+        == "What did the later accessibility review approve for signage"
+        and row["source_date"] == "2026-02-02"
+        and row["reason"] in {"quoted", "already_quoted"}
+        for row in selections
+    )
+    snapshot = viewer._snapshot(directory, [], run_id="separate-change-evidence")
+    assert all(row in snapshot["search_trace"]["packing"][0]["candidates"] for row in selections)
+    earlier = call(*args, "--end-date", "2026-01-31")
+    assert all(
+        row["conversation_id"] != "production" for row in earlier["packing_trace"]["candidates"]
+    )
+
+
 def test_context_quotes_identical_transcripts_once_and_retains_both_clocks(work):
     directory, call = work
     quotes = ["The relay calibration is 3 volts.", "The relay calibration passed."]

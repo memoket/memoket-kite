@@ -76,6 +76,9 @@ original packing ranks. Without `--text`, these details are returned in JSON.
 For a question about a schedule change, KITE can follow a date and topic
 mentioned again in a later recording and quote a nearby line about the change.
 The graph shows the repeated date and links to the original turns.
+For several subquestions about a decision's evolution, KITE can reserve
+original evidence for each subquestion within one quote budget. The saved
+candidate trace names the subquestion and links to the selected passage.
 When an unquoted English word has no match, question compilation can select
 a common plural or verb form found in the scoped original text. The graph
 shows the search word and the indexed form. Use `--matching-lines` to look
