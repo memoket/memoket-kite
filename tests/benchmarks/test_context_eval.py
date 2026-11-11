@@ -1,10 +1,15 @@
 import json
 import subprocess
 
+import pytest
+
 from benchmarks.agent import context_eval
 
 
-def test_bounded_context_benchmark_shares_the_same_originals_between_arms(tmp_path, monkeypatch):
+@pytest.mark.parametrize("matching_lines", [False, True])
+def test_bounded_context_benchmark_shares_the_same_originals_between_arms(
+    tmp_path, monkeypatch, matching_lines
+):
     corpus = tmp_path / "originals"
     corpus.mkdir()
     metadata = tmp_path / "dates"
@@ -23,7 +28,7 @@ def test_bounded_context_benchmark_shares_the_same_originals_between_arms(tmp_pa
     case = {
         "id": "release",
         "task": "Check the release checklist and deployment ownership.",
-        "questions": ["Was the release checklist approved?", "Who owns the deployment?"],
+        "questions": ['Was the "release checklist" approved?', 'Who "owns the deployment"?'],
         "start_date": "2026-04-01",
         "end_date": "2026-04-01",
         "claims": {
@@ -37,7 +42,9 @@ def test_bounded_context_benchmark_shares_the_same_originals_between_arms(tmp_pa
     scopes = context_eval.prepare_case_corpora(sources, [case], output, with_files=True)
     scope = scopes["release"]
     assert scope.source_count == 1 and scope.citations == {"inside#L3", "inside#L4"}
-    row, pack = context_eval.retrieval_case(scope.workspace, case, question=True)
+    row, pack = context_eval.retrieval_case(
+        scope.workspace, case, question=True, matching_lines=matching_lines
+    )
     assert row["claims_with_evidence"] == row["claims_requiring_evidence"] == 2
     assert row["complete"]
     assert "Question 2" in pack and "outside" not in pack
@@ -49,6 +56,9 @@ def test_bounded_context_benchmark_shares_the_same_originals_between_arms(tmp_pa
             assert "./kite context --text" in prompt
             default = subprocess.check_output([cwd / "kite", "context", "--text"], text=True)
             assert "Question 2" in default and "inside#L3" in default and "inside#L4" in default
+            if matching_lines:
+                first, second = default.split("Question 2", 1)
+                assert "inside#L4" not in first and "inside#L3" not in second
             result = json.loads(subprocess.check_output([cwd / "kite", "topics"], text=True))
             assert result["ok"]
             found = subprocess.check_output(
@@ -86,6 +96,7 @@ def test_bounded_context_benchmark_shares_the_same_originals_between_arms(tmp_pa
             output / "memory",
             question=True,
             scopes=scopes,
+            matching_lines=matching_lines,
         )
     )
     assert all(trial["score"]["full_pass"] for trial in trials)

@@ -229,12 +229,16 @@ def evidence_ids(pack: dict) -> set[str]:
     }
 
 
-def retrieval_case(workspace: Path, case: dict, *, question: bool = False) -> tuple[dict, str]:
+def retrieval_case(
+    workspace: Path, case: dict, *, question: bool = False, matching_lines: bool = False
+) -> tuple[dict, str]:
     if question:
         questions = case_questions(case)
         args = ["--question", questions[0]]
         if len(questions) == 2:
             args += ["--compare-with", questions[1]]
+        if matching_lines:
+            args += ["--matching-lines"]
     else:
         args = [value for term in case["terms"] for value in ("--term", term)]
         args += ["--limit", "10", "--max-bytes", "7500"]
@@ -472,7 +476,9 @@ def score_revisions(workspace: Path, records: list[dict], cases: list[dict]) -> 
     }
 
 
-def write_launcher(launcher: Path, workspace: Path, questions: list[str] | None) -> None:
+def write_launcher(
+    launcher: Path, workspace: Path, questions: list[str] | None, *, matching_lines: bool = False
+) -> None:
     command = shlex.join(
         [
             sys.executable,
@@ -487,6 +493,8 @@ def write_launcher(launcher: Path, workspace: Path, questions: list[str] | None)
         default = ["--question", questions[0]]
         if len(questions) == 2:
             default += ["--compare-with", questions[1]]
+        if matching_lines:
+            default += ["--matching-lines"]
         script += [
             'if [ "${1-}" = context ]; then',
             '  for arg in "$@"; do',
@@ -515,6 +523,7 @@ def run_host(
     scopes: dict[str, CaseCorpus] | None = None,
     source_format: str = "transcript-text",
     record_tool_output: bool = False,
+    matching_lines: bool = False,
 ):
     for index, case in enumerate(cases):
         if not (case.get("answer_patterns") or case.get("claims")):
@@ -602,6 +611,7 @@ def run_host(
                         directory / "kite",
                         selected_workspace,
                         case_questions(case) if scoped is not None else None,
+                        matching_lines=matching_lines,
                     )
                 trace = {"record_tool_output": True} if record_tool_output else {}
                 trial = codex_trial(binary, model, directory, prompt, **trace)
@@ -712,6 +722,11 @@ def main() -> None:
         help="use explicit case terms or compile the question with the current agent entry point",
     )
     parser.add_argument(
+        "--matching-lines",
+        action="store_true",
+        help="benchmark question lookup using matching lines",
+    )
+    parser.add_argument(
         "--repeat", type=int, default=1, help="number of fresh paired host runs per case"
     )
     parser.add_argument(
@@ -731,6 +746,8 @@ def main() -> None:
         parser.error("provide a nonempty case array with distinct IDs")
     if not question and any("questions" in case for case in cases):
         parser.error("two-question cases require --retrieval question")
+    if args.matching_lines and not question:
+        parser.error("--matching-lines requires --retrieval question")
     if args.recording_metadata is not None and not args.recording_metadata.is_dir():
         parser.error("--recording-metadata requires a directory")
     sources = read_corpus(args.corpus, args.source_format, args.recording_metadata)
@@ -747,6 +764,7 @@ def main() -> None:
             any(key in case for key in ("claims", "start_date", "end_date", "questions"))
             for case in cases
         )
+        or args.matching_lines
     )
     scopes = (
         prepare_case_corpora(sources, cases, args.output, with_files=bool(args.model))
@@ -757,7 +775,12 @@ def main() -> None:
     packs = {}
     for case in cases:
         scope = scopes[case["id"]] if scopes is not None else None
-        row, pack = retrieval_case(scope.workspace if scope else workspace, case, question=question)
+        row, pack = retrieval_case(
+            scope.workspace if scope else workspace,
+            case,
+            question=question,
+            matching_lines=args.matching_lines,
+        )
         if scope is not None:
             row.update(source_count=scope.source_count, source_sha256=scope.sha256)
         packs[case["id"]] = pack
@@ -787,6 +810,8 @@ def main() -> None:
         kite(workspace, "backup", str(revision_workspace))
         result["revision_spec_sha256"] = hashlib.sha256(update_spec).hexdigest()
         result["revisions"] = score_revisions(revision_workspace, records, json.loads(update_spec))
+    if args.matching_lines:
+        result["matching_lines"] = True
     report = args.output / "results.json"
     report.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     if args.model:
@@ -810,6 +835,7 @@ def main() -> None:
                 scopes=scopes,
                 source_format=args.source_format,
                 record_tool_output=args.record_tool_output,
+                matching_lines=args.matching_lines,
             ):
                 result["codex"].append(trial)
                 report.write_text(

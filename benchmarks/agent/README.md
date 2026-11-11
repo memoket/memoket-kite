@@ -206,6 +206,10 @@ usage separately. `rendered_bytes` measures the offline context pack including
 its citation headers.
 Use `--repeat 3` to run fresh paired sessions three times per case. Each
 repetition reverses the arm order and retains its own Codex usage record.
+Add `--matching-lines` to benchmark questions that ask for the source of a
+known quotation. Include the quoted phrase in the case question. The file
+arm receives the same question and source scope. This setting is recorded in
+the result and applies to the first KITE lookup and offline context pack.
 
 For notes, pass `--source-format text` to read UTF-8 `.txt` and `.md` files.
 Their citations use `file-stem#text-line-N`. Pass `--recording-metadata DIR`
