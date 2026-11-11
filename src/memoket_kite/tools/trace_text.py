@@ -1,4 +1,4 @@
-"""Render the existing trace report for a terminal."""
+"""Render trace reports and workflow checkpoints for a terminal."""
 
 from __future__ import annotations
 
@@ -19,6 +19,12 @@ _STATUS = {
     "inference": "Inference",
     "statement": "Statement",
 }
+_RECOVERY_HINTS = {
+    "stale_snapshot": "Start a new run on the current memory snapshot.",
+    "stale_definition": "Start a new run with the current pipeline definition.",
+    "stale_preview": "Create a fresh deletion preview and obtain approval for it.",
+    "integrity_error": "Inspect the workspace with kite-tool integrity --include-workflows.",
+}
 # Keep terminal controls and directional overrides visible as escapes.
 _CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]")
 
@@ -29,6 +35,46 @@ def _inline(text: str) -> str:
 
 def _references(numbers: Iterable[int]) -> str:
     return " ".join(f"[{number}]" for number in sorted(set(numbers)))
+
+
+def render_status(checkpoint: dict) -> str:
+    state = checkpoint["state"].replace("_", " ").capitalize()
+    snapshot = "current" if checkpoint["snapshot_current"] else "older than current memory"
+    lines = [
+        f"Run  {checkpoint['run_id']}",
+        f"Pipeline  {checkpoint['pipeline_id']} v{checkpoint['pipeline_version']}",
+        f"Status  {state}",
+        f"Memory snapshot  {checkpoint['memory_version']} ({snapshot})",
+    ]
+    if stage_id := checkpoint["current_stage"]:
+        lines.append(f"Last stage  {stage_id}")
+    lines.extend(("", "Stages"))
+    for stage_id, stage in checkpoint["stages"].items():
+        stage_state = stage["state"].replace("_", " ").capitalize()
+        detail = f"  attempts {stage['attempts']}, retries {stage['retry_count']}"
+        if error := stage["error"]:
+            detail += f"  {error}"
+        lines.append(f"  {stage_id}  {stage_state}{detail}")
+
+    resume = checkpoint["resume"]
+    if resume["state"] == "blocked":
+        reason = resume["reason"]
+        lines.extend(("", f"Resume blocked  {reason}"))
+        if hint := _RECOVERY_HINTS.get(reason):
+            lines.append(hint)
+    elif resume["state"] == "complete":
+        lines.extend(("", "Run complete"))
+    else:
+        lines.extend(("", "Next stages"))
+        for stage in resume["stages"]:
+            lines.append(f"  {stage['id']}  ({stage['tool']})")
+            lines.append(f"    Skill  {stage['skill']}")
+            if missing := stage["missing_inputs"]:
+                inputs = ", ".join(f"{name} ({kind})" for name, kind in missing.items())
+                lines.append(f"    Missing inputs  {inputs}")
+            if flags := stage["required_flags"]:
+                lines.append(f"    Authorization flags  {', '.join(flags)}")
+    return "\n".join(map(_inline, lines))
 
 
 def _render_states(report: dict, references: dict[str, list[int]]) -> list[str]:

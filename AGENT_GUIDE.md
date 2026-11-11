@@ -132,7 +132,9 @@ exceeds the target. Other response fields use additional bytes.
    write access before checkpoint data can be shown.
 5. Use `kite-tool status RUN_ID` to inspect `resume.stages`. Each eligible
    stage lists its skill, the names and types of missing inputs, and any flags
-   that require explicit user authorization. Repeating a completed stage
+   that require explicit user authorization. Add `--text` for a terminal view
+   of stage status, attempts, recovery requirements and blocked reasons.
+   Repeating a completed stage
    returns its prior artifact on the same snapshot. Inspect a current artifact
    with `kite-tool artifact RUN_ID STAGE_ID`. Start a fresh run if `resume.reason`
    is `stale_snapshot` or `stale_definition`. Checkpoints bind the schemas

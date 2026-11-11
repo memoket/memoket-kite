@@ -16,7 +16,7 @@ from .ingest import file_source
 from .operations import SCHEMAS, SOURCE_SCOPE, TOOLS, Context
 from .resources import resource_root
 from .retrieve import evidence_context, segment_context, topic_inventory
-from .trace_text import render_trace
+from .trace_text import render_status, render_trace
 from .workflow import (
     SCRIPTED_IMPORT_STAGES,
     TRACE_PIPELINES,
@@ -300,6 +300,13 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("run_id")
         if name == "artifact":
             command.add_argument("stage_id")
+        else:
+            command.add_argument(
+                "--text",
+                dest="text_output",
+                action="store_true",
+                help="show checkpoint stages and recovery requirements for a terminal",
+            )
     segments = commands.add_parser("segments", help="read a page of a normalized transcript")
     segments.add_argument("run_id")
     segments.add_argument("stage_id")
@@ -703,6 +710,8 @@ def main(argv=None) -> int:
         print(render_demo(result["value"]))
     elif args.command == "query" and args.text_output:
         print(result["text"])
+    elif args.command == "status" and args.text_output:
+        print(render_status(result))
     elif args.command in {"audio-source", "file-source"}:
         print(encode(result))
     else:

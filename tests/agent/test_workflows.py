@@ -45,7 +45,9 @@ def work(tmp_path, capsys, monkeypatch):
         code = cli.main([*resources, "--workspace", str(workspace_dir or directory), *args])
         output = capsys.readouterr().out
         assert code == (2 if error else 0), output
-        if not error and (args[0] == "codebook" or (args[0] == "query" and "--text" in args)):
+        if not error and (
+            args[0] == "codebook" or (args[0] in {"query", "status"} and "--text" in args)
+        ):
             return output
         data = json.loads(output)
         if args[0] in {"audio-source", "file-source"} and not error:
@@ -451,11 +453,22 @@ def test_discover_interrupted_runs_and_resume_without_disclosing_inputs(work):
     }
     assert "private-text-marker" not in json.dumps([runs, status])
     assert "source-private-id" not in json.dumps([runs, status])
+    before = (directory / "kite.sqlite3").read_bytes()
+    readable = call("status", run_id, "--text")
+    assert f"Run  {run_id}\nPipeline  memory-ingestion v1\nStatus  Failed" in readable
+    assert "Last stage  annotate" in readable
+    assert "annotate  Failed  attempts 1, retries 0  missing_input" in readable
+    assert "Next stages\n  annotate  (annotate)" in readable
+    assert "Skill  skills/memory/fact-extraction/SKILL.md" in readable
+    assert "Missing inputs  annotations (annotations)" in readable
+    assert "private-text-marker" not in readable and "source-private-id" not in readable
+    assert (directory / "kite.sqlite3").read_bytes() == before
     call("stage", run_id, "annotate", payload={"annotations": source["annotations"]})
     assert call("status", run_id)["resume"]["stages"][0]["id"] == "commit"
     call("stage", run_id, "commit")
     call("stage", run_id, "verify")
     assert call("status", run_id)["resume"] == {"state": "complete", "stages": []}
+    assert "Run complete" in call("status", run_id, "--text")
 
     with sqlite3.connect(directory / "kite.sqlite3") as db:
         db.execute("UPDATE runs SET inputs = ? WHERE id = ?", ('{"private-marker":NaN}', run_id))
@@ -694,6 +707,9 @@ def test_inconsistent_taxonomy_rolls_back_and_stale_runs_are_detected(work):
     status = call("status", "stale")
     assert not status["snapshot_current"]
     assert status["resume"] == {"state": "blocked", "reason": "stale_snapshot", "stages": []}
+    readable = call("status", "stale", "--text")
+    assert "Memory snapshot  0 (older than current memory)" in readable
+    assert "Resume blocked  stale_snapshot" in readable
     call("stage", "stale", "retrieve", error="stale_snapshot")
     call("artifact", "stale", "resolve", error="stale_snapshot")
 
@@ -1169,6 +1185,9 @@ def test_deletion_approval_purge_and_replay(work):
     )
     status = call("status", "delete")
     assert status["resume"]["stages"][0]["required_flags"] == ["--approve"]
+    readable = call("status", "delete", "--text")
+    assert "Status  Awaiting approval" in readable and "Authorization flags  --approve" in readable
+    assert plan["approval_token"] not in readable and "private-celadon-body" not in readable
     unfinished = call("runs", "--unfinished")
     assert [(run["run_id"], run["state"]) for run in unfinished["runs"]] == [
         ("delete", "awaiting_approval")
