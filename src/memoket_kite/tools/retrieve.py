@@ -10,6 +10,7 @@ from memoket_kite.core.vocab import norm_code
 from .contracts import (
     CURSOR,
     DATE,
+    HASH,
     TEXT,
     ToolError,
     array,
@@ -21,6 +22,7 @@ from .contracts import (
 )
 from .index import event_date_basis, revision_id
 from .ingest import source_day
+from .source_diff import source_changes
 from .timing import precedes, source_timing
 
 QUERY = object_schema(
@@ -45,6 +47,15 @@ QUERY = object_schema(
     },
 )
 QUERY["dependentRequired"] = {"conversation_id": ["source"]}
+REVISION_COMPARISON = object_schema(
+    {"before": HASH},
+    {
+        "after": HASH,
+        "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+        "max_bytes": {"type": "integer", "minimum": 512, "maximum": 65536},
+        "cursor": CURSOR,
+    },
+)
 
 
 def topic_inventory(workspace, *, contains: str | None, limit: int, cursor: str | None) -> dict:
@@ -162,6 +173,92 @@ def _citation(record: dict, line_id: str, segment: dict) -> dict:
         "source_line_id": line_id,
         **segment,
     }
+
+
+def compare_revisions(workspace, request: dict) -> dict:
+    """Read only the changed original lines of two retained source revisions."""
+    validate(REVISION_COMPARISON, request, "revision comparison")
+    before = workspace.record(request["before"])
+    original = before["conversation"]
+    after = workspace.source_revision(
+        original["source"], original["conversation_id"], request.get("after")
+    )
+    target = after["conversation"]
+    snapshot = workspace.snapshot_identity()
+    changes = source_changes(
+        target,
+        before,
+        snapshot=snapshot,
+        checksum=after["checksum"],
+        limit=request.get("limit", 8),
+        cursor=request.get("cursor"),
+    )
+    changed_ids = {item["segment_id"] for item in changes["segments"]}
+    quotes = []
+    for record in (before, after):
+        prefix = revision_id(record)
+        quotes.append(
+            {
+                segment["segment_id"]: _citation(record, f"{prefix}L{i}", segment)
+                for i, segment in enumerate(record["conversation"]["segments"], 1)
+                if segment["segment_id"] in changed_ids
+            }
+        )
+    used = 0
+    budget = request.get("max_bytes", 3800)
+    for item in changes["segments"]:
+        item.pop("current_source_line_id", None)
+        old, new = (group.get(item["segment_id"]) for group in quotes)
+        size = sum(len(line["text"].encode("utf-8")) for line in (old, new) if line is not None)
+        item["before"] = old
+        item["after"] = new
+        if used + size > budget:
+            for key in ("before", "after"):
+                if item[key] is not None:
+                    item[key].pop("text")
+            item["quotes_omitted"] = True
+        else:
+            used += size
+    changes["affected_baseline_facts"] = changes.pop("affected_current_facts")
+    return {
+        **changes,
+        "source": original["source"],
+        "conversation_id": original["conversation_id"],
+        "title": target.get("title", ""),
+        "memory_version": snapshot[1],
+        "quote_bytes": used,
+        "before": {
+            "checksum": before["checksum"],
+            "date": source_day(original),
+            "active": before["active"],
+        },
+        "after": {
+            "checksum": after["checksum"],
+            "date": source_day(target),
+            "active": after["active"],
+        },
+    }
+
+
+def render_revision_comparison(report: dict) -> str:
+    lines = [f"{report['source']}/{report['conversation_id']} · v{report['memory_version']}"]
+    for side in ("before", "after"):
+        revision = report[side]
+        label = "current" if revision["active"] else "retained"
+        date = revision["date"] or "undated"
+        lines.append(f"{side.title()} {revision['checksum']} ({label}, {date})")
+    for field in report["conversation_fields"]:
+        lines.append(f"Changed metadata: {field}")
+    for change in report["segments"]:
+        for side, mark in (("before", "−"), ("after", "+")):
+            if (line := change[side]) is not None:
+                text = line.get("text", "[quote omitted by byte budget]")
+                lines.append(f"{mark} [{line['conversation_id']}#{line['segment_id']}] {text}")
+    if report["segment_order_changed"]:
+        lines.append("Segment order changed.")
+    if report["next_cursor"]:
+        lines.append(f"Next page: {report['next_cursor']}")
+    return "\n".join(lines)
 
 
 def _citations(index, fact) -> list[dict]:

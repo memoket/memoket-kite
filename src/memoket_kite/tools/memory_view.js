@@ -17,6 +17,7 @@
       sourceCatalog: 'Sources', noSources: 'No sources are available.', filterCatalog: 'Filter this list',
       noMatches: 'No matching items.', more: 'Show more', scanned: 'sources with entity or facet labels',
       compile: 'Compiled phrases', candidates: 'candidate spans', quoteBytes: 'quote bytes',
+      candidateSources: 'candidate sources', compareRevision: 'Compare with current version',
       cooccurrence: 'Same annotated passage', relatedEntities: 'Co-occurring entities', relatedFacets: 'Co-occurring facets',
       sharedPassages: 'shared passages', sharedEvidence: 'Shared quotes with', linkedTopics: 'Topics in these passages',
       annotated: 'Indexed passages with labels', unannotated: 'No entity or facet labels on this source',
@@ -46,6 +47,7 @@
       sourceCatalog: '来源', noSources: '当前工作区没有来源。', filterCatalog: '筛选当前列表',
       noMatches: '没有匹配项。', more: '显示更多', scanned: '份来源有实体或 Facet 标注',
       compile: '编译出的检索词', candidates: '个候选片段', quoteBytes: '字节原文',
+      candidateSources: '份候选来源', compareRevision: '与当前版本对照',
       cooccurrence: '同段共现', relatedEntities: '同段出现的实体', relatedFacets: '同段出现的 Facets',
       sharedPassages: '个共同片段', sharedEvidence: '与此节点共现的引用', linkedTopics: '这些片段涉及的主题',
       annotated: '个片段有实体或 Facet 标注', unannotated: '此来源暂无实体或 Facet 标注。',
@@ -697,6 +699,11 @@
       header.append(element('p', metadata.join(' · '), 'detail-meta'));
       const count = selected.memories.filter(memory => memory.entities.length || memory.facets.length).length;
       header.append(element('p', count ? number.format(count) + ' ' + t('annotated') : t('unannotated'), 'detail-meta'));
+      if (selected.active === false) {
+        const link = element('a', t('compareRevision'), 'citation-link');
+        link.href = '?' + new URLSearchParams({ view: 'revision', before: selected.checksum, lang: language });
+        header.append(link);
+      }
       citationSection(panel, t('original'), recordQuotes(selected.memories).filter(line => line.revision_checksum === selected.checksum));
     } else if (kind === 'entity' || kind === 'facet') {
       if (kind === 'facet') header.append(element('p', t(selected.axis), 'detail-meta'));
@@ -778,8 +785,9 @@
         element('strong', snapshot.search_question ? t('compile') : t('terms')),
         element('p', stats.terms.join(' · ')),
         element('p', [number.format(stats.candidate_spans) + ' ' + t('candidates'),
+          stats.candidate_sources === null ? null : number.format(stats.candidate_sources) + ' ' + t('candidateSources'),
           number.format(stats.sources) + ' ' + t('sourceCatalog'),
-          number.format(stats.quotes) + ' ' + t('quotes'), number.format(stats.quote_bytes) + ' ' + t('quoteBytes')].join(' · ')),
+          number.format(stats.quotes) + ' ' + t('quotes'), number.format(stats.quote_bytes) + ' ' + t('quoteBytes')].filter(Boolean).join(' · ')),
       );
     }
     byId('refresh').textContent = t('refresh');

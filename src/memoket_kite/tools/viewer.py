@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlencode
 from .activity import memory_activity
 from .context import compile_question, context_enabled, context_pack, search_question
 from .contracts import ToolError
-from .retrieve import memory_snapshot
+from .retrieve import compare_revisions, memory_snapshot
 from .workspace import Workspace
 
 IDLE_TIMEOUT = 3600
@@ -71,6 +71,7 @@ def _search_snapshot(workspace: Workspace, terms: list[str], question: str | Non
         "search_trace": {
             "terms": compiled["terms"] if question is not None else terms,
             "candidate_spans": sum(pack["candidate_spans"] for _, pack in packs),
+            "candidate_sources": packs[0][1]["candidate_sources"] if question is not None else None,
             "quote_bytes": sum(pack["quote_bytes"] for _, pack in packs),
             "sources": len(sources),
             "quotes": len(evidence),
@@ -155,6 +156,7 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
             ("graph", "memory_view.js"),
             ("activity", "memory_activity.js"),
             ("changes", "memory_compare.js"),
+            ("revision", "memory_revision.js"),
         )
         if view != "changes" or comparison_data is not None
     }
@@ -189,6 +191,12 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                 requested_view = params.get("view", [None])[0]
                 if requested_view == "activity":
                     view, snapshot = "activity", _activity_snapshot(directory)
+                elif requested_view == "revision":
+                    request = {"before": params.get("before", [""])[0]}
+                    if cursor := params.get("cursor"):
+                        request["cursor"] = cursor[0]
+                    with Workspace.open(directory, read_only=True) as workspace:
+                        view, snapshot = "revision", compare_revisions(workspace, request)
                 elif comparison_data is not None and (
                     requested_view == "changes"
                     or (requested_view is None and not terms and not question)
@@ -200,7 +208,9 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                     snapshot = {**snapshot, "comparison_available": True}
             except (ValueError, ToolError) as exc:
                 if isinstance(exc, ValueError) or exc.code == "invalid_input":
-                    self.send_error(HTTPStatus.BAD_REQUEST, "Use up to three search phrases")
+                    self.send_error(HTTPStatus.BAD_REQUEST, "Invalid memory view parameters")
+                elif exc.code == "not_found":
+                    self.send_error(HTTPStatus.NOT_FOUND, "Source revision was not found")
                 else:
                     self.send_error(
                         HTTPStatus.SERVICE_UNAVAILABLE, "KITE could not read the workspace"

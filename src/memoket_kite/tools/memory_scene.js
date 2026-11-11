@@ -13,6 +13,10 @@ function renderViewerNavigation(language, activeView, parameters, comparisonAvai
     const link = document.getElementById('workspace-' + view);
     link.hidden = view === 'changes' && !comparisonAvailable;
     const query = new URLSearchParams(parameters);
+    if (activeView === 'revision') {
+      query.delete('before');
+      query.delete('cursor');
+    }
     query.set('view', view);
     query.set('lang', language);
     link.href = '?' + query.toString();

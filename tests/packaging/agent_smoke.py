@@ -24,6 +24,7 @@ def main() -> None:
         "memory_scene.js",
         "memory_compare.js",
         "memory_activity.js",
+        "memory_revision.js",
     ):
         assert viewer_assets.joinpath(name).is_file(), name
     name = "kite-tool.exe" if os.name == "nt" else "kite-tool"

@@ -1,0 +1,14 @@
+id: source-revision-review
+version: 1
+description: Compare retained original lines from two revisions of one conversation.
+inputs:
+  request: revision_comparison
+stages:
+  - id: compare
+    skill: skills/memory/source-revision-review/SKILL.md
+    tool: compare_revisions
+    needs: []
+    inputs:
+      request: input.request
+    output: revision_difference
+    acceptance: Each changed segment has revision-bound citations for the retained sides.

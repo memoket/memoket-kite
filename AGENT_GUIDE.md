@@ -39,6 +39,7 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
 | Rebuild a discussion timeline by date, people, project or topic | `timeline-reconstruction` |
 | Follow how a decision or requirement changed | `decision-evolution` |
 | Append a source revision or a cited correction | `memory-update` |
+| Compare changed original lines in two versions of a source | `source-revision-review` |
 | Merge two equivalent topic labels | `memory-consolidation` |
 | Change a topic's parents | `topic-reclassification` |
 | Audit the source records and Codebook | `memory-maintenance` |
@@ -57,6 +58,12 @@ same search and limit to continue the listing at the same memory version.
 For original-text tasks, run `kite-tool context --question "$QUESTION" --text`.
 It compiles the task and returns cited passages in one local call. Use
 `context-search` if you need separate, saved compile and search stages.
+
+Use `kite-tool source-compare BEFORE --text` to read the changed lines between
+a retained source revision and its current version. `source-history SOURCE ID`
+lists stored checksums. Add `--after CHECKSUM` to choose a different target.
+`--max-bytes` limits quote text, and JSON retains original line references for
+any omitted quotes.
 
 For a direct read from an existing workspace, use `kite-tool query --topic "first run"`.
 Repeat `--topic` to supply several topic names or aliases. Use `--source` and

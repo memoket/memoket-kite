@@ -9,6 +9,7 @@ _PIPELINES = {
     "memory-deletion": "delete",
     "memory-consolidation": "merge",
     "context-search": "search",
+    "source-revision-review": "compare",
 }
 
 

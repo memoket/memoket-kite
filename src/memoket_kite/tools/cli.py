@@ -29,7 +29,13 @@ from .ingest import file_source, normalize, prepare_source
 from .memoket_source import memoket_source
 from .operations import SCHEMAS, SOURCE_SCOPE, TOOLS, Context
 from .resources import resource_root
-from .retrieve import evidence_context, segment_context, topic_inventory
+from .retrieve import (
+    compare_revisions,
+    evidence_context,
+    render_revision_comparison,
+    segment_context,
+    topic_inventory,
+)
 from .source_diff import source_changes
 from .trace_text import render_status, render_trace
 from .transcript_text import transcript_recording_day, transcript_text_source
@@ -429,6 +435,21 @@ def _parser() -> argparse.ArgumentParser:
     )
     history.add_argument("source")
     history.add_argument("conversation_id")
+    comparison = commands.add_parser(
+        "source-compare", help="compare two stored versions of one source"
+    )
+    comparison.add_argument(
+        "before", metavar="CHECKSUM", help="retained source revision to compare"
+    )
+    comparison.add_argument(
+        "--after", metavar="CHECKSUM", help="compare to this revision instead of the current one"
+    )
+    comparison.add_argument("--limit", type=int, help="changed segments per page")
+    comparison.add_argument("--max-bytes", type=int, help="original quote byte budget")
+    comparison.add_argument("--cursor", help="continue with the previous page's next_cursor")
+    comparison.add_argument(
+        "--text", action="store_true", help="display only the changed quotes and references"
+    )
     lines = commands.add_parser(
         "source-lines", help="read original lines from a stored conversation"
     )
@@ -846,6 +867,15 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 byte_budget=args.byte_budget,
             ), None
 
+    if args.command == "source-compare":
+        request = {
+            name: value
+            for name in ("before", "after", "limit", "max_bytes", "cursor")
+            if (value := getattr(args, name)) is not None
+        }
+        with Workspace.open(args.workspace, read_only=True) as workspace:
+            return compare_revisions(workspace, request), None
+
     if args.command == "integrity" and args.include_workflows:
         with Workspace.open(args.workspace, read_only=True) as workspace:
             workspace.verify_sqlite()
@@ -985,6 +1015,8 @@ def main(argv=None) -> int:
         print(result["text"])
     elif args.command == "context" and args.text:
         print(render_context(result))
+    elif args.command == "source-compare" and args.text:
+        print(render_revision_comparison(result))
     elif args.command == "evidence" and args.text:
         window = result["value"]
         if not window["source_revision_active"]:

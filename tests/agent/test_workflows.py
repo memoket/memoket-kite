@@ -268,6 +268,14 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
             ]
             assert all(stage["state"] == "completed" for stage in activity["runs"][0]["stages"])
             assert request["question"] not in json.dumps(activity)
+            baseline = searched["spans"][0]["evidence"][0]["revision_checksum"]
+            correction = text_input("release", "Publish the release checklist.")["source"]
+            correction["expected_checksum"] = baseline
+            call("index-sources", payload={"sources": [{"source": correction}]})
+            revision = read(f"?view=revision&before={baseline}")
+            assert revision["segments"][0]["before"]["text"] == "Review the release checklist."
+            assert revision["segments"][0]["after"]["text"] == "Publish the release checklist."
+            assert revision["segments"][0]["before"]["revision_checksum"] == baseline
         finally:
             process.terminate()
             process.wait(timeout=10)
@@ -357,7 +365,8 @@ def test_cli_help_still_prints_usage(capsys):
 def test_discovery_and_invalid_pipeline(work, tmp_path):
     _, call = work
     pipelines = call("pipelines")["pipelines"]
-    assert len(pipelines) == 13 and "context-search" in {entry["id"] for entry in pipelines}
+    assert len(pipelines) == 14
+    assert {"context-search", "source-revision-review"} <= {entry["id"] for entry in pipelines}
     assert call("describe", "delete")["delete"]["effect"] == "delete"
     repo = tmp_path / "definitions"
     for folder in ("schemas", "skills", "pipeline_defs"):
@@ -394,7 +403,7 @@ def test_installable_extension_and_custom_connector(work, tmp_path):
 
     assert custom_call("resources")["extension_root"] == str(extension)
     catalog = custom_call("pipelines")
-    assert len(catalog["pipelines"]) == 14
+    assert len(catalog["pipelines"]) == 15
     assert "invalid_extensions" not in catalog
     built_in = "memory-ingestion"
     assert custom_call("validate-pipeline", built_in) == call("validate-pipeline", built_in)
@@ -5764,13 +5773,61 @@ def test_context_index_source_revision_merge_and_delete(work, monkeypatch):
     new = call("context", "--term", "上线")["spans"][0]["evidence"][0]
     assert new["text"] == "确认周一交付。"
     assert call("evidence", old["source_line_id"])["value"]["evidence"]["text"] == old["text"]
+    comparison = call("source-compare", old["revision_checksum"])
+    assert comparison["counts"] == {"added": 0, "removed": 0, "modified": 1, "unchanged": 0}
+    assert comparison["segments"][0]["before"] == old
+    assert comparison["segments"][0]["after"] == new
+    assert not comparison["before"]["active"] and comparison["after"]["active"]
+    call(
+        "start",
+        "source-revision-review",
+        "--run-id",
+        "compare",
+        payload={"request": {"before": old["revision_checksum"]}},
+    )
+    assert call("stage", "compare", "compare")["value"] == {
+        key: value for key, value in comparison.items() if key != "ok"
+    }
     invalid = entry("确认周三交付。", "2026-10-04", old["revision_checksum"])
     call("index-sources", payload={"sources": [invalid]}, error="conflict")
     _delete_source(call, "erase-indexed", {"source": "text", "conversation_id": "rollout"})
     assert call("context", "--term", "交付")["spans"] == []
     call("evidence", old["source_line_id"], error="not_found")
+    call("source-compare", old["revision_checksum"], error="not_found")
+    assert call("status", "compare")["state"] == "invalidated"
     call("index-sources", payload={"sources": [first]}, error="deleted_source")
     assert "确认周一交付".encode() not in (directory / "kite.sqlite3").read_bytes()
+
+
+def test_source_comparison_bounds_quotes_and_keeps_page_citations(work):
+    _, call = work
+    conversation = {
+        "source": "transcript",
+        "conversation_id": "bounded-revision",
+        "metadata": {"source_reference": "bounded-revision"},
+        "segments": [{"segment_id": "stable", "text": "旧" * 200}],
+    }
+    source = {"format": "conversation", "payload": conversation}
+    call("index-sources", payload={"sources": [{"source": source}]})
+    prior = call("source-history", "transcript", "bounded-revision")["current_checksum"]
+    conversation["segments"] = [
+        {"segment_id": "stable", "text": "新" * 200},
+        {"segment_id": "extra", "text": "添加原文。"},
+    ]
+    call("index-sources", payload={"sources": [{"source": {**source, "expected_checksum": prior}}]})
+    options = ("source-compare", prior, "--limit", "1", "--max-bytes", "512")
+    page = call(*options)
+    assert page["quote_bytes"] == 0 and page["segments"][0]["quotes_omitted"]
+    for side, expected in (("before", "旧" * 200), ("after", "新" * 200)):
+        reference = page["segments"][0][side]
+        assert "text" not in reference
+        assert (
+            call("evidence", reference["source_line_id"])["value"]["evidence"]["text"] == expected
+        )
+    continuation = call(*options, "--cursor", page["next_cursor"])
+    assert continuation["next_cursor"] is None
+    assert continuation["segments"][0]["before"] is None
+    assert continuation["segments"][0]["after"]["text"] == "添加原文。"
 
 
 def test_context_transcript_import_retains_file_lines_and_neighbor_turns(work, tmp_path):
@@ -5815,6 +5872,19 @@ def test_compiled_context_prioritizes_source_hits_within_quote_budget(work, tmp_
     lines = [line for span in pack["spans"] for line in span["evidence"]]
     assert [(line["segment_id"], line["text"]) for line in lines] == [("L5", "确认升级决定。")]
     assert pack["quote_bytes"] == len(lines[0]["text"].encode())
+
+
+def test_compiled_context_terms_are_grounded_in_requested_conversation(work, tmp_path):
+    _, call = work
+    for identity, text in (("42", "讨论入库调度。"), ("43", "讨论部署策略。")):
+        (tmp_path / f"{identity}_transcript.txt").write_text(
+            f"00:00\nSpeaker A\n{text}\n", encoding="utf-8"
+        )
+    call("index-sources", "--transcripts", str(tmp_path))
+    pack = call("context", "--question", "入库调度和部署策略如何确认？", "--conversation-id", "42")
+    assert pack["compilation"]["terms"] == ["入库调度"]
+    assert pack["candidate_sources"] == 1
+    assert pack["spans"][0]["evidence"][0]["conversation_id"] == "42"
 
 
 def test_transcript_recording_dates_backfill_matching_sources_with_annotations(work, tmp_path):

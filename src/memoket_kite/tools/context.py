@@ -100,17 +100,18 @@ def _question_phrases(question: str):
 def compile_question(workspace, request: dict) -> dict:
     validate(CONTEXT_REQUEST, request, "context request")
     version = _require_context(workspace)
+    where, args = _search_scope(request)
     candidates = []
     for phrase in dict.fromkeys(_question_phrases(request["question"])):
         expression = f'"{_tokens(phrase)}"'
         frequency = workspace.db.execute(
-            "SELECT count(*) FROM (SELECT rowid FROM context_spans "
-            "WHERE context_spans MATCH ? LIMIT 32)",
-            (expression,),
+            f"SELECT count(*) FROM (SELECT rowid FROM context_spans WHERE {where} LIMIT 32)",
+            (expression, *args),
         ).fetchone()[0]
         if frequency:
             labeled = workspace.db.execute(
-                "SELECT 1 FROM context_spans WHERE labels MATCH ? LIMIT 1", (expression,)
+                f"SELECT 1 FROM context_spans WHERE {where} LIMIT 1",
+                (f"labels : {expression}", *args),
             ).fetchone()
             length = len(phrase.replace(" ", ""))
             score = min(length, 7) * (2 - frequency / 32) + (3 if labeled else 0)
@@ -239,7 +240,9 @@ def rebuild_context(db, records: list[dict], vocab, version: int) -> None:
     db.execute("INSERT INTO context_snapshot VALUES(?)", (version,))
 
 
-def _candidates(db, plan: dict, limit: int) -> list:
+def _search_scope(plan: dict) -> tuple[str, list]:
+    if plan.get("start_date", "") > plan.get("end_date", "9999-12-31"):
+        raise ToolError("invalid_input", "start date must not follow end date")
     filters = ["context_spans MATCH ?"]
     args = []
     for field, operator, key in (
@@ -257,21 +260,52 @@ def _candidates(db, plan: dict, limit: int) -> list:
         args.append(plan["conversation_id"])
     if "start_date" in plan or "end_date" in plan:
         filters.append("day <> ''")
-    where = " AND ".join(filters)
+    return " AND ".join(filters), args
+
+
+def _coherent_order(matches: list[list]) -> list:
+    # Accumulate a term's best rank once per conversation. This rewards several
+    # clues pointing to the same meeting without boosting long meetings for length.
+    span_scores = defaultdict(float)
+    source_scores = defaultdict(float)
+    candidates = {}
+    for term_rank, rows in enumerate(matches):
+        seen_sources = set()
+        for rank, row in enumerate(rows):
+            checksum = row["checksum"]
+            key = (checksum, row["start"])
+            candidates[key] = row
+            score = 1 / ((1 + term_rank / 4) * (3 + rank))
+            span_scores[key] += score
+            if checksum not in seen_sources:
+                source_scores[checksum] += score
+                seen_sources.add(checksum)
+    ordered = sorted(candidates, key=lambda key: -(span_scores[key] + 0.5 * source_scores[key[0]]))
+    return [candidates[key] for key in ordered]
+
+
+def _candidates(db, plan: dict, limit: int, *, focus: bool = False) -> list:
+    where, args = _search_scope(plan)
     order = "bm25(context_spans, 1.0, 0.35, 1.2), day DESC"
     if plan.get("latest"):
         order = "day DESC, bm25(context_spans, 1.0, 0.35, 1.2)"
-    # Round-robin across terms. A common term cannot consume the whole pack.
-    streams = []
+    coherent = focus and not plan.get("latest")
+    stream_limit = max(limit, min(limit * 6, 30)) if coherent else limit * 6
+    matches = []
     for phrase in dict.fromkeys(map(_tokens, plan["terms"])):
         if not phrase:
             continue
-        matches = db.execute(
-            f"SELECT checksum, start, stop FROM context_spans WHERE {where} "
-            f"ORDER BY {order}, checksum, start LIMIT ?",
-            (f'"{phrase}"', *args, limit * 6),
-        ).fetchall()
-        streams.append(iter(matches))
+        matches.append(
+            db.execute(
+                f"SELECT checksum, start, stop FROM context_spans WHERE {where} "
+                f"ORDER BY {order}, checksum, start LIMIT ?",
+                (f'"{phrase}"', *args, stream_limit),
+            ).fetchall()
+        )
+    if coherent:
+        return _coherent_order(matches)
+    # Round-robin across explicit terms and preserve the existing date preference.
+    streams = [iter(rows) for rows in matches]
     results = []
     seen = set()
     while streams:
@@ -352,8 +386,6 @@ def context_pack(
     workspace, plan: dict, *, limit: int, max_bytes: int, neighbors: int, focus: bool = False
 ) -> dict:
     validate(_CONTEXT_SCHEMA, plan, "context plan")
-    if plan.get("start_date", "") > plan.get("end_date", "9999-12-31"):
-        raise ToolError("invalid_input", "start date must not follow end date")
     if not 1 <= limit <= 50 or not 512 <= max_bytes <= 65536 or not 0 <= neighbors <= 5:
         raise ToolError(
             "invalid_input", "context needs limit 1–50, max bytes 512–65536, neighbors 0–5"
@@ -361,7 +393,7 @@ def context_pack(
     if not any(map(_tokens, plan["terms"])):
         raise ToolError("invalid_input", "context needs an indexable term")
     version = _require_context(workspace)
-    candidates = _candidates(workspace.db, plan, limit)
+    candidates = _candidates(workspace.db, plan, limit, focus=focus)
     phrases = (
         tuple(f" {tokens} " for term in plan["terms"] if (tokens := _tokens(term))) if focus else ()
     )
@@ -374,6 +406,7 @@ def context_pack(
         "quote_budget_bytes": max_bytes,
         "lines_over_budget": omitted,
         "candidate_spans": len(candidates),
+        "candidate_sources": len({row["checksum"] for row in candidates}),
         "span_limit": limit,
     }
 
