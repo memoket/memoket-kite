@@ -7,6 +7,9 @@ Run `kite-tool context --question "$QUESTION" --text` with the user's task.
 For two independent questions, use `--question "$FIRST" --compare-with "$SECOND"`.
 Give each question the subject it refers to. Both use the same recording bounds
 and workspace snapshot. Each receives a share of the quote and span budget.
+If one recording dominates the leading candidates of a default comparison,
+KITE can quote one more passage within the same byte budget. An explicit
+`--limit` fixes the span limit.
 Answer from the cited passages. For one missing detail, search with a specific
 `--term` or narrow to an identified meeting with `--conversation-id`.
 For an exact quotation or its recording time, add `--matching-lines` to

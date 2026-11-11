@@ -312,6 +312,7 @@ def _search_questions(workspace, compiled: dict, index) -> dict:
             focus=question is not None,
             _index=index,
             _question=question,
+            prioritize_first_lines=compare_terms is not None and "limit" not in request,
         )
         if question is not None:
             result["compilation"] = {"question": question, "terms": terms}
@@ -729,6 +730,7 @@ def _pack(
     historical_records: dict | None = None,
     compact_sources: dict | None = None,
     trace: dict | None = None,
+    prioritize_first_lines: bool = False,
 ):
     compact_sources = compact_sources or {}
     records = historical_records if historical_records is not None else dict(compact_sources)
@@ -754,8 +756,25 @@ def _pack(
         trace.update(total=len(rows), candidates=traced)
     seen = defaultdict(set)
     packed = []
+    remaining = []
     size = omitted = 0
     anchored = tuple(f" {anchor} " for anchor in anchors)
+
+    def take(checksum, segments, positions):
+        nonlocal size, omitted
+        chosen = []
+        for pos in positions:
+            if pos in seen[checksum]:
+                continue
+            weight = len(segments[pos]["text"].encode("utf-8"))
+            if size + weight > max_bytes:
+                omitted += 1
+                continue
+            size += weight
+            chosen.append(pos)
+            seen[checksum].add(pos)
+        return chosen
+
     for index, row in enumerate(rows):
         if len(packed) == limit:
             break
@@ -770,27 +789,20 @@ def _pack(
         start, stop = row["start"], row["stop"]
         if not 0 <= start < stop <= len(segments):
             raise ToolError("integrity_error", "context index does not match its source revision")
-        chosen = []
         previously_omitted = omitted
         positions = (
             range(start, stop)
             if checksum in compact_sources
             else _positions(segments, start, stop, neighbors, phrases, anchored, matching_lines)
         )
-        for pos in positions:
-            if pos in seen[checksum]:
-                continue
-            segment = segments[pos]
-            weight = len(segment["text"].encode("utf-8"))
-            if size + weight > max_bytes:
-                omitted += 1
-                continue
-            size += weight
-            chosen.append(pos)
-            seen[checksum].add(pos)
+        first_positions = positions
+        if prioritize_first_lines:
+            first = next((pos for pos in positions if start <= pos < stop), None)
+            first_positions = () if first is None else (first,)
+        chosen = take(checksum, segments, first_positions)
         if index < len(traced):
             over_budget = omitted - previously_omitted
-            reason = "already_quoted" if positions else "no_matching_line"
+            reason = "already_quoted" if first_positions else "no_matching_line"
             if chosen:
                 reason = "quoted"
             elif over_budget:
@@ -799,27 +811,37 @@ def _pack(
                 reason=reason, quoted_lines=len(chosen), lines_over_budget=over_budget
             )
         if chosen:
-            packed.append(
-                {
-                    "source_date": source_day(conversation),
-                    "title": conversation.get("title", ""),
-                    **{
-                        key: conversation[key]
-                        for key in RECORDING_CLOCK_FIELDS
-                        if key in conversation
-                    },
-                    **(
-                        {"source_revision_active": record["active"]}
-                        if historical_records is not None
-                        else {}
-                    ),
-                    "evidence": [
-                        _citation(record, f"{revision_id(record)}L{pos + 1}", segments[pos])
-                        for pos in sorted(chosen)
-                    ],
-                }
-            )
-    return packed, size, omitted
+            packed.append((record, chosen))
+            if prioritize_first_lines:
+                remaining.append((index, checksum, segments, positions, chosen))
+    for index, checksum, segments, positions, chosen in remaining:
+        previously_omitted = omitted
+        chosen.extend(take(checksum, segments, positions))
+        if index < len(traced):
+            traced[index]["quoted_lines"] = len(chosen)
+            traced[index]["lines_over_budget"] += omitted - previously_omitted
+    spans = []
+    for record, chosen in packed:
+        conversation = record["conversation"]
+        segments = conversation["segments"]
+        revision = revision_id(record)
+        spans.append(
+            {
+                "source_date": source_day(conversation),
+                "title": conversation.get("title", ""),
+                **{key: conversation[key] for key in RECORDING_CLOCK_FIELDS if key in conversation},
+                **(
+                    {"source_revision_active": record["active"]}
+                    if historical_records is not None
+                    else {}
+                ),
+                "evidence": [
+                    _citation(record, f"{revision}L{pos + 1}", segments[pos])
+                    for pos in sorted(chosen)
+                ],
+            }
+        )
+    return spans, size, omitted
 
 
 def context_pack(
@@ -880,7 +902,18 @@ def _trace_sources(workspace, trace: dict) -> None:
         row.update(sources[row["revision_checksum"]])
 
 
-def _context_evidence(workspace, plan, *, limit, max_bytes, neighbors, focus, _index, _question):
+def _context_evidence(
+    workspace,
+    plan,
+    *,
+    limit,
+    max_bytes,
+    neighbors,
+    focus,
+    _index,
+    _question,
+    prioritize_first_lines=False,
+):
     validate(_CONTEXT_SCHEMA, plan, "context plan")
     if not any(map(_tokens, plan["terms"])):
         raise ToolError("invalid_input", "context needs an indexable term")
@@ -918,6 +951,17 @@ def _context_evidence(workspace, plan, *, limit, max_bytes, neighbors, focus, _i
             anchors=anchors,
             term_candidates=term_candidates,
         )
+        first_lines = (
+            prioritize_first_lines
+            and neighbors > 0
+            and not (plan.get("latest") or matching_lines or anchors or compact)
+            and len(candidates) > limit
+            and len({row["checksum"] for row in candidates[: limit + 1]}) == 1
+        )
+        if first_lines:
+            # One recording occupies the front of this comparison branch.
+            # Give another passage room before expanding neighboring lines.
+            limit += 1
         spans, size, omitted = _pack(
             workspace,
             candidates,
@@ -930,6 +974,7 @@ def _context_evidence(workspace, plan, *, limit, max_bytes, neighbors, focus, _i
             historical_records=index.records,
             compact_sources=compact,
             trace=trace,
+            prioritize_first_lines=first_lines,
         )
         if trace is not None:
             _trace_sources(workspace, trace)
@@ -943,6 +988,7 @@ def _context_evidence(workspace, plan, *, limit, max_bytes, neighbors, focus, _i
         "candidate_spans": len(candidates),
         "candidate_sources": len({row["checksum"] for row in candidates}),
         "span_limit": limit,
+        **({"first_lines_prioritized": True} if first_lines else {}),
         **({"packing_trace": trace} if trace is not None else {}),
         **(
             {"term_coverage": _term_coverage(plan["terms"], term_candidates, spans)}

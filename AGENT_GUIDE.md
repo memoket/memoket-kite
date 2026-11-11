@@ -75,6 +75,10 @@ the command also returns these details in JSON.
 For two independent questions, use `--question "$FIRST" --compare-with "$SECOND"`.
 The two searches share the snapshot, date filters and total quote budget. The
 pipeline accepts the second question as `request.compare_with`.
+When one recording fills the head of a default comparison search, KITE gives
+each leading passage room for an original line before adding neighbors. This
+can include one additional passage within the question's quote budget. Pass
+`--limit` to use a fixed span limit.
 Open **Workflows** in the memory viewer to inspect a completed search and its
 saved citations, or to open a committed change and its retained source versions.
 

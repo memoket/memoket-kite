@@ -33,6 +33,9 @@ Use `--latest` when the task needs newer recordings first. For two independent
 questions, run `context --question "$FIRST" --compare-with "$SECOND" --text`.
 Restate the subject where needed so each question can retrieve its own quotes.
 Both share the snapshot, recording date filters, and total context budget.
+When one recording supplies the leading candidates, a default comparison
+can cite an additional passage within its quote budget. Pass `--limit` when
+the number of passages needs a fixed upper bound.
 Keep related details in one question when they can come from the same passage.
 In the graph, **Recording dates** limits search and the result panel groups
 passages by their recording date. **Compare** shows both sets of compiled terms.

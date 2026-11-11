@@ -54,6 +54,7 @@ def _search_snapshot(
                     "quote_bytes": part["quote_bytes"],
                     "quote_budget_bytes": part["quote_budget_bytes"],
                     "term_coverage": part.get("term_coverage", []),
+                    "first_lines_prioritized": part.get("first_lines_prioritized", False),
                 }
                 for key, part in packs
             ]

@@ -28,6 +28,7 @@
       anchorSources: 'sources matching the name',
       matchedTerms: 'Terms in this quote',
       inspectCandidates: 'Rerun with candidate details', packingOrder: 'Packing order',
+      firstLinesPrioritized: 'More passages from the leading source',
       packingSegments: 'Segments',
       packingReasons: { quoted: 'Quoted', span_limit: 'Span limit reached', quote_budget: 'Quote budget',
         already_quoted: 'Already quoted', no_matching_line: 'No matching original line' },
@@ -75,6 +76,7 @@
       anchorSources: '份来源命中名称',
       matchedTerms: '原文命中',
       inspectCandidates: '重查并查看候选', packingOrder: '引文选取顺序',
+      firstLinesPrioritized: '先取同一来源的多个片段',
       packingSegments: '原文段',
       packingReasons: { quoted: '已引用', span_limit: '片段数已达上限', quote_budget: '引文预算不足',
         already_quoted: '已在前面引用', no_matching_line: '原文行无完整命中' },
@@ -922,6 +924,7 @@
           branch.append(button(part.question, () => choose(topics.get(part.key)), 'citation-link'),
             termSummary(part.terms, part.term_coverage),
             element('p', `${number.format(part.passages)} ${t('record')} · ${number.format(part.quote_bytes)}/${number.format(part.quote_budget_bytes)} ${t('quoteBytes')}`));
+          if (part.first_lines_prioritized) branch.append(element('p', t('firstLinesPrioritized')));
           branches.append(branch);
         }
         trace.append(branches);

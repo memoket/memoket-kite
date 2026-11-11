@@ -215,7 +215,7 @@ def _parser() -> argparse.ArgumentParser:
     history_scope.add_argument(
         "--known-at", help="search what the workspace knew at an ISO timestamp with offset"
     )
-    context.add_argument("--limit", type=int, default=8, help="maximum matched spans")
+    context.add_argument("--limit", type=int, help="maximum matched spans")
     context.add_argument("--max-bytes", type=int, help="original quote byte budget")
     context.add_argument("--neighbors", type=int, help="adjacent turns on either side (default 1)")
     context.add_argument(
@@ -821,9 +821,10 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
         if args.question is not None or args.save is not None:
             request = {
                 **plan,
-                "limit": args.limit,
                 "neighbors": neighbors,
             }
+            if args.limit is not None:
+                request["limit"] = args.limit
             if args.question is None:
                 request["terms"] = args.term
             else:
@@ -844,7 +845,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             return context_pack(
                 workspace,
                 {**plan, "terms": args.term},
-                limit=args.limit,
+                limit=args.limit if args.limit is not None else 8,
                 max_bytes=args.max_bytes if args.max_bytes is not None else 6000,
                 neighbors=neighbors,
             ), None

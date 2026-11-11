@@ -6075,6 +6075,37 @@ def test_context_comparison_keeps_both_questions_in_one_budget_and_snapshot(work
     call("context", "--term", "northwind", "--compare-with", "loading", error="invalid_input")
 
 
+def test_context_comparison_can_cover_more_passages_from_a_dominant_source(work):
+    directory, call = work
+    source = {
+        "format": "conversation",
+        "payload": {
+            "source": "transcript",
+            "conversation_id": "planning",
+            "metadata": {"source_reference": "planning.txt"},
+            "segments": [
+                {"segment_id": str(i), "text": "budget marker is present. " + chr(97 + i) * 311}
+                for i in range(5)
+            ],
+        },
+    }
+    release = text_input("release", "The release owner is Rae.")["source"]
+    call("index-sources", payload={"sources": [{"source": source}, {"source": release}]})
+    args = ("context", "--question", "check the budget marker", "--compare-with", "release owner")
+    pack = call(*args, "--explain", "--save", "dominant")
+    first, second = pack["parts"]
+    assert first["first_lines_prioritized"] and first["span_limit"] == 5
+    assert len(first["spans"]) == 5
+    assert all(row["reason"] == "quoted" for row in first["packing_trace"]["candidates"])
+    assert "first_lines_prioritized" not in second
+    assert pack["quote_bytes"] <= pack["quote_budget_bytes"] == 3800
+    saved = viewer._snapshot(directory, [], run_id="dominant")
+    assert saved["search_comparison"][0]["first_lines_prioritized"]
+    fixed = call(*args, "--limit", "8")
+    assert "first_lines_prioritized" not in fixed["parts"][0]
+    assert fixed["parts"][0]["span_limit"] == 4
+
+
 def test_context_text_reuses_a_quote_across_questions(work):
     _, call = work
     original = "The ledger review moves to Monday because the reconciled figures arrive Friday."
