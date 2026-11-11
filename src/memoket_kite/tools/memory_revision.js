@@ -5,11 +5,11 @@
   const language = (params.get('lang') || navigator.language).startsWith('zh') ? 'zh' : 'en';
   const zh = language === 'zh';
   const copy = zh ? {
-    title: '原文版本对照', before: '对照基准', after: '当前版本', added: '新增', removed: '移除', modified: '修改',
+    title: '原文版本对照', before: '对照基准', after: '对照版本', added: '新增', removed: '移除', modified: '修改',
     metadata: '变更字段', order: '原文行顺序有变动', empty: '原文行无改动', none: '此版本没有这行',
     noDate: '日期未知', omitted: '此引文超过本页预算', next: '下一页', refresh: '刷新',
   } : {
-    title: 'Source revision comparison', before: 'Baseline', after: 'Current version', added: 'Added', removed: 'Removed', modified: 'Modified',
+    title: 'Source revision comparison', before: 'Baseline', after: 'Compared version', added: 'Added', removed: 'Removed', modified: 'Modified',
     metadata: 'Changed fields', order: 'Source line order changed', empty: 'No changed source lines', none: 'Line absent in this revision',
     noDate: 'Date unknown', omitted: 'Quote exceeds this page’s budget', next: 'Next page', refresh: 'Refresh',
   };

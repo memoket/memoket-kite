@@ -10,6 +10,12 @@
       verify: '校验', preview: '预览', apply: '执行', compile: '编译检索', search: '搜索',
       compare: '原文版本对照',
       searchVersion: '在此版本检索',
+      savedSearch: '打开当次检索原文',
+      changeDetails: '查看变更', back: '返回所有变更', searchPrevious: '检索提交前版本',
+      sourceRevisions: '保留的来源变更', openSource: '查看此版本原文', compareSource: '对照提交前后的原文',
+      previousPage: '上一页', nextPage: '下一页', openTopic: '查看当前主题',
+      missingDetails: '此提交没有可展示的来源版本或主题明细。',
+      deletedEvidence: '删除记录保留数量。提交前的快照也无法读取已删除的原文。',
       completed: '完成', pending: '待执行', failed: '失败', running: '运行中', awaiting_approval: '待批准',
       redacted: '已隐去明细',
       changed: '已变更', sources: '来源', revisions: '来源版本', facts: '事实', refresh: '刷新',
@@ -22,6 +28,12 @@
       verify: 'Verify', preview: 'Preview', apply: 'Apply', compile: 'Compile query', search: 'Search',
       compare: 'Compare source revisions',
       searchVersion: 'Search this version',
+      savedSearch: 'Open saved search evidence',
+      changeDetails: 'View change', back: 'Back to all changes', searchPrevious: 'Search before this change',
+      sourceRevisions: 'Retained source changes', openSource: 'Read this revision', compareSource: 'Compare before and after this commit',
+      previousPage: 'Previous page', nextPage: 'Next page', openTopic: 'Open current topic',
+      missingDetails: 'No retained source revisions or topic details are available for this commit.',
+      deletedEvidence: 'The deletion record retains counts. Earlier snapshots omit the deleted originals.',
       completed: 'Completed', pending: 'Pending', failed: 'Failed', running: 'Running', awaiting_approval: 'Awaiting approval',
       redacted: 'Details redacted',
       changed: 'Changed', sources: 'sources', revisions: 'source revisions', facts: 'facts', refresh: 'Refresh',
@@ -39,6 +51,40 @@
     return node;
   }
 
+  function link(label, target) {
+    const item = element('a', t(label), 'citation-link');
+    item.href = '?' + new URLSearchParams({ lang: language, ...target });
+    return item;
+  }
+
+  function changeDetail(panel, event) {
+    if (event.kind === 'delete') {
+      panel.append(element('p', t('deletedEvidence'), 'detail-meta'));
+    } else if (event.topic_merge) {
+      const merge = event.topic_merge;
+      panel.append(element('p', `${merge.from_topic} → ${merge.to_topic}`));
+      if (merge.current_topic) panel.append(link('openTopic', { view: 'graph', topic: merge.current_topic }));
+    } else if (event.source_changes?.length) {
+      const list = element('ul', undefined, 'change-sources');
+      const first = event.source_offset + 1;
+      const last = event.source_offset + event.source_changes.length;
+      panel.append(element('h4', `${t('sourceRevisions')} ${first}–${last}/${event.retained_source_changes}`));
+      for (const source of event.source_changes) {
+        const entry = element('li');
+        entry.append(element('strong', source.title || source.conversation_id));
+        entry.append(link('openSource', { view: 'source', checksum: source.checksum }));
+        if (source.before) entry.append(link('compareSource', { view: 'revision', before: source.before, after: source.checksum }));
+        list.append(entry);
+      }
+      panel.append(list);
+      const target = { view: 'activity', event: event.version };
+      if (event.source_offset) panel.append(link('previousPage', { ...target, offset: Math.max(0, event.source_offset - 20) }));
+      if (last < event.retained_source_changes) panel.append(link('nextPage', { ...target, offset: last }));
+    } else {
+      panel.append(element('p', t('missingDetails'), 'detail-meta'));
+    }
+  }
+
   function render() {
     document.documentElement.lang = language;
     renderViewerNavigation(language, 'activity', params, data.comparison_available);
@@ -49,6 +95,8 @@
     const date = value => new Date(value).toLocaleString(language);
     const events = byId('activity-events');
     events.replaceChildren(element('h3', t('events')));
+    const details = data.selected_event != null;
+    if (details) events.append(link('back', { view: 'activity' }));
     if (!data.events.length) events.append(element('p', t('emptyEvents')));
     for (const event of data.events) {
       const row = element('section', undefined, 'activity-row');
@@ -57,15 +105,18 @@
         : event.kind === 'merge' ? '' : t('changed') + ' ' + event.changed_count + '/' + event.source_count + ' ' + t('sources');
       row.append(element('strong', t(event.kind) + ' · v' + event.version));
       row.append(element('p', [counts, date(event.committed_at)].filter(Boolean).join(' · ')));
-      if (event.can_search_version) {
-        const link = element('a', t('searchVersion'), 'citation-link');
-        const target = new URLSearchParams({ view: 'graph', lang: language, at: event.version });
-        link.href = '?' + target.toString();
-        row.append(link);
+      if (!details) row.append(link('changeDetails', { view: 'activity', event: event.version }));
+      if (details && event.can_search_previous) {
+        row.append(link('searchPrevious', { view: 'graph', at: event.version - 1 }));
       }
+      if (event.can_search_version) {
+        row.append(link('searchVersion', { view: 'graph', at: event.version }));
+      }
+      if (details) changeDetail(row, event);
       events.append(row);
     }
     const runs = byId('activity-runs');
+    runs.hidden = details;
     runs.replaceChildren(element('h3', t('runs')));
     if (!data.runs.length) runs.append(element('p', t('emptyRuns')));
     for (const run of data.runs) {
@@ -80,6 +131,9 @@
         stages.append(item);
       }
       row.append(stages);
+      if (run.saved_search) {
+        row.append(link('savedSearch', { view: 'graph', run: run.saved_search }));
+      }
       runs.append(row);
     }
   }

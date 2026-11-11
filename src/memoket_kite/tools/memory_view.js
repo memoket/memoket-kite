@@ -5,6 +5,7 @@
   const number = new Intl.NumberFormat();
   const searching = Boolean(snapshot.search_terms?.length);
   const comparison = snapshot.search_comparison || [];
+  const recordingBounds = snapshot.search_recording_bounds || {};
   const copy = {
     en: {
       title: 'Memory Graph', searchTitle: 'Search Evidence', topics: 'Topics', terms: 'Search terms',
@@ -19,6 +20,7 @@
       noMatches: 'No matching items.', more: 'Show more', scanned: 'sources with entity or facet labels',
       compile: 'Compiled phrases', candidates: 'candidate spans', quoteBytes: 'quote bytes',
       candidateSources: 'candidate sources', compareRevision: 'Compare with current version',
+      readRevision: 'Read this revision',
       anchorSources: 'sources matching the name',
       matchedTerms: 'Terms in this quote',
       versionFilter: 'Version', versionFilterLabel: 'Search at a workspace version', history: 'Workspace snapshot',
@@ -26,6 +28,7 @@
       recordingTimeline: 'Evidence by recording date', invalidDateRange: 'Start date must not follow end date.',
       noDatedResults: 'No matching passages in this recording window.',
       compareQuestions: 'Compare', secondQuestion: 'Second question', firstQuestionRequired: 'Enter the first question.',
+      savedSearch: 'Saved search', currentWorkspace: 'Current workspace',
       historyDeletes: 'Later deletions affected the evidence available for this snapshot.',
       cooccurrence: 'Same annotated passage', relatedEntities: 'Co-occurring entities', relatedFacets: 'Co-occurring facets',
       sharedPassages: 'shared passages', sharedEvidence: 'Shared quotes with', linkedTopics: 'Topics in these passages',
@@ -57,6 +60,7 @@
       noMatches: '没有匹配项。', more: '显示更多', scanned: '份来源有实体或 Facet 标注',
       compile: '编译出的检索词', candidates: '个候选片段', quoteBytes: '字节原文',
       candidateSources: '份候选来源', compareRevision: '与当前版本对照',
+      readRevision: '查看此版本原文',
       anchorSources: '份来源命中名称',
       matchedTerms: '原文命中',
       versionFilter: '版本', versionFilterLabel: '按工作区版本检索', history: '工作区快照',
@@ -64,6 +68,7 @@
       recordingTimeline: '按录制日期查看原文', invalidDateRange: '起始日期应早于或等于截止日期。',
       noDatedResults: '这个录制日期范围内没有命中的原文片段。',
       compareQuestions: '对比', secondQuestion: '第二个问题', firstQuestionRequired: '请输入第一个问题。',
+      savedSearch: '已保存的检索', currentWorkspace: '当前工作区',
       historyDeletes: '后来执行的删除可能影响此快照可见的原文。',
       cooccurrence: '同段共现', relatedEntities: '同段出现的实体', relatedFacets: '同段出现的 Facets',
       sharedPassages: '个共同片段', sharedEvidence: '与此节点共现的引用', linkedTopics: '这些片段涉及的主题',
@@ -744,6 +749,9 @@
       header.append(element('p', metadata.join(' · '), 'detail-meta'));
       const count = selected.memories.filter(memory => memory.entities.length || memory.facets.length).length;
       header.append(element('p', count ? number.format(count) + ' ' + t('annotated') : t('unannotated'), 'detail-meta'));
+      const original = element('a', t('readRevision'), 'citation-link');
+      original.href = '?' + new URLSearchParams({ view: 'source', checksum: selected.checksum, lang: language });
+      header.append(original);
       if (selected.active === false) {
         const link = element('a', t('compareRevision'), 'citation-link');
         link.href = '?' + new URLSearchParams({ view: 'revision', before: selected.checksum, lang: language });
@@ -864,12 +872,17 @@
         if (history.later_deletions) trace.append(element('p', t('historyDeletes')));
       }
       const recordingScope = [
-        query.has('start_date') && `${t('recordingFrom')} ${query.get('start_date')}`,
-        query.has('end_date') && `${t('recordingThrough')} ${query.get('end_date')}`,
+        recordingBounds.start_date && `${t('recordingFrom')} ${recordingBounds.start_date}`,
+        recordingBounds.end_date && `${t('recordingThrough')} ${recordingBounds.end_date}`,
       ].filter(Boolean);
       if (recordingScope.length) {
         trace.prepend(element('p', [t('recordingDates'), ...recordingScope].join(' · ')));
         if (!stats.quotes) trace.append(element('p', t('noDatedResults')));
+      }
+      if (snapshot.saved_search) {
+        const saved = snapshot.saved_search;
+        const current = saved.version === snapshot.version ? '' : ` · ${t('currentWorkspace')} v${snapshot.version}`;
+        trace.prepend(element('p', `${t('savedSearch')} v${saved.version} · ${new Date(saved.searched_at).toLocaleString(language)}${current}`));
       }
     }
     byId('refresh').textContent = t('refresh');
@@ -899,16 +912,16 @@
   }
 
   byId('search-terms').value = snapshot.search_question || (snapshot.search_terms || []).join('，');
-  byId('search-version').value = query.get('at') ?? '';
+  byId('search-version').value = query.get('at') ?? snapshot.search_history?.version ?? '';
   const recordingStart = byId('recording-start');
   const recordingEnd = byId('recording-end');
-  recordingStart.value = query.get('start_date') ?? '';
-  recordingEnd.value = query.get('end_date') ?? '';
+  recordingStart.value = recordingBounds.start_date ?? query.get('start_date') ?? '';
+  recordingEnd.value = recordingBounds.end_date ?? query.get('end_date') ?? '';
   const recordingFilter = byId('recording-filter');
   recordingFilter.toggleAttribute('data-active', Boolean(recordingStart.value || recordingEnd.value));
   recordingFilter.addEventListener('input', () => recordingEnd.setCustomValidity(''));
   const secondQuestion = byId('comparison-question');
-  secondQuestion.value = query.get('q2') ?? '';
+  secondQuestion.value = comparison[1]?.question ?? query.get('q2') ?? '';
   byId('comparison-filter').toggleAttribute('data-active', Boolean(secondQuestion.value));
   secondQuestion.addEventListener('input', () => byId('search-terms').setCustomValidity(''));
   byId('search-terms').addEventListener('input', event => event.target.setCustomValidity(''));

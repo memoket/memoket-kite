@@ -61,6 +61,8 @@ It compiles the task and returns cited passages in one local call. Use
 For two independent questions, use `--question "$FIRST" --compare-with "$SECOND"`.
 The two searches share the snapshot, date filters and total quote budget. The
 pipeline accepts the second question as `request.compare_with`.
+Open **Workflows** in the memory viewer to inspect a completed search and its
+saved citations, or to open a committed change and its retained source versions.
 
 Use `--at-version VERSION` or `--known-at 2026-05-14T10:30:00+08:00` to search
 the source revisions visible in a tracked workspace snapshot. `--start-date`

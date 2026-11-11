@@ -213,8 +213,11 @@ summary { color: var(--teal); cursor: pointer; font-size: 12px; }
 .compare-results .detail { max-height: 360px; }
 .activity-grid { display: grid; grid-template-columns: minmax(220px, .85fr) minmax(280px, 1.35fr); gap: 14px; margin-top: 18px; }
 .activity-grid .detail { align-content: start; }
+.activity-grid:has(#activity-runs[hidden]) { grid-template-columns: minmax(0, 1fr); }
 .activity-row { display: grid; gap: 7px; }
 .activity-row p, .activity-stage { color: var(--muted); font-size: 12px; }
+.change-sources { list-style: none; margin: 0; padding: 0; }
+.change-sources li { display: grid; justify-items: start; gap: 3px; padding: 8px 0; border-top: 1px solid var(--line); }
 .activity-stages { display: flex; flex-wrap: wrap; gap: 6px; padding: 0; margin: 0; list-style: none; }
 .activity-stage { padding: 4px 7px; border-radius: 5px; background: var(--paper); }
 .activity-stage[data-state="completed"] { background: #e3efe8; color: #125c50; }

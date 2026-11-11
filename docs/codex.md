@@ -75,6 +75,14 @@ to see the compiled terms and cited passages, or start the viewer with
 `kite-tool view --term PHRASE` for a phrase search. Open **Workflows** to see
 committed imports, updates, merges, and deletions alongside recent pipeline
 stages. An existing workspace starts recording new changes on upgrade.
+Choose **View change** to inspect retained source changes or the recorded topic
+merge. For a revised source, **Compare before and after this commit** opens the
+two original versions from that commit. Deletion entries show counts and links
+to the workspace versions on either side.
+On a completed `context-search` run, choose **Open saved search evidence** to
+see the original compiled terms and cited passages without running the search
+again. After a permanent deletion, reopening or refreshing an old saved search
+link shows that the result is unavailable.
 Select a historical source revision and choose **Compare with current version**
 to see the original lines that changed, with citations for both versions.
 Enter a workspace version next to the search question, name it in the question

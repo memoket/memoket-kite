@@ -202,9 +202,9 @@ def test_memory_viewer_reads_fresh_committed_state(work):
 
 def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path):
     directory, call = work
-    call(
-        "ingest", payload=text_input("release", "Review the release checklist.", date="2026-02-07")
-    )
+    release = text_input("release", "Review the release checklist.", date="2026-02-07")
+    release["annotations"]["taxonomy"] = [{"name": "release"}, {"name": "checklists"}]
+    ingested = call("ingest", payload=release)["receipt"]
     assert viewer._snapshot(directory, [], at_version=1)["search_available"]
     call("index-sources")
     before = {"version": 1, "topics": [], "passages": [], "revisions": [], "evidence": {}}
@@ -235,12 +235,15 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
         try:
             url = urlsplit(process.stdout.readline().strip())
 
-            def read(query):
+            def read(query, status=200):
                 with closing(HTTPConnection(url.hostname, url.port, timeout=10)) as client:
                     client.request("GET", url.path + query)
                     response = client.getresponse()
-                    assert response.status == 200
+                    assert response.status == status
                     body = response.read()
+                    if status != 200:
+                        return body
+                    assert response.getheader("Cache-Control") == "no-store"
                 return json.loads(
                     re.search(rb'id="kite-memory-data"[^>]*>(.*?)</script>', body, re.S)[1]
                 )
@@ -269,6 +272,7 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
             assert activity["comparison_available"] and activity["events"][0]["kind"] == "ingest"
             assert activity["events"][0]["can_search_version"]
             assert activity["runs"][0]["kind"] == "search"
+            assert activity["runs"][0]["saved_search"] == "visual-search"
             assert [stage["name"] for stage in activity["runs"][0]["stages"]] == [
                 "compile",
                 "search",
@@ -276,15 +280,35 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
             assert all(stage["state"] == "completed" for stage in activity["runs"][0]["stages"])
             assert request["question"] not in json.dumps(activity)
             baseline = searched["spans"][0]["evidence"][0]["revision_checksum"]
+            saved_query = "?view=graph&run=visual-search"
+            saved = read(saved_query)
+            assert saved["search_trace"] == question["search_trace"]
+            assert saved["evidence"] == question["evidence"]
+            assert saved["saved_search"]["version"] == question["version"]
+            import_event = read(f"?view=activity&event={ingested['memory_version']}")["events"][0]
+            assert import_event["source_changes"][0]["checksum"] == baseline
+            assert import_event["source_changes"][0]["before"] is None
+            source_query = f"?view=source&checksum={baseline}"
+            original_source = read(source_query)
+            assert original_source["segments"][0]["text"] == "Review the release checklist."
+            assert original_source["source_revision_active"]
+            read("?view=graph&run=visual-search&q=unrelated", status=400)
             correction = text_input("release", "Publish the release checklist.", date="2026-02-07")[
                 "source"
             ]
             correction["expected_checksum"] = baseline
-            call("index-sources", payload={"sources": [{"source": correction}]})
+            update = call("index-sources", payload={"sources": [{"source": correction}]})
             revision = read(f"?view=revision&before={baseline}")
             assert revision["segments"][0]["before"]["text"] == "Review the release checklist."
             assert revision["segments"][0]["after"]["text"] == "Publish the release checklist."
             assert revision["segments"][0]["before"]["revision_checksum"] == baseline
+            changed = read(f"?view=activity&event={update['memory_version']}")["events"][0]
+            updated = revision["after"]["checksum"]
+            assert changed["source_changes"][0]["before"] == baseline
+            assert changed["source_changes"][0]["checksum"] == updated
+            assert read(saved_query)["evidence"] == saved["evidence"]
+            assert not read(saved_query)["revisions"][0]["active"]
+            assert not read(source_query)["source_revision_active"]
             historical = read(f"?view=graph&q=checklist&at={question['version']}")
             assert historical["search_history"]["version"] == question["version"]
             assert (
@@ -308,6 +332,44 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
             ]
             assert [part["passages"] for part in compared["search_comparison"]] == [1, 0]
             assert compared["passages"][0]["terms"] == ["question-1"]
+            third = text_input("release", "Sign off the checklist.", date="2026-02-07")["source"]
+            third["expected_checksum"] = updated
+            call("index-sources", payload={"sources": [{"source": third}]})
+            exact = read(f"?view=revision&before={baseline}&after={updated}")
+            assert exact["segments"][0]["after"]["text"] == "Publish the release checklist."
+            assert not exact["after"]["active"]
+            call(
+                "start",
+                "memory-consolidation",
+                "--run-id",
+                "visible-merge",
+                payload={"merge": {"from_topic": "release", "to_topic": "checklists"}},
+            )
+            merged = call("stage", "visible-merge", "commit")["value"]
+            merge_event = read(f"?view=activity&event={merged['memory_version']}")["events"][0]
+            assert merge_event["topic_merge"] == {
+                "from_topic": "release",
+                "to_topic": "checklists",
+                "current_topic": "checklists",
+            }
+            assert read(saved_query)["evidence"] == saved["evidence"]
+            deleted = _delete_source(
+                call, "viewer-delete", {"source": "text", "conversation_id": "release"}
+            )
+            unavailable = read(saved_query, status=410)
+            assert b"permanent deletion" in unavailable and b"release checklist" not in unavailable
+            assert b"release checklist" not in read(source_query, status=404)
+            delete_event = read(f"?view=activity&event={deleted['memory_version']}")["events"][0]
+            assert delete_event["revision_count"] == 3 and delete_event["can_search_previous"]
+            assert "source_changes" not in delete_event
+            assert not read(f"?view=activity&event={update['memory_version']}")["events"][0][
+                "source_changes"
+            ]
+            assert (
+                read(f"?view=activity&event={merged['memory_version']}")["events"][0]["topic_merge"]
+                is None
+            )
+            assert not any(run.get("saved_search") for run in read("?view=activity")["runs"])
         finally:
             process.terminate()
             process.wait(timeout=10)

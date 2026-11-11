@@ -1,3 +1,7 @@
+window.addEventListener('pageshow', event => {
+  if (event.persisted) location.reload();
+});
+
 function renderViewerNavigation(language, activeView, parameters, comparisonAvailable = false) {
   const zh = language === 'zh';
   const nav = document.getElementById('workspace-views');
@@ -15,7 +19,16 @@ function renderViewerNavigation(language, activeView, parameters, comparisonAvai
     const query = new URLSearchParams(parameters);
     if (activeView === 'revision') {
       query.delete('before');
+      query.delete('after');
       query.delete('cursor');
+    }
+    if (activeView === 'source') {
+      query.delete('checksum');
+      query.delete('offset');
+    }
+    if (view !== 'activity') {
+      query.delete('event');
+      query.delete('offset');
     }
     query.set('view', view);
     query.set('lang', language);

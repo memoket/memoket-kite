@@ -18,6 +18,7 @@ from .activity import memory_activity
 from .context import _tokens, context_enabled, context_pack, question_pack
 from .contracts import ToolError
 from .retrieve import compare_revisions, memory_snapshot
+from .workflow import saved_context_search, source_revision_page
 from .workspace import Workspace
 
 IDLE_TIMEOUT = 3600
@@ -28,13 +29,19 @@ def _search_snapshot(
     terms: list[str],
     question: str | None,
     scope: dict,
+    *,
+    saved: dict | None = None,
 ) -> dict:
     passages = {}
     sources = {}
     evidence = {}
     comparison = []
     if question is not None:
-        result = question_pack(workspace, {"question": question, **scope})
+        result = (
+            saved["value"]
+            if saved is not None
+            else question_pack(workspace, {"question": question, **scope})
+        )
         if "parts" in result:
             packs = [(f"question-{i}", part) for i, part in enumerate(result["parts"], 1)]
             comparison = [
@@ -92,11 +99,34 @@ def _search_snapshot(
             passage = passages.setdefault(ids, {"label": citation, "evidence": ids, "terms": []})
             passage["terms"].append(term)
     history = packs[0][1].get("history")
+    if saved is not None and sources:
+        retained = {
+            row["checksum"]: bool(row["active"])
+            for row in workspace.db.execute(
+                f"SELECT checksum, active FROM revisions WHERE checksum IN ({','.join('?' for _ in sources)})",
+                tuple(sources),
+            )
+        }
+        if retained.keys() != sources.keys():
+            raise ToolError("integrity_error", "saved search cites an unavailable source revision")
+        for checksum, active in retained.items():
+            sources[checksum]["active"] = active
+    if history is not None:
+        source_count = history["retained_sources"]
+    elif saved is not None:
+        version = saved["manifest"]["memory_version"]
+        source_count = workspace.db.execute(
+            "SELECT count(*) FROM revision_visibility WHERE opened_version<=? "
+            "AND (closed_version IS NULL OR closed_version>?)",
+            (version, version),
+        ).fetchone()[0]
+    else:
+        source_count = workspace.db.execute(
+            "SELECT count(*) FROM revisions WHERE active=1"
+        ).fetchone()[0]
     return {
         "version": workspace.version(),
-        "sources": history["retained_sources"]
-        if history is not None
-        else workspace.db.execute("SELECT count(*) FROM revisions WHERE active=1").fetchone()[0],
+        "sources": source_count,
         "topics": [],
         "facts": [],
         "states": {},
@@ -107,6 +137,11 @@ def _search_snapshot(
         "search_question": question,
         "search_comparison": comparison,
         "search_history": history,
+        "search_recording_bounds": {
+            key: packs[0][1]["plan"][key]
+            for key in ("start_date", "end_date")
+            if key in packs[0][1]["plan"]
+        },
         "search_trace": {
             "terms": packs[0][1]["compilation"]["terms"] if question is not None else terms,
             "candidate_spans": sum(pack["candidate_spans"] for _, pack in packs),
@@ -132,6 +167,7 @@ def _snapshot(
     *,
     recording_bounds: dict | None = None,
     compare_with: str | None = None,
+    run_id: str | None = None,
 ) -> dict:
     try:
         with Workspace.open(directory, read_only=True) as workspace:
@@ -144,6 +180,20 @@ def _snapshot(
                 if tracked
                 else None
             )
+            if run_id is not None:
+                saved = saved_context_search(workspace, run_id)
+                pack = saved["value"]
+                first = pack["parts"][0] if "parts" in pack else pack
+                return {
+                    **_search_snapshot(
+                        workspace, [], first["compilation"]["question"], {}, saved=saved
+                    ),
+                    "history_origin": origin,
+                    "saved_search": {
+                        "version": saved["manifest"]["memory_version"],
+                        "searched_at": saved["manifest"]["created_at"],
+                    },
+                }
             historical_search = at_version is not None and origin is not None
             if (terms or question is not None) and (searchable or at_version is not None):
                 scope = {**(recording_bounds or {})}
@@ -200,10 +250,10 @@ def _read_comparison(path: Path) -> dict:
         raise ToolError("invalid_input", "could not read graph comparison snapshots") from exc
 
 
-def _activity_snapshot(directory: Path) -> dict:
+def _activity_snapshot(directory: Path, event_version: int | None = None, offset: int = 0) -> dict:
     try:
         with Workspace.open(directory, read_only=True) as workspace:
-            return memory_activity(workspace)
+            return memory_activity(workspace, event_version=event_version, offset=offset)
     except ToolError as exc:
         if (
             exc.code != "not_found"
@@ -212,6 +262,15 @@ def _activity_snapshot(directory: Path) -> dict:
         ):
             raise
         return {"version": 0, "events": [], "runs": []}
+
+
+def _version_parameter(params: dict, name: str) -> int | None:
+    value = params.get(name, [None])[0]
+    if value is None:
+        return None
+    if not value.isascii() or not value.isdigit() or len(value) > 19 or int(value) >= 2**63:
+        raise ValueError("invalid workspace version")
+    return int(value)
 
 
 def _serve(directory: Path, comparison: Path | None = None) -> None:
@@ -230,6 +289,7 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
             ("activity", "memory_activity.js"),
             ("changes", "memory_compare.js"),
             ("revision", "memory_revision.js"),
+            ("source", "memory_source.js"),
         )
         if view != "changes" or comparison_data is not None
     }
@@ -256,36 +316,57 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                 terms = list(dict.fromkeys(params.get("term", ())))
                 question = params.get("q", [None])[0]
                 compare_with = params.get("q2", [None])[0]
+                run_id = params.get("run", [None])[0]
                 if (
                     len(terms) > 3
                     or any(len(term) > 128 for term in terms)
                     or (question is not None and (len(question) > 512 or terms))
                     or (compare_with is not None and (question is None or len(compare_with) > 512))
+                    or (
+                        run_id is not None
+                        and (
+                            terms
+                            or question is not None
+                            or any(key in params for key in ("at", "start_date", "end_date"))
+                        )
+                    )
                 ):
                     raise ValueError("invalid terms")
                 requested_view = params.get("view", [None])[0]
                 if requested_view == "activity":
-                    view, snapshot = "activity", _activity_snapshot(directory)
+                    view, snapshot = (
+                        "activity",
+                        _activity_snapshot(
+                            directory,
+                            _version_parameter(params, "event"),
+                            _version_parameter(params, "offset") or 0,
+                        ),
+                    )
                 elif requested_view == "revision":
                     request = {"before": params.get("before", [""])[0]}
+                    if after := params.get("after"):
+                        request["after"] = after[0]
                     if cursor := params.get("cursor"):
                         request["cursor"] = cursor[0]
                     with Workspace.open(directory, read_only=True) as workspace:
                         view, snapshot = "revision", compare_revisions(workspace, request)
+                elif requested_view == "source":
+                    with Workspace.open(directory, read_only=True) as workspace:
+                        view, snapshot = (
+                            "source",
+                            source_revision_page(
+                                workspace,
+                                params.get("checksum", [""])[0],
+                                offset=_version_parameter(params, "offset") or 0,
+                            ),
+                        )
                 elif comparison_data is not None and (
                     requested_view == "changes"
-                    or (requested_view is None and not terms and not question)
+                    or (requested_view is None and not terms and not question and run_id is None)
                 ):
                     view, snapshot = "changes", comparison_data
                 else:
-                    version_text = params.get("at", [None])[0]
-                    if version_text is not None and (
-                        not version_text.isascii()
-                        or not version_text.isdigit()
-                        or len(version_text) > 19
-                    ):
-                        raise ValueError("invalid workspace version")
-                    at_version = int(version_text) if version_text is not None else None
+                    at_version = _version_parameter(params, "at")
                     bounds = {
                         key: params[key][0] for key in ("start_date", "end_date") if key in params
                     }
@@ -298,6 +379,7 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                             at_version,
                             recording_bounds=bounds,
                             compare_with=compare_with,
+                            run_id=run_id,
                         ),
                     )
                 if comparison_data is not None:
@@ -308,7 +390,14 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                 elif exc.code == "invalid_input":
                     self.send_error(HTTPStatus.BAD_REQUEST, explain=str(exc))
                 elif exc.code == "not_found":
-                    self.send_error(HTTPStatus.NOT_FOUND, "Source revision was not found")
+                    self.send_error(
+                        HTTPStatus.NOT_FOUND,
+                        "The requested search, change or source revision was not found",
+                    )
+                elif exc.code == "invalidated_run":
+                    self.send_error(
+                        HTTPStatus.GONE, "A permanent deletion removed this saved search"
+                    )
                 elif exc.code == "history_unavailable":
                     self.send_error(HTTPStatus.NOT_FOUND, "This workspace version was not tracked")
                 else:

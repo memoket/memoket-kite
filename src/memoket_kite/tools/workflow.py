@@ -501,7 +501,7 @@ def _resume(
         try:
             for reference in stage["inputs"].values():
                 if reference.startswith("stage."):
-                    prerequisite = _artifact(context, checkpoint, reference[6:])
+                    prerequisite = _artifact(context.workspace, checkpoint, reference[6:])
                     if prerequisite["manifest"]["kind"] == "deletion_plan":
                         context.workspace.deletion_impact(
                             prerequisite["value"], run_id=checkpoint["run_id"]
@@ -598,7 +598,47 @@ def _bound_definition(
 def artifact(context: Context, run_id: str, stage_id: str) -> dict:
     run, checkpoint = _run(context.workspace, run_id)
     _bound_definition(context, run, checkpoint)
-    return _artifact(context, checkpoint, stage_id)
+    return _artifact(context.workspace, checkpoint, stage_id)
+
+
+def saved_context_search(workspace, run_id: str) -> dict:
+    """Read a completed search for display without reopening it for execution."""
+    run, checkpoint = _run(workspace, run_id)
+    if checkpoint["pipeline_id"] != "context-search":
+        raise ToolError("not_found", "saved search was not found")
+    if checkpoint["state"] == "invalidated":
+        raise ToolError("invalidated_run", "a permanent deletion removed this saved search")
+    if checkpoint["state"] != "completed":
+        raise ToolError("not_found", "the search has not completed")
+    if run["definition"] != checkpoint["definition_digest"]:
+        raise ToolError("integrity_error", "checkpoint definition digest differs from its record")
+    result = _artifact(workspace, checkpoint, "search")
+    manifest, value = result["manifest"], result["value"]
+    if (
+        manifest["kind"] != "context_evidence"
+        or manifest["memory_version"] != checkpoint["memory_version"]
+        or value.get("memory_version") != checkpoint["memory_version"]
+    ):
+        raise ToolError("integrity_error", "saved search does not match its workspace snapshot")
+    return result
+
+
+def committed_topic_merge(workspace, version: int) -> dict | None:
+    for row in workspace.db.execute(
+        "SELECT * FROM runs WHERE json_extract(checkpoint, '$.pipeline_id')='memory-consolidation' "
+        "AND json_extract(checkpoint, '$.stages.commit.artifact.memory_version')=?",
+        (version,),
+    ):
+        checkpoint = _checkpoint(row)
+        receipt = _artifact(workspace, checkpoint, "commit")["value"]
+        if receipt["changed"]:
+            merge = _stored_inputs(row, checkpoint)["merge"]
+            validate(SCHEMAS["reclassify"], merge, "stored topic merge")
+            return {
+                **merge,
+                "current_topic": workspace.index().vocab.resolve_topic(merge["to_topic"]),
+            }
+    return None
 
 
 def resume_ingestion(context: Context, run_id: str, annotations: dict) -> dict:
@@ -689,6 +729,19 @@ def source_lines(
     elif offset:
         raise ToolError("invalid_input", "pass the previous page's revision_checksum as --revision")
     record = workspace.source_revision(source, conversation_id, checksum)
+    return _source_line_page(workspace, record, offset=offset, limit=limit, byte_budget=byte_budget)
+
+
+def source_revision_page(workspace, checksum: str, *, offset: int) -> dict:
+    validate(HASH, checksum, "revision checksum")
+    _validate_segment_window(offset, 20, 6000)
+    record = workspace.record(checksum)
+    return _source_line_page(workspace, record, offset=offset, limit=20, byte_budget=6000)
+
+
+def _source_line_page(
+    workspace, record: dict, *, offset: int, limit: int, byte_budget: int
+) -> dict:
     conversation = record["conversation"]
     revision = revision_id(record)
     page = _segment_page(
@@ -708,18 +761,18 @@ def source_lines(
     }
 
 
-def _artifact(context: Context, checkpoint: dict, stage_id: str) -> dict:
+def _artifact(workspace, checkpoint: dict, stage_id: str) -> dict:
     stage = checkpoint["stages"].get(stage_id, {})
     manifest = stage.get("artifact")
     if stage.get("state") != "completed" or not manifest:
         raise ToolError("not_found", "stage artifact is unavailable")
-    row = context.workspace.db.execute(
+    row = workspace.db.execute(
         "SELECT * FROM artifacts WHERE run_id=? AND stage=?", (checkpoint["run_id"], stage_id)
     ).fetchone()
     if row is None:
         raise ToolError("integrity_error", "checkpoint refers to a missing artifact")
     value = _verified_artifact_value(row, manifest)
-    if row["kind"] in SNAPSHOT_KINDS and manifest["memory_version"] != context.workspace.version():
+    if row["kind"] in SNAPSHOT_KINDS and manifest["memory_version"] != workspace.version():
         raise ToolError("stale_snapshot", "stage artifact was produced against an older snapshot")
     validate(SCHEMAS[row["kind"]], value, "stored artifact")
     return {"manifest": manifest, "value": value}
@@ -753,7 +806,7 @@ def _stage_args(context: Context, checkpoint: dict, stage: dict, pending_inputs:
                 raise ToolError("missing_input", f"stage requires input {key}")
             args[argument] = pending_inputs[key]
         else:
-            args[argument] = _artifact(context, checkpoint, key)["value"]
+            args[argument] = _artifact(context.workspace, checkpoint, key)["value"]
     return args
 
 
@@ -800,7 +853,10 @@ def advance(
     extra = _inputs(context, definition, extra)
     _check_stage_inputs(definition, checkpoint, stage, supplied, extra)
     if state["state"] == "completed":
-        return {"checkpoint": checkpoint, **_artifact(context, checkpoint, stage_id)}, None
+        return {
+            "checkpoint": checkpoint,
+            **_artifact(context.workspace, checkpoint, stage_id),
+        }, None
     if state["state"] in ("invalidated", "redacted"):
         raise ToolError("invalidated_run", "this stage's artifacts were redacted after deletion")
     if _dependency_pending(checkpoint, stage):
