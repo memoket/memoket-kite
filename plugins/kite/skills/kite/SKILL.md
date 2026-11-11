@@ -16,7 +16,7 @@ lines and distinguish confirmed decisions from proposals. Quote a known topic
 name to focus retrieval. For a missing detail,
 use `--term`, `--conversation-id`, or `evidence 'ID#SEGMENT' --context 2 --text`.
 State any unresolved gaps.
-For date filters, revision differences, and decision history, read
+For two-question comparisons, date filters, revision differences, and decision history, read
 [query.md](references/query.md).
 
 ## Choose a workflow

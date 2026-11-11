@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "kite",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "Remember what your team decided, who owns it now, and why it changed.",
   "author": { "name": "Memoket Inc.", "url": "https://github.com/memoket" },
   "homepage": "https://github.com/memoket/memoket-kite",
