@@ -187,9 +187,7 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
     historical = run(
         "context",
         "--question",
-        "What does rollout depend on?",
-        "--at-version",
-        str(indexed["memory_version"]),
+        f'What does "rollout" depend on in workspace v{indexed["memory_version"]}?',
         "--text",
     ).stdout
     assert "[handoff#L4] Speaker A: Rollout depends on the checklist." in historical

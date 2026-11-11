@@ -8,6 +8,8 @@ For what the workspace knew at a given point, use `context --at-version VERSION`
 or `context --known-at TIMESTAMP` with the original question. Supply an offset
 with the timestamp. Use `--start-date` and `--end-date` for recording dates and
 retain the shown revision checksum with historical citations.
+The question itself can include `workspace v12` or `workspace as of TIMESTAMP`.
+Use one workspace snapshot per query.
 
 Use `bash "$KITE" topics --contains PHRASE` to find indexed topics, then
 `bash "$KITE" query --topic TOPIC --text` for a readable trace. Use
