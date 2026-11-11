@@ -273,7 +273,10 @@ efficiency summary uses only pairs where both answers pass.
 Use `--record-tool-output` when diagnosing a retrieval miss. The private
 report then includes the commands and the exact output Codex received.
 
-The fixed retrieval result checks exact evidence coverage and the fraction
+The fixed retrieval result counts each original segment reference exposed in
+the evidence pack. When KITE reuses identical transcript text, the linked
+source revisions expose the same segment IDs and also count as available
+references. The fixed result checks evidence coverage and the fraction
 of tasks where all expected evidence was retrieved. A labeled citation hit
 does not assess the relevance of every extra retrieved line. Review answer
 pattern failures against the original evidence, including equivalent wording.

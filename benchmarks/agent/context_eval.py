@@ -302,10 +302,11 @@ def case_questions(case: dict) -> list[str]:
 
 def evidence_ids(pack: dict) -> set[str]:
     return {
-        f"{line['conversation_id']}#{line['segment_id']}"
+        f"{source['conversation_id']}#{line['segment_id']}"
         for part in pack.get("parts", [pack])
         for span in part["spans"]
         for line in span["evidence"]
+        for source in (line, *span.get("same_text_sources", ()))
     }
 
 

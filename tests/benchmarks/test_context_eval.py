@@ -6,6 +6,19 @@ import pytest
 from benchmarks.agent import context_eval
 
 
+def test_identical_text_sources_keep_the_original_segment_references():
+    pack = {
+        "spans": [
+            {
+                "evidence": [{"conversation_id": "first", "segment_id": "L10"}],
+                "same_text_sources": [{"conversation_id": "second"}],
+            },
+            {"evidence": [{"conversation_id": "third", "segment_id": "L14"}]},
+        ]
+    }
+    assert context_eval.evidence_ids(pack) == {"first#L10", "second#L10", "third#L14"}
+
+
 def test_comparison_benchmark_uses_disjoint_recording_windows(tmp_path):
     corpus = tmp_path / "transcripts"
     corpus.mkdir()
