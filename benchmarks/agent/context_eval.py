@@ -21,6 +21,7 @@ from memoket_kite.tools.contracts import DATE, digest, validate
 from memoket_kite.tools.ingest import file_source
 from memoket_kite.tools.resources import resource_root
 from memoket_kite.tools.transcript_text import transcript_recording_day, transcript_text_source
+from memoket_kite.tools.workspace import Workspace
 
 
 def kite(workspace: Path, *args: str, payload=None, expected_error=None) -> dict:
@@ -110,6 +111,50 @@ def corpus_hash(sources: list[CorpusSource]) -> str:
     for source in sources:
         checksum.update(f"{source.name}\0{hashlib.sha256(source.raw).hexdigest()}\n".encode())
     return checksum.hexdigest()
+
+
+def apply_index_annotations(sources: list[CorpusSource], directory: Path) -> int:
+    """Copy annotations tied to matching source lines from a read-only workspace."""
+    by_identity = {
+        (item.conversation["source"], item.conversation["conversation_id"]): item
+        for item in sources
+    }
+    annotations = []
+    with Workspace.open(directory, read_only=True) as workspace:
+        version = workspace.version()
+        for record in workspace.records(active_only=True):
+            conversation = record["conversation"]
+            key = (conversation["source"], conversation["conversation_id"])
+            item = by_identity.get(key)
+            if item is None:
+                continue
+            if item.conversation["segments"] != conversation["segments"]:
+                raise ValueError(f"annotation source lines differ from the corpus for {item.name}")
+            labels = {
+                name: record[name]
+                for name in ("index_spans", "taxonomy", "entity_aliases")
+                if record.get(name)
+            }
+            if labels:
+                annotations.append((item, {"facts": [], **labels}))
+    if not any(labels.get("index_spans") for _, labels in annotations):
+        raise ValueError("no matching source has index span annotations")
+    for item, labels in annotations:
+        item.record["annotations"] = labels
+    return version
+
+
+def annotation_summary(sources: list[CorpusSource]) -> dict:
+    entries = [
+        (source.name, source.record["annotations"])
+        for source in sources
+        if "annotations" in source.record
+    ]
+    return {
+        "annotated_source_count": sum(bool(labels.get("index_spans")) for _, labels in entries),
+        "index_span_count": sum(len(labels.get("index_spans", ())) for _, labels in entries),
+        "annotations_sha256": digest(entries),
+    }
 
 
 def corpus_sources(directory: Path) -> tuple[list[dict], str]:
@@ -427,6 +472,12 @@ def score_revisions(workspace: Path, records: list[dict], cases: list[dict]) -> 
         if segment["text"].count(case["replace"]) != 1:
             raise ValueError(f"{case['id']}: edit must match exactly once")
         segment["text"] = segment["text"].replace(case["replace"], case["with"], 1)
+        if labels := entry.get("annotations"):
+            labels["index_spans"] = [
+                span
+                for span in labels.get("index_spans", ())
+                if segment_id not in span["segment_ids"]
+            ]
         originals.append((original, segment["text"]))
         updates.append(entry)
     start = time.perf_counter()
@@ -720,6 +771,11 @@ def main() -> None:
     parser.add_argument(
         "--recording-metadata", type=Path, help="directory of same-ID recording JSON files"
     )
+    parser.add_argument(
+        "--annotations-from",
+        type=Path,
+        help="reuse verified source index annotations from a workspace",
+    )
     parser.add_argument("--host-context", choices=("tool", "prefilled"), default="tool")
     parser.add_argument(
         "--retrieval",
@@ -762,6 +818,9 @@ def main() -> None:
     if args.recording_metadata is not None and not args.recording_metadata.is_dir():
         parser.error("--recording-metadata requires a directory")
     sources = read_corpus(args.corpus, args.source_format, args.recording_metadata)
+    annotation_version = None
+    if args.annotations_from is not None:
+        annotation_version = apply_index_annotations(sources, args.annotations_from)
     records = [source.record for source in sources]
     args.output.mkdir(mode=0o700)
     workspace = args.output / "memory"
@@ -777,6 +836,7 @@ def main() -> None:
         )
         or args.matching_lines
         or args.host_follow_up
+        or args.annotations_from is not None
     )
     scopes = (
         prepare_case_corpora(sources, cases, args.output, with_files=bool(args.model))
@@ -795,6 +855,8 @@ def main() -> None:
         )
         if scope is not None:
             row.update(source_count=scope.source_count, source_sha256=scope.sha256)
+        if annotation_version is not None:
+            row["index_annotations"] = annotation_summary(select_sources(sources, case_dates(case)))
         packs[case["id"]] = pack
         context.append(row)
     result = {
@@ -816,6 +878,11 @@ def main() -> None:
             benchmark_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             question_bound_to_launcher=question,
         )
+    if annotation_version is not None:
+        result["index_annotations"] = {
+            "workspace_version": annotation_version,
+            **annotation_summary(sources),
+        }
     if args.updates:
         update_spec = args.updates.read_bytes()
         revision_workspace = args.output / "revisions"

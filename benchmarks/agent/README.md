@@ -228,6 +228,15 @@ python -m benchmarks.agent.context_eval /path/to/transcripts cases.json artifact
   --model YOUR_CODEX_MODEL --codex /path/to/codex
 ```
 
+Add `--annotations-from /path/to/workspace` to test an existing source index.
+The benchmark copies index spans, topic definitions, and entity aliases from
+active records with the same source identity and original segments. It keeps
+the original input files and dates for both arms. This mode uses only index
+annotations and imports zero facts. It records the annotation counts and
+digests for the whole corpus and each case scope. Report annotation creation
+cost separately when comparing runs with a prepared index.
+Declared edits in `--updates` drop index spans attached to the edited line.
+
 Under `--retrieval question`, a case can supply `questions` with exactly
 two questions. Both arms see those questions in the task prompt. The fixed
 KITE pack uses `--compare-with` and a single quote budget. For field-level

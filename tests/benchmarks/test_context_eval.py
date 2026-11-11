@@ -134,3 +134,65 @@ def test_text_benchmark_and_claim_grading_preserve_source_lines(tmp_path):
     assert not bad["full_pass"]
     answer["owner"]["citations"].pop()
     assert context_eval.grade_claims(json.dumps(answer), specs, visible)["full_pass"]
+
+
+def test_benchmark_copies_only_annotations_bound_to_the_same_source_lines(tmp_path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "handoff.txt").write_text("Rae owns deployment.\n")
+    (raw / "unannotated.txt").write_text("The build is ready.\n")
+    sources = context_eval.read_corpus(raw, "text")
+    record = json.loads(json.dumps(sources[0].record))
+    record["source"]["payload"]["title"] = "A title from the reference workspace"
+    record["annotations"] = {
+        "facts": [
+            {"content": "Rae owns deployment.", "segment_ids": ["text-line-1"], "topics": ["owner"]}
+        ],
+        "index_spans": [{"segment_ids": ["text-line-1"], "topics": ["pilot handoff"]}],
+    }
+    annotated = tmp_path / "annotated"
+    context_eval.kite(annotated, "ingest", "--input", "-", payload=record)
+    with context_eval.Workspace.open(annotated, read_only=True) as workspace:
+        version = workspace.version()
+        assert workspace.records(active_only=True)[0]["facts"]
+    initial_hash = context_eval.corpus_hash(sources)
+    assert context_eval.apply_index_annotations(sources, annotated) == version
+    assert context_eval.corpus_hash(sources) == initial_hash
+    assert sources[0].conversation.get("title") != record["source"]["payload"]["title"]
+    assert sources[0].record["annotations"]["facts"] == []
+    assert "annotations" not in sources[1].record
+    stats = context_eval.annotation_summary(sources)
+    assert stats["annotated_source_count"] == stats["index_span_count"] == 1
+    assert len(stats["annotations_sha256"]) == 64
+    evaluated = tmp_path / "evaluated"
+    context_eval.kite(
+        evaluated, "index-sources", "--input", "-", payload={"sources": [s.record for s in sources]}
+    )
+    pack = context_eval.kite(evaluated, "context", "--term", "pilot handoff")
+    assert context_eval.evidence_ids(pack) == {"handoff#text-line-1"}
+    assert (
+        context_eval.kite(evaluated, "context", "--term", "A title from the reference")["spans"]
+        == []
+    )
+
+    updated = context_eval.score_revisions(
+        evaluated,
+        [source.record for source in sources],
+        [
+            {
+                "id": "owner",
+                "evidence": "handoff#text-line-1",
+                "replace": "Rae",
+                "with": "Maya",
+                "terms": ["deployment"],
+            }
+        ],
+    )
+    assert updated["cases"] == [{"id": "owner", "correct_context": True, "historical_quote": True}]
+    assert context_eval.kite(evaluated, "context", "--term", "pilot handoff")["spans"] == []
+
+    (raw / "handoff.txt").write_text("A different person owns deployment.\n")
+    edited = context_eval.read_corpus(raw, "text")
+    with pytest.raises(ValueError, match="annotation source lines differ"):
+        context_eval.apply_index_annotations(edited, annotated)
+    assert all("annotations" not in item.record for item in edited)
