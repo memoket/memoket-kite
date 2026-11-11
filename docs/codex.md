@@ -51,6 +51,18 @@ Removing the plugin leaves the memory files on disk. Codex receives the source
 text it reads for annotation. The KITE CLI itself stores and queries the
 workspace locally.
 
+## View the memory graph
+
+Ask Codex “Open my KITE memory graph.” KITE opens a local browser page on
+`127.0.0.1`. Drag to rotate the graph. Select a memory to see its topic,
+state key, source version, and original quotes. Select a topic, state key, or
+source revision to see which memories connect to it.
+
+The page reads the current workspace when opened or refreshed. The server
+listens only on this machine and stops after an hour without a request. You
+can start it from a terminal with `kite-tool view` if your Codex environment
+restricts local ports.
+
 ## Refresh
 
 Refresh the Memoket directory with `codex plugin marketplace upgrade memoket`,

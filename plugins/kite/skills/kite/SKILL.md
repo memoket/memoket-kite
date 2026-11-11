@@ -1,6 +1,6 @@
 ---
 name: kite
-description: Use KITE to recall what the team decided, who owns it now, and how plans changed. Use when asked for a KITE demo or when KITE should supply meeting decisions or commitments for an answer or next action. Imports selected notes and transcripts with original citations.
+description: Use KITE to recall what the team decided, who owns it now, and how plans changed. Use for the KITE memory graph, demos, and meeting decisions or commitments. Imports selected notes and transcripts with original citations.
 ---
 
 Use `bash` with the absolute path to `scripts/kite.sh` beside this skill. In the
@@ -10,6 +10,17 @@ launcher selects the project's local memory directory and prepares the runtime
 on first use. Keep the launcher-selected workspace across chats. Reserve
 `KITE_DATA_DIR` or an explicit `--workspace DIR` before the command for a
 destination the user selects.
+
+## Memory graph
+
+When asked to open, browse, or visualize KITE memory in a browser, run
+`bash "$KITE" view` and give the user the returned local URL. The graph shows
+the workspace's retained memories and their links to topics, state keys, and
+source revisions. Refresh the page to read the latest committed records.
+
+If `viewer_unavailable` reports that the host blocks loopback access, use the
+host's normal command approval when available. The same command can also be run
+from a local terminal in the project directory.
 
 ## Setup and demo
 

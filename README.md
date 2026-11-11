@@ -43,7 +43,8 @@ codex plugin marketplace add memoket/memoket-kite --ref codex/agent-native-memor
 ```
 
 See the [Codex installation guide](docs/codex.md) for first-run setup, import,
-and citation examples.
+and citation examples. Ask **“Open my KITE memory graph”** to see how the
+project's memories connect to topics, state keys, and source revisions.
 
 ### Try the command line
 

@@ -1,6 +1,6 @@
 {
   "name": "kite",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Remember what your team decided, who owns it now, and why it changed.",
   "author": { "name": "Memoket Inc.", "url": "https://github.com/memoket" },
   "homepage": "https://github.com/memoket/memoket-kite",
@@ -18,9 +18,9 @@
     "capabilities": ["Read", "Write"],
     "websiteURL": "https://github.com/memoket/memoket-kite",
     "defaultPrompt": [
+      "Open my KITE memory graph.",
       "Show me how KITE remembers a changed release decision.",
-      "Use KITE to draft my next steps from the latest decisions and owners.",
-      "Use KITE to explain what changed since the last meeting and cite why."
+      "Use KITE to draft my next steps from the latest decisions and owners."
     ]
   }
 }
