@@ -1,0 +1,56 @@
+[
+  {
+    "source": {
+      "format": "text",
+      "payload": {
+        "conversation_id": "release-kickoff",
+        "title": "Release kickoff",
+        "source_date": "2026-11-03",
+        "metadata": {"source_reference": "release-demo:kickoff"},
+        "text": "Ravi owns the release. We approved shipping on Friday."
+      }
+    },
+    "annotations": {
+      "taxonomy": [{"name": "release", "aliases": ["release plan"]}],
+      "facts": [
+        {"content": "Ravi owns the release.", "segment_ids": ["text-1"], "topics": ["release"], "status": "confirmed", "state_key": "release-owner", "state": "Ravi"},
+        {"content": "The team approved shipping on Friday.", "segment_ids": ["text-1"], "topics": ["release"], "status": "confirmed", "state_key": "ship-day", "state": "Friday"}
+      ]
+    }
+  },
+  {
+    "source": {
+      "format": "text",
+      "payload": {
+        "conversation_id": "release-handoff",
+        "title": "Release handoff",
+        "source_date": "2026-11-05",
+        "metadata": {"source_reference": "release-demo:handoff"},
+        "text": "Maya takes over the release. We approved Tuesday because the Friday build failed validation."
+      }
+    },
+    "annotations": {
+      "facts": [
+        {"content": "Maya takes over the release.", "segment_ids": ["text-1"], "topics": ["release"], "status": "confirmed", "state_key": "release-owner", "state": "Maya"},
+        {"content": "The team approved Tuesday because the Friday build failed validation.", "segment_ids": ["text-1"], "topics": ["release"], "status": "confirmed", "state_key": "ship-day", "state": "Tuesday"}
+      ]
+    }
+  },
+  {
+    "source": {
+      "format": "text",
+      "payload": {
+        "conversation_id": "release-followup",
+        "title": "Release follow-up",
+        "source_date": "2026-11-06",
+        "metadata": {"source_reference": "release-demo:followup"},
+        "text": "Could we ship on Monday instead? Let's wait for QA before deciding."
+      }
+    },
+    "annotations": {
+      "facts": [
+        {"content": "Monday was suggested pending QA.", "segment_ids": ["text-1"], "topics": ["release"], "status": "proposal", "state_key": "ship-day", "state": "Monday"}
+      ]
+    }
+  }
+]

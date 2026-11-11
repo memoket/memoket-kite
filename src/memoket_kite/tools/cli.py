@@ -21,7 +21,7 @@ from .contracts import (
     read_utf8,
     validate,
 )
-from .demo import render_demo, run_demo
+from .demo import render_decision_story, render_demo, run_demo
 from .ingest import file_source, prepare_source
 from .memoket_source import memoket_source
 from .operations import SCHEMAS, SOURCE_SCOPE, TOOLS, Context
@@ -148,6 +148,9 @@ def _parser() -> argparse.ArgumentParser:
         "--metrics", action="store_true", help="emit deterministic fixture metrics"
     )
     demo_output.add_argument("--text", action="store_true", help="show the decision and citations")
+    demo_output.add_argument(
+        "--decision-story", action="store_true", help="show how memory follows a changed decision"
+    )
     demo.add_argument(
         "--save-workspace", type=Path, metavar="PATH", help="save the demo to a new workspace"
     )
@@ -595,7 +598,12 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
         return result, None
     if args.command == "demo":
         return {
-            "value": run_demo(root, metrics=args.metrics, save_workspace=args.save_workspace)
+            "value": run_demo(
+                root,
+                metrics=args.metrics,
+                decision_story=args.decision_story,
+                save_workspace=args.save_workspace,
+            )
         }, None
     if args.command == "validate-pipeline":
         definition, checksum, skill_root = load_pipeline(
@@ -810,6 +818,8 @@ def main(argv=None) -> int:
         print(result["markdown"], end="")
     elif args.command == "demo" and args.text:
         print(render_demo(result["value"]))
+    elif args.command == "demo" and args.decision_story:
+        print(render_decision_story(result["value"]))
     elif args.command == "query" and args.text_output:
         print(result["text"])
     elif args.command == "status" and args.text_output:

@@ -186,6 +186,19 @@ def main() -> None:
         assert report["timeline"][2]["evidence"][0]["source_line_id"] in readable
         call("demo", "--save-workspace", str(demo_workspace), error="conflict")
         assert call("integrity", "--include-workflows", workspace=demo_workspace) == saved
+        story = subprocess.check_output(
+            [str(command), "--workspace", str(original), "demo", "--decision-story"],
+            text=True,
+            cwd=directory,
+            timeout=45,
+        )
+        assert "As of 2026-11-04  Ravi owns the release. Ship Friday." in story
+        assert "Maya owns the release. Ship Tuesday." in story
+        assert "Starting from Ravi's earlier mention leads to Maya." in story
+        assert "proposal  Monday was suggested pending QA." in story
+        assert "Customer approval? No evidence in these meetings." in story
+        assert '"source": "text/release-handoff#text-1"' in story
+        assert "Maya takes over the release. We approved Tuesday" in story
         call("source-history", "text", "note", error="not_found")
         assert not original.exists()
 
