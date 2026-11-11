@@ -4,7 +4,7 @@
 
 ### Follow the thread, not the nearest match.
 
-Open-source and vector-free, KITE achieves **🥇 93.51% on LoCoMo and 🥇 85.60% on LongMemEval-S**, with *gpt-4.1-mini* used across all benchmark stages and an average reader context of only **~1.6K tokens per question**.
+Open-source and vector-free, KITE is **conversation memory infrastructure** that sits between your agent and your meetings: your agent does the reasoning, and KITE keeps every fact on **a line back to what was said**.
 
 <a href="https://memoket.ai/"><img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/memoket-website-badge-navy.svg" alt="Memoket website"></a>
 <a href="https://discord.com/invite/tFh4nur4Vn"><img src="https://img.shields.io/badge/-Discord-232B3A?style=for-the-badge&logo=discord&logoColor=white" alt="Join Memoket on Discord"></a>
@@ -17,7 +17,7 @@ Open-source and vector-free, KITE achieves **🥇 93.51% on LoCoMo and 🥇 85.6
 <br>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/kite-architecture-flow.png" width="100%" alt="KITE at a glance: conversations become source-linked memory facts, memory settles under a governed topic map, a question compiles to an inspectable plan, and the answer arrives with receipts.">
+  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/kite-hero.png" width="100%" alt="KITE as conversation memory infrastructure. At the top, your agent, Claude Code, Codex, Muse, Grok Bot, or any agent with a terminal, reads from KITE and writes back. At the bottom, meetings, calls, recordings, and transcripts are tied into the kite's string. Across the middle, one memory thread runs through the kite and is laid out six ways, each in its own card: Recall, Summary, Timeline, Business lines, Change lines, and Topics, with room for more views, agents, and sources at every edge.">
 </p>
 
 <a id="news"></a>
@@ -28,13 +28,37 @@ Open-source and vector-free, KITE achieves **🥇 93.51% on LoCoMo and 🥇 85.6
 - **[2026-10-26]**: 🎬 Released an **[explainer video](#video)** of how KITE works, from a message to a cited answer.
 - **[2026-08-13]**: 🎉 First public release: **[KITE v0.1.0](https://github.com/memoket/memoket-kite/releases/tag/v0.1.0)** is open source under Apache-2.0 and on **[PyPI](https://pypi.org/project/memoket-kite/)** as `memoket-kite`.
 
+<a id="views"></a>
+
+## 🪁 The Views
+
+One memory, laid out the way each question needs. Your meetings go in once, and your agent
+reads the same thread back in whichever view the question calls for.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/views/recall.png" width="49%" alt="Recall, from kite search: a question answered by three lines, each hanging a receipt from the moment it was said.">
+  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/views/summary.png" width="49%" alt="Summary, from kite overview: everything said, distilled into one short card your agent keeps in mind, the rest expanded on demand.">
+</p>
+<p align="center">
+  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/views/timeline.png" width="49%" alt="Timeline, from kite events: decisions and other events in time, up to now.">
+  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/views/lanes.png" width="49%" alt="Business lines, from kite view lanes: every line of work across the meetings, with what changed and what holds now.">
+</p>
+<p align="center">
+  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/views/chain.png" width="49%" alt="Change lines, from kite view chain: one line of work through time, with what changed and the conflict still open.">
+  <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/views/topics.png" width="49%" alt="Topics, from kite vocab: a topic tree sized by how much is filed under each topic, and different words gathered under one name.">
+</p>
+
+Each picture shows the shape of what the command in its corner returns. `kite view lanes`
+and `kite view chain` also render business lines and change lines as pages you can open;
+try them on the demo memory in the [Quick Start](#quick-start).
+
 ## 💡 Why KITE by Memoket
 
 Most AI memory turns every sentence into a cloud of numbers and hands back whatever
 lands closest to your question. It always returns *something*, even when the answer
 was never there, and it cannot show you *why*.
 
-KITE by Memoket reads what a question means, not how it sounds.
+KITE by Memoket follows what a question means, not how it sounds.
 
 > **"Who's the decision-maker on the Henderson account now?"**
 >
@@ -45,16 +69,18 @@ KITE by Memoket reads what a question means, not how it sounds.
 >
 > Both were filed under the same topic when they were written. Then *now* sorts them
 > by date. Similarity has no notion of *now*: nearest-match memory rates March just as
-> relevant and answers **"Marcus"**, with nothing to tell you it is wrong. KITE answers
-> **"Dana"**, with the June line attached.
+> relevant and answers **"Marcus"**, with nothing to tell you it is wrong. With KITE the
+> answer is **"Dana"**, with the June line attached.
 
 |  | Nearest-match memory | 🪁 KITE by Memoket |
 |---|---|---|
 | **Finds** | whatever *sounds* like the question | the facts that *answer* it |
 | **When it was never said** | returns something anyway | comes back empty, and says so |
 | **Why this answer?** | a similarity score | a readable plan, with who said it and when |
-| **Runtime stack** | embeddings · vector DB · rerankers | one portable, topic-indexed file |
+| **Runtime stack** | embeddings · vector DB · rerankers | one portable, topic-indexed memory |
 | **Ask again tomorrow** | depends on the index that day | the same plan walks the same steps |
+
+KITE keeps the memory; your agent does the thinking.
 
 <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/string-b.svg" width="100%" alt="">
 
@@ -71,8 +97,9 @@ https://github.com/user-attachments/assets/a5c053fb-36de-4eeb-8d2d-d652792314f4
 
 #### 1 · Message → Fact
 
-A user says, **"I moved to Tokyo on July 26."** KITE by Memoket extracts what happened and
-files it under its topics, keeping the original message as evidence:
+A user says, **"I moved to Tokyo on July 26."** Your agent works out what happened and
+writes it back with `kite write`. KITE checks the source line, files the fact under its
+topics, and keeps the original message as evidence:
 
 ```xml
 <fact t="2026-07-26" kind="event" who="user"
@@ -84,8 +111,8 @@ files it under its topics, keeping the original message as evidence:
 
 #### 2 · Question → Plan
 
-When the agent asks **"Where does the user live now?"**, KITE by Memoket compiles the
-question into a plan you can read, validate, and cache:
+When someone asks **"Where does the user live now?"**, your agent turns the question
+into a plan you can read, validate, and cache:
 
 ```json
 {
@@ -111,9 +138,11 @@ TAKE 1
 ```
 
 The same validated plan always follows the same steps over the same memory, with no
-embeddings and no vector database anywhere.
+embeddings, no vector database, and no model call anywhere.
 
 #### 4 · Evidence → Answer
+
+Your agent answers from that evidence, and the receipt travels with it:
 
 ```text
 Answer: Tokyo
@@ -125,11 +154,11 @@ Source: chat1L1, "I moved to Tokyo on July 26."
 <table>
 <tr>
 <td width="33%" valign="top"><h4 align="center">🚫 No vector stack</h4>
-No embeddings, no vector database, no layers to embed, sort, and re-rank every result.</td>
+No embeddings, no vector database, and no model calls in the agent tools. Your agent does the reasoning.</td>
 <td width="33%" valign="top"><h4 align="center">🗂️ Structured facts</h4>
-Conversations crystallize into typed, dated, topic-indexed memory you can open and read.</td>
+Conversations settle into six layers you can open and read: Lines, Atoms, Entities, Events, Series, and Topics.</td>
 <td width="33%" valign="top"><h4 align="center">🔍 Inspectable queries</h4>
-Every question becomes a symbolic plan, revealing exactly how each answer was matched.</td>
+Every question can become a symbolic plan, revealing exactly how each answer was matched.</td>
 </tr>
 <tr>
 <td valign="top"><h4 align="center">🕐 Time-aware retrieval</h4>
@@ -147,67 +176,67 @@ When something was never said, the search comes back genuinely empty, and KITE s
 
 ## 🚀 Quick Start
 
-### 1. Install and configure
+### 1. Install
 
 ```bash
-python -m pip install memoket-kite
-export OPENAI_API_KEY="sk-..."
-mkdir -p artifacts
-curl -fsSL \
-  https://raw.githubusercontent.com/memoket/memoket-kite/main/examples/data/demo_codebook.xml \
-  -o artifacts/quickstart.xml
+git clone https://github.com/memoket/memoket-kite.git && cd memoket-kite
+python -m pip install -e ".[mcp]"
 ```
 
-Using another OpenAI-compatible provider? Set `OPENAI_BASE_URL` as well.
+No API key to set: the `kite` tools make no model calls. Your agent brings its own model.
 
 ### 2. Remember
 
-Turn a conversation into structured, source-backed facts:
+Replay the demo: four public product meetings from the
+[AMI Meeting Corpus](https://groups.inf.ed.ac.uk/ami/corpus/) (CC BY 4.0), ingested as
+Lines, with the facts, events, and threads an agent wrote back about them:
 
-```python
-from memoket_kite import Memory
-
-memory = Memory.load("artifacts/quickstart.xml")
-memory.remember(
-    [{"role": "user", "content": "I moved to Tokyo."}],
-    session_id="session_1",
-)
+```bash
+bash examples/agent_demo/run.sh
+export KITE_MEMORY=artifacts/ami-demo/meetings.xml
 ```
+
+For your own conversations, start a memory with `kite init my-meetings.xml` and point
+`KITE_MEMORY` at it; `kite ingest` then takes a whisper.cpp, SRT, VTT, or plain-text
+transcript, and `kite write` takes what your agent extracted from it.
 
 ### 3. Recall
 
-Compile a question into a plan and retrieve matching facts, each carrying its sources:
+Search what was said, pull facts by topic, or follow a thread, each carrying its sources,
+then lay every thread out across the meetings:
+
+```bash
+kite search "kinetic" --layer lines
+kite atoms --topic power_source
+kite events --series S3 --expand
+kite view lanes --out lanes.html
+```
+
+The same topic lookup from Python:
 
 ```python
-from memoket_kite import Memory
+from memoket_kite.tools import MemoryTools
 
-memory = Memory.load("artifacts/quickstart.xml")
-
-for fact in memory.recall("Where did the user move?"):
-    print(fact.content)
-    print(fact.sources)
+memory = MemoryTools.open("artifacts/ami-demo/meetings.xml")
+for atom in memory.atoms(topic="power_source")["atoms"]:
+    print(atom["text"], [line["id"] for line in atom["src"]])
 ```
 
 ### 4. Answer
 
-Generate an answer from the retrieved evidence and keep the receipts:
+Hand the memory to your agent. It follows the KITE skills, answers with the original
+lines attached, and writes back what it learns:
 
-```python
-from memoket_kite import Memory
-
-memory = Memory.load("artifacts/quickstart.xml")
-
-result = memory.answer_with_evidence("Where did the user move?")
-print(result.text)  # "The user moved to Tokyo."
-for fact in result.evidence:
-    print(fact.content, fact.sources)  # the moments the answer stands on
-
-print(memory.answer("Where did the user move?"))  # just the text
+```bash
+kite setup claude        # or: kite setup codex
+claude
 ```
 
-Full reference in [docs/api.md](https://github.com/memoket/memoket-kite/blob/main/docs/api.md);
-more runnable examples in
-[`examples/`](https://github.com/memoket/memoket-kite/tree/main/examples).
+> What did the team decide about the power source, and when did it change?
+
+Full reference in [docs/agent-tools.md](https://github.com/memoket/memoket-kite/blob/main/docs/agent-tools.md);
+the demo, step by step, in
+[`examples/agent_demo/`](https://github.com/memoket/memoket-kite/blob/main/examples/agent_demo/README.md).
 
 <img src="https://raw.githubusercontent.com/memoket/memoket-kite/main/assets/string-b.svg" width="100%" alt="">
 
@@ -215,32 +244,14 @@ more runnable examples in
 
 ## 📊 Benchmark Results
 
-KITE by Memoket posts the top overall score on both public long-conversation memory
-benchmarks. It is the only system up there that uses no vectors, and it reads less
-context than any capable rival.
-
-<div align="center">
-
-| Benchmark | Overall Accuracy | Avg. Reader Context |
-|---|---:|---:|
-| **LoCoMo** | 🥇 **93.51%** | 1.51k tokens |
-| **LongMemEval-S** | 🥇 **85.60%** | 1.65k tokens |
-
-</div>
-
-All systems are evaluated under one shared protocol, with `gpt-4.1-mini` as the
-common reader and judge; the exact rubrics are in the
+KITE's memory representation is evaluated on LoCoMo and LongMemEval-S, two public
+long-conversation memory benchmarks; the method and its results are in
+[our paper](https://arxiv.org/abs/2610.41521). Each benchmark runs under a written
+protocol, with `gpt-4.1-mini` used across all benchmark stages, from building the memory
+to reading and judging; the exact rubrics are in the
 [LoCoMo protocol](https://github.com/memoket/memoket-kite/blob/main/benchmarks/locomo/protocol.py)
 and
 [LongMemEval protocol](https://github.com/memoket/memoket-kite/blob/main/benchmarks/longmemeval/protocol.py).
-Reader context is the mean per-question evidence budget: what the reader actually
-gets to see, measured by the same ledger on every question.
-
-Each figure comes from a reference run under the default configuration, with
-`gpt-4.1-mini` reading and judging and no ablation flags set. The reproduction
-contract pins the dataset revisions, protocols, model IDs, expected row counts,
-and reported scores. The provided scripts rebuild the evaluation locally from
-the official datasets with a configured compatible LLM endpoint.
 
 <details>
 <summary><b>How a local run is recorded</b></summary>
@@ -264,18 +275,25 @@ the benchmark corpora keep their own licences, spelled out in
 
 ## 🔗 Integrations
 
-KITE by Memoket is a plain Python library: three calls take you from a raw conversation
-to a cited answer. The optional [local MCP server](docs/mcp.md) exposes those calls
-to Claude Code over stdio, with source IDs and dates attached to evidence:
+KITE by Memoket plugs into the agent you already use: Claude Code, Codex, Muse, Grok Bot,
+or any agent with a terminal. `kite setup claude` or
+`kite setup codex` installs the skill pack: one router and five workflows your agent
+follows, to ingest a recording, extract and write back, recall with receipts, lay out
+business lines, and trace what changed. The same read and write tools also run as a
+local [MCP server](https://github.com/memoket/memoket-kite/blob/main/docs/agent-tools.md#mcp-tools)
+over stdio, with no model calls:
 
 ```bash
 python -m pip install "memoket-kite[mcp]"
-kite-mcp --memory ./artifacts/memory.xml
+kite mcp --memory ./artifacts/ami-demo/meetings.xml
 ```
 
-Use an existing writable KITE XML file. Follow the [Claude Code example](docs/mcp.md)
-for setup and a two-conversation temporal update from Tokyo to Berlin.
-Normal library installation remains dependency-free.
+Use an existing writable KITE XML file, such as the demo memory from the Quick Start.
+Recordings are transcribed on your own machine with
+[whisper.cpp](https://github.com/ggml-org/whisper.cpp). Prefer KITE to run extraction
+and answering with a model you configure? The [Memory API](docs/api.md) and `kite-mcp`
+do that; see the [Claude Code example](docs/mcp.md). Normal library installation
+remains dependency-free.
 
 Want yours first? [Tell us on Discord](https://discord.com/invite/tFh4nur4Vn).
 
@@ -313,8 +331,8 @@ https://github.com/user-attachments/assets/685ac90d-95ab-4114-a7d3-c22ec3db94a0
 
 ## 📖 Citation
 
-A technical report is in preparation; BibTeX will land here with the arXiv
-release. Until then, please cite this repository.
+If KITE helps your work, please cite our paper,
+[KITE: Retrieval as a Decision Procedure for Long-Term Conversational Memory](https://arxiv.org/abs/2610.41521).
 
 ## 📄 License
 
