@@ -51,6 +51,7 @@ button:focus-visible, input:focus-visible, canvas:focus-visible {
 .search-icon { position: relative; width: 11px; height: 11px; border: 1.5px solid #68756f; border-radius: 50%; }
 .search-icon::after { content: ""; position: absolute; width: 5px; height: 1.5px; background: #68756f; right: -4px; bottom: -2px; transform: rotate(45deg); }
 #search-terms { min-width: 0; width: clamp(105px, 20vw, 285px); border: 0; background: transparent; padding: 5px 3px; }
+#search-version { width: 5.2em; border: 0; border-left: 1px solid var(--line); background: transparent; padding: 5px 7px; font-size: 12px; }
 #search-submit, .overview { background: #e4eee7; border: 0; color: #13564c; font-weight: 650; border-radius: 6px; padding: 6px 11px; }
 #search-submit:hover, .overview:hover { background: #d2e7dc; }
 .quiet { background: transparent; border: 1px solid transparent; border-radius: 6px; min-height: 36px; padding: 4px 8px; color: var(--muted); white-space: nowrap; }

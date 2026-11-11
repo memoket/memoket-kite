@@ -276,6 +276,13 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
             assert revision["segments"][0]["before"]["text"] == "Review the release checklist."
             assert revision["segments"][0]["after"]["text"] == "Publish the release checklist."
             assert revision["segments"][0]["before"]["revision_checksum"] == baseline
+            historical = read(f"?view=graph&q=checklist&at={question['version']}")
+            assert historical["search_history"]["version"] == question["version"]
+            assert (
+                historical["evidence"][next(iter(historical["evidence"]))]["text"]
+                == "Review the release checklist."
+            )
+            assert historical["revisions"][0]["active"] is False
         finally:
             process.terminate()
             process.wait(timeout=10)
@@ -5885,6 +5892,133 @@ def test_compiled_context_terms_are_grounded_in_requested_conversation(work, tmp
     assert pack["compilation"]["terms"] == ["入库调度"]
     assert pack["candidate_sources"] == 1
     assert pack["spans"][0]["evidence"][0]["conversation_id"] == "42"
+
+
+@pytest.mark.parametrize(
+    ("phrase", "original", "corrected", "late"),
+    [
+        ("发货安排", "发货安排确认为周五。", "发货安排更正为周一。", "发货安排的上周纪要刚补录。"),
+        (
+            "access review",
+            "Access review requires two reviewers.",
+            "Access review requires three reviewers.",
+            "A prior access review was transcribed today.",
+        ),
+    ],
+)
+def test_historical_context_separates_recording_date_and_knowledge_time(
+    work,
+    monkeypatch,
+    phrase,
+    original,
+    corrected,
+    late,
+):
+    _, call = work
+    moment = "2026-07-02T01:00:00+00:00"
+    monkeypatch.setattr(workspace, "now", lambda: moment)
+
+    def entry(identity, text, day, baseline=None):
+        source = text_input(identity, text, date=day)["source"]
+        if baseline is not None:
+            source["expected_checksum"] = baseline
+        return {"source": source}
+
+    initial = call("index-sources", payload={"sources": [entry("handoff", original, "2026-07-01")]})
+    version = initial["memory_version"]
+    baseline = call("source-history", "text", "handoff")["current_checksum"]
+    moment = "2026-07-02T05:00:00+00:00"
+    update = call(
+        "index-sources", payload={"sources": [entry("handoff", corrected, "2026-07-01", baseline)]}
+    )
+    moment = "2026-07-02T07:00:00+00:00"
+    call("index-sources", payload={"sources": [entry("late-recording", late, "2026-06-25")]})
+
+    def quotes(pack):
+        return {line["text"] for span in pack["spans"] for line in span["evidence"]}
+
+    past = call(
+        "context",
+        "--question",
+        phrase,
+        "--known-at",
+        "2026-07-02T12:59:59+08:00",
+        "--end-date",
+        "2026-07-01",
+    )
+    assert quotes(past) == {original}
+    assert past["history"]["version"] == version and past["history"]["later_deletions"] == 0
+    assert past["spans"][0]["evidence"][0]["revision_checksum"] == baseline
+    assert not past["spans"][0]["source_revision_active"]
+    assert quotes(
+        call("context", "--term", phrase, "--at-version", str(update["memory_version"]))
+    ) == {corrected}
+    assert quotes(call("context", "--term", phrase, "--end-date", "2026-07-01")) == {
+        corrected,
+        late,
+    }
+    assert (
+        quotes(
+            call(
+                "context",
+                "--term",
+                phrase,
+                "--at-version",
+                str(version),
+                "--end-date",
+                "2026-06-30",
+            )
+        )
+        == set()
+    )
+    call(
+        "context",
+        "--term",
+        phrase,
+        "--known-at",
+        "2026-07-02T00:00:00Z",
+        error="history_unavailable",
+    )
+
+    request = {"question": phrase, "at_version": version}
+    call("start", "context-search", "--run-id", "historical", payload={"request": request})
+    call("stage", "historical", "compile")
+    assert quotes(call("stage", "historical", "search")["value"]) == {original}
+    _delete_source(call, "erase-history", {"source": "text", "conversation_id": "handoff"})
+    remaining = call("context", "--term", phrase, "--at-version", str(version))
+    assert quotes(remaining) == set() and remaining["history"]["later_deletions"] == 1
+    assert call("status", "historical")["state"] == "invalidated"
+
+
+def test_historical_context_preserves_upgrade_boundary_and_uses_raw_evidence(work):
+    directory, call = work
+    original = text_input("archived", "The handoff is Tuesday.")["source"]
+    first = call("index-sources", payload={"sources": [{"source": original}]})["memory_version"]
+    with closing(sqlite3.connect(directory / "kite.sqlite3")) as db:
+        db.execute("DROP TABLE revision_visibility")
+        db.execute("DROP TABLE memory_versions")
+        db.commit()
+    call("context", "--term", "handoff", "--at-version", str(first), error="history_unavailable")
+    assert call("integrity")["memory_version"] == first
+    call(
+        "context", "--term", "handoff", "--at-version", str(first - 1), error="history_unavailable"
+    )
+    baseline = call("source-history", "text", "archived")["current_checksum"]
+    extra = {
+        "source": {**original, "expected_checksum": baseline},
+        "annotations": {
+            "facts": [],
+            "index_spans": [{"segment_ids": ["text-1"], "topics": ["dispatch alias"]}],
+        },
+    }
+    second = call("index-sources", payload={"sources": [extra]})["memory_version"]
+    assert call("context", "--term", "dispatch alias")["spans"]
+    for version in (first, second):
+        assert not call("context", "--term", "dispatch alias", "--at-version", str(version))[
+            "spans"
+        ]
+        pack = call("context", "--term", "handoff", "--at-version", str(version))
+        assert pack["spans"][0]["evidence"][0]["revision_checksum"] == baseline
 
 
 def test_transcript_recording_dates_backfill_matching_sources_with_annotations(work, tmp_path):

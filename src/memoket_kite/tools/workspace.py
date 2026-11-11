@@ -24,6 +24,7 @@ from .contracts import (
     now,
     page_cursor,
     page_offset,
+    utc_timestamp,
     validate,
 )
 from .index import Index, build_index, fact_entries, load_index, revision_id, source_key
@@ -83,6 +84,14 @@ CREATE TABLE IF NOT EXISTS deletion_audit (
 CREATE TABLE IF NOT EXISTS memory_activity (
     version INTEGER PRIMARY KEY, kind TEXT NOT NULL, changed_count INTEGER NOT NULL,
     source_count INTEGER NOT NULL, committed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS memory_versions (
+    version INTEGER PRIMARY KEY, committed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS revision_visibility (
+    checksum TEXT PRIMARY KEY REFERENCES revisions(checksum) ON DELETE CASCADE,
+    opened_version INTEGER NOT NULL REFERENCES memory_versions(version),
+    closed_version INTEGER REFERENCES memory_versions(version)
 );
 """
 
@@ -218,6 +227,11 @@ class Workspace:
                 db.execute("PRAGMA user_version=1")
                 db.commit()
                 db.execute("BEGIN IMMEDIATE")
+            current = workspace.version()
+            if not db.execute(
+                "SELECT 1 FROM memory_versions WHERE version=?", (current,)
+            ).fetchone():
+                workspace._record_version(current)
             yield workspace
             db.commit()
         finally:
@@ -799,7 +813,42 @@ class Workspace:
         self._seal_index(version + 1, checksum, source_checksum)
         if context_enabled(self.db):
             rebuild_context(self.db, records, index.vocab, version + 1)
+        self._record_version(version + 1)
         return {"changed": True, "memory_version": version + 1}
+
+    def _record_version(self, version: int) -> None:
+        previous = self.db.execute(
+            "SELECT committed_at FROM memory_versions ORDER BY version DESC LIMIT 1"
+        ).fetchone()
+        timestamp = utc_timestamp(now()).isoformat(timespec="microseconds")
+        if previous:
+            timestamp = max(timestamp, previous["committed_at"])
+        self.db.execute("INSERT INTO memory_versions VALUES(?, ?)", (version, timestamp))
+        self.db.execute(
+            "UPDATE revision_visibility SET closed_version=? WHERE closed_version IS NULL "
+            "AND checksum IN (SELECT checksum FROM revisions WHERE active=0)",
+            (version,),
+        )
+        self.db.execute(
+            "INSERT OR IGNORE INTO revision_visibility(checksum, opened_version) "
+            "SELECT checksum, ? FROM revisions WHERE active=1",
+            (version,),
+        )
+
+    def records_at(self, version: int, plan: dict) -> list[dict]:
+        filters = ["v.opened_version<=?", "(v.closed_version IS NULL OR v.closed_version>?)"]
+        args = [version, version]
+        for field in ("source", "conversation_id"):
+            if field in plan:
+                filters.append(f"r.{field}=?")
+                args.append(plan[field])
+        where = " AND ".join(filters)
+        rows = self.db.execute(
+            "SELECT r.* FROM revision_visibility v JOIN revisions r ON r.checksum=v.checksum "
+            f"WHERE {where} ORDER BY r.checksum",
+            args,
+        ).fetchall()
+        return self._records(rows)
 
     def require_source_allowed(self, source, conversation_id, reference) -> None:
         if not isinstance(source, str):

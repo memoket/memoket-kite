@@ -15,7 +15,7 @@ from time import monotonic
 from urllib.parse import parse_qs, urlencode
 
 from .activity import memory_activity
-from .context import compile_question, context_enabled, context_pack, search_question
+from .context import context_enabled, context_pack, question_pack
 from .contracts import ToolError
 from .retrieve import compare_revisions, memory_snapshot
 from .workspace import Workspace
@@ -23,17 +23,27 @@ from .workspace import Workspace
 IDLE_TIMEOUT = 3600
 
 
-def _search_snapshot(workspace: Workspace, terms: list[str], question: str | None = None) -> dict:
+def _search_snapshot(
+    workspace: Workspace,
+    terms: list[str],
+    question: str | None,
+    at_version: int | None,
+) -> dict:
     passages = {}
     sources = {}
     evidence = {}
+    scope = {} if at_version is None else {"at_version": at_version}
     if question is not None:
-        compiled = compile_question(workspace, {"question": question})
         terms = [question]
-        packs = [(question, search_question(workspace, compiled))]
+        packs = [(question, question_pack(workspace, {"question": question, **scope}))]
     else:
         packs = [
-            (term, context_pack(workspace, {"terms": [term]}, limit=4, max_bytes=3600, neighbors=1))
+            (
+                term,
+                context_pack(
+                    workspace, {"terms": [term], **scope}, limit=4, max_bytes=3600, neighbors=1
+                ),
+            )
             for term in terms
         ]
     for term, pack in packs:
@@ -46,6 +56,7 @@ def _search_snapshot(workspace: Workspace, terms: list[str], question: str | Non
                 "reference": first["source_reference"],
                 "title": span["title"],
                 "day": span["source_date"],
+                "active": span.get("source_revision_active", True),
             }
             ids = tuple(line["source_line_id"] for line in lines)
             for line in lines:
@@ -55,11 +66,12 @@ def _search_snapshot(workspace: Workspace, terms: list[str], question: str | Non
                 citation += f"–{last['segment_id']}"
             passage = passages.setdefault(ids, {"label": citation, "evidence": ids, "terms": []})
             passage["terms"].append(term)
+    history = packs[0][1].get("history")
     return {
         "version": workspace.version(),
-        "sources": workspace.db.execute("SELECT count(*) FROM revisions WHERE active=1").fetchone()[
-            0
-        ],
+        "sources": history["retained_sources"]
+        if history is not None
+        else workspace.db.execute("SELECT count(*) FROM revisions WHERE active=1").fetchone()[0],
         "topics": [],
         "facts": [],
         "states": {},
@@ -68,8 +80,9 @@ def _search_snapshot(workspace: Workspace, terms: list[str], question: str | Non
         "search_available": True,
         "search_terms": terms,
         "search_question": question,
+        "search_history": history,
         "search_trace": {
-            "terms": compiled["terms"] if question is not None else terms,
+            "terms": packs[0][1]["compilation"]["terms"] if question is not None else terms,
             "candidate_spans": sum(pack["candidate_spans"] for _, pack in packs),
             "candidate_sources": packs[0][1]["candidate_sources"] if question is not None else None,
             "quote_bytes": sum(pack["quote_bytes"] for _, pack in packs),
@@ -80,13 +93,30 @@ def _search_snapshot(workspace: Workspace, terms: list[str], question: str | Non
     }
 
 
-def _snapshot(directory: Path, terms: list[str], question: str | None = None) -> dict:
+def _snapshot(
+    directory: Path, terms: list[str], question: str | None = None, at_version: int | None = None
+) -> dict:
     try:
         with Workspace.open(directory, read_only=True) as workspace:
             searchable = context_enabled(workspace.db)
-            if (terms or question is not None) and searchable:
-                return _search_snapshot(workspace, terms, question)
-            return {**memory_snapshot(workspace), "search_available": searchable}
+            tracked = workspace.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='memory_versions'"
+            ).fetchone()
+            origin = (
+                workspace.db.execute("SELECT min(version) FROM memory_versions").fetchone()[0]
+                if tracked
+                else None
+            )
+            if (terms or question is not None) and (searchable or at_version is not None):
+                return {
+                    **_search_snapshot(workspace, terms, question, at_version),
+                    "history_origin": origin,
+                }
+            return {
+                **memory_snapshot(workspace),
+                "search_available": searchable,
+                "history_origin": origin,
+            }
     except ToolError as exc:
         if (
             exc.code != "not_found"
@@ -203,7 +233,15 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                 ):
                     view, snapshot = "changes", comparison_data
                 else:
-                    view, snapshot = "graph", _snapshot(directory, terms, question)
+                    version_text = params.get("at", [None])[0]
+                    if version_text is not None and (
+                        not version_text.isascii()
+                        or not version_text.isdigit()
+                        or len(version_text) > 19
+                    ):
+                        raise ValueError("invalid workspace version")
+                    at_version = int(version_text) if version_text is not None else None
+                    view, snapshot = "graph", _snapshot(directory, terms, question, at_version)
                 if comparison_data is not None:
                     snapshot = {**snapshot, "comparison_available": True}
             except (ValueError, ToolError) as exc:
@@ -211,6 +249,8 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                     self.send_error(HTTPStatus.BAD_REQUEST, "Invalid memory view parameters")
                 elif exc.code == "not_found":
                     self.send_error(HTTPStatus.NOT_FOUND, "Source revision was not found")
+                elif exc.code == "history_unavailable":
+                    self.send_error(HTTPStatus.NOT_FOUND, "This workspace version was not tracked")
                 else:
                     self.send_error(
                         HTTPStatus.SERVICE_UNAVAILABLE, "KITE could not read the workspace"

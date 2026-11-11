@@ -59,6 +59,15 @@ For original-text tasks, run `kite-tool context --question "$QUESTION" --text`.
 It compiles the task and returns cited passages in one local call. Use
 `context-search` if you need separate, saved compile and search stages.
 
+Use `--at-version VERSION` or `--known-at 2026-05-14T10:30:00+08:00` to search
+the source revisions visible in a tracked workspace snapshot. `--start-date`
+and `--end-date` separately filter the dates of the recordings in that snapshot.
+Historical searches use the original text and titles of the selected revisions.
+Read any stated effective date and approval status from the quoted text. Use
+the revision checksum with `evidence` to read an exact historical quote.
+Upgrading a workspace starts tracking its current version. A later permanent
+deletion can leave an older snapshot with missing evidence.
+
 Use `kite-tool source-compare BEFORE --text` to read the changed lines between
 a retained source revision and its current version. `source-history SOURCE ID`
 lists stored checksums. Add `--after CHECKSUM` to choose a different target.

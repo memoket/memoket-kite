@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .audio import audio_source
 from .captions import CAPTION_FORMATS
-from .context import compile_question, context_pack, render_context, search_question
+from .context import context_pack, question_pack, render_context
 from .contracts import (
     HASH,
     TEXT,
@@ -198,6 +198,11 @@ def _parser() -> argparse.ArgumentParser:
     context.add_argument("--start-date", help="earliest source date, inclusive")
     context.add_argument("--end-date", help="latest source date, inclusive")
     context.add_argument("--latest", action="store_true", help="give newer dated sources priority")
+    history_scope = context.add_mutually_exclusive_group()
+    history_scope.add_argument("--at-version", type=int, help="search a tracked workspace snapshot")
+    history_scope.add_argument(
+        "--known-at", help="search what the workspace knew at an ISO timestamp with offset"
+    )
     context.add_argument("--limit", type=int, default=8, help="maximum matched spans")
     context.add_argument("--max-bytes", type=int, help="original quote byte budget")
     context.add_argument("--neighbors", type=int, default=1, help="adjacent turns on either side")
@@ -772,7 +777,14 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
         plan.update(
             {
                 key: value
-                for key in ("source", "conversation_id", "start_date", "end_date")
+                for key in (
+                    "source",
+                    "conversation_id",
+                    "start_date",
+                    "end_date",
+                    "at_version",
+                    "known_at",
+                )
                 if (value := getattr(args, key)) is not None
             }
         )
@@ -786,7 +798,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 }
                 if args.max_bytes is not None:
                     request["max_bytes"] = args.max_bytes
-                return search_question(workspace, compile_question(workspace, request)), None
+                return question_pack(workspace, request), None
             return context_pack(
                 workspace,
                 {**plan, "terms": args.term},

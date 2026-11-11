@@ -6,8 +6,10 @@ import re
 import sqlite3
 import unicodedata
 from collections import defaultdict
+from contextlib import closing, contextmanager, nullcontext
+from dataclasses import dataclass
 
-from .contracts import DATE, TEXT, ToolError, array, object_schema, validate
+from .contracts import DATE, TEXT, ToolError, array, object_schema, utc_timestamp, validate
 from .index import SPAN_FACET_AXES, revision_id
 from .ingest import source_day
 from .retrieve import _citation
@@ -29,6 +31,8 @@ _CONTEXT_SCHEMA = object_schema(
         "start_date": DATE,
         "end_date": DATE,
         "latest": {"type": "boolean"},
+        "at_version": {"type": "integer", "minimum": 0, "maximum": 2**63 - 1},
+        "known_at": {"type": "string", "format": "date-time"},
     },
 )
 CONTEXT_REQUEST = object_schema(
@@ -97,19 +101,17 @@ def _question_phrases(question: str):
                         yield " ".join(words[start : start + width])
 
 
-def compile_question(workspace, request: dict) -> dict:
-    validate(CONTEXT_REQUEST, request, "context request")
-    version = _require_context(workspace)
-    where, args = _search_scope(request)
+def _compile_terms(db, plan: dict, question: str) -> list[str]:
+    where, args = _search_scope(plan)
     candidates = []
-    for phrase in dict.fromkeys(_question_phrases(request["question"])):
+    for phrase in dict.fromkeys(_question_phrases(question)):
         expression = f'"{_tokens(phrase)}"'
-        frequency = workspace.db.execute(
+        frequency = db.execute(
             f"SELECT count(*) FROM (SELECT rowid FROM context_spans WHERE {where} LIMIT 32)",
             (expression, *args),
         ).fetchone()[0]
         if frequency:
-            labeled = workspace.db.execute(
+            labeled = db.execute(
                 f"SELECT 1 FROM context_spans WHERE {where} LIMIT 1",
                 (f"labels : {expression}", *args),
             ).fetchone()
@@ -122,27 +124,41 @@ def compile_question(workspace, request: dict) -> dict:
             selected.append(phrase)
         if len(selected) == 8:
             break
-    return {
-        "request": request,
-        "terms": selected or [request["question"][:128]],
-        "memory_version": version,
-    }
+    return selected or [question[:128]]
+
+
+def compile_question(workspace, request: dict) -> dict:
+    validate(CONTEXT_REQUEST, request, "context request")
+    with _search_index(workspace, request) as index:
+        terms = _compile_terms(index.db, index.filters, request["question"])
+    return {"request": request, "terms": terms, "memory_version": workspace.version()}
+
+
+def question_pack(workspace, request: dict) -> dict:
+    validate(CONTEXT_REQUEST, request, "context request")
+    with _search_index(workspace, request) as index:
+        terms = _compile_terms(index.db, index.filters, request["question"])
+        return _search_question(workspace, request, terms, index=index)
 
 
 def search_question(workspace, compiled: dict) -> dict:
     if compiled["memory_version"] != workspace.version():
         raise ToolError("stale_snapshot", "memory changed; compile the question again")
-    request = compiled["request"]
+    return _search_question(workspace, compiled["request"], compiled["terms"])
+
+
+def _search_question(workspace, request: dict, terms: list, *, index=None) -> dict:
     filters = {key: request[key] for key in _CONTEXT_SCHEMA["properties"] if key in request}
     result = context_pack(
         workspace,
-        {"terms": compiled["terms"], **filters},
+        {"terms": terms, **filters},
         limit=request.get("limit", 8),
         max_bytes=request.get("max_bytes", _QUESTION_BYTES),
         neighbors=request.get("neighbors", 1),
         focus=True,
+        _index=index,
     )
-    return {**result, "compilation": {"question": request["question"], "terms": compiled["terms"]}}
+    return {**result, "compilation": {"question": request["question"], "terms": terms}}
 
 
 def enable_context(db) -> None:
@@ -192,13 +208,11 @@ def _spans(segments: list[dict]):
     yield start, len(segments)
 
 
-def _index_rows(records: list[dict], vocab):
+def _index_rows(records, vocab):
     for record in records:
-        if not record["active"]:
-            continue
         conversation = record["conversation"]
         segments = conversation["segments"]
-        labels = _span_labels(record, vocab)
+        labels = _span_labels(record, vocab) if vocab is not None else {}
         title = _tokens(conversation.get("title", ""))
         day = source_day(conversation) or ""
         for start, stop in _spans(segments):
@@ -219,10 +233,7 @@ def _index_rows(records: list[dict], vocab):
             )
 
 
-def rebuild_context(db, records: list[dict], vocab, version: int) -> None:
-    # Derived data is replaced in the same transaction as the source snapshot.
-    # Dropping the shadow tables also purges obsolete postings on older SQLite.
-    db.execute("DROP TABLE IF EXISTS context_spans")
+def _create_context_table(db) -> None:
     try:
         db.execute(
             "CREATE VIRTUAL TABLE context_spans USING fts5("
@@ -233,11 +244,95 @@ def rebuild_context(db, records: list[dict], vocab, version: int) -> None:
         if "no such module: fts5" not in str(exc):
             raise
         raise ToolError("missing_dependency", "this Python SQLite build needs FTS5") from exc
+
+
+def rebuild_context(db, records: list[dict], vocab, version: int) -> None:
+    # Dropping the shadow tables also purges obsolete postings on older SQLite.
+    db.execute("DROP TABLE IF EXISTS context_spans")
+    _create_context_table(db)
     db.executemany(
-        "INSERT INTO context_spans VALUES(?, ?, ?, ?, ?, ?, ?, ?)", _index_rows(records, vocab)
+        "INSERT INTO context_spans VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+        _index_rows((record for record in records if record["active"]), vocab),
     )
     db.execute("DELETE FROM context_snapshot")
     db.execute("INSERT INTO context_snapshot VALUES(?)", (version,))
+
+
+@dataclass
+class _SearchIndex:
+    db: sqlite3.Connection
+    filters: dict
+    history: dict | None = None
+    records: dict | None = None
+
+
+def _history_snapshot(workspace, plan: dict) -> dict:
+    if "known_at" in plan and "at_version" in plan:
+        raise ToolError("invalid_input", "choose a workspace version or known-at time")
+    db = workspace.db
+    if db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_versions'").fetchone() is None:
+        raise ToolError("history_unavailable", "run kite-tool integrity to begin tracking versions")
+    if "at_version" in plan:
+        row = db.execute(
+            "SELECT * FROM memory_versions WHERE version=?", (plan["at_version"],)
+        ).fetchone()
+    else:
+        cutoff = utc_timestamp(plan["known_at"]).isoformat(timespec="microseconds")
+        row = db.execute(
+            "SELECT * FROM memory_versions WHERE committed_at<=? ORDER BY version DESC LIMIT 1",
+            (cutoff,),
+        ).fetchone()
+        if row is not None:
+            following = db.execute(
+                "SELECT min(version) FROM memory_versions WHERE version>?", (row["version"],)
+            ).fetchone()[0]
+            if following is not None and following != row["version"] + 1:
+                row = None
+            elif following is None and workspace.version() != row["version"]:
+                row = None
+    if row is None:
+        raise ToolError("history_unavailable", "no tracked workspace snapshot covers this cutoff")
+    return {
+        **dict(row),
+        "retained_sources": db.execute(
+            "SELECT count(*) FROM revision_visibility WHERE opened_version<=? "
+            "AND (closed_version IS NULL OR closed_version>?)",
+            (row["version"], row["version"]),
+        ).fetchone()[0],
+        "later_deletions": db.execute(
+            "SELECT count(*) FROM deletion_audit WHERE version>?", (row["version"],)
+        ).fetchone()[0],
+    }
+
+
+@contextmanager
+def _search_index(workspace, plan: dict):
+    if "at_version" not in plan and "known_at" not in plan:
+        _require_context(workspace)
+        yield _SearchIndex(workspace.db, plan)
+        return
+    _search_scope(plan)
+    history = _history_snapshot(workspace, plan)
+    visible = workspace.records_at(history["version"], plan)
+    if "start_date" in plan or "end_date" in plan:
+        lower, upper = plan.get("start_date", ""), plan.get("end_date", "9999-12-31")
+        visible = [
+            record
+            for record in visible
+            if (day := source_day(record["conversation"])) and lower <= day <= upper
+        ]
+    records = {record["checksum"]: record for record in visible}
+    with closing(sqlite3.connect(":memory:")) as db:
+        db.row_factory = sqlite3.Row
+        _create_context_table(db)
+        # Historical queries admit only raw, tracked revisions. Current labels
+        # and topic merges would introduce information unavailable at the cutoff.
+        db.executemany(
+            "INSERT INTO context_spans VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            _index_rows(records.values(), None),
+        )
+        filters = {key: value for key, value in plan.items() if key != "conversation_id"}
+        yield _SearchIndex(db, filters, history, records)
 
 
 def _search_scope(plan: dict) -> tuple[str, list]:
@@ -339,8 +434,17 @@ def _positions(segments: list[dict], start: int, stop: int, neighbors: int, phra
     return [*range(start, stop), *(pos for pos in window if not start <= pos < stop)]
 
 
-def _pack(workspace, rows: list, limit: int, max_bytes: int, neighbors: int, phrases: tuple):
-    records = {}
+def _pack(
+    workspace,
+    rows: list,
+    limit: int,
+    max_bytes: int,
+    neighbors: int,
+    phrases: tuple,
+    *,
+    historical_records: dict | None = None,
+):
+    records = historical_records if historical_records is not None else {}
     seen = defaultdict(set)
     packed = []
     size = omitted = 0
@@ -348,13 +452,15 @@ def _pack(workspace, rows: list, limit: int, max_bytes: int, neighbors: int, phr
         if len(packed) == limit:
             break
         checksum = row["checksum"]
-        if checksum not in records:
+        if historical_records is None and checksum not in records:
             records[checksum] = workspace.record(checksum)
-        record = records[checksum]
+        record = records.get(checksum)
+        if record is None or (historical_records is None and not record["active"]):
+            raise ToolError("integrity_error", "context index does not match its source revision")
         conversation = record["conversation"]
         segments = conversation["segments"]
         start, stop = row["start"], row["stop"]
-        if not record["active"] or not 0 <= start < stop <= len(segments):
+        if not 0 <= start < stop <= len(segments):
             raise ToolError("integrity_error", "context index does not match its source revision")
         chosen = []
         for pos in _positions(segments, start, stop, neighbors, phrases):
@@ -373,6 +479,11 @@ def _pack(workspace, rows: list, limit: int, max_bytes: int, neighbors: int, phr
                 {
                     "source_date": source_day(conversation),
                     "title": conversation.get("title", ""),
+                    **(
+                        {"source_revision_active": record["active"]}
+                        if historical_records is not None
+                        else {}
+                    ),
                     "evidence": [
                         _citation(record, f"{revision_id(record)}L{pos + 1}", segments[pos])
                         for pos in sorted(chosen)
@@ -383,7 +494,14 @@ def _pack(workspace, rows: list, limit: int, max_bytes: int, neighbors: int, phr
 
 
 def context_pack(
-    workspace, plan: dict, *, limit: int, max_bytes: int, neighbors: int, focus: bool = False
+    workspace,
+    plan: dict,
+    *,
+    limit: int,
+    max_bytes: int,
+    neighbors: int,
+    focus: bool = False,
+    _index: _SearchIndex | None = None,
 ) -> dict:
     validate(_CONTEXT_SCHEMA, plan, "context plan")
     if not 1 <= limit <= 50 or not 512 <= max_bytes <= 65536 or not 0 <= neighbors <= 5:
@@ -392,14 +510,24 @@ def context_pack(
         )
     if not any(map(_tokens, plan["terms"])):
         raise ToolError("invalid_input", "context needs an indexable term")
-    version = _require_context(workspace)
-    candidates = _candidates(workspace.db, plan, limit, focus=focus)
     phrases = (
         tuple(f" {tokens} " for term in plan["terms"] if (tokens := _tokens(term))) if focus else ()
     )
-    spans, size, omitted = _pack(workspace, candidates, limit, max_bytes, neighbors, phrases)
+    with nullcontext(_index) if _index is not None else _search_index(workspace, plan) as index:
+        candidates = _candidates(
+            index.db, {**index.filters, "terms": plan["terms"]}, limit, focus=focus
+        )
+        spans, size, omitted = _pack(
+            workspace,
+            candidates,
+            limit,
+            max_bytes,
+            neighbors,
+            phrases,
+            historical_records=index.records,
+        )
     return {
-        "memory_version": version,
+        "memory_version": workspace.version(),
         "plan": plan,
         "spans": spans,
         "quote_bytes": size,
@@ -408,6 +536,7 @@ def context_pack(
         "candidate_spans": len(candidates),
         "candidate_sources": len({row["checksum"] for row in candidates}),
         "span_limit": limit,
+        **({"history": index.history} if index.history is not None else {}),
     }
 
 
@@ -417,9 +546,17 @@ def render_context(pack: dict) -> str:
         for line in span["evidence"]:
             namespaces[line["conversation_id"]].add(line["source"])
     lines = []
+    if history := pack.get("history"):
+        lines.append(f"Workspace v{history['version']} · {history['committed_at']}")
+        if history["later_deletions"]:
+            lines.append(
+                f"Later deletions: {history['later_deletions']}. Deleted evidence is unavailable."
+            )
     for span in pack["spans"]:
         if span["source_date"]:
             lines.append(f"Date: {span['source_date']}")
+        if history:
+            lines.append(f"Revision: {span['evidence'][0]['revision_checksum']}")
         for line in span["evidence"]:
             ref = f"{line['conversation_id']}#{line['segment_id']}"
             if len(namespaces[line["conversation_id"]]) > 1:
@@ -427,6 +564,6 @@ def render_context(pack: dict) -> str:
             speaker = f" {line['speaker_id']}:" if "speaker_id" in line else ""
             lines.append(f"[{ref}]{speaker} {line['text']}")
         lines.append("")
-    if not lines:
-        return "No evidence matched."
+    if not pack["spans"]:
+        lines.append("No evidence matched.")
     return "\n".join(lines).strip()

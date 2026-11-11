@@ -18,6 +18,8 @@
       noMatches: 'No matching items.', more: 'Show more', scanned: 'sources with entity or facet labels',
       compile: 'Compiled phrases', candidates: 'candidate spans', quoteBytes: 'quote bytes',
       candidateSources: 'candidate sources', compareRevision: 'Compare with current version',
+      versionFilter: 'Version', versionFilterLabel: 'Search at a workspace version', history: 'Workspace snapshot',
+      historyDeletes: 'Later deletions affected the evidence available for this snapshot.',
       cooccurrence: 'Same annotated passage', relatedEntities: 'Co-occurring entities', relatedFacets: 'Co-occurring facets',
       sharedPassages: 'shared passages', sharedEvidence: 'Shared quotes with', linkedTopics: 'Topics in these passages',
       annotated: 'Indexed passages with labels', unannotated: 'No entity or facet labels on this source',
@@ -48,6 +50,8 @@
       noMatches: '没有匹配项。', more: '显示更多', scanned: '份来源有实体或 Facet 标注',
       compile: '编译出的检索词', candidates: '个候选片段', quoteBytes: '字节原文',
       candidateSources: '份候选来源', compareRevision: '与当前版本对照',
+      versionFilter: '版本', versionFilterLabel: '按工作区版本检索', history: '工作区快照',
+      historyDeletes: '后来执行的删除可能影响此快照可见的原文。',
       cooccurrence: '同段共现', relatedEntities: '同段出现的实体', relatedFacets: '同段出现的 Facets',
       sharedPassages: '个共同片段', sharedEvidence: '与此节点共现的引用', linkedTopics: '这些片段涉及的主题',
       annotated: '个片段有实体或 Facet 标注', unannotated: '此来源暂无实体或 Facet 标注。',
@@ -777,6 +781,14 @@
     byId('search-terms').placeholder = t('placeholder');
     byId('search-terms').setAttribute('aria-label', t('placeholder'));
     byId('search-submit').textContent = t('search');
+    const versionFilter = byId('search-version');
+    versionFilter.hidden = snapshot.history_origin == null;
+    if (!versionFilter.hidden) {
+      versionFilter.min = snapshot.history_origin;
+      versionFilter.max = snapshot.version;
+      versionFilter.placeholder = t('versionFilter');
+      versionFilter.setAttribute('aria-label', t('versionFilterLabel'));
+    }
     const trace = byId('search-trace');
     trace.hidden = !snapshot.search_trace;
     if (snapshot.search_trace) {
@@ -789,6 +801,11 @@
           number.format(stats.sources) + ' ' + t('sourceCatalog'),
           number.format(stats.quotes) + ' ' + t('quotes'), number.format(stats.quote_bytes) + ' ' + t('quoteBytes')].filter(Boolean).join(' · ')),
       );
+      if (snapshot.search_history) {
+        const history = snapshot.search_history;
+        trace.prepend(element('p', `${t('history')} v${history.version} · ${new Date(history.committed_at).toLocaleString(language)}`));
+        if (history.later_deletions) trace.append(element('p', t('historyDeletes')));
+      }
     }
     byId('refresh').textContent = t('refresh');
     byId('language').textContent = language === 'zh' ? 'English' : '中文';
@@ -817,6 +834,7 @@
   }
 
   byId('search-terms').value = snapshot.search_question || (snapshot.search_terms || []).join('，');
+  byId('search-version').value = query.get('at') ?? '';
   byId('search-terms').addEventListener('input', event => event.target.setCustomValidity(''));
   byId('search').addEventListener('submit', event => {
     event.preventDefault();
@@ -833,6 +851,7 @@
     if (snapshot.comparison_available) params.set('view', 'graph');
     for (const term of terms) params.append('term', term);
     if (!terms.length && value) params.set('q', value);
+    if (value && byId('search-version').value) params.set('at', byId('search-version').value);
     if (!value && currentTopic && !searching) params.set('topic', currentTopic.code);
     location.search = params.toString();
   });
