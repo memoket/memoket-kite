@@ -80,6 +80,10 @@ to see the original lines that changed, with citations for both versions.
 Enter a workspace version next to the search question, name it in the question
 as `workspace v12`, or select **Search this version** from **Workflows**. Older
 workspaces start tracking from the first write or integrity check after upgrade.
+Open **Recording dates** beside the search field to set an inclusive meeting
+window. You can combine it with a workspace version. The search detail panel
+groups the returned passages by recording day and opens each cited passage in
+the graph. Effective dates and approval status are in the original wording.
 
 To browse a live graph alongside saved before-and-after snapshots, start the
 viewer with `kite-tool view --compare PATH`. The JSON file contains an `examples`

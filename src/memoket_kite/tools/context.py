@@ -518,14 +518,14 @@ def _candidates(
             continue
         matches.append(
             db.execute(
-                f"SELECT checksum, start, stop FROM context_spans WHERE {where} "
+                f"SELECT checksum, start, stop, day FROM context_spans WHERE {where} "
                 f"ORDER BY {order}, checksum, start LIMIT ?",
                 (f'"{phrase}"', *args, stream_limit),
             ).fetchall()
         )
     if coherent:
         return _coherent_order(matches, preferred_sources)
-    # Round-robin across explicit terms and preserve the existing date preference.
+    # Give each term a turn before breaking ties within a recording date.
     streams = [iter(rows) for rows in matches]
     results = []
     seen = set()
@@ -541,7 +541,9 @@ def _candidates(
                 results.append(row)
             remaining.append(stream)
         streams = remaining
-    return results
+    return (
+        sorted(results, key=lambda row: row["day"], reverse=True) if plan.get("latest") else results
+    )
 
 
 def _positions(segments: list[dict], start: int, stop: int, neighbors: int, phrases: tuple):

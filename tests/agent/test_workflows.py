@@ -202,7 +202,9 @@ def test_memory_viewer_reads_fresh_committed_state(work):
 
 def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path):
     directory, call = work
-    call("ingest", payload=text_input("release", "Review the release checklist."))
+    call(
+        "ingest", payload=text_input("release", "Review the release checklist.", date="2026-02-07")
+    )
     assert viewer._snapshot(directory, [], at_version=1)["search_available"]
     call("index-sources")
     before = {"version": 1, "topics": [], "passages": [], "revisions": [], "evidence": {}}
@@ -274,7 +276,9 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
             assert all(stage["state"] == "completed" for stage in activity["runs"][0]["stages"])
             assert request["question"] not in json.dumps(activity)
             baseline = searched["spans"][0]["evidence"][0]["revision_checksum"]
-            correction = text_input("release", "Publish the release checklist.")["source"]
+            correction = text_input("release", "Publish the release checklist.", date="2026-02-07")[
+                "source"
+            ]
             correction["expected_checksum"] = baseline
             call("index-sources", payload={"sources": [{"source": correction}]})
             revision = read(f"?view=revision&before={baseline}")
@@ -290,6 +294,13 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
             assert historical["revisions"][0]["active"] is False
             inferred = read(f"?view=graph&q=checklist+in+workspace+v{question['version']}")
             assert inferred["search_history"] == historical["search_history"]
+            in_window = read(
+                f"?q=checklist&at={question['version']}&start_date=2026-02-07&end_date=2026-02-07"
+            )
+            assert in_window["evidence"] == historical["evidence"]
+            assert in_window["revisions"][0]["day"] == "2026-02-07"
+            assert not read("?term=checklist&start_date=2026-02-08")["passages"]
+            assert not read("?q=checklist&end_date=2026-02-06")["passages"]
         finally:
             process.terminate()
             process.wait(timeout=10)
@@ -5728,6 +5739,36 @@ def test_provider_result_is_discarded_if_the_definition_changes(work, tmp_path, 
         assert process.returncode == 2, errors or output
         assert json.loads(output)["error"]["code"] == "stale_definition"
     assert call("status", "provider", repo=repo)["stages"]["extract"]["attempts"] == 0
+
+
+def test_context_latest_prioritizes_recording_date_across_terms(work):
+    _, call = work
+    records = [
+        ("older", "The alpha milestone was approved.", "2026-03-04"),
+        ("newer", "The beta milestone was approved.", "2026-04-09"),
+        ("unknown", "The gamma milestone was approved.", None),
+    ]
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {"source": text_input(identity, text, date=day)["source"]}
+                for identity, text, day in records
+            ]
+        },
+    )
+    terms = ("--term", "alpha", "--term", "gamma", "--term", "beta")
+    latest = call("context", *terms, "--latest", "--limit", "1")
+    assert [span["source_date"] for span in latest["spans"]] == ["2026-04-09"]
+    assert latest["spans"][0]["evidence"][0]["conversation_id"] == "newer"
+    ranked = call("context", *terms, "--latest")
+    assert [span["source_date"] for span in ranked["spans"]] == [
+        "2026-04-09",
+        "2026-03-04",
+        None,
+    ]
+    ordinary = call("context", *terms, "--limit", "1")
+    assert ordinary["spans"][0]["evidence"][0]["conversation_id"] == "older"
 
 
 def test_context_index_source_revision_merge_and_delete(work, monkeypatch):

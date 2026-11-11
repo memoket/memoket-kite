@@ -24,6 +24,13 @@
         <span class="search-icon" aria-hidden="true"></span>
         <input id="search-terms" type="search" aria-label="Search original evidence" maxlength="512">
         <input id="search-version" type="number" aria-label="Workspace version" step="1" hidden>
+        <details id="recording-filter">
+          <summary id="recording-filter-label">Recording dates</summary>
+          <div class="recording-filter-fields">
+            <label><span id="recording-start-label">From</span><input id="recording-start" type="date" aria-labelledby="recording-start-label"></label>
+            <label><span id="recording-end-label">Through</span><input id="recording-end" type="date" aria-labelledby="recording-end-label"></label>
+          </div>
+        </details>
         <button id="search-submit" type="submit">Search</button>
       </form>
       <button id="language" type="button" class="quiet">中文</button>

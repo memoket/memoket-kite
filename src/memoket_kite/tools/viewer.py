@@ -27,12 +27,11 @@ def _search_snapshot(
     workspace: Workspace,
     terms: list[str],
     question: str | None,
-    at_version: int | None,
+    scope: dict,
 ) -> dict:
     passages = {}
     sources = {}
     evidence = {}
-    scope = {} if at_version is None else {"at_version": at_version}
     if question is not None:
         terms = [question]
         packs = [(question, question_pack(workspace, {"question": question, **scope}))]
@@ -106,7 +105,12 @@ def _search_snapshot(
 
 
 def _snapshot(
-    directory: Path, terms: list[str], question: str | None = None, at_version: int | None = None
+    directory: Path,
+    terms: list[str],
+    question: str | None = None,
+    at_version: int | None = None,
+    *,
+    recording_bounds: dict | None = None,
 ) -> dict:
     try:
         with Workspace.open(directory, read_only=True) as workspace:
@@ -121,8 +125,11 @@ def _snapshot(
             )
             historical_search = at_version is not None and origin is not None
             if (terms or question is not None) and (searchable or at_version is not None):
+                scope = {**(recording_bounds or {})}
+                if at_version is not None:
+                    scope["at_version"] = at_version
                 return {
-                    **_search_snapshot(workspace, terms, question, at_version),
+                    **_search_snapshot(workspace, terms, question, scope),
                     "history_origin": origin,
                 }
             return {
@@ -254,7 +261,13 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                     ):
                         raise ValueError("invalid workspace version")
                     at_version = int(version_text) if version_text is not None else None
-                    view, snapshot = "graph", _snapshot(directory, terms, question, at_version)
+                    bounds = {
+                        key: params[key][0] for key in ("start_date", "end_date") if key in params
+                    }
+                    view, snapshot = (
+                        "graph",
+                        _snapshot(directory, terms, question, at_version, recording_bounds=bounds),
+                    )
                 if comparison_data is not None:
                     snapshot = {**snapshot, "comparison_available": True}
             except (ValueError, ToolError) as exc:

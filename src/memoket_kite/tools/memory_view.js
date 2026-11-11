@@ -21,6 +21,9 @@
       anchorSources: 'sources matching the name',
       matchedTerms: 'Terms in this quote',
       versionFilter: 'Version', versionFilterLabel: 'Search at a workspace version', history: 'Workspace snapshot',
+      recordingDates: 'Recording dates', recordingFrom: 'From', recordingThrough: 'Through',
+      recordingTimeline: 'Evidence by recording date', invalidDateRange: 'Start date must not follow end date.',
+      noDatedResults: 'No matching passages in this recording window.',
       historyDeletes: 'Later deletions affected the evidence available for this snapshot.',
       cooccurrence: 'Same annotated passage', relatedEntities: 'Co-occurring entities', relatedFacets: 'Co-occurring facets',
       sharedPassages: 'shared passages', sharedEvidence: 'Shared quotes with', linkedTopics: 'Topics in these passages',
@@ -55,6 +58,9 @@
       anchorSources: '份来源命中名称',
       matchedTerms: '原文命中',
       versionFilter: '版本', versionFilterLabel: '按工作区版本检索', history: '工作区快照',
+      recordingDates: '录制日期', recordingFrom: '起始日期', recordingThrough: '截止日期',
+      recordingTimeline: '按录制日期查看原文', invalidDateRange: '起始日期应早于或等于截止日期。',
+      noDatedResults: '这个录制日期范围内没有命中的原文片段。',
       historyDeletes: '后来执行的删除可能影响此快照可见的原文。',
       cooccurrence: '同段共现', relatedEntities: '同段出现的实体', relatedFacets: '同段出现的 Facets',
       sharedPassages: '个共同片段', sharedEvidence: '与此节点共现的引用', linkedTopics: '这些片段涉及的主题',
@@ -589,6 +595,26 @@
     });
     group.append(list);
     panel.append(group);
+    return group;
+  }
+
+  function recordingTimeline(panel, entries) {
+    const days = new Map();
+    for (const node of entries) {
+      const day = node.sources[0]?.day || '';
+      if (!days.has(day)) days.set(day, []);
+      days.get(day).push({ node, note: node.sources[0]?.label });
+    }
+    if (!days.size || (days.size === 1 && days.has(''))) return false;
+    const timeline = element('section', undefined, 'recording-timeline');
+    timeline.append(element('h3', t('recordingTimeline')));
+    const dated = [...days.keys()].filter(Boolean).sort();
+    if (days.has('')) dated.push('');
+    for (const day of dated) {
+      section(timeline, null, days.get(day)).prepend(element('h4', day || t('noDate')));
+    }
+    panel.append(timeline);
+    return true;
   }
 
   function renderCatalogControls() {
@@ -679,12 +705,15 @@
       section(panel, 'entities', [...new Set(all.flatMap(memory => memory.entities))]);
       section(panel, 'facets', [...new Set(all.flatMap(memory => memory.facets))].map(node => ({ node, note: t(node.axis) })));
       if (mode !== 'memory' && all.length) panel.append(button(t('openEvidence'), () => changeMode('memory'), 'overview'));
-      section(panel, 'memories', mode === 'memory' ? all : selected.memories);
+      if (!searching || !recordingTimeline(panel, all)) {
+        section(panel, 'memories', mode === 'memory' ? all : selected.memories);
+      }
       return;
     }
 
     if (kind === 'memory') {
       const metadata = [];
+      if (searching && selected.sources[0]) metadata.push(selected.sources[0].day || t('noDate'));
       if (selected.status) metadata.push(t(selected.status));
       if (selected.active === false || selected.effective === false) metadata.push(t('historical'));
       if (selected.state?.value) metadata.push(t('current') + ' · ' + selected.state.value);
@@ -788,6 +817,9 @@
     byId('search-terms').placeholder = t('placeholder');
     byId('search-terms').setAttribute('aria-label', t('placeholder'));
     byId('search-submit').textContent = t('search');
+    byId('recording-filter-label').textContent = t('recordingDates');
+    byId('recording-start-label').textContent = t('recordingFrom');
+    byId('recording-end-label').textContent = t('recordingThrough');
     const versionFilter = byId('search-version');
     versionFilter.hidden = snapshot.history_origin == null;
     if (!versionFilter.hidden) {
@@ -813,6 +845,14 @@
         const history = snapshot.search_history;
         trace.prepend(element('p', `${t('history')} v${history.version} · ${new Date(history.committed_at).toLocaleString(language)}`));
         if (history.later_deletions) trace.append(element('p', t('historyDeletes')));
+      }
+      const recordingScope = [
+        query.has('start_date') && `${t('recordingFrom')} ${query.get('start_date')}`,
+        query.has('end_date') && `${t('recordingThrough')} ${query.get('end_date')}`,
+      ].filter(Boolean);
+      if (recordingScope.length) {
+        trace.prepend(element('p', [t('recordingDates'), ...recordingScope].join(' · ')));
+        if (!stats.quotes) trace.append(element('p', t('noDatedResults')));
       }
     }
     byId('refresh').textContent = t('refresh');
@@ -843,12 +883,24 @@
 
   byId('search-terms').value = snapshot.search_question || (snapshot.search_terms || []).join('，');
   byId('search-version').value = query.get('at') ?? '';
+  const recordingStart = byId('recording-start');
+  const recordingEnd = byId('recording-end');
+  recordingStart.value = query.get('start_date') ?? '';
+  recordingEnd.value = query.get('end_date') ?? '';
+  const recordingFilter = byId('recording-filter');
+  recordingFilter.toggleAttribute('data-active', Boolean(recordingStart.value || recordingEnd.value));
+  recordingFilter.addEventListener('input', () => recordingEnd.setCustomValidity(''));
   byId('search-terms').addEventListener('input', event => event.target.setCustomValidity(''));
   byId('search').addEventListener('submit', event => {
     event.preventDefault();
     const input = byId('search-terms');
     const value = input.value.trim();
-    const terms = /[,，、]/u.test(value) && !/[?？。]/u.test(value)
+    if (recordingStart.value && recordingEnd.value && recordingStart.value > recordingEnd.value) {
+      recordingEnd.setCustomValidity(t('invalidDateRange'));
+      recordingEnd.reportValidity();
+      return;
+    }
+    const terms = value !== snapshot.search_question && /[,，、]/u.test(value) && !/[?？。]/u.test(value)
       ? [...new Set(value.split(/[,，、]+/u).map(term => term.trim()).filter(Boolean))] : [];
     if (terms.length > 3 || terms.some(term => term.length > 128)) {
       input.setCustomValidity(t('invalid'));
@@ -860,6 +912,8 @@
     for (const term of terms) params.append('term', term);
     if (!terms.length && value) params.set('q', value);
     if (value && byId('search-version').value) params.set('at', byId('search-version').value);
+    if (value && recordingStart.value) params.set('start_date', recordingStart.value);
+    if (value && recordingEnd.value) params.set('end_date', recordingEnd.value);
     if (!value && currentTopic && !searching) params.set('topic', currentTopic.code);
     location.search = params.toString();
   });
