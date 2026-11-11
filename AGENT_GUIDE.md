@@ -441,10 +441,13 @@ output as private data.
 
 Run `kite-tool sources` to find conversation IDs and current checksums without
 reading transcript text. Use the checksum for incremental source updates or the
-source and ID to select an export.
+source and ID to select an export. Add `--project "Launch 计划"` to list only
+conversations whose current revision carries that exact project label. Combine
+it with `--source` to scope the inventory to one source namespace. Each
+conversation's revision count includes its retained history.
 
 For a large workspace, use `kite-tool sources --limit 50`. Pass the returned
-`next_cursor` as `--cursor` with the same limit and source filter for the next
+`next_cursor` as `--cursor` with the same limit and filters for the next
 page. Start again without the cursor after the memory snapshot changes.
 
 ```sh

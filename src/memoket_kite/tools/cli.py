@@ -336,6 +336,7 @@ def _parser() -> argparse.ArgumentParser:
         "sources", help="list conversation identities and current checksums"
     )
     sources.add_argument("--source", help="select a source namespace")
+    sources.add_argument("--project", help="select current revisions with this exact project label")
     sources.add_argument("--limit", type=int, help="number of conversations per page (1–1000)")
     sources.add_argument("--cursor", help="continue with the previous page's next_cursor")
     history = commands.add_parser(
@@ -593,7 +594,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
         with Workspace.inspect(args.workspace, initialize=True) as workspace:
             if args.command == "sources":
                 return workspace.source_inventory(
-                    args.source, limit=args.limit, cursor=args.cursor
+                    args.source, project=args.project, limit=args.limit, cursor=args.cursor
                 ), None
             return {"xml": workspace.export_codebook(**scope, active_only=args.active_only)}, None
 

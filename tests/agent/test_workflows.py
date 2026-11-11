@@ -3981,6 +3981,8 @@ def test_source_project_is_queryable_and_changes_with_the_revision(work, tmp_pat
     first = call(*query, "Launch 计划")["value"]
     assert first["timeline"][0]["effective"]
     assert not call(*query, "launch 计划")["value"]["timeline"]
+    (before,) = call("sources", "--project", "Launch 计划")["sources"]
+    assert before["revisions"] == 1 and before["current_checksum"] == original["checksum"]
 
     changed = call(*command, "--project", "Delivery", "--expected-checksum", original["checksum"])
     changed["annotations"] = prepared["annotations"]
@@ -3992,6 +3994,10 @@ def test_source_project_is_queryable_and_changes_with_the_revision(work, tmp_pat
     assert old_row["evidence"][0]["text"] == new_row["evidence"][0]["text"]
     assert old_row["evidence"][0]["revision_checksum"] == original["checksum"]
     assert new_row["evidence"][0]["revision_checksum"] == latest["checksum"]
+    assert call("sources", "--project", "Launch 计划")["sources"] == []
+    assert call("sources", "--project", "Delivery")["sources"] == [
+        {**before, "revisions": 2, "current_checksum": latest["checksum"]}
+    ]
 
 
 def test_file_source_imports_subrip_cues_without_inferring_speakers(work, tmp_path):
@@ -4671,6 +4677,50 @@ def test_source_inventory_paginates_one_workspace_snapshot(work, tmp_path):
     )
     _delete_source(call, "erase", {"source": "text", "conversation_id": "first"})
     call("sources", "--limit", "1", "--cursor", first["next_cursor"], error="stale_snapshot")
+
+
+def test_source_inventory_paginates_only_matching_projects(work):
+    _, call = work
+    project = "Launch 计划"
+    for source, identity, label in (
+        ("archive", "first", project),
+        ("text", "between", None),
+        ("text", "last", project),
+    ):
+        payload = text_input(identity, "Private inventory fixture.")
+        conversation = payload["source"]["payload"]
+        conversation.update(
+            source=source, segments=[{"segment_id": "text-1", "text": conversation.pop("text")}]
+        )
+        if label is not None:
+            conversation["metadata"]["project"] = label
+        payload["source"]["format"] = "conversation"
+        ingest(call, identity, payload)
+
+    inventory = call("sources", "--project", project)
+    assert [item["conversation_id"] for item in inventory["sources"]] == ["first", "last"]
+    assert "next_cursor" not in inventory and "Private inventory fixture" not in json.dumps(
+        inventory
+    )
+    assert (
+        call("sources", "--source", "text", "--project", project)["sources"]
+        == inventory["sources"][1:]
+    )
+    assert call("sources", "--project", project.lower(), "--limit", "1")["next_cursor"] is None
+    assert call("sources", "--project", project.lower())["sources"] == []
+    call("sources", "--project", "  ", error="invalid_input")
+
+    page = ("sources", "--project", project, "--limit", "1")
+    first = call(*page)
+    continuation = ("--cursor", first["next_cursor"])
+    last = call(*page, *continuation)
+    assert first["sources"] + last["sources"] == inventory["sources"]
+    assert last["next_cursor"] is None
+    assert first["memory_version"] == last["memory_version"] == inventory["memory_version"]
+    call("sources", "--limit", "1", *continuation, error="invalid_input")
+    call("sources", "--project", "Other", "--limit", "1", *continuation, error="invalid_input")
+    _delete_source(call, "erase", {"source": "archive", "conversation_id": "first"})
+    call(*page, *continuation, error="stale_snapshot")
 
 
 def test_codebook_and_sources_read_committed_snapshot_during_a_write(work, monkeypatch):

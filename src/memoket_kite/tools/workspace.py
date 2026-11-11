@@ -8,12 +8,14 @@ import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, closing, contextmanager, suppress
 from hashlib import sha256
+from itertools import islice
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
 from .contracts import (
     CURSOR,
+    TEXT,
     ToolError,
     decode_object,
     digest,
@@ -592,8 +594,15 @@ class Workspace:
         return index
 
     def source_inventory(
-        self, source: str | None, *, limit: int | None = None, cursor: str | None = None
+        self,
+        source: str | None,
+        *,
+        project: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
     ) -> dict:
+        if project is not None:
+            validate(TEXT, project, "project")
         if limit is not None and not 1 <= limit <= 1000:
             raise ToolError("invalid_input", "source limit must be between 1 and 1000")
         if cursor is not None:
@@ -602,23 +611,46 @@ class Workspace:
             validate(CURSOR, cursor, "source cursor")
         identity, version = self.snapshot_identity()
         scope = [identity, version, "sources-v1", source, limit]
+        if project is not None:
+            scope.append(project)
         offset = page_offset(scope, cursor, name="source listing")
-        rows = self.db.execute(
-            """
-            SELECT source, conversation_id, count(*) AS revisions,
-                max(CASE WHEN active=1 THEN checksum END) AS current_checksum
-            FROM revisions
-            WHERE (? IS NULL OR source=?)
-            GROUP BY source, conversation_id
-            ORDER BY source, conversation_id
-            LIMIT ? OFFSET ?
-            """,
-            (source, source, -1 if limit is None else limit + 1, offset),
-        ).fetchall()
-        result = {"sources": [dict(row) for row in rows[:limit]], "memory_version": version}
+        with closing(
+            self.db.execute(
+                """
+                SELECT source, conversation_id, count(*) AS revisions,
+                    max(CASE WHEN active=1 THEN checksum END) AS current_checksum
+                FROM revisions
+                WHERE (? IS NULL OR source=?)
+                GROUP BY source, conversation_id
+                ORDER BY source, conversation_id
+                LIMIT ? OFFSET ?
+                """,
+                (
+                    source,
+                    source,
+                    -1 if project is not None or limit is None else limit + 1,
+                    0 if project is not None else offset,
+                ),
+            )
+        ) as rows:
+            if project is None:
+                page = rows.fetchall()
+            else:
+                # Keep source payloads out of SQLite's temporary sort data.
+                matches = (
+                    row
+                    for row in rows
+                    if row["current_checksum"] is not None
+                    and self.record(row["current_checksum"])["conversation"]["metadata"].get(
+                        "project"
+                    )
+                    == project
+                )
+                page = list(islice(matches, offset, None if limit is None else offset + limit + 1))
+        result = {"sources": [dict(row) for row in page[:limit]], "memory_version": version}
         if limit is not None:
             result["next_cursor"] = (
-                page_cursor(scope, offset + limit) if len(rows) > limit else None
+                page_cursor(scope, offset + limit) if len(page) > limit else None
             )
         return result
 

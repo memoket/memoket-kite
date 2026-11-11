@@ -237,6 +237,13 @@ def main() -> None:
         assert result["retry_count"] == 1
         for stage in ("commit", "verify"):
             call("stage", run_id, stage, "--summary", workspace=recovered)
+        inventory = call(
+            "sources", "--project", "Launch pilot", "--limit", "1", workspace=recovered
+        )
+        (entry,) = inventory["sources"]
+        assert entry["source"] == "text" and entry["conversation_id"] == "note"
+        assert len(entry["current_checksum"]) == 64 and inventory["next_cursor"] is None
+        assert call("sources", "--project", "Other", workspace=recovered)["sources"] == []
         query = {"query": {"topics": ["launch review"], "projects": ["Launch pilot"]}}
         trace = call("start", "topic-tracing", payload=query, workspace=recovered)["run_id"]
         for stage in ("resolve", "retrieve"):
