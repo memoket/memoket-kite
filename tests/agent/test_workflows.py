@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 from dataclasses import replace
+from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from queue import Queue
@@ -24,7 +25,7 @@ import pytest
 from memoket_kite import Memory
 from memoket_kite.pipeline import extract
 from memoket_kite.research import Codebook, SymbolicQuery
-from memoket_kite.tools import audio, cli, operations, workflow, workspace
+from memoket_kite.tools import audio, cli, memoket_source, operations, workflow, workspace
 from memoket_kite.tools.contracts import ToolError, digest, encode, validate
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -50,7 +51,7 @@ def work(tmp_path, capsys, monkeypatch):
         ):
             return output
         data = json.loads(output)
-        if args[0] in {"audio-source", "file-source"} and not error:
+        if args[0] in {"audio-source", "file-source", "memoket-source"} and not error:
             return data
         assert data["ok"] is (error is None)
         if error:
@@ -4239,6 +4240,171 @@ def memoket_api_transcript():
         memoket_api_page([second], offset=1),
     ]
     return pages, memoket_api_page([first, second])
+
+
+@pytest.fixture
+def memoket_api_server(monkeypatch):
+    requests, replies, delays = [], Queue(), []
+
+    class Endpoint(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append((self.path, self.headers["Authorization"], payload))
+            status, headers, body = replies.get_nowait()
+            if not isinstance(body, bytes):
+                body = json.dumps(body).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(body)))
+            for name, value in headers.items():
+                self.send_header(name, value)
+            self.end_headers()
+            self.wfile.write(body)
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Endpoint) as server:
+
+        def connection(host, *, timeout):
+            assert host == "api.memoket.ai" and timeout == 30
+            return HTTPConnection("127.0.0.1", server.server_port, timeout=2)
+
+        monkeypatch.setattr(memoket_source, "HTTPSConnection", connection)
+        monkeypatch.setattr(memoket_source, "sleep", delays.append)
+        monkeypatch.setenv("MEMOKET_API_TOKEN", "private-synthetic-token")
+        worker = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+        worker.start()
+        try:
+            yield requests, replies, delays
+        finally:
+            server.shutdown()
+            worker.join(timeout=2)
+
+
+def test_memoket_source_pages_retries_and_preserves_original_citations(
+    work, tmp_path, memoket_api_transcript, memoket_api_server
+):
+    directory, call = work
+    requests, replies, delays = memoket_api_server
+    pages, single = memoket_api_transcript
+    metadata = {
+        "id": "product-review",
+        "title": "Product review",
+        "started_at": "2026-04-02T10:00:00Z",
+        "language_code": "en",
+        "participant_details": ["private transport metadata"],
+    }
+    pages[0]["note"] = "private transport note"
+    replies.put((200, {}, pages[0]))
+    replies.put((429, {"Retry-After": "2"}, {"error": "private rate limit message"}))
+    replies.put((200, {}, pages[1]))
+    replies.put((200, {}, pages[2]))
+    replies.put((200, {}, {"items": [metadata]}))
+    command = ("memoket-source", "product-review", "--project", "Layout pilot")
+    source = call(*command, "--include-metadata")
+    assert not directory.exists()
+    assert delays == [2]
+    assert requests == [
+        (
+            "/v1/tools/get_transcripts",
+            "Bearer private-synthetic-token",
+            {
+                "conversation_id": "product-review",
+                "offset": offset,
+                "text_offset": text_offset,
+            },
+        )
+        for offset, text_offset in ((0, 0), (0, 2), (0, 2), (1, 0))
+    ] + [
+        (
+            "/v1/tools/get_conversations",
+            "Bearer private-synthetic-token",
+            {
+                "conversation_ids": ["product-review"],
+            },
+        )
+    ]
+    assert "private" not in json.dumps(source)
+
+    export = tmp_path / "export.json"
+    export.write_text(json.dumps({"pages": [single], "recording": metadata}), encoding="utf-8")
+    offline = call("file-source", str(export), "--format", "memoket", "--project", "Layout pilot")
+    assert offline == source
+    annotation = {
+        "facts": [
+            {
+                "content": "The team selected the green layout.",
+                "segment_ids": ["review-line-1"],
+                "topics": ["layout"],
+                "status": "confirmed",
+            }
+        ]
+    }
+    first = ingest(call, "selected", {**source, "annotations": annotation})
+    duplicate = ingest(call, "export", {**offline, "annotations": annotation})
+    assert (
+        first["changed"] and not duplicate["changed"] and first["checksum"] == duplicate["checksum"]
+    )
+    result = call("query", "--topic", "layout", "--project", "Layout pilot")["value"]
+    (evidence,) = result["timeline"][0]["evidence"]
+    assert (evidence["conversation_id"], evidence["segment_id"], evidence["text"]) == (
+        "product-review",
+        "review-line-1",
+        "🟢 We selected the green layout.",
+    )
+    assert evidence["revision_checksum"] == first["checksum"]
+
+    replies.put((200, {}, single))
+    lean = call(*command, "--expected-checksum", first["checksum"])
+    assert lean["source"]["expected_checksum"] == first["checksum"]
+    assert "started_at" not in lean["source"]["payload"]
+    assert requests[-1][0] == "/v1/tools/get_transcripts" and len(requests) == 6
+
+
+def test_memoket_source_fails_before_returning_partial_content(
+    work, memoket_api_transcript, memoket_api_server, monkeypatch
+):
+    directory, call = work
+    requests, replies, delays = memoket_api_server
+    pages, _ = memoket_api_transcript
+    command = ("memoket-source", "product-review")
+    with monkeypatch.context() as patch:
+        patch.delenv("MEMOKET_API_TOKEN")
+        call(*command, error="configuration_error")
+        patch.setenv("MEMOKET_API_TOKEN", "private token with spaces")
+        call(*command, error="configuration_error")
+    call(*command, "--project", "  ", error="invalid_input")
+    call(*command, "--expected-checksum", "invalid", error="invalid_input")
+    assert not requests
+
+    wrong_recording = copy.deepcopy(pages[0])
+    wrong_recording["items"][0]["conversation_id"] = "private-wrong-recording"
+    cycle = copy.deepcopy(pages[0])
+    cycle["items"][0]["next_text_offset"] = 0
+    for status, headers, body, code in (
+        (307, {"Location": "https://example.invalid/private-redirect"}, {}, "source_error"),
+        (403, {}, {"error": "private-scope"}, "permission_denied"),
+        (429, {"Retry-After": "300"}, {"error": "private-limit"}, "rate_limited"),
+        (200, {}, b"private invalid JSON", "source_error"),
+        (200, {}, b"x" * (memoket_source._RESPONSE_LIMIT + 1), "source_error"),
+        (200, {}, {"items": []}, "not_found"),
+        (200, {}, wrong_recording, "invalid_input"),
+        (200, {}, cycle, "invalid_input"),
+    ):
+        before = len(requests)
+        replies.put((status, headers, body))
+        result = call(*command, error=code)
+        assert "source" not in result and "private" not in json.dumps(result)
+        assert len(requests) == before + 1
+    assert not delays and not directory.exists()
+
+    replies.put((200, {}, pages[0]))
+    replies.put((503, {}, {"error": "private provider error"}))
+    failed = call(*command, error="source_error")
+    assert "source" not in failed and "private" not in json.dumps(failed)
+    assert requests[-1][2]["text_offset"] == 2 and not directory.exists()
 
 
 @pytest.mark.parametrize("split_emoji", [False, True], ids=["code-point", "utf16-surrogate"])

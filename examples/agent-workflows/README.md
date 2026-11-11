@@ -272,6 +272,22 @@ To change a committed source's project, prepare it with the new label and
 its current checksum and run `memory-update`. The old label remains attached
 to its historical revision.
 
+For a recording the user selected and authorized, set `MEMOKET_API_TOKEN` with
+`transcripts:read` in your shell and pass its exact recording ID. The command
+follows both page cursors and emits the complete source input.
+
+```sh
+kite-tool memoket-source RECORD_ID --project "Planning pilot" \
+  | kite-tool start memory-ingestion --run-id transcript-api --input -
+```
+
+Add `--include-metadata` with `summaries:read` to include the title, start time,
+and language. Use the same option for repeat imports and `--expected-checksum`
+when preparing a revision. If a page is rate-limited and Memoket asks for a
+delay of up to 60 seconds, KITE retries that page once. It reports an error if
+it cannot finish, so an incomplete transcript never reaches ingestion.
+[Memoket API documentation](https://eu.memoket.ai/pages/connector)
+
 Use the saved response directly for a complete single-page Memoket
 `get_transcripts` result. For a longer recording, follow the two paging
 cursors and pass each saved response in the order you received it.

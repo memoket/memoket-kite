@@ -3,6 +3,14 @@ name: memoket-connector
 description: Normalize an authorized Memoket record transcript response.
 ---
 
+For a recording the user selected and authorized, run
+`kite-tool memoket-source RECORD_ID`. Set `MEMOKET_API_TOKEN` in the environment
+with `transcripts:read`. The command fetches all transcript pages and prints a
+normalized source for `start` or `ingest`. With `--include-metadata`, the token
+also needs `summaries:read` and the source includes the recording title, start
+time, and language when available. Use the same metadata option for repeat
+imports. Never put the API token in workflow inputs or transcript metadata.
+
 For an authorized export file, run
 `kite-tool file-source FILE --format memoket` and pass the result as the
 pipeline input. The command emits the normalized conversation and drops

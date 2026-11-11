@@ -13,6 +13,7 @@ from .captions import CAPTION_FORMATS
 from .contracts import HASH, TEXT, ToolError, decode_object, encode, read_utf8, validate
 from .demo import render_demo, run_demo
 from .ingest import file_source
+from .memoket_source import memoket_source
 from .operations import SCHEMAS, SOURCE_SCOPE, TOOLS, Context
 from .resources import resource_root
 from .retrieve import evidence_context, segment_context, topic_inventory
@@ -244,6 +245,17 @@ def _parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="saved Memoket get_conversations response or recording item",
     )
+    memoket = commands.add_parser(
+        "memoket-source", help="prepare ingestion input for one authorized Memoket recording"
+    )
+    memoket.add_argument("conversation_id", help="ID of the recording authorized by the user")
+    memoket.add_argument(
+        "--include-metadata",
+        action="store_true",
+        help="fetch the recording title, start time and language (requires summaries:read)",
+    )
+    memoket.add_argument("--project", help="project label for later trace queries")
+    memoket.add_argument("--expected-checksum", help="current source checksum for a revision")
     audio = commands.add_parser(
         "audio-source", help="transcribe a local recording into a memory-ingestion input"
     )
@@ -564,6 +576,15 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             expected_checksum=args.expected_checksum,
         ), None
 
+    if args.command == "memoket-source":
+        return memoket_source(
+            root,
+            args.conversation_id,
+            include_metadata=args.include_metadata,
+            project=args.project,
+            expected_checksum=args.expected_checksum,
+        ), None
+
     if args.command == "backup":
         return Workspace.backup(
             args.workspace,
@@ -724,7 +745,7 @@ def main(argv=None) -> int:
         print(result["text"])
     elif args.command == "status" and args.text_output:
         print(render_status(result))
-    elif args.command in {"audio-source", "file-source"}:
+    elif args.command in {"audio-source", "file-source", "memoket-source"}:
         print(encode(result))
     else:
         print(encode({"ok": True, **result}))

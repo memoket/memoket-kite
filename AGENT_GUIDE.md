@@ -329,6 +329,13 @@ that supports SQLite locking.
   connector keeps source IDs, original text, available speaker and millisecond
   offsets. Use `kite-tool file-source EXPORT.json --format memoket` to prepare a
   local export. Preparation discards response fields such as signed audio URLs.
+  For a recording the user selected and authorized, run
+  `kite-tool memoket-source RECORD_ID` with `MEMOKET_API_TOKEN` set. KITE reads
+  the complete transcript from the Memoket API, follows both page cursors, and
+  emits the same source-only input as `file-source`. The token needs
+  `transcripts:read`. Add `--include-metadata` with `summaries:read` to retain
+  the title, recording start time, and language. The command reads only the
+  selected recording and does not open a KITE workspace.
 - **Custom sources** use `format: conversation` and the
   [conversation schema](schemas/conversation.schema.json) with a stable source
   name and `metadata.source_reference`. Import a local canonical export with
@@ -339,7 +346,7 @@ After reviewing annotations, pipe source-only JSON to
 `kite-tool ingest --input - --annotations FILE`. The file uses the same
 `{"annotations": ...}` object as the `annotate` stage.
 
-Use `--project NAME` with `file-source` or `audio-source` to set
+Use `--project NAME` with `file-source`, `audio-source`, or `memoket-source` to set
 `metadata.project` on the prepared conversation. For a canonical export, the
 flag overrides its project label in the prepared copy. Run `kite-tool query`
 with `--project NAME` to restrict a trace to that label. Project labels are

@@ -45,6 +45,21 @@ def main() -> None:
                 assert result["error"]["code"] == error, result
             return result
 
+        child_env = dict(os.environ)
+        child_env.pop("MEMOKET_API_TOKEN", None)
+        no_token = subprocess.run(
+            [str(command), "--workspace", str(original), "memoket-source", "synthetic-recording"],
+            cwd=directory,
+            env=child_env,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        assert no_token.returncode == 2
+        assert json.loads(no_token.stdout)["error"]["code"] == "configuration_error"
+        assert not original.exists()
+
         # Packaged resources take precedence over unrelated files in the user's directory.
         (directory / "pipeline_defs").mkdir()
         (directory / "pipeline_defs" / "memory-ingestion.yaml").write_text("invalid: true\n")

@@ -1,6 +1,8 @@
-"""Assemble saved Memoket get_transcripts responses without contacting the service."""
+"""Assemble consecutive Memoket get_transcripts responses."""
 
 from __future__ import annotations
+
+from collections.abc import Iterable
 
 from .contracts import ToolError
 
@@ -13,7 +15,8 @@ def _page(response: dict) -> dict:
         raise ToolError("invalid_input", "Memoket transcript response must contain one recording")
     page = items[0]
     if (
-        response.get("truncated", page["has_more"]) is not page["has_more"]
+        type(page["has_more"]) is not bool
+        or response.get("truncated", page["has_more"]) is not page["has_more"]
         or response.get("next_offset", page["next_offset"]) != page["next_offset"]
     ):
         raise ToolError("invalid_input", "inconsistent Memoket transcript page envelope")
@@ -48,21 +51,26 @@ def _recording(payload: dict, identity: str) -> dict:
     return matches[0]
 
 
-def api_transcript(payload: dict) -> dict:
-    pages = payload.get("pages", [payload])
-    if not isinstance(pages, list) or not pages:
-        raise ToolError("invalid_input", "Memoket transcript pages must be a nonempty array")
-
+def assemble_transcript(pages: Iterable[dict], *, expected_id: str | None = None) -> dict:
     identity, total = None, None
     segments = []
     pending = None
     fragments = []
     text_offset = 0
+    more_pages = True
     for page_number, response in enumerate(pages):
+        if not more_pages:
+            raise ToolError("invalid_input", "supply all Memoket transcript pages in order")
         page = _page(response)
         if page_number == 0:
             identity, total = page["conversation_id"], page["total_line_count"]
-        if page["conversation_id"] != identity or page["total_line_count"] != total:
+            if expected_id is not None and identity != expected_id:
+                raise ToolError("invalid_input", "Memoket transcript has a different recording ID")
+        if (
+            type(total) is not int
+            or page["conversation_id"] != identity
+            or page["total_line_count"] != total
+        ):
             raise ToolError("invalid_input", "Memoket transcript pages disagree on the recording")
         if (
             type(page["offset"]) is not int
@@ -114,12 +122,11 @@ def api_transcript(payload: dict) -> dict:
                 pending, text_offset = None, 0
                 fragments.clear()
 
-        more_pages = page_number + 1 < len(pages)
-        if page["has_more"] is not more_pages:
-            raise ToolError("invalid_input", "supply all Memoket transcript pages in order")
+        more_pages = page["has_more"]
         if more_pages:
             if (
-                type(page["next_offset"]) is not int
+                len(segments) >= total
+                or type(page["next_offset"]) is not int
                 or page["next_offset"] != len(segments)
                 or type(page["next_text_offset"]) is not int
                 or page["next_text_offset"] != text_offset
@@ -132,21 +139,34 @@ def api_transcript(payload: dict) -> dict:
         ):
             raise ToolError("invalid_input", "Memoket transcript ends with an incomplete page")
 
-    if type(total) is not int or len(segments) != total:
+    if more_pages:
+        raise ToolError("invalid_input", "supply all Memoket transcript pages in order")
+    if len(segments) != total:
         raise ToolError("invalid_input", "Memoket transcript line total does not match the pages")
-    conversation = {
+    return {
         "conversation_id": identity,
         "source": "memoket",
         "segments": segments,
         "metadata": {"source_reference": identity},
     }
+
+
+def add_recording_metadata(conversation: dict, payload: dict) -> None:
+    recording = _recording(payload, conversation["conversation_id"])
+    for original, field in (
+        ("title", "title"),
+        ("started_at", "started_at"),
+        ("language_code", "language"),
+    ):
+        if recording.get(original) is not None:
+            conversation[field] = recording[original]
+
+
+def api_transcript(payload: dict) -> dict:
+    pages = payload.get("pages", [payload])
+    if not isinstance(pages, list) or not pages:
+        raise ToolError("invalid_input", "Memoket transcript pages must be a nonempty array")
+    conversation = assemble_transcript(pages)
     if "recording" in payload:
-        recording = _recording(payload["recording"], identity)
-        for original, field in (
-            ("title", "title"),
-            ("started_at", "started_at"),
-            ("language_code", "language"),
-        ):
-            if recording.get(original) is not None:
-                conversation[field] = recording[original]
+        add_recording_metadata(conversation, payload["recording"])
     return conversation
