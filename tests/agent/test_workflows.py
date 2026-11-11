@@ -253,6 +253,8 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
             question = read("?view=graph&q=Review+the+release+checklist")
             assert question["search_trace"]["quotes"] == 1
             assert question["search_trace"]["terms"]
+            named = read("?view=graph&q=%22release+checklist%22")
+            assert named["search_trace"]["anchor_sources"] == 1
             call(
                 "start", "context-search", "--run-id", "visual-search", payload={"request": request}
             )
@@ -5927,6 +5929,28 @@ def test_question_with_unique_heading_keeps_relevant_short_note_together(work, t
     ]
     focused = call("context", "--question", question, "--neighbors", "0")
     assert "compact_sources" not in focused
+
+
+def test_named_context_keeps_other_passages_with_multiple_matches(work):
+    _, call = work
+    entries = [
+        {"source": text_input(identity, body)["source"]}
+        for identity, body in (
+            ("named", "Beacon launch is approved. The checklist is ready."),
+            ("related", "Checklist owners need a second reviewer."),
+            ("noise", "The checklist is for bicycle maintenance."),
+        )
+    ]
+    call("index-sources", payload={"sources": entries})
+    question = 'What is the "Beacon launch" checklist, reviewer?'
+    pack = call("context", "--question", question)
+    assert pack["anchor_sources"] == 1
+    assert {q["conversation_id"] for span in pack["spans"] for q in span["evidence"]} == {
+        "named",
+        "related",
+    }
+    wide = call("context", "--term", "checklist")
+    assert any(q["conversation_id"] == "noise" for span in wide["spans"] for q in span["evidence"])
 
 
 @pytest.mark.parametrize(

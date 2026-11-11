@@ -18,6 +18,7 @@
       noMatches: 'No matching items.', more: 'Show more', scanned: 'sources with entity or facet labels',
       compile: 'Compiled phrases', candidates: 'candidate spans', quoteBytes: 'quote bytes',
       candidateSources: 'candidate sources', compareRevision: 'Compare with current version',
+      anchorSources: 'sources matching the name',
       versionFilter: 'Version', versionFilterLabel: 'Search at a workspace version', history: 'Workspace snapshot',
       historyDeletes: 'Later deletions affected the evidence available for this snapshot.',
       cooccurrence: 'Same annotated passage', relatedEntities: 'Co-occurring entities', relatedFacets: 'Co-occurring facets',
@@ -50,6 +51,7 @@
       noMatches: '没有匹配项。', more: '显示更多', scanned: '份来源有实体或 Facet 标注',
       compile: '编译出的检索词', candidates: '个候选片段', quoteBytes: '字节原文',
       candidateSources: '份候选来源', compareRevision: '与当前版本对照',
+      anchorSources: '份来源命中名称',
       versionFilter: '版本', versionFilterLabel: '按工作区版本检索', history: '工作区快照',
       historyDeletes: '后来执行的删除可能影响此快照可见的原文。',
       cooccurrence: '同段共现', relatedEntities: '同段出现的实体', relatedFacets: '同段出现的 Facets',
@@ -798,6 +800,7 @@
         element('p', stats.terms.join(' · ')),
         element('p', [number.format(stats.candidate_spans) + ' ' + t('candidates'),
           stats.candidate_sources === null ? null : number.format(stats.candidate_sources) + ' ' + t('candidateSources'),
+          stats.anchor_sources ? number.format(stats.anchor_sources) + ' ' + t('anchorSources') : null,
           number.format(stats.sources) + ' ' + t('sourceCatalog'),
           number.format(stats.quotes) + ' ' + t('quotes'), number.format(stats.quote_bytes) + ' ' + t('quoteBytes')].filter(Boolean).join(' · ')),
       );

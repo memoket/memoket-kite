@@ -41,6 +41,11 @@ _QUERY_FILLERS = re.compile(
     r"(?:请问|根据|查找|查询|哪些|哪个|哪里|什么|如何|怎么|为什么|分别|"
     r"这场|那场|会上|那次|当时|原文|给出|引用|请|是否|有没有|的|了|吗|呢)"
 )
+_ENGLISH_FUNCTION_WORDS = frozenset(
+    "a an and are as at be been being by can could did do does for from had has have how in is "
+    "it its of on or that the their them these they this those to was were what when where which "
+    "who why will with would you your".split()
+)
 _CONTEXT_SCHEMA = object_schema(
     {"terms": array({**TEXT, "maxLength": 128}, 1, 12)},
     {
@@ -114,7 +119,7 @@ def _question_phrases(question: str):
         else:
             words = block.split()
             for start, word in enumerate(words):
-                if len(word) > 1 and not word.isdecimal():
+                if len(word) > 1 and not word.isdecimal() and word not in _ENGLISH_FUNCTION_WORDS:
                     yield word
                 for width in (2, 3):
                     if start + width <= len(words):
@@ -444,10 +449,11 @@ def _search_scope(plan: dict) -> tuple[str, list]:
     return " AND ".join(filters), args
 
 
-def _coherent_order(matches: list[list]) -> list:
+def _coherent_order(matches: list[list], preferred_sources: set[str] | None = None) -> list:
     # Accumulate a term's best rank once per conversation. This rewards several
     # clues pointing to the same meeting without boosting long meetings for length.
     span_scores = defaultdict(float)
+    span_hits = defaultdict(int)
     source_scores = defaultdict(float)
     candidates = {}
     for term_rank, rows in enumerate(matches):
@@ -458,14 +464,28 @@ def _coherent_order(matches: list[list]) -> list:
             candidates[key] = row
             score = 1 / ((1 + term_rank / 4) * (3 + rank))
             span_scores[key] += score
+            span_hits[key] += 1
             if checksum not in seen_sources:
                 source_scores[checksum] += score
                 seen_sources.add(checksum)
-    ordered = sorted(candidates, key=lambda key: -(span_scores[key] + 0.5 * source_scores[key[0]]))
+    # A passage outside the named sources needs corroboration from a second term.
+    eligible = (
+        [key for key in candidates if key[0] in preferred_sources or span_hits[key] >= 2]
+        if preferred_sources
+        else candidates
+    )
+    ordered = sorted(eligible, key=lambda key: -(span_scores[key] + 0.5 * source_scores[key[0]]))
     return [candidates[key] for key in ordered]
 
 
-def _candidates(db, plan: dict, limit: int, *, focus: bool = False) -> list:
+def _candidates(
+    db,
+    plan: dict,
+    limit: int,
+    *,
+    focus: bool = False,
+    preferred_sources: set[str] | None = None,
+) -> list:
     where, args = _search_scope(plan)
     order = "bm25(context_spans, 1.0, 0.35, 1.2), day DESC"
     if plan.get("latest"):
@@ -484,7 +504,7 @@ def _candidates(db, plan: dict, limit: int, *, focus: bool = False) -> list:
             ).fetchall()
         )
     if coherent:
-        return _coherent_order(matches)
+        return _coherent_order(matches, preferred_sources)
     # Round-robin across explicit terms and preserve the existing date preference.
     streams = [iter(rows) for rows in matches]
     results = []
@@ -553,6 +573,19 @@ def _compact_sources(
             compact[checksum] = record
             budget -= size
     return compact
+
+
+def _quoted_sources(index: _SearchIndex, question: str, terms: list[str], limit: int) -> set[str]:
+    quoted = sorted(_quoted_phrases(question).intersection(terms))
+    if not quoted:
+        return set()
+    where, args = _search_scope(index.filters)
+    expression = " OR ".join(f'"{_tokens(phrase)}"' for phrase in quoted)
+    rows = index.db.execute(
+        f"SELECT DISTINCT checksum FROM context_spans WHERE {where} LIMIT ?",
+        (expression, *args, limit + 1),
+    ).fetchall()
+    return {row["checksum"] for row in rows} if len(rows) <= limit else set()
 
 
 def _pack(
@@ -648,13 +681,20 @@ def context_pack(
         tuple(f" {tokens} " for term in plan["terms"] if (tokens := _tokens(term))) if focus else ()
     )
     with nullcontext(_index) if _index is not None else _search_index(workspace, plan) as index:
-        candidates = _candidates(
-            index.db, {**index.filters, "terms": plan["terms"]}, limit, focus=focus
-        )
         compact = (
             _compact_sources(workspace, index, plan, _question, max_bytes // 2)
             if _question and neighbors and not plan.get("latest")
             else {}
+        )
+        preferred = set(compact)
+        if _question and not plan.get("latest"):
+            preferred.update(_quoted_sources(index, _question, plan["terms"], limit))
+        candidates = _candidates(
+            index.db,
+            {**index.filters, "terms": plan["terms"]},
+            limit,
+            focus=focus,
+            preferred_sources=preferred,
         )
         spans, size, omitted = _pack(
             workspace,
@@ -676,6 +716,7 @@ def context_pack(
         "candidate_spans": len(candidates),
         "candidate_sources": len({row["checksum"] for row in candidates}),
         "span_limit": limit,
+        **({"anchor_sources": len(preferred)} if preferred else {}),
         **({"compact_sources": min(len(compact), len(spans))} if compact else {}),
         **({"history": index.history} if index.history is not None else {}),
     }

@@ -65,6 +65,8 @@ and `--end-date` separately filter the dates of the recordings in that snapshot.
 In a question, use `workspace v12` or `workspace as of TIMESTAMP` to select a
 snapshot. Chinese questions can use `工作区 v12` or `工作区截至 TIMESTAMP`.
 Quote the full topic or project name to prioritize that phrase when it matches.
+When a name identifies a small set of sources, KITE includes passages from
+other sources when multiple query terms match the passage.
 For a short source with a unique matching title, the context pack can retain
 the whole note within its quote budget.
 Historical searches use the original text and titles of the selected revisions.

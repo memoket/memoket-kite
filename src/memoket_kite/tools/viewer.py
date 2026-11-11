@@ -85,6 +85,7 @@ def _search_snapshot(
             "terms": packs[0][1]["compilation"]["terms"] if question is not None else terms,
             "candidate_spans": sum(pack["candidate_spans"] for _, pack in packs),
             "candidate_sources": packs[0][1]["candidate_sources"] if question is not None else None,
+            "anchor_sources": packs[0][1].get("anchor_sources", 0) if question is not None else 0,
             "quote_bytes": sum(pack["quote_bytes"] for _, pack in packs),
             "sources": len(sources),
             "quotes": len(evidence),

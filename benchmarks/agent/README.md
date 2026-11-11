@@ -197,6 +197,14 @@ from its JSON events, elapsed wall time, command counts, and citation and
 answer checks. Use `--host-context prefilled` to measure delivering the fixed
 context pack directly in the prompt. Report that protocol separately.
 
+Pass `--retrieval question` to test the current compiled question workflow.
+This uses each task as the question and the default context budget. In the
+live tool comparison, each task directory has a relative launcher or transcript
+directory. The file arm starts with a bounded `rg` instruction and chooses its
+own search terms. Compare `access_prompt_bytes`, `tool_stdout_bytes`, and Codex
+usage separately. `rendered_bytes` measures the offline context pack including
+its citation headers.
+
 The fixed retrieval result checks exact evidence coverage and the fraction
 of tasks where all expected evidence was retrieved. A labeled citation hit
 does not assess the relevance of every extra retrieved line. Review answer
