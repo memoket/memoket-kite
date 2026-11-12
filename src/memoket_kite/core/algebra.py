@@ -77,8 +77,10 @@ class Unit:
 
 
 def _valid_event_time(value: str) -> bool:
-    """A Fact's event time is YYYY-MM or YYYY-MM-DD, and must be a real date."""
+    """Preserve year, month, or day precision without inventing missing parts."""
     try:
+        if re.fullmatch(r"\d{4}", value):
+            return 1 <= int(value) <= 9999
         if re.fullmatch(r"\d{4}-\d{2}", value):
             _date(int(value[:4]), int(value[5:7]), 1)
             return True
@@ -101,6 +103,8 @@ class Store:
         self.by_entity: dict[str, set] = {}
         self.by_kind: dict[str, set] = {}
         self.by_who: dict[str, set] = {}
+        self.by_who_code: dict[str, set] = {}
+        self.resolve_subject_aliases = False  # opt-in; conversation speakers stay literal
         self.by_obj: dict[str, set] = {}
         self.by_place: dict[str, set] = {}
         self.by_event: dict[str, set] = {}
@@ -373,6 +377,7 @@ class Store:
         self.by_kind.setdefault(f.kind, set()).add(f.id)
         if f.who:
             self.by_who.setdefault(f.who, set()).add(f.id)
+            self.by_who_code.setdefault(norm_code(f.who), set()).add(f.id)
         self.by_unit.setdefault(f.unit, set()).add(f.id)
         for c in f.obj:
             self.by_obj.setdefault(c, set()).add(f.id)
@@ -464,15 +469,20 @@ def parse_plan(obj: dict, vocab: Vocab, speakers: set | None = None) -> list[Sub
         if not isinstance(w, dict):
             w = {}
         who_extra = []
+        # Preserve all atoms accepted by the public plan schema. Silently
+        # slicing a value list changes OR coverage or removes AND predicates.
         topics = []
-        for t in (w.get("topics") or [])[:4]:
+        for t in w.get("topics") or []:
             if isinstance(t, str):
                 t = {"code": t, "closure": True}
-            code = vocab.resolve_topic(t.get("code", ""))
-            if code:
-                topics.append((code, bool(t.get("closure", True))))
+            raw_code = t.get("code", "")
+            code = vocab.resolve_topic(raw_code)
+            # Keep dead identifiers until execute() can observe that a
+            # semantic constraint was present. Dropping them here can turn a
+            # misspelled anchor into an accidental whole-corpus query.
+            topics.append((code or norm_code(raw_code), bool(t.get("closure", True))))
         entities = []
-        for e in (w.get("entities") or [])[:4]:
+        for e in w.get("entities") or []:
             if str(e).lower() in speakers:
                 who_extra.append(str(e).lower())
                 continue
@@ -481,6 +491,8 @@ def parse_plan(obj: dict, vocab: Vocab, speakers: set | None = None) -> list[Sub
                 who_extra.append(code)
             elif code:
                 entities.append(code)
+            else:
+                entities.append(norm_code(e))
         # compile sometimes emits a single-endpoint time (["2023-05"]) or a
         # bare string — normalize to two endpoints instead of crashing
         tm = w.get("time") or ["", ""]
@@ -490,7 +502,9 @@ def parse_plan(obj: dict, vocab: Vocab, speakers: set | None = None) -> list[Sub
         uv = w.get("units") or w.get("unit") or []
         if isinstance(uv, str):
             uv = [uv]
-        units = tuple(str(u) for u in uv if u)[:8]
+        # A units predicate is a scope, not a ranked top-k list. Preserve all
+        # explicit/resolved members; execute() applies the evidence budget.
+        units = tuple(str(u) for u in uv if u)
         pipe = []
         for st in (q.get("pipe") or [])[:4]:
             op = st.get("op")
@@ -507,18 +521,18 @@ def parse_plan(obj: dict, vocab: Vocab, speakers: set | None = None) -> list[Sub
                     time=(str(tm[0] or ""), str(tm[1] or "")),
                     topics=tuple(topics),
                     entities=tuple(entities),
-                    obj=tuple(norm_code(x) for x in (w.get("obj") or [])[:3] if norm_code(x)),
-                    place=tuple(norm_code(x) for x in (w.get("place") or [])[:3] if norm_code(x)),
-                    event=tuple(norm_code(x) for x in (w.get("event") or [])[:3] if norm_code(x)),
-                    kind=tuple(norm_code(k) for k in (w.get("kind") or [])[:4]),
+                    obj=tuple(norm_code(x) for x in w.get("obj") or [] if norm_code(x)),
+                    place=tuple(norm_code(x) for x in w.get("place") or [] if norm_code(x)),
+                    event=tuple(norm_code(x) for x in w.get("event") or [] if norm_code(x)),
+                    kind=tuple(norm_code(k) for k in w.get("kind") or []),
                     who=tuple(
                         dict.fromkeys(
-                            [str(x).lower() for x in (w.get("who") or [])[:3]] + who_extra
+                            [str(x).lower() for x in w.get("who") or []] + who_extra
                         )
                     ),
                     units=units,
                     grep=str(w.get("grep") or ""),
-                    grep_all=tuple(str(g) for g in (w.get("grep_all") or [])[:3]),
+                    grep_all=tuple(str(g) for g in w.get("grep_all") or []),
                     entity_kind=str(w.get("entity_kind") or ""),
                     conf_min=w.get("conf_min", "low"),
                 ),
@@ -600,6 +614,25 @@ def _entity_postings(
     return ids
 
 
+def _who_fact_ids(store: Store, vocab: Vocab, subject: str) -> set[str]:
+    """Exact subject matching, optionally extended by registered entity aliases.
+
+    Neither co-mentioned entities nor inferred relations create subject edges.
+    The opt-in applies to facts only; source-line speaker semantics stay literal.
+    """
+    ids = set(store.by_who.get(subject, ()))
+    ids.update(store.by_who.get("both", ()))
+    ids.update(store.by_who.get("multi", ()))
+    if store.resolve_subject_aliases and subject not in store.speakers:
+        code = vocab.resolve_entity(subject)
+        if code:
+            entity = vocab.entities[code]
+            for name in {code, entity.name, *entity.aliases}:
+                if name.lower() not in store.speakers:
+                    ids.update(store.by_who_code.get(norm_code(name), ()))
+    return ids
+
+
 def _match_facts(
     store: Store,
     vocab: Vocab,
@@ -660,11 +693,7 @@ def _match_facts(
     if w.who:
         ids = set()
         for s in w.who:
-            ids |= (
-                store.by_who.get(s, set())
-                | store.by_who.get("both", set())
-                | store.by_who.get("multi", set())
-            )
+            ids |= _who_fact_ids(store, vocab, s)
         isect(ids)
     if w.units:
         ids = set()
@@ -775,7 +804,7 @@ def _score(
         s += best
     if w.kind and f.kind in w.kind:
         s += 1.0
-    if w.who and (f.who in w.who or f.who in ("both", "multi")):
+    if w.who and any(f.id in _who_fact_ids(store, vocab, subject) for subject in w.who):
         s += 0.5
     if w.grep:
         s += _grep_score(store, w.grep, f.text)
@@ -885,8 +914,10 @@ def execute(
             else:
                 rows.sort(key=lambda u: u.date)
             rows = _apply_pipe_units(rows, sq.pipe, aggregates)
-            for u in rows:
-                pooled[f"U::{u.id}"] = max(pooled.get(f"U::{u.id}", 0), 1.0)
+            for rank, u in enumerate(rows):
+                # Retain the lookup/pipe order when the global budget trims
+                # units. A flat score would choose IDs rather than relevance.
+                pooled[f"U::{u.id}"] = max(pooled.get(f"U::{u.id}", 0), 1.0 - rank * 1e-4)
             continue
         if sq.select == "lines":
             w = sq.where
@@ -1003,7 +1034,12 @@ def execute(
         # traversal during ranking.
         topic_closures: dict[str, set[str]] = {}
 
-        scores = {fid: _score(store, vocab, w, fid, topic_closures) for fid in cand}
+        # Relaxation widens eligibility, not the request's lexical intent.
+        # Atomic facts can split a conjunction across a selected document;
+        # dropping grep as a hard filter must not also flatten all relevance
+        # scores and turn the fallback into fact-ID order.
+        rank_where = replace(w, grep=sq.where.grep, grep_all=sq.where.grep_all)
+        scores = {fid: _score(store, vocab, rank_where, fid, topic_closures) for fid in cand}
         truncates = any(step[0] in ("head", "tail") for step in sq.pipe)
         if truncates:
             # head/tail drop rows here, so what survives must be decided by
@@ -1113,6 +1149,15 @@ def execute(
                 if len(pack) >= budget:
                     break
                 try_pack(key, respect_cap=False)
+        if not coverage:
+            # The outer retrieval selector must preserve these existing
+            # per-query allocations even when their scores are below its
+            # general "precise row" threshold. This is packing metadata,
+            # not a score boost or a field in the stored facts.
+            reserved_keys = {key for keys in subquery_top for key in keys}
+            for row in pack:
+                if row["type"] == "fact" and f"F::{row['id']}" in reserved_keys:
+                    row["_plan_reserved"] = True
     else:
         for key in order:
             typ, _, ident = key.partition("::")
@@ -1202,6 +1247,8 @@ def _apply_pipe_units(units: list[Unit], pipe, aggregates) -> list[Unit]:
 # deliberately absent here so a stage cannot substitute on them; any other
 # `$name.field` falls through `_subst_refs` as a literal string.
 _STAGE_REF = re.compile(r"^\$([^.\s]+)\.(unit|units|date|t)$")
+# Exact spaced labels are references only in typed document/date fields.
+_SPACED_STAGE_REF = re.compile(r"^\$([^.\s]+(?: +[^.\s]+)+)\.(unit|units|date|t)$")
 
 
 def _grep_branches(pattern: str, whole) -> list:
@@ -1253,11 +1300,13 @@ def _grep_branches(pattern: str, whole) -> list:
     return compiled or [whole]
 
 
-def _subst_refs(obj, bindings: dict):
+def _subst_refs(obj, bindings: dict, *, spaced_names: bool = False):
     """Resolve `$stage.field` references against earlier stage bindings.
     Returns (value, ok); ok=False when a reference cannot be resolved."""
     if isinstance(obj, str) and obj.startswith("$"):
         match = _STAGE_REF.fullmatch(obj)
+        spaced_match = _SPACED_STAGE_REF.fullmatch(obj) if spaced_names else None
+        match = match or spaced_match
         if match is None:
             # A leading "$" alone does not make a reference: a grep pattern
             # like "$" and a value like "$2,500" start with it too. Requiring
@@ -1266,7 +1315,7 @@ def _subst_refs(obj, bindings: dict):
             return obj, True
         name, field = match.groups()
         b = bindings.get(name)
-        if b is None and len(bindings) == 1:
+        if b is None and spaced_match is None and len(bindings) == 1:
             # forgiving resolution: LLMs mix up stage names; with a single
             # prior stage the intent is unambiguous
             b = next(iter(bindings.values()))
@@ -1276,7 +1325,7 @@ def _subst_refs(obj, bindings: dict):
     if isinstance(obj, list):
         out = []
         for x in obj:
-            v, ok = _subst_refs(x, bindings)
+            v, ok = _subst_refs(x, bindings, spaced_names=spaced_names)
             if not ok:
                 return None, False
             out.extend(v if isinstance(v, list) else [v])
@@ -1284,7 +1333,10 @@ def _subst_refs(obj, bindings: dict):
     if isinstance(obj, dict):
         out = {}
         for k, x in obj.items():
-            v, ok = _subst_refs(x, bindings)
+            v, ok = _subst_refs(
+                x, bindings,
+                spaced_names=spaced_names and k in {"where", "unit", "units", "time"},
+            )
             if not ok:
                 return None, False
             out[k] = v
@@ -1292,7 +1344,7 @@ def _subst_refs(obj, bindings: dict):
     return obj, True
 
 
-def _has_stage_reference(obj) -> bool:
+def _has_stage_reference(obj, *, spaced_names: bool = False) -> bool:
     """Whether this stage body actually references an earlier stage.
 
     Each string is matched in full against the reference pattern rather than
@@ -1302,15 +1354,18 @@ def _has_stage_reference(obj) -> bool:
     them once the budget is tight.
     """
     if isinstance(obj, str):
-        return _STAGE_REF.fullmatch(obj) is not None
+        return bool(_STAGE_REF.fullmatch(obj) or (spaced_names and _SPACED_STAGE_REF.fullmatch(obj)))
     if isinstance(obj, list):
-        return any(_has_stage_reference(item) for item in obj)
+        return any(_has_stage_reference(item, spaced_names=spaced_names) for item in obj)
     if isinstance(obj, dict):
-        return any(_has_stage_reference(value) for value in obj.values())
+        return any(
+            _has_stage_reference(value, spaced_names=spaced_names and key in {"where", "unit", "units", "time"})
+            for key, value in obj.items()
+        )
     return False
 
 
-def _stage_binding(rows: list[dict]) -> dict:
+def _stage_binding(rows: list[dict], *, bind_dates: bool = True) -> dict:
     """Expose a stage's result to later stages: top row's id/unit/date + all units."""
     data_rows = [r for r in rows if r.get("type") != "count"]
     units = []
@@ -1318,14 +1373,17 @@ def _stage_binding(rows: list[dict]) -> dict:
         u = r.get("unit", r.get("id"))
         if u and u not in units:
             units.append(u)
-    top = data_rows[0] if data_rows else {}
+    # execute() sorts its output chronologically for presentation. A scalar
+    # stage reference must bind the best-ranked row, not that display order.
+    top = max(data_rows, key=lambda row: row.get("score", 0), default={})
+    date = top.get("date", "") if bind_dates else ""
     counts = [r for r in rows if r.get("type") == "count"]
     return {
         "id": top.get("id", ""),
         "unit": top.get("unit", top.get("id", "")),
         "units": units,
-        "date": top.get("date", ""),
-        "t": top.get("date", ""),
+        "date": date,
+        "t": date,
         "n": counts[0]["n"] if counts else len(data_rows),
     }
 
@@ -1340,6 +1398,10 @@ def execute_plan(
     legal_kinds: set[str] | None = None,
     pack_v2: bool = False,
     coverage: bool = False,
+    *,
+    rank_stage_rows: bool = False,
+    bind_stage_dates: bool = True,
+    reserve_stage_units: bool = False,
 ) -> tuple[list[dict], Trace]:
     """Entry point for compile output. Two shapes:
     - {"queries": [...]} : parallel subqueries, pooled and ranked in one pass
@@ -1362,15 +1424,17 @@ def execute_plan(
         )
     trace = Trace()
     bindings: dict[str, dict] = {}
-    bound_rows: list[dict] = []  # stages that consumed a $ref: the refined output
+    bound_stages: list[list[dict]] = []  # preserve each dependent stage's ranked output
     free_rows: list[dict] = []  # unbound stages (anchors / wide nets): context
+    stage_top: list[dict] = []  # pack_v2: complementary property queries need seats too
+    reservable_types = {"fact", "line", "unit"} if reserve_stage_units else {"fact", "line"}
     for i, raw in enumerate(stages[:4]):
         if not isinstance(raw, dict):
             continue  # malformed compile output must degrade, not crash
         name = str(raw.get("name") or f"s{i + 1}")
         raw_body = {k: v for k, v in raw.items() if k != "name"}
-        uses_ref = _has_stage_reference(raw_body)
-        resolved, ok = _subst_refs(raw_body, bindings)
+        uses_ref = _has_stage_reference(raw_body, spaced_names=True)
+        resolved, ok = _subst_refs(raw_body, bindings, spaced_names=True)
         if not ok:  # upstream stage empty -> this stage cannot run
             trace.log("stage", name=name, skipped="unresolved_ref")
             bindings[name] = _stage_binding([])
@@ -1386,23 +1450,51 @@ def execute_plan(
             pack_v2=pack_v2,
             coverage=coverage,
         )
+        # This layer owns the stage allocations below; do not accumulate
+        # nested single-query allocations as additional stage reservations.
+        for row in rows:
+            row.pop("_plan_reserved", None)
         trace.log("stage", name=name, hits=len(rows), bound=uses_ref)
         trace.stages += [
             {"stage": f"{name}:{s['stage']}", **{k: v for k, v in s.items() if k != "stage"}}
             for s in st_trace.stages
         ]
-        bindings[name] = _stage_binding(rows)
+        if rank_stage_rows:
+            # execute() returns display order. The stage merge trims results,
+            # so it must see the strongest hits before the display tiebreakers.
+            rows.sort(key=lambda row: (row["type"] != "count", -row.get("score", 0)))
+        bindings[name] = _stage_binding(rows, bind_dates=bind_stage_dates)
         if uses_ref:
             for r in rows:
                 r["bound"] = True  # anchored result = the plan's intent
-            bound_rows += rows
+            bound_stages.append(rows)
         else:
             free_rows += rows
-    # $ref-bound stages are the plan's intent; unbound stages provide context.
-    # Per-stage headroom (max(budget, 12)) lets a bound stage out-rank the
-    # context stages; the caller's budget still bounds what comes back.
+        if pack_v2:
+            # Use the same two-row reservation as parallel subqueries in
+            # execute(). A reference scopes a query to documents; it does not
+            # make its rows more important than an unbound final-property
+            # query. Whole-passage readers can use a unit as evidence.
+            evidence = [r for r in rows if r.get("type") in reservable_types]
+            reserved = sorted(evidence, key=lambda r: (
+                -r.get("score", 0), r.get("date") or "", r.get("id") or ""
+            ))[:2]
+            for row in reserved:
+                row["_plan_reserved"] = True
+            stage_top.extend(reserved)
+    # Each dependent stage contributes evidence to the chain. A broad earlier
+    # stage must not consume the entire budget before a later property stage
+    # is admitted. Interleave their ranked outputs, starting with the latest
+    # stage, while retaining earlier bridge evidence. One dependent stage keeps
+    # its original order; unbound stages still provide additional context.
+    bound_rows = [
+        stage[offset]
+        for offset in range(max((len(stage) for stage in bound_stages), default=0))
+        for stage in reversed(bound_stages)
+        if offset < len(stage)
+    ]
     out, seen, kept = [], set(), 0
-    for r in bound_rows + free_rows:
+    for r in stage_top + bound_rows + free_rows:
         key = (r.get("type"), r.get("id"))
         if key in seen:
             continue
@@ -1462,6 +1554,7 @@ def _row(store: Store, typ: str, ident: str, score: float) -> dict:
         "id": u.id,
         "date": u.date,
         "dur": u.dur_min,
-        "score": round(score, 2),
+        # Preserve the unit rank tiebreaker for downstream scalar references.
+        "score": round(score, 4),
         "text": u.title or u.id,
     }

@@ -12,6 +12,7 @@ The answer flow is:
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -73,6 +74,7 @@ class AnswerOptions:
     infer_v2: bool
     dual_date: bool
     speaker_label: bool = False
+    compact_sources: bool = False
 
     @classmethod
     def from_profile(cls, profile) -> "AnswerOptions":
@@ -92,6 +94,7 @@ class AnswerOptions:
             infer_v2=bool(getattr(profile, "INFER_V2", False)),
             dual_date=bool(getattr(profile, "DUAL_DATE", False)),
             speaker_label=bool(getattr(profile, "SPEAKER_LABEL", False)),
+            compact_sources=bool(getattr(profile, "COMPACT_SOURCES", False)),
         )
 
 
@@ -498,17 +501,20 @@ def _build_evidence_pack(
     )
     _book("instance_index", mark)
     mark = len(lines)
-    lines.extend(
-        _render_evidence_row(
-            row,
-            store,
-            options.hydrate_sources,
-            dual_date=options.dual_date,
-            speaker=options.speaker_label,
+    evidence_rows = [row for row in rows if row["type"] != "count"]
+    if options.compact_sources:
+        lines.extend(_render_compact_sources(evidence_rows, store, options))
+    else:
+        lines.extend(
+            _render_evidence_row(
+                row,
+                store,
+                options.hydrate_sources,
+                dual_date=options.dual_date,
+                speaker=options.speaker_label,
+            )
+            for row in evidence_rows
         )
-        for row in rows
-        if row["type"] != "count"
-    )
     if ledger.current() is not None:
         ledger.charge(
             "row_renders",
@@ -687,6 +693,77 @@ def _render_evidence_row(
         f"{anchored}[{date_value} {_weekday(date_value)}]{said_note} "
         f"({row['id']}, src={row.get('src', '')}) {body}{source_text}"
     )
+
+
+def _render_compact_sources(rows: list[dict], store, options: AnswerOptions) -> list[str]:
+    """Share each retrieved source once, preserving hydrated source contents.
+
+    Hydration must retain the original passage: clipping a prefix can discard
+    the requested assertion or even split a name. Deduplication keeps that
+    source from being repeated for every fact. Without hydration, retain the
+    legacy short preview; an explicitly selected line is always shown in full.
+    This opt-in format does not change the ordinary dialogue renderer.
+    """
+    if not rows:
+        return []
+    source_limit, text_limit = (4, 400) if options.hydrate_sources else (2, 120)
+    sources: dict[str, tuple[str, dict | None]] = {}
+
+    def remember(identifier: str, text: str, line_row: dict | None = None) -> None:
+        previous = sources.get(identifier)
+        longest = text if previous is None or len(text) > len(previous[0]) else previous[0]
+        sources[identifier] = (longest, line_row or (previous[1] if previous else None))
+
+    for row in rows:
+        if row["type"] == "line":
+            remember(row["id"], spoken(row.get("who", ""), row["text"],
+                     enabled=options.speaker_label), row)
+        elif row["type"] == "fact":
+            # Match the ordinary renderer: discard missing IDs before the cap.
+            identifiers = [s for s in str(row.get("src") or "").split() if s in store.lines]
+            for identifier in identifiers[:source_limit]:
+                line = store.lines[identifier]
+                quote = spoken(line.who, line.text, enabled=options.speaker_label)
+                remember(identifier, quote if options.hydrate_sources else quote[:text_limit])
+
+    rendered = [
+        "FACTS (src references SOURCE text below; indexed dates are extraction annotations. "
+        "Check event timing against the claim and SOURCE text. "
+        "[anchored] marks a query's document/date scope, not proof of a relationship):"
+    ]
+    for row in rows:
+        if row["type"] == "line":
+            continue  # Shown once, in SOURCES, with the same citation ID.
+        if row["type"] != "fact":
+            rendered.append(_render_evidence_row(row, store, options.hydrate_sources,
+                            dual_date=options.dual_date, speaker=options.speaker_label))
+            continue
+        fact = store.facts.get(row["id"])
+        # An absent FactRecord cannot establish whether row.date is event time.
+        # Preserve its legacy header rather than silently dropping that date.
+        if fact is None:
+            rendered.append(_render_evidence_row(row, store, options.hydrate_sources,
+                            dual_date=options.dual_date, speaker=options.speaker_label))
+            continue
+        anchored = "[anchored] " if row.get("bound") else ""
+        event = f" [event={fact.t} {_weekday(fact.t[:10])}]" if fact.t else ""
+        recorded = ""
+        if options.dual_date and fact.t and _RELATIVE_PHRASE.search(row["text"]):
+            if fact.unit_date and fact.unit_date != row.get("date"):
+                recorded = f" (said {fact.unit_date}; event date already resolves the relative phrase)"
+        # Missing/unquoted sources still retain their provenance and record date.
+        if not any(s in sources for s in str(row.get("src") or "").split()):
+            recorded += f" [recorded={fact.unit_date} {_weekday(fact.unit_date)}]"
+        rendered.append(f"{anchored}({row['id']}, src={row.get('src', '')}){event}{recorded} {row['text']}")
+
+    if sources:
+        rendered.append("SOURCES (recorded dates are source metadata, not event dates):")
+    for identifier, (text, selected) in sources.items():
+        line = store.lines.get(identifier)
+        date = selected.get("date", "") if selected is not None else line.unit_date
+        anchored = "[anchored] " if selected and selected.get("bound") else ""
+        rendered.append(f"{anchored}({identifier}, recorded={date} {_weekday(date)}) {text}")
+    return rendered
 
 
 def _hydrate_sources(row: dict, store, *, speaker: bool) -> list[str]:
@@ -874,6 +951,37 @@ def _add_instance_context(
 # Answer generation
 
 
+def _answer_response_format(profile, pack: EvidencePack):
+    """Constrain structured citation strings to provenance shown to the reader.
+
+    This is an input-side output contract, not a repair of generated citations.
+    Profiles without a structured response format keep their original call.
+    """
+    configured = getattr(profile, "ANSWER_RESPONSE_FORMAT", None)
+    if configured is None:
+        return None
+    result = deepcopy(configured)
+    if result.get("type") != "json_schema":
+        return result
+    schema = result.get("json_schema", {}).get("schema", {})
+    evidence = schema.get("properties", {}).get("evidence", {})
+    items = evidence.get("items", {})
+    if evidence.get("type") != "array" or items.get("type") != "string":
+        return result
+    allowed = sorted(pack.allowed_citation_ids())
+    if "enum" in items:
+        allowed = [identifier for identifier in allowed if identifier in items["enum"]]
+    # A citation list never needs more entries than the visible identifier set.
+    # Bound generation rather than trimming or repairing returned evidence.
+    evidence["maxItems"] = min(len(allowed), evidence.get("maxItems", len(allowed)))
+    if allowed:
+        items["enum"] = allowed
+    else:
+        items.pop("enum", None)
+        evidence["maxItems"] = 0
+    return result
+
+
 def _generate_answer(
     pack: EvidencePack,
     profile,
@@ -892,7 +1000,9 @@ def _generate_answer(
         evidence="\n".join(pack.lines),
     )
     ledger.call("answer", prompt)
-    data = llm_json(prompt, model=model)
+    response_format = _answer_response_format(profile, pack)
+    extra = {"response_format": response_format} if response_format is not None else {}
+    data = llm_json(prompt, model=model, **extra)
     data = _select_consistent_answer(
         data,
         prompt,

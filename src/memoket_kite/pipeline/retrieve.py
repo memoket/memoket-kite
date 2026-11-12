@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, field
 
 from memoket_kite.core.algebra import execute_plan, fact_row, line_row
 from memoket_kite.pipeline import ledger
@@ -72,6 +73,9 @@ class RetrievalOptions:
     enum_basis: bool
     token_cap: int
     speaker_label: bool = False
+    rank_stage_rows: bool = False
+    bind_stage_dates: bool = True
+    reserve_stage_units: bool = False
 
     @classmethod
     def from_profile(cls, profile) -> "RetrievalOptions":
@@ -86,6 +90,9 @@ class RetrievalOptions:
             enum_basis=bool(getattr(profile, "ENUM_BASIS", False)),
             token_cap=_checked_token_cap(profile),
             speaker_label=bool(getattr(profile, "SPEAKER_LABEL", False)),
+            rank_stage_rows=bool(getattr(profile, "RANK_STAGE_ROWS", False)),
+            bind_stage_dates=bool(getattr(profile, "BIND_STAGE_DATES", True)),
+            reserve_stage_units=bool(getattr(profile, "RESERVE_STAGE_UNITS", False)),
         )
 
 
@@ -108,6 +115,7 @@ class RetrievalResult:
     intent: str
     budget: int
     unit_cap: int
+    candidate_rows: list[dict] = field(default_factory=list, repr=False, compare=False)
 
     def as_dict(self) -> dict:
         return {
@@ -159,7 +167,140 @@ def _run_retrieval(
     budget: int = 0,
     plan_cache: str | None = None,
 ) -> RetrievalResult:
-    """Run the full retrieval stage for answer generation or direct recall."""
+    """Run native retrieval, with at most three explicitly opted-in compilations."""
+    limit = int(getattr(profile, "COMPILE_MAX_ROUNDS", 1))
+    if not 1 <= limit <= 3:
+        raise ValueError("COMPILE_MAX_ROUNDS must be between 1 and 3")
+    if limit > 1 and (int(getattr(profile, "COMPILE_CANDIDATES", 3)) != 1 or any(
+            getattr(profile, key, False) for key in ("PLAN_REPAIR", "REFUSAL_REPLAN", "SECOND_PASS", "ROUND2"))):
+        raise ValueError("bounded compile feedback requires one candidate and no extra replanning passes")
+    current = _run_retrieval_once(store, vocab, profile, question, model=model,
+                                  reference_date=reference_date, budget=budget, plan_cache=plan_cache)
+    if limit == 1:
+        return current
+    history = [{"stage": "compile_round", "round": 1, "plan": deepcopy(current.plan),
+                "retrieval_executed": True}] + [dict(e, compile_round=1) for e in current.trace]
+    review_subject_scope = getattr(profile, "COMPILE_REVIEW_SUBJECT_SCOPE", False)
+    retain_previous_candidates = getattr(profile, "COMPILE_RETAIN_PREVIOUS_CANDIDATES", False)
+    # The whole-passage renderer delivers selected units as complete source text.
+    evidence_types = {"fact", "line", "unit"} if review_subject_scope else {"fact", "line"}
+    seen_rows = {(r["type"], r["id"]) for r in current.rows if r["type"] in evidence_types}
+    seen_plans = {json.dumps(current.plan, sort_keys=True)}
+    rounds = 1
+    stop_reason = "round_limit"
+    while rounds < limit:
+        trigger = _compile_feedback_trigger(current)
+        if not trigger and rounds == 1 and review_subject_scope:
+            trigger = "review_subject_scope"
+        if not trigger:
+            stop_reason = "no_unresolved_plan_structure"
+            break
+        context = _compile_feedback_context(current, store, profile)
+        rounds += 1
+        try:
+            plan = compile_plan(question, vocab, store, profile, model, n_candidates=1,
+                                today=reference_date, evidence_context=context)
+        except Exception as error:
+            history.append({"stage": "compile_round", "round": rounds, "trigger": trigger,
+                            "retrieval_executed": False, "error_type": type(error).__name__,
+                            "error": str(error)})
+            stop_reason = "compiler_error_previous_evidence_retained"
+            break
+        if plan == {"stop": True}:
+            history.append({"stage": "compile_round", "round": rounds, "trigger": trigger,
+                            "retrieval_executed": False, "stop": True})
+            stop_reason = "compiler_stop"
+            break
+        key = json.dumps(plan, sort_keys=True)
+        if key in seen_plans:
+            history.append({"stage": "compile_round", "round": rounds, "trigger": trigger,
+                            "retrieval_executed": False, "plan": deepcopy(plan)})
+            stop_reason = "repeated_plan"
+            break
+        seen_plans.add(key)
+        following = _run_retrieval_once(store, vocab, profile, question, model=model,
+                                        reference_date=reference_date, budget=budget,
+                                        plan_cache=plan_cache, compiled_plan=plan)
+        history.append({"stage": "compile_round", "round": rounds, "trigger": trigger,
+                        "retrieval_executed": True, "plan": deepcopy(following.plan)})
+        history.extend(dict(e, compile_round=rounds) for e in following.trace)
+        evidence_ids = {(r["type"], r["id"]) for r in following.rows if r["type"] in evidence_types}
+        if not evidence_ids:
+            stop_reason = "empty_retrieval_previous_pack_retained"
+            break
+        if retain_previous_candidates:
+            # A revised plan owns the pack. Keep earlier candidates as fallback
+            # without changing the revised plan's candidate order or selection.
+            keys = {(row["type"], row["id"]) for row in following.candidate_rows}
+            following.candidate_rows.extend(
+                row for row in current.candidate_rows if (row["type"], row["id"]) not in keys
+            )
+        if not evidence_ids - seen_rows:
+            # A narrower valid plan may remove distracting evidence without
+            # discovering a new fact. Use that executed plan, but do not spend
+            # another compiler call on an unchanged evidence universe.
+            current = following
+            stop_reason = "no_new_evidence"
+            break
+        seen_rows.update(evidence_ids)
+        current = following
+    history.append({"stage": "compile_feedback_stop", "reason": stop_reason,
+                    "compile_rounds": rounds, "round_limit": limit,
+                    "final_evidence_budget": current.budget})
+    current.trace = history
+    return current
+
+
+def _compile_feedback_trigger(result: RetrievalResult) -> str:
+    """Observable planning gaps; never inspect answers or benchmark labels."""
+    for entry in result.trace:
+        stage = str(entry.get("stage", ""))
+        if (stage == "stage" and (entry.get("skipped") or not entry.get("hits"))) or (
+                stage.endswith("refine") and entry.get("steps")):
+            return "empty_stage_or_relaxed_filters"
+    if not result.rows or not any(r["type"] in {"fact", "line"} for r in result.rows):
+        return "no_property_evidence"
+    nodes = result.plan.get("stages") or result.plan.get("queries") or []
+    for node in nodes:
+        where = node.get("where") or {}
+        units = where.get("units", [])
+        values = [units] if isinstance(units, str) else units
+        if any(isinstance(v, str) and v.startswith("$") for v in values):
+            return "dependent_document_scope_needs_chain_check"
+        if (len(nodes) > 1 and node.get("select", "facts") == "facts"
+                and not where.get("entities") and not where.get("units")):
+            return "unanchored_complementary_property"
+    return ""
+
+
+def _compile_feedback_context(result: RetrievalResult, store, profile) -> str:
+    renderer = getattr(profile, "COMPILE_FEEDBACK_RENDERER", None)
+    if renderer is None:
+        from memoket_kite.pipeline.answer import AnswerOptions, _render_compact_sources
+
+        evidence = _render_compact_sources(result.rows, store, AnswerOptions.from_profile(profile))
+    else:
+        evidence = renderer(result.rows, store)
+    outcomes = [e for e in result.trace if e.get("stage") == "stage"
+                or str(e.get("stage", "")).endswith("refine")]
+    return ("Previously executed plan:\n" + json.dumps(result.plan, ensure_ascii=False)
+            + "\nNative execution outcomes:\n" + json.dumps(outcomes, ensure_ascii=False)
+            + "\nActually retrieved evidence:\n" + "\n".join(evidence))
+
+
+def _run_retrieval_once(
+    store,
+    vocab,
+    profile,
+    question: str,
+    *,
+    model: str,
+    reference_date: str = "",
+    budget: int = 0,
+    plan_cache: str | None = None,
+    compiled_plan: dict | None = None,
+) -> RetrievalResult:
+    """The unchanged native plan execution, lexical fusion and evidence packing."""
 
     options = RetrievalOptions.from_profile(profile)
     legal_kinds = set(getattr(profile, "KINDS", ()) or ())
@@ -168,14 +309,18 @@ def _run_retrieval(
         return _score_plan(store, vocab, candidate, legal_kinds)
 
     scorer_cache_key = _plan_scorer_cache_key(legal_kinds)
+    candidates = int(getattr(profile, "COMPILE_CANDIDATES", 3))
+    if candidates < 1:
+        raise ValueError("COMPILE_CANDIDATES must be positive")
 
-    plan = compile_plan(
+    plan = deepcopy(compiled_plan) if compiled_plan is not None else compile_plan(
         question,
         vocab,
         store,
         profile,
         model,
-        scorer=scorer,
+        scorer=scorer if candidates > 1 else None,
+        n_candidates=candidates,
         today=reference_date,
         cache_dir=plan_cache,
         scorer_cache_key=scorer_cache_key,
@@ -270,6 +415,7 @@ def _run_retrieval(
         intent=intent,
         budget=budget,
         unit_cap=unit_cap,
+        candidate_rows=fused_rows,
     )
 
 
@@ -513,6 +659,9 @@ def _execute_with_plan_repair(
         legal_kinds=legal_kinds,
         pack_v2=options.pack_v2,
         coverage=coverage,
+        rank_stage_rows=options.rank_stage_rows,
+        bind_stage_dates=options.bind_stage_dates,
+        reserve_stage_units=options.reserve_stage_units,
     )
     if rows or not options.repair_plan:
         return plan, rows, trace.stages
@@ -543,6 +692,9 @@ def _execute_with_plan_repair(
         legal_kinds=legal_kinds,
         pack_v2=options.pack_v2,
         coverage=coverage,
+        rank_stage_rows=options.rank_stage_rows,
+        bind_stage_dates=options.bind_stage_dates,
+        reserve_stage_units=options.reserve_stage_units,
     )
     if not repaired_rows:
         return plan, rows, trace.stages
@@ -761,6 +913,11 @@ def _select_evidence_rows_tokencap(
     bound = [row for row in plan_rows if row.get("bound") and row.get("type") != "count"]
     bound = bound[:_BOUND_SEED_CAP]
     precise = _precise_rows(plan_rows)
+    if any(row.get("_plan_reserved") for row in plan_rows):
+        eligible = {(row["type"], row["id"]) for row in precise}
+        precise = [row for row in plan_rows if row.get("type") != "count"
+                   and (row.get("_plan_reserved")
+                        or (row["type"], row["id"]) in eligible)]
     rows: list[dict] = []
     per_unit: dict[str, int] = {}
     total = 0
@@ -833,8 +990,30 @@ def _select_evidence_rows(
 
     rows = []
     per_unit: dict[str, int] = {}
-    for row in (bound + precise)[:budget]:
+    seeds = bound + precise
+    if pack_v2:
+        # execute_plan already reserves each query's leading evidence. A
+        # document-scope reference is not a ranking signal for its entire
+        # result set: pre-admitting every bound row can fill the whole budget
+        # and prevent the fused ranking from contributing any evidence.
+        eligible = {(row["type"], row["id"]) for row in precise}
+        seeds = [row for row in plan_rows if row.get("type") != "count"
+                 and (row.get("_plan_reserved")
+                      or (row["type"], row["id"]) in eligible)]
+    seeded = set()
+    for row in seeds:
+        if len(rows) >= budget:
+            break
+        key = (row["type"], row["id"])
         unit = row.get("unit", row.get("id"))
+        if pack_v2:
+            if key in seeded:
+                continue
+            # Preserve explicit query reservations; other seed rows obey the
+            # same diversity cap as fused rows before the relief pass.
+            if not row.get("_plan_reserved") and per_unit.get(unit, 0) >= unit_cap:
+                continue
+        seeded.add(key)
         per_unit[unit] = per_unit.get(unit, 0) + 1
         rows.append(row)
 

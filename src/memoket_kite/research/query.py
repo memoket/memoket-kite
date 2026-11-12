@@ -50,9 +50,16 @@ _WHERE_FIELDS = {
     "entity_kind",
     "conf_min",
 }
-_STAGE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
-_REFERENCE = re.compile(r"^\$([^.\s]+)\.(unit|units|date)$")
-_DATE_REFERENCE = re.compile(r"^\$[^.\s]+\.date$")
+def _valid_stage_name(value: str) -> bool:
+    # Validate Unicode identifiers (including combining marks), with the
+    # existing hyphen and internal-space separators. Do not normalize the
+    # stored label: declaration and reference still require exact equality.
+    return bool(value and value == value.strip(" ") and not value.startswith("-")
+                and value.replace("-", "_").replace(" ", "_").isidentifier())
+
+
+_REFERENCE = re.compile(r"^\$([^.\s]+(?: +[^.\s]+)*)\.(unit|units|date)$")
+_DATE_REFERENCE = re.compile(r"^\$[^.\s]+(?: +[^.\s]+)*\.date$")
 
 
 def _stage_reference_parts(value: object) -> tuple[str, str] | None:
@@ -148,7 +155,7 @@ def _validate_plan_entry(entry: dict[str, Any], *, allow_refs: bool = False) -> 
             f"{', '.join(sorted(map(str, unexpected_entry_fields)))}"
         )
     if "name" in entry and (
-        not isinstance(entry["name"], str) or _STAGE_NAME.fullmatch(entry["name"]) is None
+        not isinstance(entry["name"], str) or not _valid_stage_name(entry["name"])
     ):
         raise InvalidQueryError("plan stage name must be a non-empty identifier")
     target = entry.get("select", "facts")

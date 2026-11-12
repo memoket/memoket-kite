@@ -21,7 +21,7 @@ import xml.etree.ElementTree as ET
 from datetime import date
 
 from memoket_kite.core.vocab import Vocab, norm_code
-from memoket_kite.pipeline.compile_plan import _provider_cache_identity
+from memoket_kite.pipeline.compile_plan import _entity_preview_codes, _provider_cache_identity
 from memoket_kite.prompts.extract import (
     ENTITY_CONSOLIDATION_PROMPT,
     INSTANCE_ALIGNMENT_PROMPT,
@@ -65,7 +65,7 @@ def _model_array(value) -> list | tuple:
     return value if isinstance(value, (list, tuple)) else ()
 
 
-def _normalize_facet_codes(values) -> list:
+def _normalize_facet_codes(values, *, singularize: bool = True) -> list:
     """Normalize, deduplicate, and discard empty facet values."""
     if isinstance(values, str):
         values = [values]
@@ -78,7 +78,7 @@ def _normalize_facet_codes(values) -> list:
         code = norm_code(value)
         if not code:
             continue
-        if len(code) > 3 and code.endswith("s") and not code.endswith("ss"):
+        if singularize and len(code) > 3 and code.endswith("s") and not code.endswith("ss"):
             code = code[:-3] + "y" if code.endswith("ies") else code[:-1]
         if code in _EMPTY_FACET_VALUES:
             continue
@@ -90,6 +90,42 @@ def _normalize_facet_codes(values) -> list:
 def _normalize_duration(value) -> str:
     duration = str(value or "").strip().upper()
     return duration if _DUR_RE.match(duration) and duration != "P" else ""
+
+
+def _validate_topic_references(vocabulary: Vocab, response: dict) -> list[tuple[int, str]]:
+    """Reject unindexable facts before registration can mutate the bank.
+
+    Native resolution already omits unregistered auxiliary labels. A fact with
+    another valid topic remains indexable; rejecting its whole response would
+    discard valid facts. Return those omitted labels for diagnostics, without
+    repairing paths, inventing topics or modifying the cached model response.
+    """
+    proposed = set()
+    for proposal in response["proposals"]:
+        if not isinstance(proposal, dict):
+            raise RuntimeError("malformed topic proposal; refusing silent discard")
+        code, parent = proposal.get("code"), proposal.get("parent")
+        if (not isinstance(code, str) or not norm_code(code) or
+                not isinstance(parent, str) or not (
+                    vocabulary.resolve_topic(parent) or norm_code(parent) in proposed)):
+            raise RuntimeError("invalid topic proposal code/parent; refusing silent discard")
+        proposed.add(norm_code(code))
+    unresolved = []
+    for ordinal, fact in enumerate(response["facts"], 1):
+        topics = fact.get("topics") if isinstance(fact, dict) else None
+        if not isinstance(topics, list) or not 1 <= len(topics) <= 3:
+            raise RuntimeError(f"invalid topic list in fact {ordinal}; expected 1-3 references")
+        resolved = False
+        for code in topics:
+            if not isinstance(code, str):
+                raise RuntimeError(f"malformed topic reference in fact {ordinal}")
+            if norm_code(code) and (vocabulary.resolve_topic(code) or norm_code(code) in proposed):
+                resolved = True
+            else:
+                unresolved.append((ordinal, code))
+        if not resolved:
+            raise RuntimeError(f"unknown topic reference in fact {ordinal}; refusing silent discard")
+    return unresolved
 
 
 def _register_topic_proposals(vocabulary: Vocab, proposals, session: dict) -> dict[str, str]:
@@ -159,7 +195,7 @@ def _register_fact_entities(
     """Apply a profile's entity filter and register the remaining entities."""
     entity_codes = []
     entity_filter = getattr(profile, "entity_filter", None)
-    for entity_name in _model_array(raw_entities)[:5]:
+    for entity_name in _model_array(raw_entities):
         if not isinstance(entity_name, str) or not norm_code(entity_name):
             continue
         if entity_filter and not entity_filter(entity_name):
@@ -182,7 +218,9 @@ def _normalize_fact_facets(raw_facets, allowed_events: set[str]) -> dict[str, ob
         ("place", "place"),
         ("event", "event"),
     ):
-        values = _normalize_facet_codes(raw_facets.get(facet_name))
+        # Places are proper identifiers: a plural-looking suffix can be part
+        # of the name. Keep the existing class/event normalization unchanged.
+        values = _normalize_facet_codes(raw_facets.get(facet_name), singularize=facet_name != "place")
         if facet_name == "event":
             values = [value for value in values if value in allowed_events]
         if values:
@@ -197,12 +235,12 @@ def _normalize_fact_time(value) -> str:
     """Keep only real calendar dates at the precision promised to the model."""
     candidate = str(value or "").strip()
     try:
-        if re.fullmatch(r"\d{4}-\d{2}", candidate):
+        if re.fullmatch(r"\d{1,4}-\d{1,2}", candidate):
             year, month = map(int, candidate.split("-"))
             date(year, month, 1)
-            return candidate
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", candidate):
-            return date.fromisoformat(candidate).isoformat()
+            return f"{year:04d}-{month:02d}"
+        if re.fullmatch(r"\d{1,4}-\d{1,2}-\d{1,2}", candidate):
+            return date(*map(int, candidate.split("-"))).isoformat()
     except ValueError:
         pass
     return ""
@@ -218,6 +256,8 @@ def _normalize_extracted_fact(
     source_ids: set[str],
     include_facets: bool,
     allowed_events: set[str],
+    *,
+    fixed_source_id: str | None = None,
 ) -> dict:
     """Validate one raw model Fact and convert it to the internal XML shape."""
     allowed_kinds = {norm_code(value) for value in getattr(profile, "KINDS", ())}
@@ -241,7 +281,8 @@ def _normalize_extracted_fact(
         ),
         "src": [
             source_id
-            for source_id in _model_array(raw_fact.get("src"))
+            for source_id in ([fixed_source_id] if fixed_source_id is not None
+                              else _model_array(raw_fact.get("src")))
             if isinstance(source_id, str) and source_id in source_ids
         ],
     }
@@ -262,6 +303,10 @@ def extract_facts(
     cache_dir: str | None = None,
     log=print,
     include_facets: bool | None = None,
+    *,
+    cache_only: bool = False,
+    response_format: dict | None = None,
+    expected_prompt_sha256: str | None = None,
 ) -> list[dict]:
     """Extract normalized Facts from one session.
 
@@ -274,11 +319,20 @@ def extract_facts(
     resolved through ``vocabulary`` before return. Profiles may enable object,
     place, event, and duration facets by default; ``include_facets=False``
     provides the facet-free ablation.
+
+    ``cache_only=True`` replays a completed raw response for this exact input
+    or raises before any API call. Builders use it for previously attempted
+    sources so corrupt or stale cache entries cannot silently trigger billing.
     """
     if include_facets is None:
         include_facets = bool(getattr(profile, "EXTRACT_FACETS", False))
     if not isinstance(include_facets, bool):
         raise TypeError("include_facets must be a bool or None")
+    single_source = bool(getattr(profile, "EXTRACT_SINGLE_SOURCE", False))
+    if single_source and (len(session.get("utterances", [])) != 1 or
+                          (session.get("utterance_groups") and
+                           session["utterance_groups"] != [session["utterances"]])):
+        raise ValueError("single-source extraction requires exactly one input line/group")
     extraction_response = _extract_facts_with_cache(
         vocabulary,
         profile,
@@ -287,7 +341,28 @@ def extract_facts(
         cache_dir,
         log,
         include_facets,
+        cache_only=cache_only,
+        response_format=response_format,
+        expected_prompt_sha256=expected_prompt_sha256,
     )
+    source_ids = {str(utterance[0]) for utterance in session["utterances"]}
+    if single_source or getattr(profile, "EXTRACT_STRICT_SOURCES", False):
+        for ordinal, fact in enumerate(extraction_response["facts"], 1):
+            if not isinstance(fact, dict) or not isinstance(fact.get("content"), str) or not fact["content"].strip():
+                raise RuntimeError(f"empty or malformed source fact {ordinal}; refusing silent drop")
+            # A sole input line establishes provenance without a model decision.
+            # If the model nevertheless supplied a pointer, do not repair it.
+            if single_source and "src" not in fact:
+                continue
+            pointers = fact.get("src")
+            if not isinstance(pointers, list) or not pointers or any(
+                    not isinstance(x, str) or x not in source_ids for x in pointers):
+                raise RuntimeError(f"invalid source pointer in fact {ordinal}; refusing silent drop or rewrite")
+    if getattr(profile, "EXTRACT_STRICT_TOPICS", False):
+        unresolved_topics = _validate_topic_references(vocabulary, extraction_response)
+        if unresolved_topics:
+            log("  native topic resolution omits unregistered auxiliary labels: "
+                + ", ".join(f"fact {ordinal}: {code!r}" for ordinal, code in unresolved_topics))
     proposed_parents = _register_topic_proposals(
         vocabulary, extraction_response.get("proposals"), session
     )
@@ -301,7 +376,6 @@ def extract_facts(
         if isinstance(raw_entity_types, dict)
         else {}
     )
-    source_ids = {str(utterance[0]) for utterance in session["utterances"]}
     allowed_events = {norm_code(event_type) for event_type in getattr(profile, "EVENTS", ()) or ()}
     facts = []
     for raw_fact in _model_array(extraction_response.get("facts")):
@@ -317,10 +391,24 @@ def extract_facts(
             source_ids,
             include_facets,
             allowed_events,
+            fixed_source_id=next(iter(source_ids)) if single_source else None,
         )
         if normalized_fact["content"] and normalized_fact["src"]:
             facts.append(normalized_fact)
     return facts
+
+
+def _render_extraction_tree(vocabulary, profile):
+    """Keep the bounded preview while exposing every existing root when opted in."""
+    tree = vocabulary.render_tree(max_lines=150)
+    if not getattr(profile, "EXTRACT_COMPLETE_ROOTS", False):
+        return tree
+    visible_roots = {line.removesuffix("?") for line in tree.splitlines()
+                     if line and not line[0].isspace()}
+    missing = [code + ("?" if topic.status == "candidate" else "")
+               for code, topic in sorted(vocabulary.topics.items())
+               if not topic.parents and topic.status != "deprecated" and code not in visible_roots]
+    return "\n".join([tree, *missing]) if missing else tree
 
 
 def _extract_facts_with_cache(
@@ -331,6 +419,10 @@ def _extract_facts_with_cache(
     cache_dir,
     log,
     include_facets,
+    *,
+    cache_only=False,
+    response_format=None,
+    expected_prompt_sha256=None,
 ):
     """Load or request raw extraction responses for every utterance group."""
     template = (
@@ -347,8 +439,11 @@ def _extract_facts_with_cache(
         )
         prompts.append(
             template.format(
-                tree=vocabulary.render_tree(max_lines=150),
-                entities=", ".join(sorted(vocabulary.entities)[:80]) or "(none)",
+                tree=_render_extraction_tree(vocabulary, profile),
+                entities=", ".join(_entity_preview_codes(
+                    vocabulary, session.get("title", "") + "\n" + conversation_text, 80,
+                    by_mention=getattr(profile, "ENTITY_PREVIEW_BY_MENTION", False),
+                )) or "(none)",
                 kinds="|".join(profile.KINDS),
                 events="|".join(getattr(profile, "EVENTS", ()) or ()) or "(none; use [])",
                 date=session["date"],
@@ -359,7 +454,14 @@ def _extract_facts_with_cache(
                 dialog=conversation_text,
             )
         )
+    if expected_prompt_sha256 is not None and (
+            len(prompts) != 1 or hashlib.sha256(prompts[0].encode()).hexdigest() != expected_prompt_sha256):
+        raise RuntimeError("format recovery requires the exact original prompt before any API call")
     cache_path = None
+    effort = getattr(profile, "EXTRACT_REASONING_EFFORT", None)
+    call_options = {"reasoning_effort": effort} if effort is not None else {}
+    if response_format is not None:
+        call_options["response_format"] = response_format
     if cache_dir:
         os.makedirs(cache_dir, exist_ok=True)
         supports_facet_ablation = hasattr(profile, "EXTRACT_PROMPT_NO_FACETS")
@@ -371,9 +473,15 @@ def _extract_facts_with_cache(
         # hit under an evolved vocabulary. Either hit returns Facts for bytes
         # the model never saw, and nothing downstream can detect that the
         # Codebook no longer matches the conversation it claims to describe.
-        fingerprint = hashlib.sha256(
-            "\x1f".join((model, _provider_cache_identity(), *prompts)).encode("utf-8")
-        ).hexdigest()[:12]
+        identity = [model, _provider_cache_identity(), *prompts]
+        if effort is not None:
+            # Different generation settings must never replay a medium response
+            # as non-reasoning extraction. Unconfigured legacy keys stay intact.
+            identity.append(json.dumps({"reasoning_effort": effort, "temperature": 0.0},
+                                       sort_keys=True))
+        if response_format is not None:
+            identity.append(json.dumps({"response_format": response_format}, sort_keys=True))
+        fingerprint = hashlib.sha256("\x1f".join(identity).encode("utf-8")).hexdigest()[:12]
         cache_path = os.path.join(cache_dir, f"{session['id']}{variant}.{fingerprint}.json")
         if os.path.exists(cache_path):
             try:
@@ -388,9 +496,20 @@ def _extract_facts_with_cache(
                 and isinstance(cached.get("entity_types"), dict)
             ):
                 return cached
+    if cache_only:
+        raise RuntimeError("exact extraction cache missing or invalid; cache-only mode forbids API calls")
     extraction_response = {"facts": [], "proposals": [], "entity_types": {}}
     for prompt in prompts:
-        response = llm_json(prompt, model=model)
+        response = llm_json(prompt, model=model, **call_options)
+        if (getattr(profile, "EXTRACT_STRICT_SOURCES", False) or
+                getattr(profile, "EXTRACT_SINGLE_SOURCE", False) or
+                getattr(profile, "EXTRACT_STRICT_TOPICS", False)) and not (
+                    isinstance(response.get("facts"), list) and
+                    isinstance(response.get("proposals"), list) and
+                    isinstance(response.get("entity_types"), dict)):
+            if cache_path:
+                _write_extraction_cache(cache_path, response)
+            raise RuntimeError("malformed extraction response; refusing an empty-success coercion")
         extraction_response["facts"].extend(_model_array(response.get("facts")))
         extraction_response["proposals"].extend(_model_array(response.get("proposals")))
         raw_types = response.get("entity_types")
@@ -403,20 +522,22 @@ def _extract_facts_with_cache(
         f"{len(extraction_response['proposals'])} topic proposals"
     )
     if cache_path:
-        descriptor, temporary_path = tempfile.mkstemp(
-            prefix=".extract-",
-            suffix=".tmp",
-            dir=os.path.dirname(cache_path),
-            text=True,
-        )
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                json.dump(extraction_response, stream, ensure_ascii=False)
-            os.replace(temporary_path, cache_path)
-        finally:
-            if os.path.exists(temporary_path):
-                os.unlink(temporary_path)
+        _write_extraction_cache(cache_path, extraction_response)
     return extraction_response
+
+
+def _write_extraction_cache(cache_path, response):
+    """Preserve a complete raw response, including invalid shapes, atomically."""
+    descriptor, temporary_path = tempfile.mkstemp(
+        prefix=".extract-", suffix=".tmp", dir=os.path.dirname(cache_path), text=True,
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(response, stream, ensure_ascii=False)
+        os.replace(temporary_path, cache_path)
+    finally:
+        if os.path.exists(temporary_path):
+            os.unlink(temporary_path)
 
 
 _XML_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\uFFFE\uFFFF]")

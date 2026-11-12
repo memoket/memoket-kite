@@ -1,0 +1,61 @@
+{
+  "id": "2wiki-shared-passage-date-evidence-v1-n1000",
+  "status": "frozen",
+  "frozen_at_utc": "2026-11-09T09:53:30+00:00",
+  "dataset": "2wikimultihopqa",
+  "evaluation_scope": "1,000 previously exposed development questions over the shared 6,119-passage bank",
+  "scoring": "2Wiki v1.1 aliases and demonyms, offline EM and token F1",
+  "metrics_percent": {
+    "em": 68.7,
+    "f1": 74.9752738927739
+  },
+  "previous_metrics_percent": {
+    "em": 67.4,
+    "f1": 73.6752738927739
+  },
+  "prediction_sources": {
+    "historical_v2": 891,
+    "date_evidence": 109
+  },
+  "em_changes": {
+    "gains": 14,
+    "losses": 1,
+    "lost_ordinal": 122
+  },
+  "vectors": false,
+  "answer_postprocessing": false,
+  "runtime_default_changed": false,
+  "predictions_and_scores": "artifacts/results/multihop/passage-answer-date-evidence-v1-pilot109/MERGED_SCORE_OFFLINE.json",
+  "reproduction": "Existing Compile and evidence. For the 109 gated inputs, add the source-derived date note and run gpt-4o-mini at temperature 0. Reuse frozen v2 predictions on the other 891. No independent validation or fresh full replay.",
+  "freeze_policy": "Use as the pinned 2Wiki reference. Leave these artifacts intact and use a separate version if 2Wiki is reopened.",
+  "sha256": {
+    "artifacts/results/multihop/passage-answer-date-evidence-v1-pilot109/REPORT.txt": "084643e6d92f99966c65b792498354901e9e0438eed6e34ac6c33170d5084d9c",
+    "artifacts/results/multihop/passage-answer-date-evidence-v1-pilot109/MERGED_SCORE_OFFLINE.json": "2b064701f970f9543cd157e5e881d07f79010433813f7569fc7ef0112ac33ac3",
+    "artifacts/results/multihop/passage-answer-date-evidence-v1-pilot109/SCORE_OFFLINE.json": "a856064845aa538ef0f533647afe369a52bb1b224f4bfc7289c39427af7aa5a9",
+    "artifacts/results/multihop/passage-answer-date-evidence-v1-pilot109/FREEZE.json": "79328322a7627f104fa9e5637748cd3bb7b6acf3f59dec034f598c495025f7de",
+    "artifacts/results/multihop/passage-answer-date-evidence-v1-pilot109/RESULTS.json": "5ecf7053e62a4c65c14da812b6eeb801f7ec4fd614c3999d65e36d0f7b168c44",
+    "artifacts/results/multihop/passage-answer-date-evidence-v1-pilot109/INPUT_MANIFEST.json": "cbf80a98012f7bfa09a9669a74237f56fad0c1fd574c4960b0ce039f3ce6d1a2",
+    "artifacts/results/multihop/passage-answer-date-evidence-v1-pilot109/ANSWER_PROMPT.txt": "3fc10e284f0726d8b650ca4badd55896b36c4b2945ca9dc75cbd72407a331f77",
+    "artifacts/results/multihop/passage-answer-date-evidence-v1-pilot109/date_evidence_calc.py": "543b9b8e61845c8e1fbbc47d2a0e543e88c404ad66d8c32e835168223050967c",
+    "artifacts/results/multihop/passage-answer-date-evidence-v1-pilot109/replay_gate.py": "31d750a55ebe3377e52d7193d1d10c71c204cd2b37eb6b565cd09d70999b76b7",
+    "artifacts/results/multihop/passage-answer-date-evidence-v1-pilot109/run_reader.py": "73074ea327cbab0938b474bd7a18e812b943791afa4d4738a026b6a5c340e7bd",
+    "artifacts/results/multihop/passage-answer-date-evidence-v1-pilot109/score_frozen.py": "f6d2f3e46a17bf016b60542069ebb5808bab5aae021c08393bd3707ae0042b6e",
+    "artifacts/results/multihop/passage-answer-date-evidence-v1-pilot109/merge_frozen_scores.py": "49bb7a4f6e4e02fd8e65a03acbc094fe3a6b48b2e8648395126a72dfe91af5bd",
+    "artifacts/results/multihop/passage-answer-choice-output-v2-n1000/FREEZE.json": "1e4e98283abc7494d8806051d20ba3f208c010fa8606c2219fd9fc0c7d438298",
+    "artifacts/results/multihop/passage-answer-choice-output-v2-n1000/RESULTS.json": "657dc0e9c9cf4bd9f41a384ecd1c9f863cc7a926a20c7ca65f88619c79050950",
+    "artifacts/results/multihop/passage-answer-choice-output-v2-n1000/SCORE_OFFLINE.json": "73bf4a5438ebcc603eda401efd974a5e37eaaa1e3b72743d8e400ea08a9afead",
+    "artifacts/results/multihop/passage-answer-choice-output-v2-n1000/INPUT_MANIFEST.json": "a493c466af16d099f2711e6fb5e2350c9857c80d9745866eb6626a240b6b2a77",
+    "artifacts/results/multihop/passage-terminal-subject-review-v1-n1000/QA_CONTRACT.json": "e2c192faf93e3cd15ef30eb8346f726fcfd2e8ed8db7db6b47386202ef012035",
+    "artifacts/results/multihop/passage-terminal-subject-review-v1-n1000/QUESTIONS.json": "635f38f74a47b37d4d1433b3f3c46b4a6af121df098d68f56fdbe628f86f2ea9",
+    "artifacts/results/multihop/passage-terminal-subject-review-v1-n1000/index/index.xml": "aec87aa50378e06b514cc118d2618d703c53f5ca443937ac8d0c1c5b421e07e7",
+    "artifacts/results/multihop/passage-terminal-subject-review-v1-n1000/qa/freeze.json": "da552960cf966df15f99687fdc8e4fa0662f9f755002bfda48ffb0917fb5d1d1",
+    "artifacts/results/multihop/passage-terminal-subject-review-v1-n1000/qa/predictions.jsonl": "2d34b60405ae9acfa4431c03dc682aa2703ae2054d4abe82b1f326f565eab22d",
+    "artifacts/results/multihop/passage-terminal-subject-review-v1-n1000/SCORING_ONLY_2WIKI_V1_1.py": "7c09ee2ec98c7ecb57df79eb68dba22eb381ab58d50e730dfcefafb4dda31458",
+    "artifacts/results/multihop/passage-answer-choice-output-v1-n1000-fill-six/FILL_CONTRACT.json": "43d99dd297f4cb7da92c3af6fdc96a7d3195ed2e7385d7de0dd6317dfe56c23b",
+    "artifacts/results/multihop/passage-answer-choice-output-v1-n1000-fill-six/QA_CONTRACT.json": "406969f5f9dd7895ddd52b7c3b26fbb54f465b5d09dea60c40c97e12d9df2c9e",
+    "artifacts/results/multihop/passage-answer-choice-output-v1-n1000-fill-six/FREEZE.json": "b5ab29043cf12b219d397826a5d0bb3add7f35958b75415accdd79d05280fa7e",
+    "artifacts/results/multihop/passage-answer-choice-output-v1-n1000-fill-six/RESULTS.json": "daed3dc2517e591cbe8f084c61b9332de06d23db257212ab2c6f8d7a2c8f1d78",
+    "artifacts/results/multihop/dev10-reextract/official-code-audit/SCORING_ONLY/id_aliases.jsonl": "f08ffcb6c2cefca9bdbe86b4248d6ad7a7743762d3f7264c14ff0bae85726fb6",
+    "artifacts/results/multihop/passage-answer-choice-output-v2-n1000/obvious-errors-audit/audit.py": "9d3b7fb1fa925b9b6aaed664d7d7f55ef647ba3ce0d1fd0d5673653c7a51f4be"
+  }
+}

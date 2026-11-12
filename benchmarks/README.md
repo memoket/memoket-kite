@@ -66,7 +66,72 @@ python -m benchmarks.locomo.score --help
 python -m benchmarks.longmemeval.build --help
 python -m benchmarks.longmemeval.evaluate --help
 python -m benchmarks.longmemeval.score --help
+
+python -m benchmarks.multihop.adapter --help
+python -m benchmarks.multihop.build --help
+python -m benchmarks.multihop.evaluate --help
+python -m benchmarks.multihop.score --help
 ```
+
+## Multihop document QA
+
+`multihop/` follows the same adapter/profile/protocol/build/evaluate/score layout
+for MuSiQue, HotpotQA and 2Wiki, with one shared encyclopedia profile. The route is
+strictly **one passage extraction → one compiled KITE plan → native evidence
+retrieval → one final answer**. Extraction and compilation use `gpt-6-luna`
+with medium reasoning; the reader uses `gpt-4o-mini` at temperature0.
+No additional model passes, candidate scoring, output repair, vectors or new
+query operators are enabled. The existing native normalization and evidence
+packing remain in use. Full prompts/responses/usage are recorded without headers.
+The shared multihop binding keeps the native registry preview limits (80 codes
+for extraction, 120 for compilation), but puts exact input mentions of existing
+codes, names or registered aliases first. This only selects prompt context;
+it does not invent aliases, merge entities, or expand the evidence search.
+Bindings without `ENTITY_PREVIEW_BY_MENTION` retain the original catalog order.
+Native entity retrieval also expands through associated object classes. That
+expands recall without merging identities; a retrieved candidate alone does not
+prove the requested relationship. The original class expansion is retained.
+An extraction failure is recorded in the Codebook manifest; its original source
+is retained with no fabricated facts. A previously attempted source with no
+complete native cache is not automatically sent again. Unknown in-flight usage
+stays unknown and a corpus with failures is explicitly marked incomplete.
+Each encyclopedia call has one input source line. The application binds that
+line to the native Fact `src`; the model does not generate a source identifier.
+Multi-line conversation bindings retain their original per-line citation path.
+Invalid facts or supplied source pointers stop this benchmark's build before
+later paid calls. Incomplete banks cannot be evaluated. CLI termination drains
+the current source response, then saves an incomplete checkpoint; resuming a
+control stop replays completed sources from exact native caches.
+
+Start with the authorized small connectivity check:
+
+```bash
+python -m benchmarks.multihop.adapter --tag smoke --smoke-questions 1
+python -m benchmarks.multihop.build --tag smoke --env-file /path/to/.env
+python -m benchmarks.multihop.evaluate --tag smoke --env-file /path/to/.env
+python -m benchmarks.multihop.score --tag smoke
+```
+
+The smoke corpus includes **all candidate passages and distractors** of the
+first official question per collection, deduplicated by exact title/text. It is
+a connectivity check, not a full-corpus benchmark. Full preparation instead uses
+the pinned official shared corpora (27,586 passages) and1,000 questions/collection:
+`python -m benchmarks.multihop.adapter --tag full`.
+Preparing data costs no model calls; do not launch a full extraction implicitly.
+
+Preparation writes separate corpus, question-only and reference files under
+`artifacts/datasets/multihop`. Build reads the corpus only. Evaluation reads only
+question IDs/text and the new Codebook; runtime guards block reference/raw QA
+reads. Score runs separately after all three prediction sets freeze and uses
+standard answer-normalized EM/token F1, never an LLM judge. These questions have
+already been exposed during development and must not be described as blind tests.
+
+Native stages pass document/date scope, not a dynamically inferred entity value.
+The prompt requests evidence for the entire relation chain using existing
+stages, topic closures, entities and facets. Unsupported references or invented
+bridge names are forbidden. Report the actual plan and evidence; stage count
+alone does not prove successful cross-entity multihop reasoning. The binding
+does not add an entity binder or graph traversal to conceal this limitation.
 
 LongMemEval's build profile explicitly enables two finalization stages after
 Fact extraction and topic/entity consolidation:
