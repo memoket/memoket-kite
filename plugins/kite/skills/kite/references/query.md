@@ -46,6 +46,9 @@ Pass the user's two questions together when they share a recording scope. For
 a subquestion with a named subject, search can reserve an original line that
 matches the name and a second clue. The saved search displays those clues and
 links to the original line.
+The current index can also use a directly linked topic or facet label together
+with original wording. The saved search shows the label, the matching wording
+and the recording for each such citation.
 Use times marked timezone unknown for within-day ordering only when the
 sources are known to use the same local clock. Keep ties and unknown order
 explicit in the answer.

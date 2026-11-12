@@ -93,7 +93,10 @@ def _search_snapshot(
             packs = [(question, result)]
             for candidate in result.get("packing_trace", {}).get("candidates", ()):
                 selection = candidate.get("selection", {})
-                if selection.get("reason") == "subquestion_clues" and candidate["quoted_lines"]:
+                if (
+                    selection.get("reason") in {"subquestion_clues", "subquestion_index"}
+                    and candidate["quoted_lines"]
+                ):
                     revision = revision_id({"checksum": candidate["revision_checksum"]})
                     line = f"{revision}L{candidate['start_offset'] + 1}"
                     subquestion_branches[line] = selection["term"]

@@ -8,7 +8,7 @@ import unicodedata
 from collections import defaultdict
 from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass, replace
-from itertools import islice
+from itertools import combinations, islice
 from math import log
 
 from .contracts import DATE, TEXT, ToolError, array, encode, object_schema, utc_timestamp, validate
@@ -24,6 +24,8 @@ _TEXT_SOURCE_COPIES = 8
 _FOLLOWUP_LINES = 3
 _SELECTIVE_SPANS = 4
 _SUBQUESTION_SPAN_LIMIT = 12
+_INDEXED_SCOPE_SPANS = 128
+_INDEXED_ROUTE_LIMIT = 8
 _CLAUSE_MATCH_LIMIT = 300
 _CLAUSE_SPAN_LIMIT = 1200
 _VERSION_CHANGE_SOURCE_LIMIT = 32
@@ -228,8 +230,12 @@ CONTEXT_REQUEST = {
 }
 _WORD_FORMS = array(object_schema({"query_term": TEXT, "indexed_term": TEXT}), 1, 8)
 _CHANGE_PHASES = array(TEXT, 2, 4)
+_INDEXED_ROUTE = object_schema({"labels": array(TEXT, 1, 2), "term": TEXT})
 _SUBQUESTIONS = array(
-    object_schema({"question": TEXT, "anchors": array(TEXT, 1, 2), "terms": array(TEXT, 1, 8)}),
+    object_schema(
+        {"question": TEXT, "anchors": array(TEXT, 0, 2), "terms": array(TEXT, 1, 8)},
+        {"indexed_routes": array(_INDEXED_ROUTE, 1, _INDEXED_ROUTE_LIMIT)},
+    ),
     1,
     2,
 )
@@ -578,9 +584,12 @@ def _compile_subquestions(index, request, question):
                 if match.group().casefold() not in _ENGLISH_FUNCTION_WORDS
             )
         )[:2]
-        if not anchors:
-            continue
         terms, _ = _compile_terms(index.db, index.filters, part)
+        indexed_routes = (
+            _compile_indexed_routes(index, part, terms) if index.history is None else []
+        )
+        if not (anchors or indexed_routes):
+            continue
         # Short words can identify a type of tool even when eight more
         # selective phrases outrank them in the ordinary question plan.
         words = (
@@ -592,8 +601,77 @@ def _compile_subquestions(index, request, question):
             and word not in _ENGLISH_FUNCTION_WORDS
         )
         clues = list(dict.fromkeys((*terms[:5], *words)))[:8]
-        result.append({"question": part, "anchors": anchors, "terms": clues})
+        result.append(
+            {
+                "question": part,
+                "anchors": anchors,
+                "terms": clues,
+                **({"indexed_routes": indexed_routes} if indexed_routes else {}),
+            }
+        )
     return result
+
+
+def _label_expression(labels):
+    return "labels : (" + " AND ".join(f'"{label}"' for label in labels) + ")"
+
+
+def _compile_indexed_routes(index, question, terms):
+    where, args = _search_scope(index.filters)
+    labels = []
+    for term in terms:
+        tokens = _tokens(term)
+        if (
+            tokens
+            and index.db.execute(
+                f"SELECT 1 FROM context_spans WHERE {where} LIMIT 1",
+                (_label_expression((tokens,)), *args),
+            ).fetchone()
+        ):
+            labels.append((term, tokens))
+        if len(labels) == 4:
+            break
+    if not labels:
+        return []
+    raw = {
+        tokens: term
+        for term in islice(dict.fromkeys(_question_phrases(question)), 96)
+        if (tokens := _tokens(term))
+    }
+    frequencies = {}
+    routes = []
+    pairs = [
+        (left, right)
+        for left, right in combinations(labels, 2)
+        if not set(left[1].split()).intersection(right[1].split())
+    ]
+    for group in [*pairs, *((label,) for label in labels if len(label[1].split()) >= 2)]:
+        terms, encoded = zip(*group, strict=True)
+        rows = index.db.execute(
+            f"SELECT text FROM context_spans WHERE {where} LIMIT ?",
+            (_label_expression(encoded), *args, _INDEXED_SCOPE_SPANS + 1),
+        ).fetchall()
+        if not 0 < len(rows) <= _INDEXED_SCOPE_SPANS:
+            continue
+        label_words = set(" ".join(encoded).split())
+        originals = [f" {row['text']} " for row in rows]
+        for tokens, term in raw.items():
+            if label_words.intersection(tokens.split()) or not any(
+                f" {tokens} " in text for text in originals
+            ):
+                continue
+            if tokens not in frequencies:
+                frequencies[tokens] = index.db.execute(
+                    f"SELECT count(*) FROM (SELECT rowid FROM context_spans WHERE {where} LIMIT ?)",
+                    (f'text : "{tokens}"', *args, _INDEXED_SCOPE_SPANS + 1),
+                ).fetchone()[0]
+            count = frequencies[tokens]
+            if 0 < count <= _INDEXED_SCOPE_SPANS:
+                routes.append((count, -len(tokens.split()), -len(group), terms, term))
+    return [
+        {"labels": list(labels), "term": term}
+        for _, _, _, labels, term in sorted(routes)[:_INDEXED_ROUTE_LIMIT]
+    ]
 
 
 def compile_question(workspace, request: dict) -> dict:
@@ -1343,6 +1421,87 @@ def _subquestion_evidence(workspace, index, subquestions, max_bytes):
                 )
                 break
     return list(selected.values())
+
+
+def _matching_index_labels(record, segment_id, labels):
+    for annotation in record.get("index_spans", ()):
+        if segment_id not in annotation["segment_ids"]:
+            continue
+        names = [*annotation["topics"], *annotation["entities"]]
+        for value in annotation.get("facets", {}).values():
+            names.extend([value] if isinstance(value, str) else value)
+        tokens = [(name, _tokens(name)) for name in names]
+        if len(labels) == 1:
+            matches = [name for name, text in tokens if labels[0] == text]
+        else:
+            matches = [
+                next((name for name, text in tokens if f" {label} " in f" {text} "), None)
+                for label in labels
+            ]
+        if matches and all(matches):
+            return list(dict.fromkeys(matches))
+    return []
+
+
+def _indexed_subquestion_evidence(workspace, index, part, leading, budget):
+    where, args = _search_scope(index.filters)
+    records = {}
+    for route in part.get("indexed_routes", ()):
+        labels = tuple(map(_tokens, route["labels"]))
+        term = _tokens(route["term"])
+        if not term or not all(labels):
+            continue
+        rows = index.db.execute(
+            f"SELECT checksum, start, stop, day FROM context_spans WHERE {where} LIMIT ?",
+            (
+                f'{_label_expression(labels)} AND text : "{term}"',
+                *args,
+                _SUBQUESTION_SPAN_LIMIT + 1,
+            ),
+        ).fetchall()
+        if not 0 < len(rows) <= _SUBQUESTION_SPAN_LIMIT:
+            continue
+        matches = []
+        for row in rows:
+            checksum = row["checksum"]
+            if checksum not in records:
+                records[checksum] = workspace.record(checksum)
+            record = records[checksum]
+            segments = record["conversation"]["segments"]
+            if not 0 <= row["start"] < row["stop"] <= len(segments):
+                raise ToolError(
+                    "integrity_error", "context index does not match its source revision"
+                )
+            for pos in range(row["start"], row["stop"]):
+                segment = segments[pos]
+                original = f" {_tokens(segment['text'])} "
+                if f" {term} " not in original or all(f" {label} " in original for label in labels):
+                    continue
+                if tagged := _matching_index_labels(record, segment["segment_id"], labels):
+                    matches.append((row, pos, tagged, len(segment["text"].encode("utf-8"))))
+        if not 0 < len(matches) <= 2:
+            continue
+        uncovered = [match for match in matches if match[0]["checksum"] not in leading]
+        if not uncovered or sum(match[3] for match in uncovered) > budget:
+            continue
+        return [
+            {
+                **dict(row),
+                "start": pos,
+                "stop": pos + 1,
+                "direct_positions": [pos],
+                "selection": {
+                    "reason": "subquestion_index",
+                    "term": part["question"],
+                    "clues": [route["term"]],
+                    "labels": tagged,
+                },
+            }
+            for row, pos, tagged, _ in sorted(
+                uncovered, key=lambda match: (match[0]["day"], match[0]["checksum"], match[1])
+            )
+        ]
+    return []
 
 
 def _schedule_followup(workspace, index, plan, rows, limit, line_budget):
@@ -2371,7 +2530,18 @@ def _context_evidence(
                 leading = candidates.pop(0)
                 candidates.insert(first + len(reserved_clauses) - 1, leading)
         if subquestions and not (preferred or reserved_clauses or followup):
-            candidates[:0] = _subquestion_evidence(workspace, index, subquestions, max_bytes)
+            named = _subquestion_evidence(workspace, index, subquestions, max_bytes)
+            covered = {row["selection"]["term"] for row in named}
+            leading = {row["checksum"] for row in (*named, *candidates[:limit])}
+            indexed = []
+            for part in subquestions:
+                if part["question"] not in covered:
+                    indexed = _indexed_subquestion_evidence(
+                        workspace, index, part, leading, max_bytes // 3
+                    )
+                    if indexed:
+                        break
+            candidates[:0] = [*indexed[: max(0, limit - len(named) - 1)], *named]
         if other_records is not None and not (
             change_phases or reserved_clauses or followup or matching_lines or plan.get("latest")
         ):

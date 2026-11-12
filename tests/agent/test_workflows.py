@@ -6059,6 +6059,64 @@ def test_context_reserves_distinct_named_subquestion_lines_in_one_pack(work):
     )
 
 
+def test_context_uses_index_labels_only_for_their_linked_original_lines(work):
+    directory, call = work
+    labels = {
+        "topics": ["returns routing"],
+        "facets": {"event": ["shift checklist"]},
+    }
+    tagged = text_input("warehouse", "Start with the amber kit and the green card.")["source"]
+    indexed = {
+        "source": tagged,
+        "annotations": {"facts": [], "index_spans": [{**labels, "segment_ids": ["text-1"]}]},
+    }
+    adjacent = {
+        "source": {
+            "format": "conversation",
+            "payload": {
+                "source": "text",
+                "conversation_id": "adjacent",
+                "metadata": {"source_reference": "adjacent"},
+                "segments": [
+                    {"segment_id": "tagged", "text": "Record the status."},
+                    {"segment_id": "untagged", "text": "Start with the wrong carton."},
+                ],
+            },
+        },
+        "annotations": {"facts": [], "index_spans": [{**labels, "segment_ids": ["tagged"]}]},
+    }
+    entries = [indexed, adjacent]
+    for number in range(8):
+        entries.append(
+            {
+                "source": text_input(
+                    f"discussion-{number}",
+                    f"Returns routing and the shift checklist came up in meeting {number}. "
+                    "We need to decide what to start with.",
+                )["source"]
+            }
+        )
+    entries.append({"source": text_input("tool", "Lotus used the Switchboard app.")["source"]})
+    version = call("index-sources", payload={"sources": entries})["memory_version"]
+    question = "For returns routing, what do we start with on the shift checklist? Which app did Lotus use?"
+    pack = call(
+        "context", "--question", question, "--limit", "3", "--explain", "--save", "indexed-clues"
+    )
+    selected = [
+        row
+        for row in pack["packing_trace"]["candidates"]
+        if row.get("selection", {}).get("reason") == "subquestion_index"
+    ]
+    assert [row["conversation_id"] for row in selected] == ["warehouse"]
+    assert set(selected[0]["selection"]["labels"]) & {"returns_routing", "shift_checklist"}
+    assert selected[0]["reason"] == "quoted"
+    assert pack["quote_bytes"] <= pack["quote_budget_bytes"]
+    graph = viewer._snapshot(directory, [], run_id="indexed-clues")
+    assert selected[0]["selection"]["term"] in graph["search_subquestion_branches"]
+    historical = call("context", "--question", question, "--at-version", str(version), "--explain")
+    assert not any(part.get("indexed_routes") for part in historical["compilation"]["subquestions"])
+
+
 def test_context_matching_lines_checks_the_original_segment_and_saved_plan(work):
     directory, call = work
     sources = []

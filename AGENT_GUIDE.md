@@ -101,6 +101,10 @@ Pass two questions together when they share a recording scope. The compile
 stage can identify named subquestions. The search can reserve an original
 line where the name and another clue match together. Use `--explain --save`
 to see the matched clues and open the original line in the graph.
+For current memory, a topic or facet can also point to a directly annotated
+line that matches a separate search phrase. This helps when the question
+uses the index wording and the recording uses a different term. The graph
+shows the annotation alongside the original wording used in retrieval.
 For a side-by-side result, use `--question "$FIRST" --compare-with "$SECOND"`.
 The two searches share the workspace snapshot and total quote budget.
 Recording dates are shared by default. Use `--compare-start-date` and

@@ -48,11 +48,13 @@
         focused_color: 'Original color statement for the named subject',
         change_subquestion: 'Original evidence selected for this subquestion',
         subquestion_clues: 'Name and another clue match the same original line',
+        subquestion_index: 'A cited index label and original wording locate this line',
         change_phase: 'Original evidence selected for this phase of the question',
         version_evidence: 'Original line is missing or differs in the other snapshot',
       },
       changePhases: 'Phases in the question',
-      subquestions: 'Subquestions with named clues',
+      subquestions: 'Subquestions in the search plan',
+      indexLabels: 'Index labels',
       sameTextSources: 'Sources with the same transcript text',
       duplicateLines: 'duplicate lines reused',
       packingReasons: { quoted: 'Quoted', span_limit: 'Span limit reached', quote_budget: 'Quote budget', duplicate_text: 'Text already quoted from another source',
@@ -122,11 +124,13 @@
         focused_color: '主题相关的颜色原文',
         change_subquestion: '为这个子问题选取的原文',
         subquestion_clues: '名称和另一条线索命中同一行原文',
+        subquestion_index: '索引标签和原文措辞定位这一行',
         change_phase: '为问题中这个阶段选取的原文',
         version_evidence: '该原文在对照版本中缺失或措辞不同',
       },
       changePhases: '问题中的阶段',
-      subquestions: '含名称线索的子问题',
+      subquestions: '检索计划中的子问题',
+      indexLabels: '索引标签',
       sameTextSources: '原文相同的来源',
       duplicateLines: '行重复原文已共用',
       packingReasons: { quoted: '已引用', span_limit: '片段数已达上限', quote_budget: '引文预算不足', duplicate_text: '已引用其他来源中的相同原文',
@@ -957,6 +961,9 @@
       }
       if (candidate.selection) {
         status.push(t('recordingSelection')[candidate.selection.reason] + ' · ' + candidate.selection.term);
+        if (candidate.selection.labels?.length) {
+          status.push(t('indexLabels') + ' · ' + candidate.selection.labels.join(' / '));
+        }
         if (candidate.selection.clues?.length) status.push(candidate.selection.clues.join(' / '));
       }
       if (candidate.quoted_lines) status.push(`${number.format(candidate.quoted_lines)} ${t('quotes')}`);
@@ -1095,7 +1102,9 @@
         if (stats.subquestions?.length) {
           const list = element('ul');
           for (const part of stats.subquestions) {
-            list.append(element('li', `${part.question} · ${part.anchors.join(' / ')}`));
+            const labels = [...new Set((part.indexed_routes || []).flatMap(route => route.labels))];
+            const item = [part.question, part.anchors.join(' / '), labels.length ? `${t('indexLabels')} ${labels.join(' / ')}` : ''];
+            list.append(element('li', item.filter(Boolean).join(' · ')));
           }
           trace.append(element('h4', t('subquestions')), list);
         }

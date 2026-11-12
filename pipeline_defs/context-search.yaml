@@ -1,5 +1,5 @@
 id: context-search
-version: 4
+version: 5
 description: Search cited original passages, including the same question across two workspace versions.
 inputs:
   request: context_request
@@ -11,7 +11,7 @@ stages:
     inputs:
       request: input.request
     output: context_plan
-    acceptance: Search phrases and any named subquestions are bound to the selected workspace snapshot or comparison snapshots.
+    acceptance: Search phrases and any subquestion index routes are bound to the selected workspace snapshot or comparison snapshots.
   - id: search
     skill: skills/memory/context-search/SKILL.md
     tool: search_context
@@ -19,4 +19,4 @@ stages:
     inputs:
       compiled: stage.compile
     output: context_evidence
-    acceptance: The search returns cited passages within the shared context budget and can reserve original evidence for a named subquestion.
+    acceptance: The search returns cited passages within the shared context budget and checks that any reserved original lines support the search clues.

@@ -8,6 +8,10 @@ Pass two questions together when the user gave them as one request. The
 compiler can keep named subquestions and the search can reserve a line when a
 name and another clue identify it within the recording window. Inspect the
 returned original line before using it to answer a subquestion.
+When a subquestion uses a topic or facet label, the current index can pair
+that label with a separate phrase in an original line. Inspect both in a saved
+search. Cite the original line to support the answer and use the label to
+explain how the source was found.
 For a side-by-side result, use `--question "$FIRST" --compare-with "$SECOND"`.
 Give each question the subject it refers to. Both use one workspace snapshot
 and share the quote and span budget. If the questions refer to different
