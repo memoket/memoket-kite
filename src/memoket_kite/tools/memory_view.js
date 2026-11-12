@@ -58,6 +58,7 @@
       indexLabels: 'Index labels',
       sameTextSources: 'Sources with the same transcript text',
       duplicateLines: 'duplicate lines reused',
+      trimmedLines: 'outer lines trimmed',
       packingReasons: { quoted: 'Quoted', span_limit: 'Span limit reached', quote_budget: 'Quote budget', duplicate_text: 'Text already quoted from another source',
         already_quoted: 'Already quoted', no_matching_line: 'No matching original line' },
       sourceScope: 'Source scope', allSources: 'Search all sources',
@@ -135,6 +136,7 @@
       indexLabels: '索引标签',
       sameTextSources: '原文相同的来源',
       duplicateLines: '行重复原文已共用',
+      trimmedLines: '行外围原文已精简',
       packingReasons: { quoted: '已引用', span_limit: '片段数已达上限', quote_budget: '引文预算不足', duplicate_text: '已引用其他来源中的相同原文',
         already_quoted: '已在前面引用', no_matching_line: '原文行无完整命中' },
       sourceScope: '限定来源', allSources: '搜索全部来源',
@@ -970,6 +972,7 @@
       }
       if (candidate.quoted_lines) status.push(`${number.format(candidate.quoted_lines)} ${t('quotes')}`);
       if (candidate.duplicate_lines) status.push(`${number.format(candidate.duplicate_lines)} ${t('duplicateLines')}`);
+      if (candidate.trimmed_lines) status.push(`${number.format(candidate.trimmed_lines)} ${t('trimmedLines')}`);
       if (candidate.reason === 'quoted' && candidate.lines_over_budget) {
         status.push(`${t('packingReasons').quote_budget} ${number.format(candidate.lines_over_budget)}`);
       }
@@ -1121,6 +1124,7 @@
           number.format(stats.quotes) + ' ' + t('quotes'),
           stats.followup_quotes ? number.format(stats.followup_quotes) + ' ' + t('followupQuotes') : null,
           stats.shared_quotes ? number.format(stats.shared_quotes) + ' ' + t('sharedQuotes') : null,
+          stats.trimmed_lines ? number.format(stats.trimmed_lines) + ' ' + t('trimmedLines') : null,
           number.format(stats.quote_bytes) + ' ' + t('quoteBytes')].filter(Boolean).join(' · ')));
       if (stats.packing?.length) {
         for (const packing of stats.packing) {

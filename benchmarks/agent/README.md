@@ -198,6 +198,8 @@ the isolated Codex invocation and leaves user configuration alone.
 `source_context_bytes` includes all context delivered by the hook as well as
 source tool output. End-to-end time includes hook execution. The report keeps
 the number of successful hook deliveries and the adapter's SHA-256.
+Pass `--baseline-submit-adapter PATH` with that option to compare the current
+hook against a trusted earlier adapter on identical prompts and evidence sources.
 
 The output preserves both implementations, hidden acceptance results, prompt
 and source digests, model usage, command output and wall time. Source tool

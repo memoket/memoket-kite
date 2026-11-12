@@ -230,6 +230,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     context.add_argument("--limit", type=int, help="maximum matched spans")
     context.add_argument("--max-bytes", type=int, help="original quote byte budget")
+    context.add_argument(
+        "--compact", action="store_true", help="trim outer neighboring lines in question evidence"
+    )
     context.add_argument("--neighbors", type=int, help="adjacent turns on either side (default 1)")
     context.add_argument(
         "--text", action="store_true", help="compact original quotes and citation IDs"
@@ -765,6 +768,8 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             return commit_batch(context, records, repairs), None
 
     if args.command == "context":
+        if args.compact and args.question is None:
+            raise ToolError("invalid_input", "compact context requires a question")
         if args.question is None and (
             args.compare_with is not None or args.from_version is not None
         ):
@@ -806,6 +811,8 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 request["terms"] = args.term
             else:
                 request["question"] = args.question
+                if args.compact:
+                    request["compact"] = True
             if args.max_bytes is not None:
                 request["max_bytes"] = args.max_bytes
             if args.from_version is not None:

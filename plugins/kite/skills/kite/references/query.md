@@ -1,5 +1,10 @@
 ## Query memory
 
+Add `--compact` to a question to keep the leading evidence and trim outer
+lines in later passages. The submit hook uses this option. Add
+`--explain --save` to show which passages were trimmed and open the cited
+original lines. Run a focused lookup when you need surrounding context.
+
 For changes to a single transcript, run `source-history SOURCE ID` to find
 the baseline checksum, then `source-compare BEFORE --text` for changed original
 lines. The two revision checksums identify the exact evidence versions.

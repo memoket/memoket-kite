@@ -6165,6 +6165,57 @@ def test_context_explains_packing_without_adding_unquoted_text(work):
         viewer._snapshot(directory, [], run_id="packing")
 
 
+def test_compact_context_preserves_matches_and_records_trimmed_neighbors(work):
+    directory, call = work
+    sources = [
+        {
+            "source": {
+                "format": "conversation",
+                "payload": {
+                    "source": "text",
+                    "conversation_id": identity,
+                    "metadata": {"source_reference": identity},
+                    "segments": [
+                        {"segment_id": "head", "text": "Introduction."},
+                        {"segment_id": "hit", "text": f"Amber support for the {identity} filter."},
+                        {"segment_id": "tail", "text": "Appendix."},
+                    ],
+                },
+            }
+        }
+        for identity in ("first", "second", "third")
+    ]
+    call("index-sources", payload={"sources": sources})
+    args = ("context", "--question", "What does amber support?", "--explain")
+    ordinary = call(*args)
+    compact = call(*args, "--compact", "--save", "compact")
+    assert compact["spans"][:2] == ordinary["spans"][:2]
+    assert [line["segment_id"] for line in compact["spans"][2]["evidence"]] == ["hit"]
+    assert compact["trimmed_lines"] == 2
+    assert compact["quote_bytes"] == ordinary["quote_bytes"] - len(b"Introduction.Appendix.")
+    snapshot = viewer._snapshot(directory, [], run_id="compact")
+    trace = snapshot["search_trace"]
+    assert trace["trimmed_lines"] == 2
+    assert trace["packing"][0]["candidates"][2]["trimmed_lines"] == 2
+    assert trace["packing"][0]["candidates"][2]["quoted_lines"] == 1
+    dates = ("context", "--question", "What dates does amber support?")
+    assert call(*dates)["spans"] == call(*dates, "--compact")["spans"]
+    duplicate = sources[0]["source"]["payload"]
+    repeated = "Orchid policy " + "retains its exact wording and original source. " * 4
+    duplicate.update(
+        conversation_id="repeat",
+        metadata={"source_reference": "repeat"},
+        segments=[
+            {"segment_id": "line-1", "text": repeated},
+            {"segment_id": "line-2", "text": repeated},
+        ],
+    )
+    call("index-sources", payload={"sources": [sources[0]]})
+    rendered = call("context", "--question", "orchid policy", "--compact", "--text")
+    assert rendered.count(repeated) == 1
+    assert "[repeat#line-2] (same text as repeat#line-1)" in rendered
+
+
 def test_context_reserves_distinct_named_subquestion_lines_in_one_pack(work):
     directory, call = work
     entries = (

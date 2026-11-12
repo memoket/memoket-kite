@@ -85,7 +85,8 @@ KITE: What did we decide about rollout and who owns the handoff?
 Update the release checklist and cite the original discussion.
 ```
 
-The hook searches the current project's KITE workspace locally. It includes
+The hook searches the current project's KITE workspace locally with
+`context --compact`. It includes
 the resulting original quotes and citations in Codex's model input for that
 turn. Prompts without the
 prefix continue without searching KITE. Empty or unavailable lookups also let

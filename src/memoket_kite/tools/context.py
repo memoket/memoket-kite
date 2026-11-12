@@ -232,6 +232,7 @@ CONTEXT_REQUEST = {
             "limit": {"type": "integer", "minimum": 1, "maximum": 50},
             "max_bytes": {"type": "integer", "minimum": 512, "maximum": 65536},
             "neighbors": {"type": "integer", "minimum": 0, "maximum": 5},
+            "compact": {"type": "boolean"},
         },
     ),
     "oneOf": [{"required": ["question"]}, {"required": ["terms"]}],
@@ -522,6 +523,8 @@ def _context_scope(request: dict) -> tuple[dict, str | None, str | None]:
     if "terms" in request:
         if "compare_with" in request or "from_version" in request:
             raise ToolError("invalid_input", "a comparison requires a question")
+        if request.get("compact"):
+            raise ToolError("invalid_input", "compact context requires a question")
         return request, None, None
     request, search = _question_scope(request)
     compare = request.get("compare_with")
@@ -767,6 +770,7 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
                 if version_comparison
                 else None
             ),
+            compact_context=bool(request.get("compact") and compare_terms is None),
         )
         if question is not None:
             result["compilation"] = {"question": question, "terms": terms}
@@ -2038,6 +2042,7 @@ def _pack(
     prioritize_first_lines: bool = False,
     reuse_identical_text: bool = False,
     repeated: dict[str, str] | None = None,
+    trim_neighbors: bool = False,
 ):
     compact_sources = compact_sources or {}
     compact_copies = compact_copies or {}
@@ -2158,7 +2163,7 @@ def _pack(
             if duplicates:
                 traced[index]["duplicate_lines"] = duplicates
         if chosen:
-            packed.append((record, chosen, followup))
+            packed.append((index, record, chosen, followup))
             if prioritize_first_lines:
                 remaining.append((index, checksum, segments, positions, chosen))
     for index, checksum, segments, positions, chosen in remaining:
@@ -2173,9 +2178,27 @@ def _pack(
                     traced[index].get("duplicate_lines", 0) + duplicates
                 )
     spans = []
-    for record, chosen, followup in packed:
+    trimmed_lines = 0
+    for index, record, chosen, followup in packed:
         conversation = record["conversation"]
         segments = conversation["segments"]
+        chosen.sort()
+        if trim_neighbors and len(spans) >= 2 and len(chosen) > 1 and followup is None:
+            texts = (f" {_tokens(segments[pos]['text'])} " for pos in chosen)
+            hits = [
+                offset
+                for offset, text in enumerate(texts)
+                if any(phrase in text for phrase in phrases)
+            ]
+            if hits:
+                start, stop = hits[0], hits[-1] + 1
+                removed = chosen[:start] + chosen[stop:]
+                chosen = chosen[start:stop]
+                if removed:
+                    size -= sum(len(segments[pos]["text"].encode("utf-8")) for pos in removed)
+                    trimmed_lines += len(removed)
+                    if index < len(traced):
+                        traced[index].update(quoted_lines=len(chosen), trimmed_lines=len(removed))
         revision = revision_id(record)
         group = group_by_checksum.get(record["checksum"])
         copies = list(compact_copies.get(record["checksum"], ()))
@@ -2206,12 +2229,11 @@ def _pack(
                 ),
                 **followup_quote,
                 "evidence": [
-                    _citation(record, f"{revision}L{pos + 1}", segments[pos])
-                    for pos in sorted(chosen)
+                    _citation(record, f"{revision}L{pos + 1}", segments[pos]) for pos in chosen
                 ],
             }
         )
-    return spans, size, omitted
+    return spans, size, omitted, trimmed_lines
 
 
 def context_pack(
@@ -2513,6 +2535,7 @@ def _context_evidence(
     reserve_change_phases=False,
     earlier_snapshot=False,
     other_records=None,
+    compact_context=False,
 ):
     validate(_CONTEXT_SCHEMA, plan, "context plan")
     if not any(map(_tokens, plan["terms"])):
@@ -2704,7 +2727,30 @@ def _context_evidence(
             or (reserve_change_phases and bool(followup or reserved_clauses))
             or selected_version is not None
         )
-        spans, size, omitted = _pack(
+        trim_neighbors = (
+            compact_context
+            and neighbors == 1
+            and _question
+            and not (
+                index.history
+                or compact
+                or preferred
+                or anchors
+                or matching_lines
+                or plan.get("latest")
+            )
+            and not any(
+                pattern.search(_question)
+                for pattern in (
+                    _SCHEDULE_QUESTION,
+                    _SCHEDULE_SEQUENCE,
+                    _EARLIER_PHASE,
+                    _LATER_PHASE,
+                )
+            )
+            and not _quoted_phrases(_question)
+        )
+        spans, size, omitted, trimmed_lines = _pack(
             workspace,
             candidates,
             limit,
@@ -2720,6 +2766,7 @@ def _context_evidence(
             prioritize_first_lines=first_lines,
             reuse_identical_text=focus and not (matching_lines or plan.get("latest")),
             repeated=repeated,
+            trim_neighbors=bool(trim_neighbors),
         )
         if trace is not None:
             _trace_sources(workspace, trace)
@@ -2754,6 +2801,7 @@ def _context_evidence(
         "candidate_spans": len(candidates),
         "candidate_sources": len({row["checksum"] for row in candidates}),
         "span_limit": limit,
+        **({"compact": True, "trimmed_lines": trimmed_lines} if compact_context else {}),
         **({"first_lines_prioritized": True} if first_lines else {}),
         **({"version_evidence": version_quote} if version_quote else {}),
         **({"phase_evidence": phase_evidence} if phase_evidence else {}),
@@ -2867,6 +2915,12 @@ def render_context(pack: dict) -> str:
                         reference = f" (quoted in Question {earlier})"
                     if earlier < number and len(reference.encode()) < len(quote.encode()):
                         quote = reference
+                elif pack.get("compact") and not history:
+                    earlier = first_quote.setdefault((revision, quote), ref)
+                    if earlier != ref:
+                        reference = f" (same text as {earlier})"
+                        if len(reference.encode()) < len(quote.encode()):
+                            quote = reference
                 lines.append(f"[{ref}]{quote}")
             lines.append("")
         if not part["spans"]:

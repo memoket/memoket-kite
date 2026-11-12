@@ -28,7 +28,7 @@ def prepare_context(event, launcher):
     question = match[1].strip()
     try:
         search = subprocess.run(
-            [str(launcher), "context", "--text", f"--question={question}"],
+            [str(launcher), "context", "--text", f"--question={question}", "--compact"],
             cwd=cwd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,

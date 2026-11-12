@@ -68,6 +68,11 @@ same search and limit to continue the listing at the same memory version.
 For original-text tasks, run `kite-tool context --question "$QUESTION" --text`.
 It compiles the task and returns cited passages in one local call. Use
 `context-search` if you need separate, saved compile and search stages.
+For a smaller question pack, add `--compact`. It keeps the first two passages
+intact and can omit outer lines around matches in later passages. Dated or
+sequenced questions, quoted searches and version comparisons retain their
+surrounding context. Use `--compact --explain --save` to inspect the resulting
+citations and see which candidates had outer lines trimmed.
 For an implementation request with questions about the original decision,
 pass the request as written. The graph shows the wording used for retrieval
 when the compiler keeps the task subject with its questions.

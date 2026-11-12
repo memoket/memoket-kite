@@ -266,6 +266,11 @@ def _search_snapshot(
             if question and not comparison
             else 0,
             "quote_bytes": sum(pack["quote_bytes"] for _, pack in packs),
+            **(
+                {"trimmed_lines": packs[0][1]["trimmed_lines"]}
+                if packs[0][1].get("trimmed_lines")
+                else {}
+            ),
             "sources": len(sources),
             "quotes": len(evidence),
             "followup_quotes": sum(bool(line.get("followup_terms")) for line in evidence.values()),
