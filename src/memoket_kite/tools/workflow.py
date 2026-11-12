@@ -676,7 +676,7 @@ def committed_topic_merge(workspace, version: int) -> dict | None:
             validate(SCHEMAS["reclassify"], merge, "stored topic merge")
             return {
                 **merge,
-                "current_topic": workspace.index().vocab.resolve_topic(merge["to_topic"]),
+                "current_topic": workspace.vocabulary().resolve_topic(merge["to_topic"]),
             }
     return None
 

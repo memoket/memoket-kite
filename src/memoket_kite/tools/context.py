@@ -11,7 +11,17 @@ from dataclasses import dataclass, replace
 from itertools import combinations, islice
 from math import log
 
-from .contracts import DATE, TEXT, ToolError, array, encode, object_schema, utc_timestamp, validate
+from .contracts import (
+    DATE,
+    ID,
+    TEXT,
+    ToolError,
+    array,
+    encode,
+    object_schema,
+    utc_timestamp,
+    validate,
+)
 from .index import SPAN_FACET_AXES, revision_id, source_key
 from .ingest import RECORDING_CLOCK_FIELDS, source_day
 from .retrieve import _citation
@@ -49,6 +59,15 @@ _CURRENT_PLAN_TASK = re.compile(
     r"|^(?:please\s+)?(?:prepare|update|set up|carry out)\s+"
     r"(?P<en>[^\n.!?;,]{2,100}?)\s+(?:using|based on|according to)\s+"
     r"(?:the\s+)?(?:latest|most recent)\s+(?:confirmed|approved)\s+(?:plan|schedule)\b",
+    re.I,
+)
+_REVISED_SCHEDULE_TASK = re.compile(
+    r"^(?:请\s*)?按(?:照)?(?:会议(?:纪要|记录)?|纪要|原文|讨论)\s*(?:更新|实现|整理|准备)\s*"
+    r"(?P<zh>[^，,。！？!?；;\n]{2,100})[，,]\s*(?:保留|对照|对比|追踪)"
+    r"|^(?:please\s+)?(?:update|implement|prepare|document|revise)\s+"
+    r"(?P<en>[^,;\n?.!]{2,100}?)\s+(?:from|using|based on|according to)\s+"
+    r"(?:the\s+)?(?:meeting\s+notes|minutes|transcripts?|recordings?|discussion)\s*[,;]\s*"
+    r"(?:retain\w*|keep\w*|preserv\w*|compar\w*|trac\w*)\b",
     re.I,
 )
 _EARLIER_PLAN_WORDS = (
@@ -258,6 +277,7 @@ CONTEXT_REQUEST = {
             "max_bytes": {"type": "integer", "minimum": 512, "maximum": 65536},
             "neighbors": {"type": "integer", "minimum": 0, "maximum": 5},
             "compact": {"type": "boolean"},
+            "after": ID,
         },
     ),
     "oneOf": [{"required": ["question"]}, {"required": ["terms"]}],
@@ -583,6 +603,15 @@ def _compile_questions(workspace, indexes, request, search, compare_search):
             task = _CURRENT_PLAN_TASK.match(search)
             if task and (subject := (task["zh"] or task["en"]).strip()):
                 current_plan_subject = search = subject
+            elif task := _REVISED_SCHEDULE_TASK.match(search):
+                subject = (task["zh"] or task["en"]).strip()
+                earlier = _EARLIER_PHASE.search(search, task.end())
+                if (
+                    _SCHEDULE_QUESTION.search(subject)
+                    and earlier
+                    and _LATER_PHASE.search(search, earlier.end())
+                ):
+                    current_plan_subject = subject
     terms, forms = (
         (request["terms"], [])
         if search is None
@@ -649,16 +678,19 @@ def _question_anchors(text):
 
 
 def _compile_subquestions(index, request, question):
-    if (
-        request.get("latest")
-        or request.get("matching_lines")
-        or request.get("limit", 8) < 3
-        or _quoted_phrases(question)
-    ):
+    if request.get("latest") or request.get("matching_lines") or _quoted_phrases(question):
         return []
     matches = list(_EXPLICIT_QUESTIONS.finditer(question))
     parts = [match[1].strip() for match in matches]
-    if len(parts) not in (2, 3) or not all(parts) or len(set(parts)) != len(parts):
+    limit = request.get("limit", 8)
+    if request.get("after") and not parts and limit >= 2:
+        parts = [question.strip()]
+    if len(parts) == 1:
+        if not request.get("after") or limit < 2:
+            return []
+    elif len(parts) not in (2, 3) or limit < 3 or len(set(parts)) != len(parts):
+        return []
+    if not all(parts):
         return []
     shared = []
     if len(parts) == 3:
@@ -806,6 +838,26 @@ def search_question(workspace, compiled: dict) -> dict:
         return _search_questions(workspace, compiled, indexes)
 
 
+def _previous_evidence(workspace, run_id):
+    from .workflow import saved_context_search
+
+    seen = set()
+    citations = set()
+    while run_id is not None:
+        if run_id in seen:
+            raise ToolError("integrity_error", "saved searches reference each other")
+        seen.add(run_id)
+        value = saved_context_search(workspace, run_id)["value"]
+        citations.update(
+            (line["revision_checksum"], line["segment_id"])
+            for part in value.get("parts", [value])
+            for span in part["spans"]
+            for line in span["evidence"]
+        )
+        run_id = value.get("after")
+    return citations
+
+
 def _search_questions(workspace, compiled: dict, indexes) -> dict:
     request = compiled["request"]
     index, comparison = indexes
@@ -817,6 +869,9 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
     version_comparison = "from_version" in request
     if (compare_terms is not None) != ("compare_with" in request or version_comparison):
         raise ToolError("invalid_input", "compile both comparison questions before searching")
+    after = request.get("after")
+    previous_evidence = _previous_evidence(workspace, after) if after is not None else None
+    skipped = set()
 
     def search(
         question, terms, span_limit, quote_budget, search_index, forms, phases, overrides=None
@@ -848,6 +903,8 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
                 else None
             ),
             compact_context=bool(request.get("compact") and compare_terms is None),
+            previous_evidence=previous_evidence,
+            skipped=skipped,
         )
         if question is not None:
             result["compilation"] = {"question": question, "terms": terms}
@@ -872,7 +929,10 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
     forms = compiled.get("word_forms", ())
     phases = compiled.get("change_phases", ())
     if compare_terms is None:
-        return search(question, compiled["terms"], limit, budget, index, forms, phases)
+        result = search(question, compiled["terms"], limit, budget, index, forms, phases)
+        if after is not None:
+            result.update(after=after, previously_cited_lines=len(skipped))
+        return result
     first_limit, first_budget = (limit + 1) // 2, (budget + 1) // 2
     date_overrides = _comparison_dates(request)
     parts = [
@@ -893,6 +953,7 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
         "quote_budget_bytes": budget,
         "quote_bytes": sum(part["quote_bytes"] for part in parts),
         "parts": parts,
+        **({"after": after, "previously_cited_lines": len(skipped)} if after is not None else {}),
         **({"compare_recording_overrides": date_overrides} if date_overrides else {}),
         **({"version_comparison": True} if version_comparison else {}),
         **(
@@ -2217,6 +2278,8 @@ def _pack(
     reuse_identical_text: bool = False,
     repeated: dict[str, str] | None = None,
     trim_neighbors: bool = False,
+    previous_evidence: set[tuple[str, str]] | None = None,
+    skipped: set[tuple[str, str]] | None = None,
 ):
     compact_sources = compact_sources or {}
     compact_copies = compact_copies or {}
@@ -2317,6 +2380,19 @@ def _pack(
         )
         if isinstance(row, dict) and "direct_positions" in row:
             positions, followup = row["direct_positions"], None
+        already_delivered = False
+        if previous_evidence:
+            # A revised segment can reuse its ID. Exclude only the exact revision.
+            novel = []
+            for pos in positions:
+                citation = checksum, segments[pos]["segment_id"]
+                if citation in previous_evidence:
+                    if skipped is not None:
+                        skipped.add(citation)
+                    already_delivered = True
+                else:
+                    novel.append(pos)
+            positions = novel
         first_positions = positions
         if prioritize_first_lines:
             first = next((pos for pos in positions if start <= pos < stop), None)
@@ -2331,6 +2407,8 @@ def _pack(
                 reason = "quote_budget"
             elif duplicates:
                 reason = "duplicate_text"
+            elif already_delivered and not positions:
+                reason = "previously_cited"
             traced[index].update(
                 reason=reason, quoted_lines=len(chosen), lines_over_budget=over_budget
             )
@@ -2374,8 +2452,11 @@ def _pack(
                     if index < len(traced):
                         traced[index].update(quoted_lines=len(chosen), trimmed_lines=len(removed))
         revision = revision_id(record)
-        if index < len(traced) and "selection" in traced[index] and len(chosen) == 1:
-            traced[index]["source_line_id"] = f"{revision}L{chosen[0] + 1}"
+        if index < len(traced) and "selection" in traced[index]:
+            direct = rows[index].get("direct_positions", ())
+            primary = direct[0] if direct else chosen[0] if len(chosen) == 1 else None
+            if primary in chosen:
+                traced[index]["source_line_id"] = f"{revision}L{primary + 1}"
         group = group_by_checksum.get(record["checksum"])
         copies = list(compact_copies.get(record["checksum"], ()))
         if group in shared_groups:
@@ -2713,6 +2794,8 @@ def _context_evidence(
     earlier_snapshot=False,
     other_records=None,
     compact_context=False,
+    previous_evidence=None,
+    skipped=None,
 ):
     validate(_CONTEXT_SCHEMA, plan, "context plan")
     if not any(map(_tokens, plan["terms"])):
@@ -2962,6 +3045,8 @@ def _context_evidence(
             reuse_identical_text=focus and not (matching_lines or plan.get("latest")),
             repeated=repeated,
             trim_neighbors=bool(trim_neighbors),
+            previous_evidence=previous_evidence,
+            skipped=skipped,
         )
         if trace is not None:
             _trace_sources(workspace, trace)
@@ -3119,12 +3204,21 @@ def render_context(pack: dict) -> str:
                 lines.append(f"[{ref}]{quote}")
             lines.append("")
         if not part["spans"]:
-            lines.append("No evidence matched.")
+            lines.append(
+                "No new evidence matched." if pack.get("after") else "No evidence matched."
+            )
         coverage = part.get("term_coverage", ())
         if len(coverage) > 1:
             missing = [" ".join(row["term"].split()) for row in coverage if not row["quoted_lines"]]
             if missing:
                 lines.append("No cited lines for: " + ", ".join(missing))
+    if after := pack.get("after"):
+        lines.extend(
+            (
+                "",
+                f"Earlier search: {after} · {pack['previously_cited_lines']} previously cited lines skipped",
+            )
+        )
     if run_id := pack.get("saved_run"):
         lines.extend(("", f"Saved search: {run_id}"))
     return "\n".join(lines).strip()

@@ -1,6 +1,6 @@
 id: context-search
-version: 6
-description: Search cited original passages, including the same question across two workspace versions.
+version: 7
+description: Search cited original passages, supplement a saved search, or compare workspace versions.
 inputs:
   request: context_request
 stages:

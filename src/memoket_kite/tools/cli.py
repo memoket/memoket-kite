@@ -215,6 +215,9 @@ def _parser() -> argparse.ArgumentParser:
         "--save", nargs="?", const="", metavar="RUN_ID", help="save the compile and search results"
     )
     context.add_argument("--source", help="restrict search to one source namespace")
+    context.add_argument(
+        "--after", metavar="RUN_ID", help="skip original lines from a saved search"
+    )
     context.add_argument("--conversation-id", help="search within an original conversation ID")
     context.add_argument("--start-date", help="earliest source date, inclusive")
     context.add_argument("--end-date", help="latest source date, inclusive")
@@ -390,7 +393,7 @@ def _parser() -> argparse.ArgumentParser:
     begin.add_argument("--run-id")
     begin.add_argument("--input", metavar="FILE", help="JSON input file or - for stdin")
     begin.add_argument(
-        "--visualize", action="store_true", help="open the live graph for an import or search"
+        "--visualize", action="store_true", help="open the live graph for the workflow"
     )
     stage = commands.add_parser("stage", help="advance or retry a single stage")
     stage.add_argument("run_id")
@@ -806,13 +809,15 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 if (value := getattr(args, key)) is not None
             }
         )
-        if args.question is not None or args.save is not None:
+        if args.question is not None or args.save is not None or args.after is not None:
             request = {
                 **plan,
                 "neighbors": neighbors,
             }
             if args.limit is not None:
                 request["limit"] = args.limit
+            if args.after is not None:
+                request["after"] = args.after
             if args.question is None:
                 request["terms"] = args.term
             else:
@@ -962,7 +967,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
     )
     if args.command == "start":
         if args.visualize and args.pipeline not in FOLLOW_STAGES:
-            raise ToolError("invalid_input", "--visualize supports import and context-search runs")
+            raise ToolError("invalid_input", "this workflow does not support --visualize")
         if args.visualize and args.pipeline == "context-search":
             request = supplied.get("request")
             if isinstance(request, dict):

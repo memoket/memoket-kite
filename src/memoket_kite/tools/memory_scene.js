@@ -523,12 +523,12 @@ class MemoryScene {
       const pulse = (1 - Math.cos(age * 2 * Math.PI / 900)) / 2;
       const strength = animating ? (importing ? .12 + .88 * pulse : .55 + .45 * pulse) : .46;
       const mark = {
-        color: importing ? '#88f5b8' : '#89d8ff',
+        color: importing ? '#88f5b8' : effect.kind === 'merge' ? '#f8d492' : '#89d8ff',
         strength, age, flow: !importing && animating,
       };
       for (const node of active) nodes.set(node, mark);
       for (const edge of this.scene.edges) {
-        if (['association', 'citation', 'query', 'mention', 'facet'].includes(edge.kind)
+        if (['association', 'citation', 'query', 'mention', 'facet', 'hierarchy'].includes(edge.kind)
             && active.has(edge.from) && active.has(edge.to)) edges.set(edge, mark);
       }
     }

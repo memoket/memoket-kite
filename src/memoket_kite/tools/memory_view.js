@@ -25,6 +25,8 @@
       retrievalPath: 'How this line was found', retrievalReplay: 'Replay search',
       sourceTextRoute: 'Text in the same recording', textIndexRoute: 'Full-text index',
       dateIndexRoute: 'Recording dates + date in the transcript', labelIndexRoute: 'Annotation index + full text',
+      planSubject: 'Schedule subject',
+      previousSearch: 'Earlier search', skippedCitations: 'previously cited lines skipped',
       noUsedLabels: 'This run records no topic, entity or facet selection for these quotes.',
       candidateLabels: 'Candidate labels',
       searchPlan: 'Search plan and candidates',
@@ -73,7 +75,7 @@
       duplicateLines: 'duplicate lines reused',
       trimmedLines: 'outer lines trimmed',
       packingReasons: { quoted: 'Quoted', span_limit: 'Span limit reached', quote_budget: 'Quote budget', duplicate_text: 'Text already quoted from another source',
-        already_quoted: 'Already quoted', no_matching_line: 'No matching original line' },
+        already_quoted: 'Already quoted', previously_cited: 'Quoted in an earlier search', no_matching_line: 'No matching original line' },
       sourceScope: 'Source scope', allSources: 'Search all sources',
       invalidMatching: 'Enter up to twelve phrases of at most 128 characters.',
       versionFilter: 'Version', versionFilterLabel: 'Search at a workspace version', history: 'Workspace snapshot',
@@ -111,6 +113,8 @@
       retrievalPath: '原文如何命中', retrievalReplay: '重播检索',
       sourceTextRoute: '同一录制的正文', textIndexRoute: '全文索引',
       dateIndexRoute: '录制日期索引＋原文日期', labelIndexRoute: '标注索引＋正文',
+      planSubject: '排期主题',
+      previousSearch: '前序检索', skippedCitations: '行已引用原文被跳过',
       noUsedLabels: '本次记录未显示通过主题、实体或 Facet 选中这些引用。',
       candidateLabels: '候选标签',
       searchPlan: '检索计划和候选',
@@ -158,7 +162,7 @@
       duplicateLines: '行重复原文已共用',
       trimmedLines: '行外围原文已精简',
       packingReasons: { quoted: '已引用', span_limit: '片段数已达上限', quote_budget: '引文预算不足', duplicate_text: '已引用其他来源中的相同原文',
-        already_quoted: '已在前面引用', no_matching_line: '原文行无完整命中' },
+        already_quoted: '已在前面引用', previously_cited: '已在前序检索中引用', no_matching_line: '原文行无完整命中' },
       sourceScope: '限定来源', allSources: '搜索全部来源',
       invalidMatching: '请输入最多十二个检索词，每个不超过 128 字符。',
       versionFilter: '版本', versionFilterLabel: '按工作区版本检索', history: '工作区快照',
@@ -1110,20 +1114,32 @@
   const workflowCopy = {
     zh: {
       import: '记忆导入', query: '记忆查询', preview: '已预览来源', normalize: '已整理原文',
+      update: '记忆更新', merge: '主题融合', delete: '记忆删除', apply: '已删除',
+      approval: '等待确认删除范围', previewCleared: '预览已清除',
+      revisions: '版本', memories: '记忆', citations: '原文引用', memberships: '主题关联',
+      facts: '事实记录', runs_to_invalidate: '待失效的运行', run_artifacts_to_purge: '待清除的产物',
       annotate: '已关联标注', commit: '已写入', verify: '已验证', compile: '已编译检索词',
       search: '已找到原文', pending: '等待开始', failed: '阶段失败',
-      unchanged: '无新增记忆', empty: '没有命中原文', unavailable: '运行记录不可用',
+      unchanged: '无变更', empty: '没有命中原文', unavailable: '运行记录不可用',
       changes: '查看变更', evidence: '查看引用', replay: '重播', locateTopic: '定位主题', importedPath: '新增原文',
     },
     en: {
       import: 'Memory import', query: 'Memory search', preview: 'Sources previewed',
+      update: 'Memory update', merge: 'Topic merge', delete: 'Memory deletion', apply: 'Deleted',
+      approval: 'Awaiting deletion approval', previewCleared: 'Preview cleared',
+      revisions: 'revisions', memories: 'memories', citations: 'citations', memberships: 'topic links',
+      facts: 'facts', runs_to_invalidate: 'runs to invalidate', run_artifacts_to_purge: 'artifacts to clear',
       normalize: 'Original normalized', annotate: 'Annotations linked', commit: 'Committed',
       verify: 'Verified', compile: 'Query compiled', search: 'Evidence found',
-      pending: 'Waiting to start', failed: 'Stage failed', unchanged: 'No new memory',
+      pending: 'Waiting to start', failed: 'Stage failed', unchanged: 'No change',
       empty: 'No matching evidence', unavailable: 'Run unavailable',
       changes: 'View change', evidence: 'View citations', replay: 'Replay',
       locateTopic: 'Locate topic', importedPath: 'New source',
     },
+  };
+  const workflowKinds = {
+    'memory-update': 'update', 'context-search': 'query',
+    'memory-consolidation': 'merge', 'memory-deletion': 'delete',
   };
 
   function renderFilterTrace() {
@@ -1178,22 +1194,26 @@
   function renderWorkflow() {
     if (!progress) return;
     const labels = workflowCopy[language];
-    const search = progress.pipeline === 'context-search';
+    const kind = workflowKinds[progress.pipeline] || 'import';
+    const search = kind === 'query';
     const done = [...progress.stages].reverse().find(stage => stage.state === 'completed');
-    const committed = progress.stages.find(stage => stage.name === 'commit');
+    const committed = progress.stages.find(stage => stage.name === 'commit' || stage.name === 'apply');
     const status = progress.state === 'failed' ? labels.failed
       : search && done?.name === 'search' && !done.citations?.length ? labels.empty
+      : kind === 'delete' && done?.name === 'preview' ? labels.approval
       : committed?.changed === false ? labels.unchanged : labels[done?.name || 'pending'];
     byId('workflow-activity').hidden = false;
     const statusElement = byId('workflow-status');
-    const message = labels[search ? 'query' : 'import'] + ' · ' + status;
+    const message = labels[kind] + ' · ' + status;
     if (statusElement.textContent !== message) statusElement.textContent = message;
     const result = byId('workflow-result');
     const replay = byId('workflow-replay');
     const path = progress.change?.paths?.[0];
-    replay.hidden = !path && !(search && done?.citations?.length);
+    const merge = progress.change?.topic_merge;
+    const deleted = progress.change?.deleted_graph_counts;
+    replay.hidden = !(path || merge || deleted || (search && done?.citations?.length));
     replay.textContent = labels.replay;
-    const topic = path?.topics?.[0];
+    const topic = merge?.current_topic || path?.topics?.[0];
     const topicLink = byId('workflow-topic');
     const sourceLink = byId('workflow-source');
     const graph = { view: 'graph', lang: language, follow: progress.run_id };
@@ -1211,12 +1231,23 @@
     }
     const changed = progress.change?.source_changes?.[0];
     const target = progress.saved_search ? { view: 'graph', run: progress.saved_search, follow: progress.run_id }
+      : merge && progress.change.topic_graph ? { view: 'changes', event: progress.commit_version }
       : changed?.has_graph ? { view: 'changes', event: progress.commit_version, checksum: changed.checksum }
       : progress.commit_version != null ? { view: 'activity', event: progress.commit_version } : null;
     result.hidden = !target;
     if (target) {
       result.href = '?' + new URLSearchParams({ ...target, lang: language });
       result.textContent = labels[search ? 'evidence' : 'changes'];
+    }
+    if (kind === 'delete' || kind === 'merge') {
+      const steps = byId('filter-trace-steps');
+      const counts = deleted || (kind === 'delete' && done?.name === 'preview' ? done.counts : undefined);
+      const details = Object.entries(counts || {}).map(([key, value]) =>
+        `${number.format(value)} ${labels[key]}`);
+      if (deleted && progress.stages[0].state === 'redacted') details.push(labels.previewCleared);
+      if (merge) details.push(`${merge.from_topic} → ${merge.to_topic}`);
+      steps.hidden = !details.length;
+      steps.replaceChildren(...details.map(detail => element('li', detail)));
     }
   }
 
@@ -1275,6 +1306,23 @@
       return;
     }
     if (!progress) return;
+    if (progress.change?.deleted_graph_counts) {
+      const steps = byId('filter-trace-steps');
+      steps.dataset.effect = 'delete';
+      steps.replaceChildren(...[...steps.children].map(step => {
+        const item = step.cloneNode(true);
+        item.dataset.replaying = 'true';
+        return item;
+      }));
+      return;
+    }
+    if (progress.change?.topic_merge) {
+      const topic = topics.get(progress.change.topic_merge.current_topic);
+      if (!topic) return;
+      view.playWorkflowEffect('merge', [[...lineage(topic).map(node => node.id),
+        ...topic.memories.map(memory => memory.id)]]);
+      return;
+    }
     if (progress.change?.paths?.length) {
       view.playWorkflowEffect('import', progress.change.paths.map(path => {
         const source = sources.get(path.checksum);
@@ -1323,6 +1371,18 @@
           }
           if (!response.ok) throw new Error('Could not read progress');
           const next = await response.json();
+          if (next.commit_version > snapshot.version) {
+            const params = new URLSearchParams(location.search);
+            if (next.change?.kind === 'delete') {
+              params.delete('node');
+              params.delete('topic');
+            } else if (next.change?.topic_merge?.current_topic) {
+              params.set('topic', next.change.topic_merge.current_topic);
+              params.set('mode', 'topic');
+            }
+            location.replace('?' + params);
+            return;
+          }
           const newResult = next.saved_search !== progress.saved_search || next.commit_version !== progress.commit_version;
           progress = next;
           renderWorkflow();
@@ -1439,6 +1499,9 @@
         if (stats.implementation_search) {
           trace.append(element('p', `${t('implementationSearch')} · ${stats.implementation_search}`));
         }
+        if (stats.current_plan_subject) {
+          trace.append(element('p', `${t('planSubject')} · ${stats.current_plan_subject}`));
+        }
         trace.append(termSummary(stats.terms, stats.term_coverage));
         renderWordForms(trace, stats.word_forms);
         renderRepeatedTerms(trace, stats.repeated_terms);
@@ -1506,6 +1569,14 @@
         const saved = snapshot.saved_search;
         const current = saved.version === snapshot.version ? '' : ` · ${t('currentWorkspace')} v${snapshot.version}`;
         trace.prepend(element('p', `${t('savedSearch')} v${saved.version} · ${new Date(saved.searched_at).toLocaleString(language)}${current}`));
+      }
+      if (snapshot.search_after) {
+        const { run_id, skipped } = snapshot.search_after;
+        const link = element('a', t('previousSearch'), 'citation-link');
+        link.href = '?' + new URLSearchParams({ view: 'graph', run: run_id, lang: language });
+        const note = element('p');
+        note.append(link, ` · ${number.format(skipped)} ${t('skippedCitations')}`);
+        trace.append(note);
       }
       if (retrievalRoutes.length && !retrievalRoutes.some(({ route }) => route.labels?.length)) {
         trace.append(element('p', t('noUsedLabels')));

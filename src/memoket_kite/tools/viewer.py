@@ -87,11 +87,11 @@ def _recording_dates(plan: dict) -> dict:
 
 def _selected_search_lines(pack: dict):
     for candidate in pack.get("packing_trace", {}).get("candidates", ()):
-        if candidate["quoted_lines"] != 1 or not candidate.get("selection"):
+        if not candidate["quoted_lines"] or not candidate.get("selection"):
             continue
         line = candidate.get("source_line_id")
         start = candidate["start_offset"]
-        if line is None and candidate["end_offset"] == start + 1:
+        if line is None and candidate["quoted_lines"] == 1 and candidate["end_offset"] == start + 1:
             line = f"{revision_id({'checksum': candidate['revision_checksum']})}L{start + 1}"
         if line:
             yield line, candidate["selection"]
@@ -236,11 +236,19 @@ def _search_snapshot(
             ]
         else:
             packs = [(question, result)]
+            compilation = result.get("compilation", {})
+            single_followup = bool(
+                result.get("after") and len(compilation.get("subquestions", ())) == 1
+            )
             for line, selection in _selected_search_lines(result):
                 branch = selection.get("question")
                 if selection.get("reason") in {"subquestion_clues", "subquestion_index"}:
                     branch = selection["term"]
-                if branch:
+                if (
+                    branch
+                    and not single_followup
+                    and branch != compilation.get("current_plan_subject")
+                ):
                     subquestion_branches[line] = branch
         terms = [key for key, _ in packs]
     elif saved is not None or scope.get("matching_lines"):
@@ -393,6 +401,16 @@ def _search_snapshot(
         },
         "search_recording_bounds": _recording_dates(packs[0][1]["plan"]),
         "search_comparison_recording_overrides": compare_date_overrides,
+        **(
+            {
+                "search_after": {
+                    "run_id": result["after"],
+                    "skipped": result["previously_cited_lines"],
+                }
+            }
+            if saved is not None and "after" in result
+            else {}
+        ),
         "search_trace": {
             "terms": packs[0][1]["compilation"]["terms"] if question is not None else terms,
             "word_forms": packs[0][1].get("compilation", {}).get("word_forms", []),
@@ -402,6 +420,11 @@ def _search_snapshot(
             "implementation_search": packs[0][1]
             .get("compilation", {})
             .get("implementation_search"),
+            **(
+                {"current_plan_subject": subject}
+                if (subject := packs[0][1].get("compilation", {}).get("current_plan_subject"))
+                else {}
+            ),
             "term_coverage": packs[0][1].get("term_coverage", []) if not comparison else [],
             "packing": [
                 {

@@ -58,15 +58,18 @@ commit's original citations. For a preview before the write, start
 `selection` accepts an absolute `transcripts` directory or `batch_file`,
 with optional `recording_metadata` for transcript imports.
 
-If the user asks to watch an import or a search, start the workflow and open
+If the user asks to watch a workflow, start it and open
 `kite-tool view --follow RUN_ID` before advancing the first stage. Pass
 `--no-open` to use the returned URL in a host browser, or use
 `kite-tool start PIPELINE --input FILE --visualize` to start and open it in
 one command. Follow the same run ID through all stages. New memory paths glow
 on the existing graph after commit. Search results animate the cited paths on
 the same view. Open the change or citations from the graph to inspect details.
-This works for `source-indexing`, `memory-ingestion`,
-`memory-update`, and `context-search`.
+This works for `source-indexing`, `memory-ingestion`, `memory-update`,
+`memory-consolidation`, `memory-deletion`, and `context-search`. The merge
+links to the retained topic and its before-and-after graph. Deletion shows
+preview counts while awaiting the operator's approval. After apply the graph
+refreshes and shows only aggregate removal counts from the redacted receipt.
 
 Use `kite-tool topics` to find queryable topic codes, aliases and parent topics.
 `kite-tool topics --contains "first run"` searches normalized codes and aliases.

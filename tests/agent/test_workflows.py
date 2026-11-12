@@ -481,6 +481,7 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
                 "visible-merge",
                 payload={"merge": {"from_topic": "release", "to_topic": "checklists"}},
             )
+            assert read("?progress=visible-merge")["state"] == "pending"
             merged = call("stage", "visible-merge", "commit")["value"]
             merge_event = read(f"?view=activity&event={merged['memory_version']}")["events"][0]
             assert merge_event["topic_merge"] == {
@@ -488,10 +489,31 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
                 "to_topic": "checklists",
                 "current_topic": "checklists",
             }
+            follow = read("?view=graph&follow=visible-merge")
+            merge_progress = follow["workflow_progress"]
+            assert merge_progress["change"]["topic_merge"] == merge_event["topic_merge"]
+            assert merge_progress["change"]["topic_graph"]
+            assert {topic["code"] for topic in follow["topics"]} == {"checklists", "onboarding"}
+            call("stage", "visible-merge", "verify")
+            assert read("?progress=visible-merge")["state"] == "completed"
             assert read(saved_query)["evidence"] == saved["evidence"]
-            deleted = _delete_source(
-                call, "viewer-delete", {"source": "text", "conversation_id": "release"}
+            call(
+                "start",
+                "memory-deletion",
+                "--run-id",
+                "viewer-delete",
+                payload={"target": {"source": "text", "conversation_id": "release"}},
             )
+            preview = call("stage", "viewer-delete", "preview")["value"]
+            deletion_progress = read("?progress=viewer-delete")
+            assert deletion_progress["stages"][0]["counts"]["revisions"] == 3
+            assert preview["approval_token"] not in json.dumps(deletion_progress)
+            assert "release" not in json.dumps(deletion_progress)
+            call("stage", "viewer-delete", "apply", error="awaiting_approval")
+            assert read("?progress=viewer-delete")["state"] == "awaiting_approval"
+            deleted = call(
+                "stage", "viewer-delete", "apply", "--approve", preview["approval_token"]
+            )["value"]
             unavailable = read(saved_query, status=410)
             assert b"permanent deletion" in unavailable and b"release checklist" not in unavailable
             assert b"release checklist" not in read(source_query, status=404)
@@ -504,6 +526,17 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
                 "citations": 1,
                 "memberships": 1,
             }
+            follow = read("?view=graph&follow=viewer-delete")
+            assert not any(revision["reference"] == "release" for revision in follow["revisions"])
+            deletion_progress = follow["workflow_progress"]
+            assert deletion_progress["stages"][0]["state"] == "redacted"
+            assert (
+                deletion_progress["change"]["deleted_graph_counts"]
+                == delete_event["deleted_graph_counts"]
+            )
+            assert "release" not in json.dumps(deletion_progress)
+            assert preview["approval_token"] not in json.dumps(deletion_progress)
+            read("?progress=visible-merge", status=410)
             redacted_graph = read(update_graph_path, status=410)
             assert (
                 b"permanent deletion" in redacted_graph
@@ -6453,6 +6486,21 @@ def test_context_uses_index_labels_only_for_their_linked_original_lines(work):
     assert set(route["index_nodes"]) == {
         used[label] for label in selected[0]["selection"]["labels"]
     }
+    call("context", "--term", "Switchboard", "--matching-lines", "--save", "known-app")
+    targeted = call(
+        "context",
+        "--after",
+        "known-app",
+        "--question",
+        question.split(" Which")[0],
+        "--limit",
+        "2",
+        "--max-bytes",
+        "1500",
+        "--explain",
+    )
+    assert targeted["packing_trace"]["candidates"][0]["selection"]["reason"] == "subquestion_index"
+    assert targeted["spans"][0]["evidence"][0]["conversation_id"] == "warehouse"
     historical = call("context", "--question", question, "--at-version", str(version), "--explain")
     assert not any(part.get("indexed_routes") for part in historical["compilation"]["subquestions"])
     task = (
@@ -6568,6 +6616,33 @@ def test_implementation_schedule_follows_a_date_from_the_earlier_discussion(work
         "revision",
     ]
 
+    for task in (
+        "Update the Delta opening schedule from the meeting notes, retaining the original plan and later changes.",
+        "按会议纪要更新 Delta 开馆排期，保留原计划和后续变更。",
+    ):
+        history = call("context", "--question", task, "--compact")
+        assert history["compilation"]["current_plan_subject"] in {
+            "the Delta opening schedule",
+            "Delta 开馆排期",
+        }
+        assert history["spans"] == direct["spans"]
+    call("context", "--question", task, "--compact", "--explain", "--save", "keep-both-dates")
+    replay = viewer._snapshot(directory, [], run_id="keep-both-dates")
+    routes = [route for span in replay["passages"] for route in span["retrieval"]]
+    assert [
+        (replay["evidence"][route["line_id"]]["segment_id"], route["reason"]) for route in routes
+    ] == [
+        ("L3", "subquestion_clues"),
+        ("L3", "dated_plan_followup"),
+    ]
+    assert not replay["search_subquestion_branches"]
+    unrelated = call(
+        "context",
+        "--question",
+        "Update the Delta opening schedule from the meeting notes, retaining the original format.",
+    )
+    assert "current_plan_subject" not in unrelated["compilation"]
+
     task = (
         "Summarize the Delta schedule. Which date did the read-through start? "
         "What was the conservative opening date? What was the later opening date?"
@@ -6599,6 +6674,34 @@ def test_context_matching_lines_preserves_mixed_unicode_tokens_across_versions(w
         pack = call(*args, *scope)
         quotes = [line["text"] for span in pack["spans"] for line in span["evidence"]]
         assert quotes == [original]
+
+
+def test_context_followup_skips_only_previously_delivered_revisions(work):
+    directory, call = work
+    original = text_input("first", "The amber route uses cold storage.")["source"]
+    other = text_input("second", "The amber route has a seven-day retention limit.")["source"]
+    call("index-sources", payload={"sources": [{"source": original}, {"source": other}]})
+    flags = ("--term", "amber route", "--matching-lines")
+    first = call("context", *flags, "--conversation-id", "first", "--save", "first-look")
+    first_quote = first["spans"][0]["evidence"][0]
+    second = call("context", *flags, "--after", "first-look", "--save", "followup", "--explain")
+    assert second["after"] == "first-look" and second["previously_cited_lines"] == 1
+    assert [q["conversation_id"] for s in second["spans"] for q in s["evidence"]] == ["second"]
+    assert any(c["reason"] == "previously_cited" for c in second["packing_trace"]["candidates"])
+    snapshot = viewer._snapshot(directory, [], run_id="followup")
+    assert snapshot["search_after"] == {"run_id": "first-look", "skipped": 1}
+    assert all(q["conversation_id"] == "second" for q in snapshot["evidence"].values())
+    empty = call("context", *flags, "--after", "followup")
+    assert empty["spans"] == [] and empty["previously_cited_lines"] == 2
+    revised = text_input("first", "The amber route now uses warm storage.")["source"]
+    revised["expected_checksum"] = first_quote["revision_checksum"]
+    call("index-sources", payload={"sources": [{"source": revised}]})
+    current = call("context", *flags, "--after", "followup")
+    assert [q["text"] for s in current["spans"] for q in s["evidence"]] == [
+        "The amber route now uses warm storage."
+    ]
+    _delete_source(call, "delete-first", {"source": "text", "conversation_id": "first"})
+    call("context", *flags, "--after", "followup", error="invalidated_run")
 
 
 def test_context_matching_lines_checks_the_original_segment_and_saved_plan(work):

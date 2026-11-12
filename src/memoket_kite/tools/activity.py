@@ -24,6 +24,8 @@ FOLLOW_STAGES = {
     "source-indexing": ("preview", "commit", "verify"),
     "memory-ingestion": ("normalize", "annotate", "commit", "verify"),
     "memory-update": ("normalize", "annotate", "commit", "verify"),
+    "memory-consolidation": ("commit", "verify"),
+    "memory-deletion": ("preview", "apply"),
     "context-search": ("compile", "search"),
 }
 
@@ -54,10 +56,19 @@ def workflow_progress(workspace, run_id: str) -> dict:
         manifest = state["artifact"]
         stage["version"] = manifest["memory_version"]
         stage["completed_at"] = manifest["created_at"]
-        if pipeline == "source-indexing" or name in {"compile", "search", "commit"}:
+        if pipeline in {"source-indexing", "memory-deletion"} or name in {
+            "compile",
+            "search",
+            "commit",
+        }:
             value = _artifact(workspace, checkpoint, name)["value"]
         if pipeline == "source-indexing":
             stage["counts"] = {key: value[key] for key in _BATCH_STAGE_FIELDS[name] if key in value}
+        if pipeline == "memory-deletion" and name == "preview":
+            stage["counts"] = {
+                key: value[key]
+                for key in ("revisions", "facts", "runs_to_invalidate", "run_artifacts_to_purge")
+            }
         if name == "compile":
             stage["terms"] = value["terms"]
             if value.get("comparison_terms"):
@@ -80,12 +91,22 @@ def workflow_progress(workspace, run_id: str) -> dict:
                 for line in span["evidence"][:3]
             ]
             progress["saved_search"] = run_id
-        if name == "commit":
+        if name in {"commit", "apply"}:
             stage["changed"] = value["changed"]
             if value["changed"]:
                 progress["commit_version"] = value["memory_version"]
     if "commit_version" in progress:
-        progress["change"] = _workflow_change(workspace, progress["commit_version"])
+        version = progress["commit_version"]
+        if pipeline == "memory-deletion":
+            event = memory_activity(workspace, event_version=version)["events"][0]
+            progress["change"] = {
+                "kind": "delete",
+                "deleted_graph_counts": event.get(
+                    "deleted_graph_counts", {"revisions": event["revision_count"]}
+                ),
+            }
+        else:
+            progress["change"] = _workflow_change(workspace, version)
     return progress
 
 
@@ -100,6 +121,12 @@ def _workflow_change(workspace, version):
         "SELECT 1 FROM memory_activity_graphs WHERE version=? AND checksum=''", (version,)
     ).fetchone()
     change = _changed_sources(db, dict(event), 0, recorded=True, graphs=True)
+    if event["kind"] == "merge":
+        return {
+            **change,
+            "topic_graph": topic_graph is not None,
+            "topic_merge": committed_topic_merge(workspace, version),
+        }
     paths = []
     for source in change["source_changes"][:3]:
         graph = db.execute(

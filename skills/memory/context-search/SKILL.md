@@ -10,6 +10,13 @@ skip trailing implementation instructions during retrieval. Apply the user's
 implementation constraints after reading the cited original lines.
 For a qualified earlier date and a later schedule question, the search can
 follow a date repeated in a later recording with the same named subject.
+For a task asking to update a schedule from meeting notes and keep both the
+original plan and later changes, pass the whole task with `--compact`.
+When a saved first search leaves a gap, set `request.after` to its run ID and
+compile a question about the missing detail. The CLI equivalent is
+`context --after RUN_ID --question "$MISSING_DETAIL" --compact --text`.
+Use the original and new citations together. An identical revision and
+segment from the earlier searches does not spend the new quote budget.
 Keep recording dates separate from the dates mentioned in the plan.
 Pass two questions together when the user gave them as one request. The
 compiler can keep named subquestions and the search can reserve a line when a

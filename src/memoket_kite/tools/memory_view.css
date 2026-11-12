@@ -141,6 +141,7 @@ button:focus-visible, input:focus-visible, canvas:focus-visible {
 .graph-label[aria-current="true"] { max-width: 180px; border-color: #91e7ce; color: #f4fffc; background: #163831; font-weight: 650; }
 .graph-label[data-workflow="import"] { border-color: #88f5b8; }
 .graph-label[data-workflow="query"] { border-color: #89d8ff; }
+.graph-label[data-workflow="merge"] { border-color: #f8d492; }
 .graph-label:is([data-kind="query"], [data-kind="subquestion"]) { border-inline-start: 2px solid #e4a6e9; }
 .graph-label:hover, .graph-label:focus-visible { border-color: #a8e8db; color: #fff; }
 .empty { position: absolute; top: 42%; inset-inline: 12%; text-align: center; color: #c7dadc; }
@@ -250,7 +251,8 @@ summary { color: var(--teal); cursor: pointer; font-size: 12px; }
 .filter-trace-steps li { border: 1px solid #435567; border-radius: 4px; padding: 2px 6px; }
 .filter-trace-steps button { border: 0; background: transparent; padding: 0; text-align: left; }
 .filter-trace-steps [data-replaying] { animation: trace-pulse 2.2s ease-out; }
-@keyframes trace-pulse { 30% { border-color: #89d8ff; background: #254457; } }
+.filter-trace-steps[data-effect="delete"] { --trace-border: #ff9ca1; --trace-fill: #563340; }
+@keyframes trace-pulse { 30% { border-color: var(--trace-border, #89d8ff); background: var(--trace-fill, #254457); } }
 @media (prefers-reduced-motion: reduce) {
   .filter-trace-steps [data-replaying] { animation: none; }
 }

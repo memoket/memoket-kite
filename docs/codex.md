@@ -104,10 +104,11 @@ Ask “Index these transcripts with KITE and show the import in the graph” or
 “Use KITE to find the latest rollout decision and show the search in the
 graph.” With that request, Codex opens the graph for the current run before
 advancing its stages. After commit, new memory paths glow on the current
-graph. Search animates the links to the returned citations. The current view,
-rotation and zoom stay in place while the run advances. Click the result to
-open the existing change comparison or evidence view. The graph opens on
-request.
+graph. Search animates the links to the returned citations. A merge refreshes
+the graph and highlights the retained topic. A deletion shows preview counts
+while waiting for approval, then refreshes the graph and shows the redacted
+receipt. Click the result to open the change comparison, deletion record or
+saved evidence. The graph opens on request.
 
 Open **Entities**, **Facets**, or **Sources** beside the topic tree. In the
 evidence view, topics, entities, facets, passages, quoted lines, and source
@@ -132,6 +133,10 @@ again. After a permanent deletion, reopening or refreshing an old saved search
 link shows that the result is unavailable.
 For a new search, add `--save` to `kite-tool context --question "$QUESTION" --text`.
 Use the returned run ID with `kite-tool view --run RUN_ID` to open its evidence.
+For a missing detail, run `kite-tool context --after RUN_ID --question QUESTION
+--compact --text`. KITE skips original lines already delivered by that run and
+its predecessors. Add `--save` to open the supplement and its earlier search
+from the graph.
 Select a historical source revision and choose **Compare with current version**
 to see the original lines that changed, with citations for both versions.
 Enter a workspace version next to the search question, name it in the question
