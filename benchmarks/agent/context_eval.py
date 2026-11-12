@@ -23,8 +23,6 @@ from memoket_kite.tools.resources import resource_root
 from memoket_kite.tools.transcript_text import transcript_recording_day, transcript_text_source
 from memoket_kite.tools.workspace import Workspace
 
-from . import codex_timing
-
 
 def kite(workspace: Path, *args: str, payload=None, expected_error=None) -> dict:
     result = subprocess.run(
@@ -420,6 +418,8 @@ def codex_trial(
     start = time.perf_counter()
     try:
         if trace_timing:
+            from . import codex_timing
+
             exit_code, raw_events = codex_timing.read_events(command, prompt, codex_env, start)
         else:
             result = subprocess.run(
