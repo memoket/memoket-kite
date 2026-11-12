@@ -6003,6 +6003,62 @@ def test_context_explains_packing_without_adding_unquoted_text(work):
         viewer._snapshot(directory, [], run_id="packing")
 
 
+def test_context_reserves_distinct_named_subquestion_lines_in_one_pack(work):
+    directory, call = work
+    entries = (
+        ("handoff", "Harbor serves as the dispatcher for Northstar.", "2026-02-01"),
+        ("tool", "Lotus used the Switchboard app to review notes.", "2026-02-02"),
+        ("distractor", "Harbor and Northstar discussed scheduling the handoff.", "2026-02-02"),
+        ("later", "Lotus used the Pinboard app to review notes.", "2026-02-03"),
+    )
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {"source": text_input(key, text, date=day)["source"]} for key, text, day in entries
+            ]
+        },
+    )
+    question = "Which role did Harbor assume in the Northstar handoff? Which app did Lotus use?"
+    args = ("context", "--question", question, "--end-date", "2026-02-02", "--max-bytes", "512")
+    pack = call(*args, "--explain", "--save", "two-questions")
+    snapshot = viewer._snapshot(directory, [], run_id="two-questions")
+    assert pack["compilation"]["subquestions"] == snapshot["search_trace"]["subquestions"]
+    assert len(pack["compilation"]["subquestions"]) == 2
+    trace = snapshot["search_trace"]["packing"][0]["candidates"]
+    selections = [candidate for candidate in trace if "selection" in candidate]
+    assert [candidate["conversation_id"] for candidate in selections] == ["handoff", "tool"]
+    assert all(
+        candidate["reason"] == "quoted" and candidate["quoted_lines"] == 1
+        for candidate in selections
+    )
+    assert all(candidate["selection"]["reason"] == "subquestion_clues" for candidate in selections)
+    assert "app" in selections[1]["selection"]["clues"]
+    assert snapshot["search_subquestion_branches"] == [
+        row["selection"]["term"] for row in selections
+    ]
+    for row in selections:
+        matching = [
+            passage
+            for passage in snapshot["passages"]
+            if row["selection"]["term"] in passage["terms"]
+        ]
+        assert len(matching) == 1
+        assert {
+            snapshot["evidence"][line]["conversation_id"] for line in matching[0]["evidence"]
+        } == {row["conversation_id"]}
+    assert pack["quote_bytes"] <= 512
+    assert {"handoff", "tool"} <= {
+        item["conversation_id"] for item in snapshot["evidence"].values()
+    }
+    assert "later" not in {item["conversation_id"] for item in snapshot["evidence"].values()}
+    ambiguous = call("context", "--question", question, "--explain")
+    assert all(
+        item.get("selection", {}).get("term") != "Which app did Lotus use"
+        for item in ambiguous["packing_trace"]["candidates"]
+    )
+
+
 def test_context_matching_lines_checks_the_original_segment_and_saved_plan(work):
     directory, call = work
     sources = []

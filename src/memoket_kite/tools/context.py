@@ -23,6 +23,7 @@ _TRACE_CANDIDATES = 80
 _TEXT_SOURCE_COPIES = 8
 _FOLLOWUP_LINES = 3
 _SELECTIVE_SPANS = 4
+_SUBQUESTION_SPAN_LIMIT = 12
 _CLAUSE_MATCH_LIMIT = 300
 _CLAUSE_SPAN_LIMIT = 1200
 _VERSION_CHANGE_SOURCE_LIMIT = 32
@@ -34,6 +35,7 @@ _QUERY_WORDS = re.compile(r"[\u3400-\u9fff]+|[a-z0-9]+(?:\s+[a-z0-9]+)*", re.I)
 _QUOTED_PHRASES = re.compile(r'「([^」]+)」|『([^』]+)』|“([^”]+)”|"([^"\n]+)"')
 _NAME_WORDS = re.compile(r"\b[A-Z][A-Za-z0-9_-]{3,}\b")
 _ACRONYMS = re.compile(r"\b[A-Z][A-Z0-9]{1,8}\b")
+_EXPLICIT_QUESTIONS = re.compile(r"([^?？。!！;；]+)[?？]")
 _ENGLISH_WORD = re.compile(r"[a-z]{4,}")
 _VOWEL_GROUP = re.compile(r"[aeiou]+")
 _FINAL_CONSONANT = re.compile(r"[^aeiou][aeiou][^aeiouwxy]$")
@@ -151,6 +153,10 @@ _ROLE_STATEMENT = re.compile(
     r"\b(?:primary|backup|fallback|parallel|retain\w*|own\w*|lead\w*|handl\w*)\b",
     re.I,
 )
+_ROLE_DEFINITION = re.compile(
+    r"是属于|担任|充当|作为|扮演|\b(?:serves as|acts as|is responsible for|handles)\b", re.I
+)
+_SUBQUESTION_ROLE = re.compile(r"什么角色|哪个角色|负责什么|\b(?:roles?|responsibilit\w*)\b", re.I)
 _HYPOTHETICAL_DATE = re.compile(
     r"假设|举例|比如|例如|\b(?:suppose|hypothetical|for example|for instance)\b", re.I
 )
@@ -222,6 +228,11 @@ CONTEXT_REQUEST = {
 }
 _WORD_FORMS = array(object_schema({"query_term": TEXT, "indexed_term": TEXT}), 1, 8)
 _CHANGE_PHASES = array(TEXT, 2, 4)
+_SUBQUESTIONS = array(
+    object_schema({"question": TEXT, "anchors": array(TEXT, 1, 2), "terms": array(TEXT, 1, 8)}),
+    1,
+    2,
+)
 CONTEXT_PLAN = object_schema(
     {
         "request": CONTEXT_REQUEST,
@@ -234,6 +245,7 @@ CONTEXT_PLAN = object_schema(
         "comparison_word_forms": _WORD_FORMS,
         "change_phases": _CHANGE_PHASES,
         "comparison_change_phases": _CHANGE_PHASES,
+        "subquestions": _SUBQUESTIONS,
     },
 )
 
@@ -529,6 +541,10 @@ def _compile_questions(workspace, indexes, request, search, compare_search):
         result["word_forms"] = forms
     if phases := _compiled_change_phases(request, search):
         result["change_phases"] = phases
+    if search and compare_search is None:
+        subquestions = _compile_subquestions(index, request, search)
+        if subquestions:
+            result["subquestions"] = subquestions
     if compare_search is not None:
         terms, forms = _compile_terms(comparison.db, comparison.filters, compare_search)
         result["comparison_terms"] = terms
@@ -536,6 +552,47 @@ def _compile_questions(workspace, indexes, request, search, compare_search):
             result["comparison_word_forms"] = forms
         if phases := _compiled_change_phases(request, compare_search):
             result["comparison_change_phases"] = phases
+    return result
+
+
+def _compile_subquestions(index, request, question):
+    if (
+        request.get("latest")
+        or request.get("matching_lines")
+        or request.get("limit", 8) < 3
+        or _quoted_phrases(question)
+    ):
+        return []
+    parts = [part.strip() for part in _EXPLICIT_QUESTIONS.findall(question)]
+    if len(parts) != 2 or not all(parts) or parts[0] == parts[1]:
+        return []
+    result = []
+    for part in parts:
+        anchors = list(
+            dict.fromkeys(
+                match.group().casefold()
+                for match in sorted(
+                    (*_NAME_WORDS.finditer(part), *_ACRONYMS.finditer(part)),
+                    key=lambda match: match.start(),
+                )
+                if match.group().casefold() not in _ENGLISH_FUNCTION_WORDS
+            )
+        )[:2]
+        if not anchors:
+            continue
+        terms, _ = _compile_terms(index.db, index.filters, part)
+        # Short words can identify a type of tool even when eight more
+        # selective phrases outrank them in the ordinary question plan.
+        words = (
+            word
+            for word in _tokens(part).split()
+            if word.isascii()
+            and word.isalpha()
+            and len(word) >= 3
+            and word not in _ENGLISH_FUNCTION_WORDS
+        )
+        clues = list(dict.fromkeys((*terms[:5], *words)))[:8]
+        result.append({"question": part, "anchors": anchors, "terms": clues})
     return result
 
 
@@ -591,6 +648,7 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
             prioritize_first_lines=compare_terms is not None and "limit" not in request,
             word_forms=forms,
             change_phases=phases,
+            subquestions=compiled.get("subquestions", ()),
             reserve_change_phases=version_comparison,
             earlier_snapshot=version_comparison and search_index is index,
             other_records=(
@@ -605,6 +663,8 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
                 result["compilation"]["word_forms"] = forms
             if phases:
                 result["compilation"]["change_phases"] = phases
+            if "subquestions" in compiled:
+                result["compilation"]["subquestions"] = compiled["subquestions"]
             if not (filters.get("matching_lines") or _quoted_phrases(question)):
                 repeats = _repeated_han_terms(question, terms)
                 if repeats:
@@ -1212,6 +1272,77 @@ def _balance_recordings(
         return rows
     _, row, term, hits = best
     return _promote_alternative(rows, row, "selective_original_clue", term, direct_positions=hits)
+
+
+def _subquestion_evidence(workspace, index, subquestions, max_bytes):
+    """Reserve a line when a name and a second clue identify it in the original."""
+    where, args = _search_scope(index.filters)
+    records = {}
+    selected = {}
+    for part in subquestions:
+        question = part["question"]
+        require_role = _SUBQUESTION_ROLE.search(question)
+        for term in part["terms"]:
+            phrase = _tokens(term)
+            options = []
+            for anchor in part["anchors"]:
+                name = _tokens(anchor)
+                if (
+                    not name
+                    or not phrase
+                    or f" {name} " in f" {phrase} "
+                    or f" {phrase} " in f" {name} "
+                ):
+                    continue
+                rows = index.db.execute(
+                    f"SELECT checksum, start, stop, day FROM context_spans WHERE {where} LIMIT ?",
+                    (f'text : ("{name}" AND "{phrase}")', *args, _SUBQUESTION_SPAN_LIMIT + 1),
+                ).fetchall()
+                if not 0 < len(rows) <= _SUBQUESTION_SPAN_LIMIT:
+                    continue
+                matches = []
+                for row in rows:
+                    checksum = row["checksum"]
+                    if checksum not in records:
+                        record = (
+                            index.records[checksum]
+                            if index.records is not None
+                            else workspace.record(checksum)
+                        )
+                        records[checksum] = record["conversation"]["segments"]
+                    segments = records[checksum]
+                    if not 0 <= row["start"] < row["stop"] <= len(segments):
+                        raise ToolError(
+                            "integrity_error", "context index does not match its source revision"
+                        )
+                    for pos in range(row["start"], row["stop"]):
+                        text = segments[pos]["text"]
+                        if require_role and not _ROLE_DEFINITION.search(text):
+                            continue
+                        original = f" {_tokens(text)} "
+                        if f" {name} " in original and f" {phrase} " in original:
+                            matches.append((row, pos, len(text.encode("utf-8"))))
+                if len(matches) == 1 and matches[0][2] <= max_bytes // 4:
+                    row, pos, _ = matches[0]
+                    options.append((len(rows), row, pos, anchor))
+            if options:
+                _, row, pos, anchor = min(options, key=lambda option: option[0])
+                selected.setdefault(
+                    (row["checksum"], pos),
+                    {
+                        **dict(row),
+                        "start": pos,
+                        "stop": pos + 1,
+                        "direct_positions": [pos],
+                        "selection": {
+                            "reason": "subquestion_clues",
+                            "term": question,
+                            "clues": [anchor, term],
+                        },
+                    },
+                )
+                break
+    return list(selected.values())
 
 
 def _schedule_followup(workspace, index, plan, rows, limit, line_budget):
@@ -2117,6 +2248,7 @@ def _context_evidence(
     prioritize_first_lines=False,
     word_forms=(),
     change_phases=(),
+    subquestions=(),
     reserve_change_phases=False,
     earlier_snapshot=False,
     other_records=None,
@@ -2238,6 +2370,8 @@ def _context_evidence(
                 # match at the front of this version's half of the budget.
                 leading = candidates.pop(0)
                 candidates.insert(first + len(reserved_clauses) - 1, leading)
+        if subquestions and not (preferred or reserved_clauses or followup):
+            candidates[:0] = _subquestion_evidence(workspace, index, subquestions, max_bytes)
         if other_records is not None and not (
             change_phases or reserved_clauses or followup or matching_lines or plan.get("latest")
         ):

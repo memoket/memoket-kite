@@ -4,7 +4,11 @@ description: Retrieve cited original passages from a task in one local call.
 ---
 
 Run `kite-tool context --question "$QUESTION" --text` with the user's task.
-For two independent questions, use `--question "$FIRST" --compare-with "$SECOND"`.
+Pass two questions together when the user gave them as one request. The
+compiler can keep named subquestions and the search can reserve a line when a
+name and another clue identify it within the recording window. Inspect the
+returned original line before using it to answer a subquestion.
+For a side-by-side result, use `--question "$FIRST" --compare-with "$SECOND"`.
 Give each question the subject it refers to. Both use one workspace snapshot
 and share the quote and span budget. If the questions refer to different
 recording windows, set `--start-date` and `--end-date` for the first and

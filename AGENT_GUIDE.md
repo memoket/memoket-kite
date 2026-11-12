@@ -97,7 +97,11 @@ Question searches can quote identical transcripts from the same recording
 day once. Undated copies can also share a quote. The evidence pack keeps the
 source references and recording clocks. The segment IDs apply to each listed source. Use
 `--matching-lines` to inspect every occurrence separately.
-For two independent questions, use `--question "$FIRST" --compare-with "$SECOND"`.
+Pass two questions together when they share a recording scope. The compile
+stage can identify named subquestions. The search can reserve an original
+line where the name and another clue match together. Use `--explain --save`
+to see the matched clues and open the original line in the graph.
+For a side-by-side result, use `--question "$FIRST" --compare-with "$SECOND"`.
 The two searches share the workspace snapshot and total quote budget.
 Recording dates are shared by default. Use `--compare-start-date` and
 `--compare-end-date` to override either bound for the second question.

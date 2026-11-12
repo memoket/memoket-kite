@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlencode
 from .activity import memory_activity
 from .context import _tokens, context_enabled, context_pack, question_pack
 from .contracts import ToolError
+from .index import revision_id
 from .ingest import RECORDING_CLOCK_FIELDS
 from .retrieve import compare_revisions, memory_snapshot
 from .workflow import saved_context_search, source_revision_page
@@ -45,6 +46,7 @@ def _search_snapshot(
     comparison = []
     compare_date_overrides = {}
     version_comparison = False
+    subquestion_branches = {}
     if question is not None:
         result = (
             saved["value"]
@@ -89,6 +91,12 @@ def _search_snapshot(
             ]
         else:
             packs = [(question, result)]
+            for candidate in result.get("packing_trace", {}).get("candidates", ()):
+                selection = candidate.get("selection", {})
+                if selection.get("reason") == "subquestion_clues" and candidate["quoted_lines"]:
+                    revision = revision_id({"checksum": candidate["revision_checksum"]})
+                    line = f"{revision}L{candidate['start_offset'] + 1}"
+                    subquestion_branches[line] = selection["term"]
         terms = [key for key, _ in packs]
     elif saved is not None or scope.get("matching_lines"):
         result = (
@@ -172,6 +180,9 @@ def _search_snapshot(
                 [term] if term is not None else [phrase for phrase in terms if phrase in matched]
             )
             passage["terms"].extend(branches or terms)
+            passage["terms"].extend(
+                subquestion_branches[line] for line in ids if line in subquestion_branches
+            )
     history = None if version_comparison else packs[0][1].get("history")
     if saved is not None and sources:
         retained = {
@@ -209,7 +220,8 @@ def _search_snapshot(
         "revisions": list(sources.values()),
         "evidence": evidence,
         "search_available": True,
-        "search_terms": terms,
+        "search_terms": [*terms, *dict.fromkeys(subquestion_branches.values())],
+        "search_subquestion_branches": list(dict.fromkeys(subquestion_branches.values())),
         "search_question": question,
         "search_comparison": comparison,
         "search_version_comparison": version_comparison,
@@ -227,6 +239,7 @@ def _search_snapshot(
             "word_forms": packs[0][1].get("compilation", {}).get("word_forms", []),
             "repeated_terms": packs[0][1].get("compilation", {}).get("repeated_terms", []),
             "change_phases": packs[0][1].get("compilation", {}).get("change_phases", []),
+            "subquestions": packs[0][1].get("compilation", {}).get("subquestions", []),
             "term_coverage": packs[0][1].get("term_coverage", []) if not comparison else [],
             "packing": [
                 {

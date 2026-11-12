@@ -47,10 +47,12 @@
         focused_date: 'Original date statement for the named subject',
         focused_color: 'Original color statement for the named subject',
         change_subquestion: 'Original evidence selected for this subquestion',
+        subquestion_clues: 'Name and another clue match the same original line',
         change_phase: 'Original evidence selected for this phase of the question',
         version_evidence: 'Original line is missing or differs in the other snapshot',
       },
       changePhases: 'Phases in the question',
+      subquestions: 'Subquestions with named clues',
       sameTextSources: 'Sources with the same transcript text',
       duplicateLines: 'duplicate lines reused',
       packingReasons: { quoted: 'Quoted', span_limit: 'Span limit reached', quote_budget: 'Quote budget', duplicate_text: 'Text already quoted from another source',
@@ -119,10 +121,12 @@
         focused_date: '主题相关的日期原文',
         focused_color: '主题相关的颜色原文',
         change_subquestion: '为这个子问题选取的原文',
+        subquestion_clues: '名称和另一条线索命中同一行原文',
         change_phase: '为问题中这个阶段选取的原文',
         version_evidence: '该原文在对照版本中缺失或措辞不同',
       },
       changePhases: '问题中的阶段',
+      subquestions: '含名称线索的子问题',
       sameTextSources: '原文相同的来源',
       duplicateLines: '行重复原文已共用',
       packingReasons: { quoted: '已引用', span_limit: '片段数已达上限', quote_budget: '引文预算不足', duplicate_text: '已引用其他来源中的相同原文',
@@ -189,7 +193,8 @@
   for (const term of snapshot.search_terms || []) {
     const part = comparison.find(part => part.key === term);
     const label = part?.history ? `v${part.history.version}` : part?.question || term;
-    topics.set(term, { id: 'term:' + term, kind: 'topic', code: term, label, parents: [], aliases: [], children: [], memories: [] });
+    const parents = snapshot.search_subquestion_branches?.includes(term) ? [snapshot.search_question] : [];
+    topics.set(term, { id: 'term:' + term, kind: 'topic', code: term, label, parents, aliases: [], children: [], memories: [] });
   }
   for (const topic of topics.values()) {
     for (const parent of topic.parents) topics.get(parent)?.children.push(topic);
@@ -952,6 +957,7 @@
       }
       if (candidate.selection) {
         status.push(t('recordingSelection')[candidate.selection.reason] + ' · ' + candidate.selection.term);
+        if (candidate.selection.clues?.length) status.push(candidate.selection.clues.join(' / '));
       }
       if (candidate.quoted_lines) status.push(`${number.format(candidate.quoted_lines)} ${t('quotes')}`);
       if (candidate.duplicate_lines) status.push(`${number.format(candidate.duplicate_lines)} ${t('duplicateLines')}`);
@@ -1085,6 +1091,13 @@
         renderRepeatedTerms(trace, stats.repeated_terms);
         if (stats.change_phases?.length) {
           trace.append(element('p', t('changePhases') + ' · ' + stats.change_phases.join(' / ')));
+        }
+        if (stats.subquestions?.length) {
+          const list = element('ul');
+          for (const part of stats.subquestions) {
+            list.append(element('li', `${part.question} · ${part.anchors.join(' / ')}`));
+          }
+          trace.append(element('h4', t('subquestions')), list);
         }
       }
       trace.append(element('p', [number.format(stats.candidate_spans) + ' ' + t('candidates'),
