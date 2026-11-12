@@ -268,10 +268,10 @@ TOOLS = {
     "preview_delete": Tool(_preview, {"target": "deletion_target"}, "deletion_plan", version=4),
     "delete": Tool(_delete, {"plan": "deletion_plan"}, "receipt", "delete", version=4),
     "compile_context": Tool(
-        _compile_context, {"request": "context_request"}, "context_plan", version=16
+        _compile_context, {"request": "context_request"}, "context_plan", version=17
     ),
     "search_context": Tool(
-        _search_context, {"compiled": "context_plan"}, "context_evidence", version=31
+        _search_context, {"compiled": "context_plan"}, "context_evidence", version=32
     ),
     "compare_revisions": Tool(
         _compare_revisions, {"request": "revision_comparison"}, "revision_difference", version=2

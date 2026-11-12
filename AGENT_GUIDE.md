@@ -58,6 +58,9 @@ same search and limit to continue the listing at the same memory version.
 For original-text tasks, run `kite-tool context --question "$QUESTION" --text`.
 It compiles the task and returns cited passages in one local call. Use
 `context-search` if you need separate, saved compile and search stages.
+For an implementation request with questions about the original decision,
+pass the request as written. The graph shows the wording used for retrieval
+when the compiler keeps the task subject with its questions.
 Add `--save` to complete and save both stages in one command. Open the returned
 run ID with `kite-tool view --run RUN_ID`.
 For the recording time or location of a known quotation, use

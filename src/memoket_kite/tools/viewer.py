@@ -93,13 +93,13 @@ def _search_snapshot(
             packs = [(question, result)]
             for candidate in result.get("packing_trace", {}).get("candidates", ()):
                 selection = candidate.get("selection", {})
-                if (
-                    selection.get("reason") in {"subquestion_clues", "subquestion_index"}
-                    and candidate["quoted_lines"]
-                ):
+                branch = selection.get("question")
+                if selection.get("reason") in {"subquestion_clues", "subquestion_index"}:
+                    branch = selection["term"]
+                if branch and candidate["quoted_lines"]:
                     revision = revision_id({"checksum": candidate["revision_checksum"]})
                     line = f"{revision}L{candidate['start_offset'] + 1}"
-                    subquestion_branches[line] = selection["term"]
+                    subquestion_branches[line] = branch
         terms = [key for key, _ in packs]
     elif saved is not None or scope.get("matching_lines"):
         result = (
@@ -243,6 +243,9 @@ def _search_snapshot(
             "repeated_terms": packs[0][1].get("compilation", {}).get("repeated_terms", []),
             "change_phases": packs[0][1].get("compilation", {}).get("change_phases", []),
             "subquestions": packs[0][1].get("compilation", {}).get("subquestions", []),
+            "implementation_search": packs[0][1]
+            .get("compilation", {})
+            .get("implementation_search"),
             "term_coverage": packs[0][1].get("term_coverage", []) if not comparison else [],
             "packing": [
                 {

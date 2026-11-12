@@ -6115,6 +6115,102 @@ def test_context_uses_index_labels_only_for_their_linked_original_lines(work):
     assert selected[0]["selection"]["term"] in graph["search_subquestion_branches"]
     historical = call("context", "--question", question, "--at-version", str(version), "--explain")
     assert not any(part.get("indexed_routes") for part in historical["compilation"]["subquestions"])
+    task = (
+        "Implement the returns routing policy. What do we start with on the shift checklist? "
+        "Which app did Lotus use? Preserve the NoSelection sentinel."
+    )
+    result = call(
+        "context", "--question", task, "--limit", "3", "--explain", "--save", "task-recall"
+    )
+    compiled = result["compilation"]
+    assert compiled["question"] == task
+    assert compiled["implementation_search"].startswith("the returns routing policy, What do we")
+    assert "NoSelection" not in compiled["implementation_search"]
+    assert any(
+        line["conversation_id"] == "warehouse"
+        for span in result["spans"]
+        for line in span["evidence"]
+    )
+    replay = viewer._snapshot(directory, [], run_id="task-recall")
+    assert replay["search_question"] == task
+    assert replay["search_trace"]["implementation_search"] == compiled["implementation_search"]
+
+
+def test_implementation_schedule_follows_a_date_from_the_earlier_discussion(work):
+    directory, call = work
+    originals = (
+        (
+            "original",
+            "2026-07-01",
+            [
+                "Delta is planning the reading-room opening.",
+                "The read-through starts August 2.",
+                "For Delta, our conservative opening date is August 20.",
+            ],
+        ),
+        (
+            "revision",
+            "2026-07-04",
+            [
+                "Now, for Delta's opening.",
+                "The August 2 read-through is still on the calendar.",
+                "We moved to August 18 for the opening.",
+            ],
+        ),
+        (
+            "unrelated",
+            "2026-07-05",
+            [
+                "The warehouse count was due August 2.",
+                "We moved to August 22 for the warehouse count.",
+                "Now back to Delta.",
+            ],
+        ),
+    )
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {
+                    "source": {
+                        "format": "conversation",
+                        "payload": {
+                            "conversation_id": identity,
+                            "source": "transcript",
+                            "source_date": day,
+                            "metadata": {"source_reference": identity},
+                            "segments": [
+                                {"segment_id": f"L{i}", "text": text}
+                                for i, text in enumerate(texts, 1)
+                            ],
+                        },
+                    }
+                }
+                for identity, day, texts in originals
+            ]
+        },
+    )
+    task = (
+        "Implement the Delta opening schedule. What was the earlier conservative opening date? "
+        "What was the later date? Return dates as strings."
+    )
+    pack = call("context", "--question", task, "--explain", "--save", "task-schedule")
+    top = pack["packing_trace"]["candidates"][:2]
+    assert [(row["conversation_id"], row["start_offset"], row["reason"]) for row in top] == [
+        ("original", 2, "quoted"),
+        ("revision", 2, "quoted"),
+    ]
+    assert top[1]["selection"] == {
+        "reason": "dated_plan_followup",
+        "term": "August 2",
+        "question": "What was the later date",
+    }
+    graph = viewer._snapshot(directory, [], run_id="task-schedule")
+    assert graph["search_subquestion_branches"][-1] == "What was the later date"
+    followup = next(p for p in graph["passages"] if "What was the later date" in p["terms"])
+    assert [graph["evidence"][line]["text"] for line in followup["evidence"]] == [
+        "We moved to August 18 for the opening."
+    ]
 
 
 def test_context_matching_lines_checks_the_original_segment_and_saved_plan(work):

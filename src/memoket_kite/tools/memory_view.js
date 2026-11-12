@@ -41,7 +41,7 @@
       recordingSelection: {
         other_recording_followup: 'Follow-up in another recording',
         selective_original_clue: 'Rare query clue matches multiple original lines',
-        dated_plan_followup: 'A later recording cites the earlier date and mentions a change',
+        dated_plan_followup: 'A later recording repeats a date from the earlier discussion and mentions a change',
         date_corroboration: 'Another recording mentions this date for the phase',
         role_corroboration: 'Another original line discusses both named roles',
         focused_date: 'Original date statement for the named subject',
@@ -54,6 +54,7 @@
       },
       changePhases: 'Phases in the question',
       subquestions: 'Subquestions in the search plan',
+      implementationSearch: 'Task wording used for retrieval',
       indexLabels: 'Index labels',
       sameTextSources: 'Sources with the same transcript text',
       duplicateLines: 'duplicate lines reused',
@@ -117,7 +118,7 @@
       recordingSelection: {
         other_recording_followup: '另一份录制有匹配的后续原文',
         selective_original_clue: '低频检索词命中多行原文',
-        dated_plan_followup: '后续录制重提原日期并讨论改期',
+        dated_plan_followup: '后续录制重提前次讨论的日期并提到改期',
         date_corroboration: '另一份录制提到该阶段的同一日期',
         role_corroboration: '另一句原文讨论了两个对象的分工',
         focused_date: '主题相关的日期原文',
@@ -130,6 +131,7 @@
       },
       changePhases: '问题中的阶段',
       subquestions: '检索计划中的子问题',
+      implementationSearch: '用于检索的任务文字',
       indexLabels: '索引标签',
       sameTextSources: '原文相同的来源',
       duplicateLines: '行重复原文已共用',
@@ -1093,6 +1095,9 @@
         }
         trace.append(branches);
       } else {
+        if (stats.implementation_search) {
+          trace.append(element('p', `${t('implementationSearch')} · ${stats.implementation_search}`));
+        }
         trace.append(termSummary(stats.terms, stats.term_coverage));
         renderWordForms(trace, stats.word_forms);
         renderRepeatedTerms(trace, stats.repeated_terms);

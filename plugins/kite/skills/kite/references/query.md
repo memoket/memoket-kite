@@ -49,6 +49,9 @@ links to the original line.
 The current index can also use a directly linked topic or facet label together
 with original wording. The saved search shows the label, the matching wording
 and the recording for each such citation.
+An implementation request can include the subject and evidence questions in
+one `--question`. The saved graph shows the wording used for retrieval while
+the original task remains visible.
 Use times marked timezone unknown for within-day ordering only when the
 sources are known to use the same local clock. Keep ties and unknown order
 explicit in the answer.

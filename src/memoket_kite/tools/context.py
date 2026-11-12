@@ -38,6 +38,11 @@ _QUOTED_PHRASES = re.compile(r'「([^」]+)」|『([^』]+)』|“([^”]+)”|"
 _NAME_WORDS = re.compile(r"\b[A-Z][A-Za-z0-9_-]{3,}\b")
 _ACRONYMS = re.compile(r"\b[A-Z][A-Z0-9]{1,8}\b")
 _EXPLICIT_QUESTIONS = re.compile(r"([^?？。!！;；]+)[?？]")
+_IMPLEMENTATION_LEAD = re.compile(
+    r"^(?:实现|编写|修复|更新|(?:implement|build|update|fix|write)\s+)"
+    r"(?P<subject>[^?？\n]{2,100}?)(?:。|\.(?=\s|$))\s*",
+    re.I,
+)
 _ENGLISH_WORD = re.compile(r"[a-z]{4,}")
 _VOWEL_GROUP = re.compile(r"[aeiou]+")
 _FINAL_CONSONANT = re.compile(r"[^aeiou][aeiou][^aeiouwxy]$")
@@ -81,6 +86,9 @@ _SCHEDULE_CHANGE = re.compile(
     r"\b(?:reschedul\w*|postpon\w*|bring forward|brought forward|"
     r"mov(?:e|ed|ing) to|chang(?:e|ed|ing) to|push(?:ed|ing)? back)\b",
     re.I,
+)
+_PLAN_QUALIFIER = re.compile(
+    r"保守|暂定|最晚|最早|\b(?:conservative|tentative|worst[ -]case|latest|earliest)\b", re.I
 )
 _CLAUSE_BREAK = re.compile(r"[?？。！!;；]")
 _EARLIER_PHASE = re.compile(
@@ -252,6 +260,7 @@ CONTEXT_PLAN = object_schema(
         "change_phases": _CHANGE_PHASES,
         "comparison_change_phases": _CHANGE_PHASES,
         "subquestions": _SUBQUESTIONS,
+        "implementation_search": TEXT,
     },
 )
 
@@ -533,6 +542,15 @@ def _context_scope(request: dict) -> tuple[dict, str | None, str | None]:
 
 def _compile_questions(workspace, indexes, request, search, compare_search):
     index, comparison = indexes
+    implementation = None
+    if (
+        search
+        and compare_search is None
+        and not (request.get("matching_lines") or request.get("latest"))
+    ):
+        implementation = _implementation_search(search)
+        if implementation:
+            search = implementation
     terms, forms = (
         (request["terms"], [])
         if search is None
@@ -542,6 +560,7 @@ def _compile_questions(workspace, indexes, request, search, compare_search):
         "request": request,
         "terms": terms,
         "memory_version": workspace.version(),
+        **({"implementation_search": implementation} if implementation else {}),
     }
     if forms:
         result["word_forms"] = forms
@@ -559,6 +578,21 @@ def _compile_questions(workspace, indexes, request, search, compare_search):
         if phases := _compiled_change_phases(request, compare_search):
             result["comparison_change_phases"] = phases
     return result
+
+
+def _implementation_search(question):
+    lead = _IMPLEMENTATION_LEAD.match(question)
+    if lead is None or _quoted_phrases(question):
+        return None
+    following = list(_EXPLICIT_QUESTIONS.finditer(question, lead.end()))
+    if not following or following[0].start() != lead.end():
+        return None
+    # Keep the task subject with the first question. Instructions after the
+    # last question concern the output and need no index terms.
+    subject = lead["subject"].strip()
+    if not subject:
+        return None
+    return f"{subject}, {question[lead.end() : following[-1].end()]}"
 
 
 def _compile_subquestions(index, request, question):
@@ -722,7 +756,8 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
             neighbors=request.get("neighbors", 0 if request.get("matching_lines") else 1),
             focus=question is not None,
             _index=search_index,
-            _question=question,
+            _question=compiled.get("implementation_search", question),
+            implementation_task="implementation_search" in compiled,
             prioritize_first_lines=compare_terms is not None and "limit" not in request,
             word_forms=forms,
             change_phases=phases,
@@ -737,6 +772,8 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
         )
         if question is not None:
             result["compilation"] = {"question": question, "terms": terms}
+            if "implementation_search" in compiled:
+                result["compilation"]["implementation_search"] = compiled["implementation_search"]
             if forms:
                 result["compilation"]["word_forms"] = forms
             if phases:
@@ -1544,20 +1581,29 @@ def _schedule_followup(workspace, index, plan, rows, limit, line_budget):
                 break
         if len(pivots) == 3:
             break
+    return next(_dated_schedule_changes(index, pivots, segments, line_budget), None)
+
+
+def _dated_schedule_changes(index, pivots, segments, line_budget, *, topic=None):
     where, args = _search_scope(index.filters)
     for pivot, (display, day, shared) in pivots.items():
         matches = index.db.execute(
             f"SELECT checksum, start, stop, day FROM context_spans WHERE {where} AND day > ? "
-            "ORDER BY day DESC, checksum, start LIMIT 32",
-            (f'text : "{pivot}"', *args, day),
+            "ORDER BY day DESC, checksum, start LIMIT ?",
+            (f'text : "{pivot}"', *args, day, 33 if topic else 32),
         )
-        for row in matches:
+        rows = matches.fetchall()
+        if topic and len(rows) > 32:
+            continue
+        for row in rows:
             original = segments(row)
             for pos in range(row["start"], row["stop"]):
                 text = original[pos]["text"]
                 if pivot not in {_tokens(date[0]) for date in _CALENDAR_DAY.finditer(text)}:
                     continue
-                if not any(f" {clue} " in f" {_tokens(text)} " for clue in shared):
+                if topic is None and not any(
+                    f" {clue} " in f" {_tokens(text)} " for clue in shared
+                ):
                     continue
                 for changed in range(pos, min(pos + 3, len(original))):
                     statement = original[changed]["text"]
@@ -1567,14 +1613,71 @@ def _schedule_followup(workspace, index, plan, rows, limit, line_budget):
                         and _SCHEDULE_CHANGE.search(statement)
                         and len(statement.encode("utf-8")) <= line_budget
                     ):
-                        return {
+                        if topic and not any(
+                            f" {topic} " in f" {_tokens(line['text'])} "
+                            for line in original[max(0, pos - 2) : changed + 1]
+                        ):
+                            continue
+                        yield {
                             **dict(row),
                             "start": pos,
                             "stop": changed + 1,
                             "direct_positions": [changed],
                             "selection": {"reason": "dated_plan_followup", "term": display},
                         }
-    return None
+
+
+def _implementation_schedule(workspace, index, question, subquestions, max_bytes):
+    parts = _EXPLICIT_QUESTIONS.findall(question)
+    if len(parts) != 2 or not _EARLIER_PHASE.search(parts[0]) or not _LATER_PHASE.search(parts[1]):
+        return []
+    qualifiers = _PLAN_QUALIFIER.findall(parts[0])
+    if not qualifiers or not _SCHEDULE_QUESTION.search(question):
+        return []
+    earlier = next((part for part in subquestions if part["question"] == parts[0].strip()), None)
+    if not earlier or not earlier["anchors"]:
+        return []
+    picked = _subquestion_evidence(workspace, index, [{**earlier, "terms": qualifiers}], max_bytes)
+    if not picked or not picked[0]["day"]:
+        return []
+    original = picked[0]
+    records = {}
+
+    def segments(row):
+        checksum = row["checksum"]
+        if checksum not in records:
+            record = (
+                index.records[checksum] if index.records is not None else workspace.record(checksum)
+            )
+            records[checksum] = record["conversation"]["segments"]
+        return records[checksum]
+
+    lines = segments(original)
+    pos = original["start"]
+    if not _CALENDAR_DAY.search(lines[pos]["text"]):
+        return []
+    # Dates in the lead-up can identify a later recap of the same plan even
+    # if the later discussion never repeats the original proposed date.
+    pivots = {
+        _tokens(date[0]): (date[0], original["day"], ())
+        for line in lines[max(0, pos - 8) : pos + 1]
+        for date in _CALENDAR_DAY.finditer(line["text"])
+    }
+    if len(pivots) > 8:
+        return []
+    topic = _tokens(original["selection"]["clues"][0])
+    matches = {}
+    for change in _dated_schedule_changes(index, pivots, segments, max_bytes // 3, topic=topic):
+        key = (change["checksum"], change["direct_positions"][0])
+        matches.setdefault(key, change)
+        if len(matches) > 1:
+            return []
+    if not matches:
+        return []
+    revised = next(iter(matches.values()))
+    revised["start"] = revised["direct_positions"][0]
+    revised["selection"]["question"] = parts[1].strip()
+    return [original, revised]
 
 
 def _compiled_change_phases(request, question):
@@ -2404,6 +2507,7 @@ def _context_evidence(
     focus,
     _index,
     _question,
+    implementation_task=False,
     prioritize_first_lines=False,
     word_forms=(),
     change_phases=(),
@@ -2476,11 +2580,17 @@ def _context_evidence(
                 )
         reserved_clauses = []
         followup = None
+        task_dates = (
+            _implementation_schedule(workspace, index, _question, subquestions, max_bytes)
+            if implementation_task and limit >= 3 and not preferred
+            else []
+        )
+        candidates[:0] = task_dates
         if (
             _question
             and neighbors
             and candidates
-            and not (preferred or anchors or matching_lines or plan.get("latest"))
+            and not (task_dates or preferred or anchors or matching_lines or plan.get("latest"))
         ):
             sequence = _SCHEDULE_SEQUENCE.search(_question)
             if limit >= 2 and sequence and _SCHEDULE_QUESTION.search(_question):
@@ -2529,7 +2639,7 @@ def _context_evidence(
                 # match at the front of this version's half of the budget.
                 leading = candidates.pop(0)
                 candidates.insert(first + len(reserved_clauses) - 1, leading)
-        if subquestions and not (preferred or reserved_clauses or followup):
+        if subquestions and not (task_dates or preferred or reserved_clauses or followup):
             named = _subquestion_evidence(workspace, index, subquestions, max_bytes)
             covered = {row["selection"]["term"] for row in named}
             leading = {row["checksum"] for row in (*named, *candidates[:limit])}

@@ -4,6 +4,13 @@ description: Retrieve cited original passages from a task in one local call.
 ---
 
 Run `kite-tool context --question "$QUESTION" --text` with the user's task.
+For an implementation request with evidence questions, pass the request as
+given. The compiler can keep the task subject and questions together and
+skip trailing implementation instructions during retrieval. Apply the user's
+implementation constraints after reading the cited original lines.
+For a qualified earlier date and a later schedule question, the search can
+follow a date repeated in a later recording with the same named subject.
+Keep recording dates separate from the dates mentioned in the plan.
 Pass two questions together when the user gave them as one request. The
 compiler can keep named subquestions and the search can reserve a line when a
 name and another clue identify it within the recording window. Inspect the
