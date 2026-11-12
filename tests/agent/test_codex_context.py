@@ -42,7 +42,7 @@ def test_submit_repacks_an_oversized_context_after_escaping(tmp_path):
         "#!/bin/sh\n"
         'printf "%s\\n" "$*" >> calls\n'
         'if [ "$5" = "--limit" ]; then\n'
-        '  test "$6:$7:$8" = "4:--max-bytes:1800" || exit 1\n'
+        '  test "$6:$7:$8" = "4:--max-bytes:900" || exit 1\n'
         '  printf "%s\\n" "[release#L2] The date is Wednesday."\n'
         "else\n"
         '  printf "[other#L1] "\n'

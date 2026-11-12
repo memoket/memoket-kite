@@ -32,8 +32,9 @@ def prepare_context(event, launcher):
     deadline = time.monotonic() + SEARCH_SECONDS
     try:
         # Retry only if the escaped evidence and its citation headers exceed
-        # the delivery limit. KITE repacks complete lines using the same query.
-        for budget in ((), ("--limit", "4", "--max-bytes", "1800")):
+        # the delivery limit. Escaping can expand one byte to six, so leave
+        # room for the citation headers and guidance as well as the quotes.
+        for budget in ((), ("--limit", "4", "--max-bytes", "900")):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return None
