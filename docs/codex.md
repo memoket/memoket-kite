@@ -141,6 +141,11 @@ Open **Recording dates** beside the search field to set an inclusive meeting
 window. You can combine it with a workspace version. The search detail panel
 groups the returned passages by recording day and opens each cited passage in
 the graph. Effective dates and approval status are in the original wording.
+Search subquestions appear on their own layer above the stored topics, entities,
+and facets linked to the quoted lines. **Replay search** follows the recorded
+paths to those quotes and lights an annotation when the trace identifies it as a
+search input. Start `context-search` with `--visualize`, or save a search with
+`kite-tool context --explain --save` to record the candidate details for replay.
 Open **Compare** next to search to add a second question. Each question shows
 its own compiled phrases and original passages under the shared date and
 version filters.

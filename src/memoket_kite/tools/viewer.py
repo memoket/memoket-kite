@@ -85,6 +85,97 @@ def _recording_dates(plan: dict) -> dict:
     return {key: plan[key] for key in ("start_date", "end_date") if key in plan}
 
 
+def _selected_search_lines(pack: dict):
+    for candidate in pack.get("packing_trace", {}).get("candidates", ()):
+        if candidate["quoted_lines"] != 1 or not candidate.get("selection"):
+            continue
+        line = candidate.get("source_line_id")
+        start = candidate["start_offset"]
+        if line is None and candidate["end_offset"] == start + 1:
+            line = f"{revision_id({'checksum': candidate['revision_checksum']})}L{start + 1}"
+        if line:
+            yield line, candidate["selection"]
+
+
+def _search_annotations(workspace, passages, evidence):
+    """Join quotes to annotations on the exact source revision and segment."""
+    by_revision = {}
+    for line_id, quote in evidence.items():
+        by_revision.setdefault(quote["revision_checksum"], {})[quote["segment_id"]] = line_id
+    indexed = {}
+    for checksum, segments in by_revision.items():
+        for span in workspace.record(checksum).get("index_spans", ()):
+            for segment_id in segments.keys() & set(span["segment_ids"]):
+                indexed.setdefault(segments[segment_id], []).append(span)
+    if not indexed:
+        return [], []
+
+    vocab = workspace.vocabulary()
+    topics, entities = {}, {}
+
+    def include_topic(code):
+        if code in topics:
+            return
+        topic = vocab.topics[code]
+        topics[code] = {
+            "code": code,
+            "aliases": sorted(topic.aliases),
+            "parents": sorted(topic.parents),
+        }
+        for parent in topics[code]["parents"]:
+            include_topic(parent)
+
+    for passage in passages:
+        passage_topics, passage_entities, facets = set(), set(), {}
+        for line in passage["evidence"]:
+            labels = {}
+
+            def note(node, names):
+                for name in names:
+                    labels.setdefault(_tokens(name), set()).add(node)
+
+            for span in indexed.get(line, ()):
+                for name in span["topics"]:
+                    if code := vocab.resolve_topic(name):
+                        include_topic(code)
+                        passage_topics.add(code)
+                        note(f"topic:{code}", [code, name, *topics[code]["aliases"]])
+                for name in span["entities"]:
+                    if code := vocab.resolve_entity(name):
+                        entity = vocab.entities[code]
+                        entities[code] = {
+                            "code": code,
+                            "label": entity.name or code,
+                            "aliases": sorted(entity.aliases),
+                        }
+                        passage_entities.add(code)
+                        note(f"entity:{code}", [code, name, *entity.aliases])
+                for axis, values in span.get("facets", {}).items():
+                    for value in [values] if isinstance(values, str) else values:
+                        facets.setdefault(axis, set()).add(value)
+                        note(f"facet:{axis}:{value}", [value])
+
+            if labels:
+                evidence[line]["index_nodes"] = sorted(set().union(*labels.values()))
+            for route in passage.get("retrieval", ()):
+                if route["line_id"] != line:
+                    continue
+                route["index_nodes"] = sorted(
+                    {
+                        node
+                        for name in route.get("labels", ())
+                        if len(matches := labels.get(_tokens(name), ())) == 1
+                        for node in matches
+                    }
+                )
+        passage.update(
+            topics=sorted(passage_topics),
+            entities=sorted(passage_entities),
+            facets={axis: sorted(values) for axis, values in sorted(facets.items())},
+        )
+    return list(topics.values()), list(entities.values())
+
+
 def _search_snapshot(
     workspace: Workspace,
     terms: list[str],
@@ -145,14 +236,11 @@ def _search_snapshot(
             ]
         else:
             packs = [(question, result)]
-            for candidate in result.get("packing_trace", {}).get("candidates", ()):
-                selection = candidate.get("selection", {})
+            for line, selection in _selected_search_lines(result):
                 branch = selection.get("question")
                 if selection.get("reason") in {"subquestion_clues", "subquestion_index"}:
                     branch = selection["term"]
-                if branch and candidate["quoted_lines"]:
-                    revision = revision_id({"checksum": candidate["revision_checksum"]})
-                    line = f"{revision}L{candidate['start_offset'] + 1}"
+                if branch:
                     subquestion_branches[line] = branch
         terms = [key for key, _ in packs]
     elif saved is not None or scope.get("matching_lines"):
@@ -180,6 +268,7 @@ def _search_snapshot(
             for term in terms
         ]
     for term, pack in packs:
+        selected_lines = dict(_selected_search_lines(pack))
         compiled = [
             (phrase, f" {tokens} ")
             for phrase in pack["plan"]["terms"]
@@ -229,6 +318,16 @@ def _search_snapshot(
             if len(lines) > 1:
                 citation += f"–{last['segment_id']}"
             passage = passages.setdefault(ids, {"label": citation, "evidence": ids, "terms": []})
+            for line in ids:
+                if selection := selected_lines.get(line):
+                    routes = passage.setdefault("retrieval", [])
+                    route = {
+                        **selection,
+                        "line_id": line,
+                        "branch": subquestion_branches.get(line, term),
+                    }
+                    if route not in routes:
+                        routes.append(route)
             if copy_checksums:
                 passage["same_text_sources"] = list(
                     dict.fromkeys([*passage.get("same_text_sources", ()), *copy_checksums])
@@ -268,10 +367,12 @@ def _search_snapshot(
         source_count = workspace.db.execute(
             "SELECT count(*) FROM revisions WHERE active=1"
         ).fetchone()[0]
+    topics, entities = _search_annotations(workspace, passages.values(), evidence)
     return {
         "version": workspace.version(),
         "sources": source_count,
-        "topics": [],
+        "topics": topics,
+        "entities": entities,
         "facts": [],
         "states": {},
         "revisions": list(sources.values()),

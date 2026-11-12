@@ -79,6 +79,8 @@ class MemoryScene {
     this.camera = { yaw: -.20, pitch: .48, zoom: 1, x: 0, y: 0 };
     this.palette = {
       topic: { top: '#8ce0c7', front: '#3e9485', side: '#276a63', glow: '#8bf0d6' },
+      query: { top: '#e4a6e9', front: '#965caa', side: '#6d457e', glow: '#f6c1fa' },
+      subquestion: { top: '#e4a6e9', front: '#965caa', side: '#6d457e', glow: '#f6c1fa' },
       memory: { top: '#f7c389', front: '#bc7750', side: '#85513e', glow: '#ffd5a8' },
       facet: { top: '#84c9ef', front: '#4d8eb4', side: '#315a79', glow: '#ade0fc' },
       line: { top: '#d3c0f4', front: '#9378be', side: '#6e58a1', glow: '#e3d0ff' },
@@ -187,6 +189,7 @@ class MemoryScene {
       const tag = this.tags.get(node.id) || document.createElement('button');
       tag.className = 'graph-label';
       tag.type = 'button';
+      tag.dataset.kind = node.kind;
       tag.title = node.label;
       tag.textContent = node.label;
       if (node.change) tag.dataset.change = node.change;
@@ -337,7 +340,7 @@ class MemoryScene {
     const left = this.project([a[0], middle, a[2]]);
     const right = this.project([b[0], middle, b[2]]);
     const curve = shared || cooccurrence || Math.abs(a[1] - b[1]) < .1;
-    const color = this.changeColors[edge.change] || (shared ? '#c2d3ec' : correction ? '#efafd2' : cooccurrence ? '#f5cb83'
+    const color = this.changeColors[edge.change] || (shared ? '#c2d3ec' : correction ? '#efafd2' : cooccurrence ? '#f5cb83' : kind === 'query' ? this.palette.query.top
       : kind === 'mention' || kind === 'facet' ? this.palette[from.kind].top : this.palette[to.kind].top);
     context.beginPath();
     context.moveTo(start.x, start.y);
@@ -381,6 +384,7 @@ class MemoryScene {
     const dimensions = {
       topic: [.34, .25, .18], memory: [.34, .23, .115], facet: [.31, .22, .19], line: [.20, .16, .08],
       source: [.31, .25, .16], state: [.24, .20, .15], entity: [.25, .20, .14],
+      query: [.45, .22, .11], subquestion: [.37, .16, .09],
     };
     const [dx, dz, dy] = dimensions[node.kind];
     const floor = y - .05;
@@ -524,7 +528,7 @@ class MemoryScene {
       };
       for (const node of active) nodes.set(node, mark);
       for (const edge of this.scene.edges) {
-        if ((edge.kind === 'association' || edge.kind === 'citation')
+        if (['association', 'citation', 'query', 'mention', 'facet'].includes(edge.kind)
             && active.has(edge.from) && active.has(edge.to)) edges.set(edge, mark);
       }
     }

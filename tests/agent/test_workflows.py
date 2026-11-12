@@ -118,11 +118,14 @@ def test_start_opens_workflow_graph_only_when_requested(work, monkeypatch):
         return {"url": "http://127.0.0.1:8000/local/", "opened": True}
 
     monkeypatch.setattr(cli, "view_memory", open_graph)
+    source = text_input("launch", "The checklist changed.")["source"]
+    call("index-sources", payload={"sources": [{"source": source}]})
     request = {"request": {"question": "What changed in the launch checklist?"}}
     plain = call("start", "context-search", "--run-id", "plain", payload=request)
     assert not opened and "viewer" not in plain
     watched = call("start", "context-search", "--run-id", "watched", "--visualize", payload=request)
     assert opened == ["watched"] and watched["viewer"]["opened"]
+    assert call("stage", "watched", "compile")["value"]["request"]["explain"] is True
 
 
 def test_memory_viewer_reads_fresh_committed_state(work):
@@ -6380,7 +6383,11 @@ def test_context_uses_index_labels_only_for_their_linked_original_lines(work):
     tagged = text_input("warehouse", "Start with the amber kit and the green card.")["source"]
     indexed = {
         "source": tagged,
-        "annotations": {"facts": [], "index_spans": [{**labels, "segment_ids": ["text-1"]}]},
+        "annotations": {
+            "facts": [],
+            "taxonomy": [{"name": "returns routing", "parents": ["warehouse operations"]}],
+            "index_spans": [{**labels, "entities": ["Dockmaster"], "segment_ids": ["text-1"]}],
+        },
     }
     adjacent = {
         "source": {
@@ -6425,6 +6432,27 @@ def test_context_uses_index_labels_only_for_their_linked_original_lines(work):
     assert pack["quote_bytes"] <= pack["quote_budget_bytes"]
     graph = viewer._snapshot(directory, [], run_id="indexed-clues")
     assert selected[0]["selection"]["term"] in graph["search_subquestion_branches"]
+    assert {topic["code"]: topic["parents"] for topic in graph["topics"]} == {
+        "returns_routing": ["warehouse_operations"],
+        "warehouse_operations": [],
+    }
+    quote = selected[0]["source_line_id"]
+    assert set(graph["evidence"][quote]["index_nodes"]) == {
+        "topic:returns_routing",
+        "entity:dockmaster",
+        "facet:event:shift_checklist",
+    }
+    passage = next(row for row in graph["passages"] if quote in row["evidence"])
+    assert passage["entities"] == ["dockmaster"]
+    assert passage["facets"] == {"event": ["shift_checklist"]}
+    used = {
+        "returns_routing": "topic:returns_routing",
+        "shift_checklist": "facet:event:shift_checklist",
+    }
+    route = next(row for row in passage["retrieval"] if row["line_id"] == quote)
+    assert set(route["index_nodes"]) == {
+        used[label] for label in selected[0]["selection"]["labels"]
+    }
     historical = call("context", "--question", question, "--at-version", str(version), "--explain")
     assert not any(part.get("indexed_routes") for part in historical["compilation"]["subquestions"])
     task = (

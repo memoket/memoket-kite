@@ -2374,6 +2374,8 @@ def _pack(
                     if index < len(traced):
                         traced[index].update(quoted_lines=len(chosen), trimmed_lines=len(removed))
         revision = revision_id(record)
+        if index < len(traced) and "selection" in traced[index] and len(chosen) == 1:
+            traced[index]["source_line_id"] = f"{revision}L{chosen[0] + 1}"
         group = group_by_checksum.get(record["checksum"])
         copies = list(compact_copies.get(record["checksum"], ()))
         if group in shared_groups:

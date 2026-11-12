@@ -431,6 +431,9 @@ class Workspace:
     def version(self) -> int:
         return self.db.execute("SELECT version FROM memory WHERE singleton=1").fetchone()[0]
 
+    def vocabulary(self):
+        return vocabulary_at_commit(self._memory()["xml"])
+
     def snapshot_identity(self) -> tuple[str, int]:
         row = self.db.execute(
             "SELECT workspace_id, version FROM memory WHERE singleton=1"

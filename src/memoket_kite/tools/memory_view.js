@@ -16,10 +16,18 @@
   const sourceScope = snapshot.search_source_scope || {};
   let searchAllSources = false;
   let explainCandidates = Boolean(snapshot.search_trace?.packing?.length);
+  let searchPlanOpen = false;
   const copy = {
     en: {
       title: 'Memory Graph', searchTitle: 'Search Evidence', topics: 'Topics', terms: 'Search terms', questions: 'Search questions',
       topic: 'Topic', memory: 'Memory', line: 'Quoted line', source: 'Source revision', state: 'State',
+      query: 'Query', subquestion: 'Search subquestion', queryLink: 'Search path',
+      retrievalPath: 'How this line was found', retrievalReplay: 'Replay search',
+      sourceTextRoute: 'Text in the same recording', textIndexRoute: 'Full-text index',
+      dateIndexRoute: 'Recording dates + date in the transcript', labelIndexRoute: 'Annotation index + full text',
+      noUsedLabels: 'This run records no topic, entity or facet selection for these quotes.',
+      candidateLabels: 'Candidate labels',
+      searchPlan: 'Search plan and candidates',
       allMode: 'All topics', topicMode: 'Topic hierarchy', memoryMode: 'Evidence path', overview: 'Back to topics',
       entity: 'Entity', entities: 'Related entities', entityCatalog: 'Entities', mention: 'Entity link', aliases: 'Aliases',
       facet: 'Facet', facets: 'Facets', facetLink: 'Facet link', annotations: 'Indexed annotations',
@@ -99,6 +107,13 @@
     zh: {
       title: '记忆图谱', searchTitle: '原文检索', topics: '主题', terms: '检索词', questions: '检索问题',
       topic: '主题', memory: '记忆', line: '原文行', source: '来源版本', state: '状态',
+      query: '检索请求', subquestion: '检索子问题', queryLink: '检索路径',
+      retrievalPath: '原文如何命中', retrievalReplay: '重播检索',
+      sourceTextRoute: '同一录制的正文', textIndexRoute: '全文索引',
+      dateIndexRoute: '录制日期索引＋原文日期', labelIndexRoute: '标注索引＋正文',
+      noUsedLabels: '本次记录未显示通过主题、实体或 Facet 选中这些引用。',
+      candidateLabels: '候选标签',
+      searchPlan: '检索计划和候选',
       allMode: '全部主题', topicMode: '主题层级', memoryMode: '原文路径', overview: '返回主题图谱',
       entity: '实体', entities: '相关实体', entityCatalog: '实体', mention: '实体关联', aliases: '别名',
       facet: 'Facet', facets: 'Facets', facetLink: '维度关联', annotations: '已索引标注',
@@ -187,6 +202,7 @@
   }
 
   const topics = new Map();
+  const searchBranches = new Map();
   const memories = new Map();
   const sources = new Map();
   const lines = new Map();
@@ -209,10 +225,13 @@
       ? term.match(/^([^。？！?]+?)(?:。|\.\s)/)?.[1] : undefined;
     const label = part?.history ? `v${part.history.version}` : part?.question || subject || term;
     const parents = snapshot.search_subquestion_branches?.includes(term) ? [snapshot.search_question] : [];
-    topics.set(term, { id: 'term:' + term, kind: 'topic', code: term, label, parents, aliases: [], children: [], memories: [] });
+    searchBranches.set(term, { id: 'term:' + term, kind: parents.length ? 'subquestion' : 'query',
+      code: term, label, parents, aliases: [], children: [], memories: [] });
   }
-  for (const topic of topics.values()) {
-    for (const parent of topic.parents) topics.get(parent)?.children.push(topic);
+  const groupMap = node => node?.kind === 'topic' ? topics : searchBranches;
+  const isGroup = node => node?.kind === 'topic' || node?.kind === 'query' || node?.kind === 'subquestion';
+  for (const group of [...topics.values(), ...searchBranches.values()]) {
+    for (const parent of group.parents) groupMap(group).get(parent)?.children.push(group);
   }
   for (const revision of snapshot.revisions) {
     sources.set(revision.checksum, {
@@ -235,7 +254,8 @@
   ];
   for (const row of rows) {
     const evidence = [...new Set(row.evidence)].map(id => lines.get(id)).filter(Boolean);
-    const associations = [...new Set(row.terms || row.topics || [])].map(code => topics.get(code)).filter(Boolean);
+    const associations = [...new Set(row.topics || [])].map(code => topics.get(code)).filter(Boolean);
+    const branches = [...new Set(row.terms || [])].map(code => searchBranches.get(code)).filter(Boolean);
     const primary = evidence.map(line => sources.get(line.revision_checksum)).filter(Boolean);
     const copies = (row.same_text_sources || []).map(checksum => sources.get(checksum)).filter(Boolean);
     const revisions = [...new Set([...primary, ...copies])];
@@ -250,18 +270,21 @@
     });
     const memory = {
       ...row, id: 'memory:' + row.key, kind: 'memory', evidence,
-      topics: associations, sources: revisions, sameTextSources: copies,
+      topics: associations, branches, sources: revisions, sameTextSources: copies,
       entities: linkedEntities, facets: linkedFacets, state: states.get(row.state_key), corrections: [],
     };
     memories.set(row.key, memory);
-    for (const item of [...evidence, ...associations, ...revisions, ...linkedEntities, ...linkedFacets]) item.memories.push(memory);
+    for (const item of [...evidence, ...associations, ...branches, ...revisions, ...linkedEntities, ...linkedFacets]) item.memories.push(memory);
     memory.state?.memories.push(memory);
   }
   for (const memory of memories.values()) {
     const previous = memories.get(memory.supersedes);
     if (previous) previous.corrections.push(memory);
   }
+  const annotationNodes = new Map([...topics.values(), ...entities.values(), ...facets.values()]
+    .map(node => [node.id, node]));
   const roots = [...topics.values()].filter(topic => !topic.parents.some(parent => topics.has(parent)));
+  const searchRoots = [...searchBranches.values()].filter(branch => !branch.parents.length);
   const topicTotals = new Map();
 
   function topicMemories(topic, visited = new Set()) {
@@ -278,12 +301,12 @@
     let current = topic;
     while (current && !parents.includes(current)) {
       parents.unshift(current);
-      current = current.parents.map(key => topics.get(key)).find(Boolean);
+      current = current.parents.map(key => groupMap(current).get(key)).find(Boolean);
     }
     return parents;
   }
 
-  let currentTopic = topics.get(query.get('topic')) || roots[0];
+  let currentTopic = topics.get(query.get('topic')) || searchRoots[0] || roots[0];
   const requestedNode = query.get('node');
   const linkedNode = requestedNode && [...entities.values(), ...facets.values(), ...sources.values()]
     .find(node => node.id === requestedNode);
@@ -462,7 +485,7 @@
       });
       candidates = [...ranked.filter(memory => related.has(memory)), ...diverse, ...ranked];
     }
-    if (searching && node?.kind === 'topic') candidates = [...candidates, ...memories.values()];
+    if (searching && isGroup(node)) candidates = [...candidates, ...memories.values()];
     if (node?.kind === 'topic' && !searching) candidates = importedFirst(newestTopicMemories(candidates));
     if (focused) {
       const explicit = [memories.get(focused.supersedes), ...focused.corrections].filter(Boolean);
@@ -479,17 +502,24 @@
       for (const source of newSources) sourceSet.add(source);
     }
 
-    const topicSet = new Set(currentTopic && !isAnnotation(node) && node?.kind !== 'source' ? [currentTopic] : []);
-    if (focused) for (const topic of focused.topics) topicSet.add(topic);
-    if (searching && node?.kind === 'topic') for (const topic of topics.values()) topicSet.add(topic);
+    const topicSet = new Set();
+    const branchSet = new Set();
+    function addGroup(group) {
+      const set = group.kind === 'topic' ? topicSet : branchSet;
+      for (const node of searching ? lineage(group) : [group]) set.add(node);
+    }
+    if (currentTopic && !isAnnotation(node) && node?.kind !== 'source') addGroup(currentTopic);
+    if (focused) for (const group of [...focused.topics, ...focused.branches]) addGroup(group);
+    if (searching && isGroup(node)) for (const branch of searchBranches.values()) addGroup(branch);
     for (const memory of selectedMemories) {
-      for (const topic of memory.topics) if (topicSet.size < 9) topicSet.add(topic);
+      for (const topic of memory.topics) if (topicSet.size < 9) addGroup(topic);
+      for (const branch of memory.branches) addGroup(branch);
     }
     let quoted = focused?.evidence || [];
     if (node?.kind === 'topic' && progress?.change?.paths?.length) {
       quoted = [...new Set(selectedMemories.filter(isImportedMemory).flatMap(memory => memory.evidence))];
     }
-    if (searching && node?.kind === 'topic' && progress?.saved_search) {
+    if (searching && isGroup(node)) {
       quoted = [...new Set(selectedMemories.flatMap(memory => memory.evidence))];
     }
     if (isAnnotation(node) || node?.kind === 'source') {
@@ -509,13 +539,18 @@
     if (isAnnotation(node)) for (const [peer] of cooccurring(node, selectedMemories)) {
       if (entitySet.has(peer) || facetSet.has(peer)) edges.push(connection(node, peer, 'cooccurrence'));
     }
-    for (const topic of topicSet) {
-      for (const parent of topic.parents) if (topicSet.has(topics.get(parent))) {
-        edges.push(connection(topics.get(parent), topic, 'hierarchy'));
+    for (const [groups, kind] of [[topicSet, 'hierarchy'], [branchSet, 'query']]) {
+      for (const group of groups) for (const key of group.parents) {
+        const parent = groupMap(group).get(key);
+        if (groups.has(parent)) edges.push(connection(parent, group, kind));
       }
     }
     for (const memory of selectedMemories) {
       for (const topic of memory.topics) if (topicSet.has(topic)) edges.push(connection(topic, memory, 'association'));
+      const specific = memory.branches.filter(branch => branch.kind === 'subquestion');
+      for (const branch of specific.length ? specific : memory.branches) {
+        if (branchSet.has(branch)) edges.push(connection(branch, memory, 'query'));
+      }
       for (const entity of memory.entities) if (entitySet.has(entity)) edges.push(connection(entity, memory, 'mention'));
       for (const facet of memory.facets) if (facetSet.has(facet)) edges.push(connection(facet, memory, 'facet'));
       if (memory.state && stateSet.has(memory.state)) edges.push(connection(memory.state, memory, 'association'));
@@ -533,6 +568,7 @@
     }
     return {
       layers: [
+        { kind: 'query', nodes: [...branchSet] },
         { kind: 'topic', nodes: [...topicSet] },
         { kind: 'entity', nodes: [...entitySet] },
         { kind: 'facet', nodes: [...facetSet] },
@@ -561,7 +597,7 @@
     const previous = selected;
     relatedFrom = via;
     selected = node;
-    if (node.kind === 'topic') {
+    if (isGroup(node)) {
       currentTopic = node;
       browseTopic = node;
     } else {
@@ -571,7 +607,8 @@
         const anchor = isAnnotation(previous) ? previous.memories.find(memory => memory.evidence.includes(node)) : undefined;
         referenceMemory = anchor || (node.memories.includes(referenceMemory) ? referenceMemory : node.memories[0]);
       }
-      const candidates = node.topics || node.memories?.[0]?.topics || [];
+      const memory = node.kind === 'memory' ? node : node.memories?.[0];
+      const candidates = memory ? [...memory.branches, ...memory.topics] : [];
       if (candidates.length && !rankedMemories(currentTopic).includes(node.kind === 'memory' ? node : node.memories?.[0])) {
         currentTopic = candidates[0];
       }
@@ -690,6 +727,7 @@
         if (seen.has(node)) continue;
         const item = element('li');
         const row = button(undefined, () => choose(node), 'tree-row');
+        row.dataset.kind = node.kind;
         row.setAttribute('aria-current', String(node === browseTopic));
         row.title = node.label;
         row.append(element('span', '', 'tree-symbol'), element('span', node.label),
@@ -700,7 +738,9 @@
       }
       return list;
     }
-    byId('categories').replaceChildren(branch(roots));
+    const categories = byId('categories');
+    categories.replaceChildren(branch(searching ? searchRoots : roots));
+    if (searching && roots.length) categories.append(element('h3', t('topics')), branch(roots));
     renderCatalogNavigation();
   }
 
@@ -708,13 +748,13 @@
     const trail = isAnnotation(selected) || selected?.kind === 'source' ? [] : lineage(currentTopic);
     const path = byId('breadcrumbs');
     path.setAttribute('aria-label', t('path'));
-    path.hidden = !trail.length || (trail.length < 2 && selected?.kind === 'topic');
+    path.hidden = !trail.length || (trail.length < 2 && isGroup(selected));
     path.replaceChildren();
     for (const item of trail) {
       if (path.childElementCount) path.append(element('span', '/'));
       path.append(item === selected ? element('span', item.label) : button(item.label, () => choose(item)));
     }
-    if (selected && selected.kind !== 'topic') {
+    if (selected && !isGroup(selected)) {
       if (path.childElementCount) path.append(element('span', '/'));
       path.append(element('span', t(selected.kind)));
     }
@@ -854,7 +894,7 @@
     header.append(badge, element('h2', selected.label));
     panel.append(header);
 
-    if (kind === 'topic') {
+    if (isGroup(selected)) {
       const all = rankedMemories(selected);
       header.append(element('p', number.format(all.length) + ' ' + t('records'), 'detail-meta'));
       if (searching && !all.length) panel.append(element('p', t('noMatches'), 'detail-meta'));
@@ -866,9 +906,12 @@
           node, note: node.line_count != null ? number.format(node.line_count) + ' ' + t('sourceLines') : undefined,
         })));
       }
-      section(panel, 'parents', selected.parents.map(key => topics.get(key)).filter(Boolean));
-      section(panel, 'children', selected.children.map(node => ({ node, note: number.format(topicMemories(node).length) + ' ' + t('records') })));
-      section(panel, 'relatedTopics', sharedTopics(selected).map(([node, count]) => ({ node, note: number.format(count) + ' ' + t('shared') })));
+      if (kind === 'topic') {
+        section(panel, 'parents', selected.parents.map(key => topics.get(key)).filter(Boolean));
+        section(panel, 'relatedTopics', sharedTopics(selected).map(([node, count]) => ({ node, note: number.format(count) + ' ' + t('shared') })));
+      }
+      section(panel, kind === 'topic' ? 'children' : 'subquestions', selected.children.map(node => ({ node, note: number.format(topicMemories(node).length) + ' ' + t('records') })));
+      if (kind !== 'topic') section(panel, 'linkedTopics', [...new Set(all.flatMap(memory => memory.topics))]);
       section(panel, 'entities', [...new Set(all.flatMap(memory => memory.entities))]);
       section(panel, 'facets', [...new Set(all.flatMap(memory => memory.facets))].map(node => ({ node, note: t(node.axis) })));
       if (mode !== 'memory' && all.length) panel.append(button(t('openEvidence'), () => changeMode('memory'), 'overview'));
@@ -890,6 +933,7 @@
       if (selected.state?.value) metadata.push(t('current') + ' · ' + selected.state.value);
       if (metadata.length) header.append(element('p', metadata.join(' · '), 'detail-meta'));
       section(panel, 'alsoFiled', selected.topics);
+      section(panel, 'questions', selected.branches);
       section(panel, 'entities', selected.entities);
       section(panel, 'facets', selected.facets.map(node => ({ node, note: t(node.axis) })));
       citationSection(panel, t('original'), selected.evidence);
@@ -907,6 +951,10 @@
       const original = element('section');
       original.append(element('h3', t('original')), citation(selected));
       panel.append(original);
+      const annotations = (selected.index_nodes || []).map(id => annotationNodes.get(id)).filter(Boolean);
+      section(panel, 'linkedTopics', annotations.filter(node => node.kind === 'topic'));
+      section(panel, 'entities', annotations.filter(node => node.kind === 'entity'));
+      section(panel, 'facets', annotations.filter(node => node.kind === 'facet').map(node => ({ node, note: t(node.axis) })));
       section(panel, 'sources', [sources.get(selected.revision_checksum)].filter(Boolean));
     } else if (kind === 'source') {
       const metadata = [recordingClock(selected) || selected.day || t('noDate'), selected.active === false ? t('historical') : t('active')];
@@ -962,6 +1010,7 @@
       ['hierarchy', 'hierarchy', 'solid'], ['citation', 'cites', 'solid'],
       ['mention', 'mention', 'mention'],
       ['facet', 'facetLink', 'facet'],
+      ['query', 'queryLink', 'query'],
       ['cooccurrence', 'cooccurrence', 'cooccurrence'],
     ];
     for (const [kind, label, style] of meanings) if (displayed.edges.some(edge => edge.kind === kind)) {
@@ -1171,7 +1220,60 @@
     }
   }
 
+  const retrievalRoutes = [...memories.values()].flatMap(memory => (memory.retrieval || [])
+    .map(route => ({ route, memory, line: lines.get(route.line_id) })));
+
+  function retrievalLabel(route) {
+    const { reason, clues, labels } = route;
+    const kind = reason === 'dated_plan_followup' ? t('dateIndexRoute')
+      : labels?.length ? t('labelIndexRoute')
+      : reason === 'subquestion_clues' ? t(clues.length === 1 ? 'sourceTextRoute' : 'textIndexRoute')
+      : t('recordingSelection')[reason];
+    const terms = [...(clues || []), ...(labels || [])];
+    return [kind, ...(terms.length ? terms : [route.term])].filter(Boolean).join(' · ');
+  }
+
+  function retrievalPath({ route, memory, line }) {
+    const branch = searchBranches.get(route.branch) || memory.branches[0];
+    return [...lineage(branch).map(node => node.id), ...(route.index_nodes || []),
+      memory.id, line.id, 'source:' + line.revision_checksum];
+  }
+
+  function renderSearchReplay(animate = false) {
+    if (!retrievalRoutes.length) return;
+    const shown = new Set(displayed.layers.flatMap(layer => layer.nodes));
+    const routes = retrievalRoutes.filter(({ line }) => shown.has(line));
+    const status = byId('workflow-status');
+    byId('workflow-activity').hidden = false;
+    status.textContent = t('retrievalPath');
+    const replay = byId('workflow-replay');
+    replay.hidden = !routes.length;
+    replay.textContent = t('retrievalReplay');
+    const steps = byId('filter-trace-steps');
+    steps.hidden = !routes.length;
+    steps.replaceChildren(...routes.map((entry, index) => {
+      const { line, route } = entry;
+      const item = element('li');
+      if (animate) {
+        item.dataset.replaying = 'true';
+        item.style.animationDelay = `${index * 360}ms`;
+      }
+      const label = button(`${line.conversation_id}#${line.segment_id} · ${retrievalLabel(route)}`, () => {
+        choose(line);
+        view.playWorkflowEffect('query', [retrievalPath(entry)]);
+      });
+      item.append(label);
+      return item;
+    }));
+    if (animate) view.playWorkflowEffect('query', routes.map(retrievalPath));
+  }
+
   function playWorkflowEffect() {
+    if (retrievalRoutes.length) {
+      if (groupedSearch && selected !== searchRoots[0]) choose(searchRoots[0]);
+      renderSearchReplay(true);
+      return;
+    }
     if (!progress) return;
     if (progress.change?.paths?.length) {
       view.playWorkflowEffect('import', progress.change.paths.map(path => {
@@ -1197,7 +1299,6 @@
       const line = lines.get(citation.line_id);
       for (const memory of line?.memories || []) {
         path.add(memory.id);
-        for (const topic of memory.topics) path.add(topic.id);
       }
       path.add('line:' + citation.line_id);
     }
@@ -1242,11 +1343,11 @@
     byId('graph-title').textContent = mode === 'all' ? t('allMode') : selected?.label || t('fallback');
     const scope = mode === 'all' ? rankedMemories()
       : selected?.kind === 'memory' ? [selected]
-        : selected?.kind !== 'topic' && selected?.memories ? selected.memories : rankedMemories(currentTopic);
+        : !isGroup(selected) && selected?.memories ? selected.memories : rankedMemories(currentTopic);
     const passageCount = scope.filter(node => !node.fact_id).length;
     const nodeCount = displayed.layers.reduce((count, layer) => count + layer.nodes.length, 0);
     byId('graph-summary').textContent = [
-      number.format(groupedSearch ? snapshot.search_subquestion_branches.length : topics.size)
+      number.format(groupedSearch ? snapshot.search_subquestion_branches.length : searching ? searchBranches.size : topics.size)
         + ' ' + t(searching ? (snapshot.search_question ? 'questions' : 'terms') : 'topics'),
       number.format(passageCount) + ' ' + t('record'),
       number.format(nodeCount) + ' ' + t('scope'),
@@ -1291,7 +1392,7 @@
           const branch = element('div');
           const history = part.history;
           branch.append(button(history ? `${t('history')} v${history.version}` : part.question,
-            () => choose(topics.get(part.key)), 'citation-link'));
+            () => choose(searchBranches.get(part.key)), 'citation-link'));
           if (history) {
             branch.append(element('p', new Date(history.committed_at).toLocaleString(language)));
             if (history.later_deletions) branch.append(element('p', t('historyDeletes')));
@@ -1349,7 +1450,7 @@
           for (const part of stats.subquestions) {
             const labels = [...new Set((part.indexed_routes || []).flatMap(route => route.labels))];
             const clues = [...new Set([...part.anchors, ...part.terms])];
-            const item = [part.question, clues.join(' / '), labels.length ? `${t('indexLabels')} ${labels.join(' / ')}` : ''];
+            const item = [part.question, clues.join(' / '), labels.length ? `${t('candidateLabels')} ${labels.join(' / ')}` : ''];
             const row = element('li', item.filter(Boolean).join(' · '));
             for (const [id, question] of Object.entries(snapshot.search_branch_evidence || {})) {
               const line = lines.get(id);
@@ -1406,6 +1507,18 @@
         const current = saved.version === snapshot.version ? '' : ` · ${t('currentWorkspace')} v${snapshot.version}`;
         trace.prepend(element('p', `${t('savedSearch')} v${saved.version} · ${new Date(saved.searched_at).toLocaleString(language)}${current}`));
       }
+      if (retrievalRoutes.length && !retrievalRoutes.some(({ route }) => route.labels?.length)) {
+        trace.append(element('p', t('noUsedLabels')));
+      }
+      if (retrievalRoutes.length) {
+        const plan = element('details', undefined, 'search-plan');
+        plan.open = searchPlanOpen;
+        plan.addEventListener('toggle', () => { searchPlanOpen = plan.open; });
+        const body = element('div', undefined, 'search-plan-body');
+        body.append(...trace.children);
+        plan.append(element('summary', t('searchPlan')), body);
+        trace.append(plan);
+      }
     }
     byId('refresh').textContent = t('refresh');
     byId('language').textContent = language === 'zh' ? 'English' : '中文';
@@ -1432,6 +1545,7 @@
     renderDetail();
     view.show(displayed, selected, mode);
     renderFilterTrace();
+    renderSearchReplay();
   }
 
   byId('search-terms').value = snapshot.search_question || (snapshot.search_terms || []).join('，');

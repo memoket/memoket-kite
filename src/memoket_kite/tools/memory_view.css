@@ -7,6 +7,7 @@
   --line: #dfdfd6;
   --teal: #14665b;
   --topic: #4eae97;
+  --query: #a85bb5;
   --memory: #b96738;
   --line-node: #7470bc;
   --source: #487eac;
@@ -103,6 +104,7 @@ button:focus-visible, input:focus-visible, canvas:focus-visible {
 .tree-row[aria-current="true"] { background: #e3efe8; color: #125c50; font-weight: 650; }
 .tree-row > span:nth-child(2) { flex: 1; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree-symbol { display: block; width: 7px; height: 7px; background: #91b9a8; transform: rotate(45deg); margin: 0 2px; flex: none; }
+.tree-row:is([data-kind="query"], [data-kind="subquestion"]) .tree-symbol { background: var(--query); }
 .tree-count { color: #506961; font: 11px/1.2 "IBM Plex Mono", ui-monospace, monospace; }
 .overview { margin: 8px 12px 13px; }
 .workspace { overflow: hidden; }
@@ -139,6 +141,7 @@ button:focus-visible, input:focus-visible, canvas:focus-visible {
 .graph-label[aria-current="true"] { max-width: 180px; border-color: #91e7ce; color: #f4fffc; background: #163831; font-weight: 650; }
 .graph-label[data-workflow="import"] { border-color: #88f5b8; }
 .graph-label[data-workflow="query"] { border-color: #89d8ff; }
+.graph-label:is([data-kind="query"], [data-kind="subquestion"]) { border-inline-start: 2px solid #e4a6e9; }
 .graph-label:hover, .graph-label:focus-visible { border-color: #a8e8db; color: #fff; }
 .empty { position: absolute; top: 42%; inset-inline: 12%; text-align: center; color: #c7dadc; }
 .legend {
@@ -147,13 +150,15 @@ button:focus-visible, input:focus-visible, canvas:focus-visible {
 }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
 .legend i { width: 7px; height: 7px; border-radius: 1px; background: var(--node-color); }
-.legend .solid, .legend .dashed, .legend .correction, .legend .mention, .legend .facet, .legend .cooccurrence { width: 13px; height: 0; border-top: 1px solid #b1bfd1; background: transparent; }
+.legend .solid, .legend .dashed, .legend .correction, .legend .mention, .legend .facet, .legend .query, .legend .cooccurrence { width: 13px; height: 0; border-top: 1px solid #b1bfd1; background: transparent; }
 .legend .dashed { border-top-style: dashed; }
 .legend .correction { border-top: 1px dashed #efafd2; }
 .legend .mention { border-top-color: #f4da8a; }
 .legend .facet { border-top-color: #84c9ef; }
+.legend .query { border-top-color: #e4a6e9; }
 .legend .cooccurrence { border-top: 1px dashed #f5cb83; }
 [data-kind="topic"] { --node-color: var(--topic); }
+[data-kind="query"], [data-kind="subquestion"] { --node-color: var(--query); }
 [data-kind="memory"] { --node-color: var(--memory); }
 [data-kind="line"] { --node-color: var(--line-node); }
 [data-kind="source"] { --node-color: var(--source); }
@@ -243,10 +248,18 @@ summary { color: var(--teal); cursor: pointer; font-size: 12px; }
   list-style: none; margin: 0; padding: 0;
 }
 .filter-trace-steps li { border: 1px solid #435567; border-radius: 4px; padding: 2px 6px; }
+.filter-trace-steps button { border: 0; background: transparent; padding: 0; text-align: left; }
+.filter-trace-steps [data-replaying] { animation: trace-pulse 2.2s ease-out; }
+@keyframes trace-pulse { 30% { border-color: #89d8ff; background: #254457; } }
+@media (prefers-reduced-motion: reduce) {
+  .filter-trace-steps [data-replaying] { animation: none; }
+}
 .filter-trace-steps [aria-current="step"] { border-color: #89d8ff; background: #254457; }
 .filter-trace-steps [data-empty="true"] { color: #ffd1a5; }
 .filter-trace-details { border-bottom: 1px solid var(--line); padding-bottom: 10px; }
 .search-trace { display: grid; gap: 4px; margin-top: 10px; padding: 10px; background: var(--paper); border-radius: 7px; font-size: 12px; }
+.search-plan summary { cursor: pointer; }
+.search-plan-body { display: grid; gap: 4px; margin-top: 6px; }
 .search-trace p { color: var(--muted); overflow-wrap: anywhere; }
 .term-coverage { display: flex; flex-wrap: wrap; gap: 4px 12px; list-style: none; padding: 0; margin: 0; }
 .term-coverage li { display: flex; flex-wrap: wrap; column-gap: 5px; overflow-wrap: anywhere; }

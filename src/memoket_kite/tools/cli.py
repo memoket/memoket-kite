@@ -963,6 +963,10 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
     if args.command == "start":
         if args.visualize and args.pipeline not in FOLLOW_STAGES:
             raise ToolError("invalid_input", "--visualize supports import and context-search runs")
+        if args.visualize and args.pipeline == "context-search":
+            request = supplied.get("request")
+            if isinstance(request, dict):
+                request.setdefault("explain", True)
         with Workspace.open(args.workspace) as workspace:
             context = Context(root, workspace, args.pipeline, extension_root=extension_root)
             checkpoint = start(context, supplied, args.run_id)
