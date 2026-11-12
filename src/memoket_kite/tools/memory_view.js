@@ -26,6 +26,7 @@
       sourceTextRoute: 'Text in the same recording', textIndexRoute: 'Full-text index',
       dateIndexRoute: 'Recording dates + date in the transcript', labelIndexRoute: 'Annotation index + full text',
       planSubject: 'Schedule subject',
+      outputTargets: 'Evidence needed for task outputs',
       previousSearch: 'Earlier search', skippedCitations: 'previously cited lines skipped',
       noUsedLabels: 'This run records no topic, entity or facet selection for these quotes.',
       candidateLabels: 'Candidate labels',
@@ -43,7 +44,7 @@
       candidateSources: 'candidate sources', compareRevision: 'Compare with current version',
       readRevision: 'Read full transcript', topicSources: 'Original sources in this topic', sourceLines: 'lines',
       anchorSources: 'sources matching the name',
-      matchedTerms: 'Terms in this quote',
+      matchedTerms: 'Terms in this quote', allTerms: 'Every phrase must match the same original line',
       inspectCandidates: 'Rerun with candidate details', packingOrder: 'Packing order',
       sortCandidatesByDate: 'Order by recording date',
       wordForms: 'English word forms',
@@ -63,6 +64,7 @@
         focused_color: 'Original color statement for the named subject',
         change_subquestion: 'Original evidence selected for this subquestion',
         subquestion_clues: 'Name and another clue match the same original line',
+        corroborated_original: 'Independent clues match this original line',
         subquestion_index: 'A cited index label and original wording locate this line',
         change_phase: 'Original evidence selected for this phase of the question',
         version_evidence: 'Original line is missing or differs in the other snapshot',
@@ -114,6 +116,7 @@
       sourceTextRoute: '同一录制的正文', textIndexRoute: '全文索引',
       dateIndexRoute: '录制日期索引＋原文日期', labelIndexRoute: '标注索引＋正文',
       planSubject: '排期主题',
+      outputTargets: '任务输出所需的证据',
       previousSearch: '前序检索', skippedCitations: '行已引用原文被跳过',
       noUsedLabels: '本次记录未显示通过主题、实体或 Facet 选中这些引用。',
       candidateLabels: '候选标签',
@@ -131,7 +134,7 @@
       candidateSources: '份候选来源', compareRevision: '与当前版本对照',
       readRevision: '查看全部原文', topicSources: '该主题的原文来源', sourceLines: '行',
       anchorSources: '份来源命中名称',
-      matchedTerms: '原文命中',
+      matchedTerms: '原文命中', allTerms: '所有检索词必须命中同一行原文',
       inspectCandidates: '重查并查看候选', packingOrder: '引文选取顺序',
       wordForms: '英文词形匹配',
       repeatedTerms: '问题中重复出现', followupQuote: '后续原文命中', followupQuotes: '行后续引文',
@@ -150,6 +153,7 @@
         focused_color: '主题相关的颜色原文',
         change_subquestion: '为这个子问题选取的原文',
         subquestion_clues: '名称和另一条线索命中同一行原文',
+        corroborated_original: '多个独立线索命中这一行原文',
         subquestion_index: '索引标签和原文措辞定位这一行',
         change_phase: '为问题中这个阶段选取的原文',
         version_evidence: '该原文在对照版本中缺失或措辞不同',
@@ -1239,7 +1243,14 @@
       result.href = '?' + new URLSearchParams({ ...target, lang: language });
       result.textContent = labels[search ? 'evidence' : 'changes'];
     }
-    if (kind === 'delete' || kind === 'merge') {
+    if (search && !searching) {
+      const steps = byId('filter-trace-steps');
+      const details = done?.name === 'compile'
+        ? (done.output_targets?.map(target => target.description) || done.terms || [])
+        : (done?.citations?.map(citation => citation.reference) || []);
+      steps.hidden = !details.length;
+      steps.replaceChildren(...details.map(detail => element('li', detail)));
+    } else if (kind === 'delete' || kind === 'merge') {
       const steps = byId('filter-trace-steps');
       const counts = deleted || (kind === 'delete' && done?.name === 'preview' ? done.counts : undefined);
       const details = Object.entries(counts || {}).map(([key, value]) =>
@@ -1258,15 +1269,17 @@
     const { reason, clues, labels } = route;
     const kind = reason === 'dated_plan_followup' ? t('dateIndexRoute')
       : labels?.length ? t('labelIndexRoute')
+      : ['all_terms', 'output_target', 'corroborated_original'].includes(reason) ? t('textIndexRoute')
       : reason === 'subquestion_clues' ? t(clues.length === 1 ? 'sourceTextRoute' : 'textIndexRoute')
       : t('recordingSelection')[reason];
-    const terms = [...(clues || []), ...(labels || [])];
+    const terms = [...new Set([...(clues || []), ...(labels || [])])];
     return [kind, ...(terms.length ? terms : [route.term])].filter(Boolean).join(' · ');
   }
 
   function retrievalPath({ route, memory, line }) {
-    const branch = searchBranches.get(route.branch) || memory.branches[0];
-    return [...lineage(branch).map(node => node.id), ...(route.index_nodes || []),
+    const branches = route.reason === 'all_terms' ? memory.branches
+      : [searchBranches.get(route.branch) || memory.branches[0]];
+    return [...branches.flatMap(branch => lineage(branch).map(node => node.id)), ...(route.index_nodes || []),
       memory.id, line.id, 'source:' + line.revision_checksum];
   }
 
@@ -1446,6 +1459,7 @@
     if (snapshot.search_trace) {
       const stats = snapshot.search_trace;
       trace.replaceChildren(element('strong', snapshot.search_question ? t('compile') : t('terms')));
+      if (snapshot.search_all_terms) trace.append(element('p', t('allTerms')));
       if (comparison.length) {
         const branches = element('div', undefined, 'comparison-trace');
         for (const part of comparison) {
@@ -1496,13 +1510,21 @@
         }
         trace.append(branches);
       } else {
-        if (stats.implementation_search) {
-          trace.append(element('p', `${t('implementationSearch')} · ${stats.implementation_search}`));
+        const taskWording = stats.implementation_search || stats.output_search;
+        if (taskWording) {
+          trace.append(element('p', `${t('implementationSearch')} · ${taskWording}`));
         }
         if (stats.current_plan_subject) {
           trace.append(element('p', `${t('planSubject')} · ${stats.current_plan_subject}`));
         }
         trace.append(termSummary(stats.terms, stats.term_coverage));
+        if (stats.output_targets?.length) {
+          const targets = element('ul');
+          for (const target of stats.output_targets) {
+            targets.append(element('li', `${target.description} · ${target.pairs.map(pair => pair.join(' + ')).join(' / ')}`));
+          }
+          trace.append(element('p', t('outputTargets')), targets);
+        }
         renderWordForms(trace, stats.word_forms);
         renderRepeatedTerms(trace, stats.repeated_terms);
         if (stats.change_phases?.length) {

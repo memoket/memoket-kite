@@ -200,6 +200,11 @@ source tool output. End-to-end time includes hook execution. The report keeps
 the number of successful hook deliveries and the adapter's SHA-256.
 Pass `--baseline-submit-adapter PATH` with that option to compare the current
 hook against a trusted earlier adapter on identical prompts and evidence sources.
+Add `--same-prompt` to `--context-on-submit` to compare the file and submit-hook
+arms with identical user prompt bytes and no access instructions in either
+prompt. Only the isolated benchmark hook adds the KITE activation prefix when
+calling the adapter. Check each pair's `prompt_sha256` and the submit arm's
+`hook_deliveries` before attributing a difference to automatic evidence delivery.
 On macOS and Linux, add `--trace-timing` to observe when each JSON event
 arrives locally. The report includes time to turn start, shell command
 intervals, their union, and the submit hook's local processing time.
@@ -213,6 +218,13 @@ Total tool bytes include coding and test commands. Timings start after the
 project is seeded and the source index is ready. Compare efficiency on tasks
 both arms passed and keep failed checks visible. Keep private case data,
 source corpora and results under an ignored directory.
+
+For a revision experiment with successive turns, use `codex_trial` with
+`persist_session=True` and a temporary Codex home. Save the returned
+`session_id`, apply the source change to both arms, and pass that ID as
+`resume_session` from the same project and Codex home. Verify the resumed
+session ID, source snapshot, prompt digest, and resulting code for each turn.
+Report source preparation time separately from Codex turn time.
 
 ## Evaluate original conversation context
 

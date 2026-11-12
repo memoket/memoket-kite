@@ -21,6 +21,35 @@ def test_identical_text_sources_keep_the_original_segment_references():
     assert context_eval.evidence_ids(pack) == {"first#L10", "second#L10", "third#L14"}
 
 
+def test_codex_trial_resumes_the_captured_session_and_keeps_default_runs_ephemeral(
+    monkeypatch, tmp_path
+):
+    commands = []
+    session = "a4773cf3-1c99-482c-93db-5e60f35b9eef"
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        stdout = "\n".join(
+            json.dumps(event)
+            for event in (
+                {"type": "thread.started", "thread_id": session},
+                {"type": "turn.completed", "usage": {"input_tokens": 10}},
+            )
+        )
+        return subprocess.CompletedProcess(command, 0, stdout)
+
+    monkeypatch.setattr(context_eval.subprocess, "run", fake_run)
+    first = context_eval.codex_trial("codex", "model", tmp_path, "First", persist_session=True)
+    second = context_eval.codex_trial(
+        "codex", "model", tmp_path, "Next", resume_session=first["session_id"]
+    )
+    ordinary = context_eval.codex_trial("codex", "model", tmp_path, "Independent")
+    assert first["session_id"] == second["session_id"] == session
+    assert commands[1][-3:] == ["resume", session, "-"]
+    assert all("--ephemeral" not in command for command in commands[:2])
+    assert "--ephemeral" in commands[2] and "session_id" not in ordinary
+
+
 def test_task_benchmark_requires_both_behavior_and_supporting_citation():
     evidence = {"boundary": ["first#L3"], "value": ["second#L5"]}
     scope = {"first#L3", "second#L5", "second#L8"}
@@ -57,6 +86,38 @@ def test_submit_benchmark_counts_prefilled_evidence_even_without_a_tool_call():
     assert summary["both_passed_pairs"] == 1
     assert summary["both_passed_efficiency"]["submit"]["source_context_bytes"] == 100
     assert summary["arms"]["submit"]["hook_deliveries"] == 1
+
+
+def test_same_prompt_hook_uses_a_relative_runtime_from_the_benchmark_directory(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    tool = tmp_path / "bin" / "kite-tool"
+    tool.parent.mkdir()
+    tool.write_text(
+        "#!/bin/sh\n"
+        'test "$5" = "--question=Rollout?" || exit 1\n'
+        'printf "%s\\n" "[release#L2] Rollout begins Monday."\n'
+    )
+    tool.chmod(0o700)
+    project = tmp_path / "project"
+    project.mkdir()
+    launcher = project / "kite"
+    context_eval.write_launcher(launcher, tmp_path / "memory", None, kite_tool="bin/kite-tool")
+    metrics = tmp_path / "metrics.json"
+    task_eval._submit_hook(tmp_path, launcher, metrics, task_eval._CONTEXT_HOOK, same_prompt=True)
+    result = subprocess.run(
+        [sys.executable, str(tmp_path / "submit_hook.py")],
+        input=json.dumps(
+            {"hook_event_name": "UserPromptSubmit", "cwd": str(project), "prompt": "Rollout?"}
+        ),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "[release#L2] Rollout begins Monday." in context
+    assert json.loads(metrics.read_text())["bytes"] == len(context.encode())
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="timed pipe observation uses POSIX selectors")

@@ -8,7 +8,7 @@ import unicodedata
 from collections import defaultdict
 from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass, replace
-from itertools import combinations, islice
+from itertools import combinations, islice, zip_longest
 from math import log
 
 from .contracts import (
@@ -53,6 +53,21 @@ _IMPLEMENTATION_LEAD = re.compile(
     r"(?P<subject>[^?？\n]{2,100}?)(?:。|\.(?=\s|$))\s*",
     re.I,
 )
+_CODE_NAME = r"[a-zA-Z][a-zA-Z0-9]*(?:_[a-zA-Z0-9]+)+"
+_OUTPUT_FIELD = re.compile(
+    rf"用\s*`?(?P<zh>{_CODE_NAME})`?\s*(?:保存|填写|填入|填|记录|表示)"
+    rf"|\b(?:populate|fill|set)\s+`?(?P<en>{_CODE_NAME})`?\s+(?:with|to)\b",
+    re.I,
+)
+_IMPLEMENTATION_FUNCTION = re.compile(
+    rf"(?:实现\s*|\bimplement\s+)`?(?P<name>{_CODE_NAME})\s*\(\s*\)`?", re.I
+)
+_OUTPUT_CLAUSE_END = re.compile(r"[，。；！？、;]|[.!?,](?=\s|$)")
+_OUTPUT_UNIT = re.compile(
+    r"(?:两项|三项|各项|每项)(?:都)?用(?:整数|小数)\s*(?P<zh>[\u3400-\u9fff]{1,8})(?=[。；，\s]|$)"
+    r"|\b(?:both|all)\s+(?:as|in)\s+(?:whole|integer|decimal)\s+(?P<en>[a-z]{2,24})\b",
+    re.I,
+)
 _CURRENT_PLAN_TASK = re.compile(
     r"^(?:请\s*)?(?:把|将)\s*(?P<zh>[^\n。！？!?；;，,]{2,100}?)\s*"
     r"按(?:照)?\s*(?:最新|最近)(?:一次)?(?:已)?确认的?(?:计划|方案|排期)"
@@ -70,6 +85,15 @@ _REVISED_SCHEDULE_TASK = re.compile(
     r"(?:retain\w*|keep\w*|preserv\w*|compar\w*|trac\w*)\b",
     re.I,
 )
+_CONFIRMED_SCHEDULE_UPDATE = re.compile(
+    r"^(?:请\s*)?按(?:照)?(?:刚刚?|最近|最新)(?:已)?确认的?\s*"
+    r"(?P<zh>[^，,。！？!?；;\n]{2,100}?)(?:更新|调整|修改)\s*[，,。；;]\s*(?=保留|对照|追踪)"
+    r"|^(?:please\s+)?(?:update|revise|adjust)\s+(?P<en>[^,;.!?\n]{2,100}?)\s+"
+    r"(?:to|using|based on)\s+(?:the\s+)?(?:newly|just|recently)\s+(?:confirmed|approved)\s+"
+    r"(?:plan|schedule)\s*[,.;]\s*(?=keep\b|retain\b|preserve\b|compare\b)",
+    re.I,
+)
+_EFFECTIVE_SCHEDULE_DATES = re.compile(r"生效(?:日期|时间)|\beffective dates?\b", re.I)
 _EARLIER_PLAN_WORDS = (
     "原定",
     "原计划",
@@ -258,6 +282,7 @@ _CONTEXT_SCHEMA = object_schema(
         "end_date": DATE,
         "latest": {"type": "boolean"},
         "matching_lines": {"type": "boolean"},
+        "all_terms": {"type": "boolean"},
         "explain": {"type": "boolean"},
         "at_version": {"type": "integer", "minimum": 0, "maximum": 2**63 - 1},
         "known_at": {"type": "string", "format": "date-time"},
@@ -293,6 +318,10 @@ _SUBQUESTIONS = array(
     1,
     3,
 )
+_OUTPUT_TARGET = object_schema(
+    {"description": TEXT, "pairs": array(array(TEXT, 2, 2), 1, 8)},
+    {"unit": TEXT, "annotation_required": {"type": "boolean"}},
+)
 CONTEXT_PLAN = object_schema(
     {
         "request": CONTEXT_REQUEST,
@@ -307,7 +336,10 @@ CONTEXT_PLAN = object_schema(
         "comparison_change_phases": _CHANGE_PHASES,
         "subquestions": _SUBQUESTIONS,
         "implementation_search": TEXT,
+        "output_search": TEXT,
+        "output_targets": array(_OUTPUT_TARGET, 2, 3),
         "current_plan_subject": TEXT,
+        "keep_recorded_schedule": {"type": "boolean"},
     },
 )
 
@@ -564,6 +596,8 @@ def _question_scope(request: dict) -> tuple[dict, str]:
 
 def _context_scope(request: dict) -> tuple[dict, str | None, str | None]:
     validate(CONTEXT_REQUEST, request, "context request")
+    if request.get("all_terms"):
+        _validate_all_terms(request)
     if _comparison_dates(request) and "compare_with" not in request:
         raise ToolError("invalid_input", "comparison recording dates require compare_with")
     if "terms" in request:
@@ -587,15 +621,30 @@ def _context_scope(request: dict) -> tuple[dict, str | None, str | None]:
     return {**scoped, "question": request["question"]}, search, compare_search
 
 
+def _validate_all_terms(plan):
+    phrases = [_tokens(term) for term in plan.get("terms", ())]
+    if not all(phrases) or len(set(phrases)) < 2:
+        raise ToolError("invalid_input", "all_terms requires two or more distinct original phrases")
+
+
 def _compile_questions(workspace, indexes, request, search, compare_search):
     index, comparison = indexes
     implementation = None
+    output_search = None
+    output_targets = []
     current_plan_subject = None
+    keep_recorded_schedule = False
     if (
         search
         and compare_search is None
         and not (request.get("matching_lines") or request.get("latest"))
     ):
+        if request.get("compact") and index.history is None:
+            output_search = _focus_output_fields(workspace, index, search)
+            if output_search is not None:
+                if not request.get("after") and request.get("limit", 8) >= 4:
+                    output_targets = _compile_output_targets(workspace, index, search)
+                search = output_search
         implementation = _implementation_search(search)
         if implementation:
             search = implementation
@@ -603,15 +652,21 @@ def _compile_questions(workspace, indexes, request, search, compare_search):
             task = _CURRENT_PLAN_TASK.match(search)
             if task and (subject := (task["zh"] or task["en"]).strip()):
                 current_plan_subject = search = subject
+            elif task := _CONFIRMED_SCHEDULE_UPDATE.match(search):
+                subject = (task["zh"] or task["en"]).strip()
+                if _SCHEDULE_QUESTION.search(subject) and _EARLIER_PHASE.search(search, task.end()):
+                    current_plan_subject = subject
             elif task := _REVISED_SCHEDULE_TASK.match(search):
                 subject = (task["zh"] or task["en"]).strip()
                 earlier = _EARLIER_PHASE.search(search, task.end())
-                if (
-                    _SCHEDULE_QUESTION.search(subject)
-                    and earlier
-                    and _LATER_PHASE.search(search, earlier.end())
-                ):
-                    current_plan_subject = subject
+                if _SCHEDULE_QUESTION.search(subject):
+                    if earlier and _LATER_PHASE.search(search, earlier.end()):
+                        current_plan_subject = subject
+                    elif request.get("compact") and _EFFECTIVE_SCHEDULE_DATES.search(
+                        search, task.end()
+                    ):
+                        current_plan_subject = subject
+                        keep_recorded_schedule = True
     terms, forms = (
         (request["terms"], [])
         if search is None
@@ -622,7 +677,10 @@ def _compile_questions(workspace, indexes, request, search, compare_search):
         "terms": terms,
         "memory_version": workspace.version(),
         **({"implementation_search": implementation} if implementation else {}),
+        **({"output_search": output_search} if output_search is not None else {}),
+        **({"output_targets": output_targets} if output_targets else {}),
         **({"current_plan_subject": current_plan_subject} if current_plan_subject else {}),
+        **({"keep_recorded_schedule": True} if keep_recorded_schedule else {}),
     }
     if forms:
         result["word_forms"] = forms
@@ -647,6 +705,131 @@ def _compile_questions(workspace, indexes, request, search, compare_search):
         if phases := _compiled_change_phases(request, compare_search):
             result["comparison_change_phases"] = phases
     return result
+
+
+def _compile_output_targets(workspace, index, question):
+    if _quoted_phrases(question):
+        return []
+    fields = list(_OUTPUT_FIELD.finditer(question))
+    if len(fields) not in (2, 3):
+        return []
+    vocab = workspace.vocabulary()
+    unit = _OUTPUT_UNIT.search(question)
+    unit = (unit["zh"] or unit["en"]) if unit else None
+    targets = []
+    for field in fields:
+        description = _OUTPUT_CLAUSE_END.split(question[field.end() :], maxsplit=1)[0].strip()
+        if not _tokens(description):
+            return []
+        name = field["zh"] or field["en"]
+        phrases = list(dict.fromkeys(_question_phrases(description)))
+        entities = {}
+        for phrase in (*phrases, *name.casefold().split("_")):
+            if code := vocab.resolve_entity(phrase):
+                entities.setdefault(code, phrase)
+        terms, _ = _compile_terms(index.db, index.filters, description)
+        pairs, annotation_required = _output_target_pairs(index, entities, terms, phrases, unit)
+        if not pairs:
+            return []
+        targets.append(
+            {
+                "description": description,
+                "pairs": pairs,
+                **({"unit": unit} if unit else {}),
+                **({"annotation_required": True} if annotation_required else {}),
+            }
+        )
+    return targets if len({target["description"] for target in targets}) == len(targets) else []
+
+
+def _output_target_pairs(index, entities, terms, phrases, unit):
+    if unit:
+        values = [
+            term for term in dict.fromkeys((*terms, *phrases)) if re.fullmatch(r"\d+\s+\w+", term)
+        ]
+        if values:
+            return [[term, unit] for term in values[:2]], False
+        where, args = _search_scope(index.filters)
+        labels = [
+            phrase
+            for phrase in islice(dict.fromkeys((*terms, *phrases)), 48)
+            if phrase != unit
+            and index.db.execute(
+                f"SELECT 1 FROM context_spans WHERE {where} LIMIT 1",
+                (_label_expression((_tokens(phrase),)), *args),
+            ).fetchone()
+        ]
+        return [[label, unit] for label in labels[:8]], True
+    if len(entities) == 2:
+        return [list(entities.values())], False
+    if len(entities) != 1:
+        return [], False
+    anchor = next(iter(entities.values()))
+    anchor_text = f" {_tokens(anchor)} "
+    return [
+        [anchor, term]
+        for term in terms
+        if (text := f" {_tokens(term)} ") not in anchor_text and anchor_text not in text
+    ], False
+
+
+def _focus_output_fields(workspace, index, question):
+    quoted = [match.span() for match in _QUOTED_PHRASES.finditer(question)]
+
+    def unquoted(pattern):
+        return [
+            match
+            for match in pattern.finditer(question)
+            if not any(start < match.end() and match.start() < stop for start, stop in quoted)
+        ]
+
+    fields = [(match, match["zh"] or match["en"]) for match in unquoted(_OUTPUT_FIELD)]
+    if not fields:
+        return None
+    fields.extend((match, match["name"]) for match in unquoted(_IMPLEMENTATION_FUNCTION))
+    vocab = workspace.vocabulary()
+    where, args = _search_scope(index.filters)
+    originals = {}
+    parts = []
+    offset = 0
+    for match, name in sorted(fields, key=lambda field: field[0].start()):
+        if vocab.resolve_entity(name) or vocab.resolve_topic(name):
+            continue
+        rows = index.db.execute(
+            f"SELECT checksum, start, stop FROM context_spans WHERE {where} LIMIT ?",
+            (f'text : "{_tokens(name)}"', *args, _SUBQUESTION_SPAN_LIMIT + 1),
+        ).fetchall()
+        # Normalized FTS tokens omit underscores. Check the source spelling
+        # before treating ordinary adjacent words as a code identifier.
+        literal = re.compile(rf"(?<!\w){re.escape(name.casefold())}(?!\w)")
+        if len(rows) > _SUBQUESTION_SPAN_LIMIT or _original_field(
+            workspace, rows, literal, originals
+        ):
+            continue
+        parts.append(question[offset : match.start()])
+        for token in name.split("_"):
+            if vocab.resolve_entity(token):
+                parts.extend((" ", token))
+        parts.append(" ")
+        offset = match.end()
+    if not parts:
+        return None
+    parts.append(question[offset:])
+    focused = "".join(parts).strip()
+    return focused if _tokens(focused) else None
+
+
+def _original_field(workspace, rows, literal, originals):
+    for row in rows:
+        checksum = row["checksum"]
+        if checksum not in originals:
+            originals[checksum] = workspace.record(checksum)["conversation"]["segments"]
+        if any(
+            literal.search(unicodedata.normalize("NFKC", line["text"]).casefold())
+            for line in originals[checksum][row["start"] : row["stop"]]
+        ):
+            return True
+    return False
 
 
 def _implementation_search(question):
@@ -885,16 +1068,22 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
             plan,
             limit=span_limit,
             max_bytes=quote_budget,
-            neighbors=request.get("neighbors", 0 if request.get("matching_lines") else 1),
+            neighbors=request.get(
+                "neighbors", int(not (request.get("matching_lines") or request.get("all_terms")))
+            ),
             focus=question is not None,
             _index=search_index,
-            _question=compiled.get("implementation_search", question),
+            _question=compiled.get(
+                "implementation_search", compiled.get("output_search", question)
+            ),
             implementation_task="implementation_search" in compiled,
             current_plan_subject=compiled.get("current_plan_subject"),
+            keep_recorded_schedule=compiled.get("keep_recorded_schedule", False),
             prioritize_first_lines=compare_terms is not None and "limit" not in request,
             word_forms=forms,
             change_phases=phases,
             subquestions=compiled.get("subquestions", ()),
+            output_targets=compiled.get("output_targets", ()),
             reserve_change_phases=version_comparison,
             earlier_snapshot=version_comparison and search_index is index,
             other_records=(
@@ -910,6 +1099,10 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
             result["compilation"] = {"question": question, "terms": terms}
             if "implementation_search" in compiled:
                 result["compilation"]["implementation_search"] = compiled["implementation_search"]
+            if "output_search" in compiled:
+                result["compilation"]["output_search"] = compiled["output_search"]
+            if "output_targets" in compiled:
+                result["compilation"]["output_targets"] = compiled["output_targets"]
             if "current_plan_subject" in compiled:
                 result["compilation"]["current_plan_subject"] = compiled["current_plan_subject"]
             if forms:
@@ -919,7 +1112,7 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
             if "subquestions" in compiled:
                 result["compilation"]["subquestions"] = compiled["subquestions"]
             if not (filters.get("matching_lines") or _quoted_phrases(question)):
-                repeats = _repeated_han_terms(question, terms)
+                repeats = _repeated_han_terms(compiled.get("output_search", question), terms)
                 if repeats:
                     result["compilation"]["repeated_terms"] = [
                         {"term": term, "occurrences": extra + 1} for term, extra in repeats.items()
@@ -1320,12 +1513,22 @@ def _candidates(
     order = "bm25(context_spans, 1.0, 0.35, 1.2), day DESC"
     if plan.get("latest"):
         order = "day DESC, bm25(context_spans, 1.0, 0.35, 1.2)"
-    matching_lines = plan.get("matching_lines", False)
+    matching_lines = plan.get("all_terms") or plan.get("matching_lines", False)
     coherent = focus and not (plan.get("latest") or matching_lines)
     stream_limit = max(limit, min(limit * 6, 30)) if coherent else limit * 6
     matches = []
     exact = []
     terms = list(dict.fromkeys(tokens for term in plan["terms"] if (tokens := _tokens(term))))
+    if plan.get("all_terms"):
+        expression = "text : (" + " AND ".join(f'"{phrase}"' for phrase in terms) + ")"
+        rows = db.execute(
+            f"SELECT checksum, start, stop, day FROM context_spans WHERE {where} "
+            f"ORDER BY {order}, checksum, start LIMIT ?",
+            (expression, *args, stream_limit),
+        ).fetchall()
+        if term_candidates is not None:
+            term_candidates.update(dict.fromkeys(terms, len(rows)))
+        return rows
     for phrase in terms:
         expression = f'"{phrase}"'
         if matching_lines:
@@ -1387,15 +1590,18 @@ def _positions(
     anchors: tuple[str, ...],
     matching_lines: bool,
     repeated: dict[str, str],
+    *,
+    all_terms: bool = False,
 ):
     window = range(max(0, start - neighbors), min(len(segments), stop + neighbors))
     if phrases:
         hits = []
         exact = set()
         repeated_hit = False
+        includes = all if all_terms else any
         for pos in range(start, stop):
             text = f" {_tokens(segments[pos]['text'])} "
-            if any(phrase in text for phrase in phrases):
+            if includes(phrase in text for phrase in phrases):
                 hits.append(pos)
                 repeated_hit |= any(clue in text for clue in repeated)
                 if any(anchor in text for anchor in anchors):
@@ -1427,6 +1633,86 @@ def _promote_alternative(rows, row, reason, term, **details):
         rows[0],
         promoted,
         *(item for item in rows[1:] if (item["checksum"], item["start"]) != key),
+    ]
+
+
+def _independent_original_terms(text, phrases):
+    spans = []
+    clues = []
+    matched = []
+    for term, tokens in phrases:
+        if any(f" {tokens} " in f" {previous} " for previous in matched):
+            continue
+        for match in re.finditer(rf"(?= {re.escape(tokens)} )", text):
+            start = match.start() + 1
+            stop = start + len(tokens)
+            if all(stop <= left or start >= right for left, right in spans):
+                spans.append((start, stop))
+                clues.append(term)
+                matched.append(tokens)
+                break
+    return clues
+
+
+def _reserve_corroborated_original(workspace, candidates, terms, budget, neighbors):
+    if len(candidates) <= 3 or len(terms) < 2:
+        return candidates
+    phrases = sorted(((term, _tokens(term)) for term in terms), key=lambda item: -len(item[1]))
+    leading = {row["checksum"] for row in candidates[:3]}
+    records = {}
+    strongest = {}
+    for row in candidates[:24]:
+        checksum = row["checksum"]
+        if checksum not in records:
+            records[checksum] = workspace.record(checksum)["conversation"]["segments"]
+        segments = records[checksum]
+        if not 0 <= row["start"] < row["stop"] <= len(segments):
+            raise ToolError("integrity_error", "context index does not match its source revision")
+        for pos in range(row["start"], row["stop"]):
+            text = segments[pos]["text"]
+            if len(text.encode("utf-8")) > budget // 3:
+                continue
+            clues = _independent_original_terms(f" {_tokens(text)} ", phrases)
+            prior = strongest.get(checksum)
+            if len(clues) >= 2 and (prior is None or len(clues) > len(prior[2])):
+                strongest[checksum] = (row, pos, clues)
+    best = max((len(clues) for _, _, clues in strongest.values()), default=0)
+    qualified = [hit for hit in strongest.values() if len(hit[2]) == best]
+    selected = next((hit for hit in qualified if hit[0]["checksum"] not in leading), None)
+    if selected is None:
+        return candidates
+    row, pos, clues = selected
+    picked = {
+        **dict(row),
+        "start": pos,
+        "stop": pos + 1,
+        "direct_positions": [pos],
+        "selection": {"reason": "corroborated_original", "term": " + ".join(clues), "clues": clues},
+    }
+    # If only one recording corroborates the clues, pack its nearby matching
+    # passage before unrelated hits, within the ordinary quote and span limits.
+    follow = None
+    if neighbors and len(qualified) == 1:
+        checksum = row["checksum"]
+        original = records[checksum]
+        follow = next(
+            (
+                candidate
+                for candidate in candidates[:24]
+                if candidate["checksum"] == checksum
+                and pos < candidate["start"] <= pos + 8
+                and any(
+                    f" {_tokens(clue)} " in f" {_tokens(line['text'])} "
+                    for line in original[candidate["start"] : min(candidate["stop"], pos + 9)]
+                    for clue in clues
+                )
+            ),
+            None,
+        )
+    return [
+        picked,
+        *([follow] if follow is not None else []),
+        *(r for r in candidates if r is not follow),
     ]
 
 
@@ -1620,6 +1906,95 @@ def _matching_index_labels(record, segment_id, labels):
         if matches and all(matches):
             return list(dict.fromkeys(matches))
     return []
+
+
+def _output_target_evidence(workspace, index, targets, limit, budget):
+    records = {}
+    per_target = min(4, limit // len(targets))
+    target_budget = budget // len(targets)
+    selected = []
+    for target in targets:
+        groups = []
+        unit = target.get("unit")
+        quantity = (
+            re.compile(
+                rf"[\d零一二两三四五六七八九十百千]+(?:[.,]\d+)?\s*(?:个\s*)?{re.escape(unit)}(?![a-z])",
+                re.I,
+            )
+            if unit
+            else None
+        )
+        for pair in target["pairs"]:
+            picks = _output_pair_evidence(workspace, index, target, pair, records, quantity)
+            if picks:
+                groups.append(picks)
+                if not target.get("annotation_required") or len(groups) == 2:
+                    break
+        if not groups:
+            continue
+        remaining = target_budget
+        cited = set()
+        for candidate in (row for group in zip_longest(*groups) for row in group if row):
+            size = candidate.pop("quote_size")
+            key = (candidate["checksum"], candidate["start"])
+            if size <= remaining and key not in cited:
+                cited.add(key)
+                selected.append(candidate)
+                remaining -= size
+            if len(cited) >= per_target:
+                break
+    return selected
+
+
+def _output_pair_evidence(workspace, index, target, pair, records, quantity):
+    terms = tuple(map(_tokens, pair))
+    rows = _candidates(index.db, {**index.filters, "terms": pair, "all_terms": True}, 4)
+    picks = []
+    covered = set()
+    for row in rows:
+        checksum = row["checksum"]
+        if quantity and checksum in covered:
+            continue
+        if checksum not in records:
+            records[checksum] = workspace.record(checksum)
+        record = records[checksum]
+        segments = record["conversation"]["segments"]
+        if not 0 <= row["start"] < row["stop"] <= len(segments):
+            raise ToolError("integrity_error", "context index does not match its source revision")
+        for pos in range(row["start"], row["stop"]):
+            segment = segments[pos]
+            text = segment["text"]
+            original = f" {_tokens(text)} "
+            if not all(f" {term} " in original for term in terms):
+                continue
+            if quantity and not quantity.search(unicodedata.normalize("NFKC", text)):
+                continue
+            labels = []
+            if target.get("annotation_required"):
+                labels = _matching_index_labels(record, segment["segment_id"], terms[:1])
+                if not labels:
+                    continue
+            picks.append(
+                {
+                    **dict(row),
+                    "start": pos,
+                    "stop": pos + 1,
+                    "direct_positions": [pos],
+                    "quote_size": len(text.encode("utf-8")),
+                    "selection": {
+                        "reason": "output_target",
+                        "term": target["description"],
+                        "clues": pair,
+                        **({"labels": labels} if labels else {}),
+                    },
+                }
+            )
+            covered.add(checksum)
+            if quantity or len(picks) >= 4:
+                break
+        if len(picks) >= (2 if quantity else 4):
+            break
+    return picks
 
 
 def _indexed_subquestion_evidence(workspace, index, part, leading, budget):
@@ -1879,7 +2254,9 @@ def _linked_schedule(workspace, index, original, later_question, max_bytes):
     return [original, revised]
 
 
-def _current_plan_schedule(workspace, index, subject, terms, max_bytes, neighbors):
+def _current_plan_schedule(
+    workspace, index, subject, terms, max_bytes, neighbors, *, keep_recorded=False
+):
     names = [
         match.group()
         for match in (*_ACRONYMS.finditer(subject), *_NAME_WORDS.finditer(subject))
@@ -1887,22 +2264,36 @@ def _current_plan_schedule(workspace, index, subject, terms, max_bytes, neighbor
     ]
     anchors = list(dict.fromkeys(map(_tokens, (*names, *terms))))[:3]
     pairs = {}
+    recorded = {}
     for anchor in anchors:
         for qualifier in _EARLIER_PLAN_WORDS:
             clue = {"question": subject, "anchors": [anchor], "terms": [qualifier]}
             originals = _subquestion_evidence(workspace, index, [clue], max_bytes)
             if not originals:
                 continue
-            rows = _linked_schedule(workspace, index, originals[0], subject, max_bytes)
+            original = originals[0]
+            if keep_recorded and original["day"]:
+                record = (
+                    index.records[original["checksum"]]
+                    if index.records is not None
+                    else workspace.record(original["checksum"])
+                )
+                segment = record["conversation"]["segments"][original["start"]]
+                if _CALENDAR_DAY.search(segment["text"]):
+                    recorded[(original["checksum"], original["start"])] = original
+            rows = _linked_schedule(workspace, index, original, subject, max_bytes)
             if not rows:
                 continue
             key = tuple((row["checksum"], row["start"]) for row in rows)
             pairs.setdefault(key, rows)
             if len(pairs) > 1:
                 return []
-    if not pairs:
+    if pairs:
+        rows = next(iter(pairs.values()))
+    elif len(recorded) == 1:
+        rows = list(recorded.values())
+    else:
         return []
-    rows = next(iter(pairs.values()))
     for row in rows:
         record = (
             index.records[row["checksum"]]
@@ -2270,6 +2661,7 @@ def _pack(
     *,
     anchors: tuple[str, ...] = (),
     matching_lines: bool = False,
+    all_terms: bool = False,
     historical_records: dict | None = None,
     compact_sources: dict | None = None,
     compact_copies: dict | None = None,
@@ -2375,7 +2767,15 @@ def _pack(
             (range(start, stop), None)
             if checksum in compact_sources
             else _positions(
-                segments, start, stop, neighbors, phrases, anchored, matching_lines, repeated
+                segments,
+                start,
+                stop,
+                neighbors,
+                phrases,
+                anchored,
+                matching_lines,
+                repeated,
+                all_terms=all_terms,
             )
         )
         if isinstance(row, dict) and "direct_positions" in row:
@@ -2786,10 +3186,12 @@ def _context_evidence(
     _question,
     implementation_task=False,
     current_plan_subject=None,
+    keep_recorded_schedule=False,
     prioritize_first_lines=False,
     word_forms=(),
     change_phases=(),
     subquestions=(),
+    output_targets=(),
     reserve_change_phases=False,
     earlier_snapshot=False,
     other_records=None,
@@ -2800,7 +3202,10 @@ def _context_evidence(
     validate(_CONTEXT_SCHEMA, plan, "context plan")
     if not any(map(_tokens, plan["terms"])):
         raise ToolError("invalid_input", "context needs an indexable term")
-    matching_lines = plan.get("matching_lines", False)
+    all_terms = plan.get("all_terms", False)
+    if all_terms:
+        _validate_all_terms(plan)
+    matching_lines = all_terms or plan.get("matching_lines", False)
     if matching_lines and neighbors:
         raise ToolError("invalid_input", "matching lines cannot include neighboring lines")
     phrases = (
@@ -2874,12 +3279,18 @@ def _context_evidence(
         task_dates.extend(milestones)
         current_plan = (
             _current_plan_schedule(
-                workspace, index, current_plan_subject, plan["terms"], max_bytes, neighbors
+                workspace,
+                index,
+                current_plan_subject,
+                plan["terms"],
+                max_bytes,
+                neighbors,
+                keep_recorded=keep_recorded_schedule,
             )
             if current_plan_subject and limit >= 2 and not preferred
             else []
         )
-        if (current_plan or milestones) and compact_context:
+        if (len(current_plan) > 1 or milestones) and compact_context:
             candidates = []
         task_dates.extend(current_plan)
         candidates[:0] = task_dates
@@ -2936,7 +3347,11 @@ def _context_evidence(
                 # match at the front of this version's half of the budget.
                 leading = candidates.pop(0)
                 candidates.insert(first + len(reserved_clauses) - 1, leading)
-        if subquestions and not (task_dates or preferred or reserved_clauses or followup):
+        if output_targets and not (task_dates or preferred or reserved_clauses or followup):
+            candidates[:0] = _output_target_evidence(
+                workspace, index, output_targets, limit, max_bytes
+            )
+        elif subquestions and not (task_dates or preferred or reserved_clauses or followup):
             named = _subquestion_evidence(workspace, index, subquestions, max_bytes)
             covered = {row["selection"]["term"] for row in named}
             leading = {row["checksum"] for row in (*named, *candidates[:limit])}
@@ -3028,6 +3443,16 @@ def _context_evidence(
             )
             and not _quoted_phrases(_question)
         )
+        if (
+            trim_neighbors
+            and limit >= 4
+            and not (subquestions or output_targets or followup)
+            and not reserved_clauses
+            and previous_evidence is None
+        ):
+            candidates = _reserve_corroborated_original(
+                workspace, candidates, plan["terms"], max_bytes, neighbors
+            )
         spans, size, omitted, trimmed_lines = _pack(
             workspace,
             candidates,
@@ -3037,6 +3462,7 @@ def _context_evidence(
             phrases,
             anchors=anchors,
             matching_lines=matching_lines,
+            all_terms=all_terms,
             historical_records=index.records,
             compact_sources=compact,
             compact_copies=compact_copies,

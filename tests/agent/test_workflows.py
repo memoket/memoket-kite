@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from queue import Queue
 from threading import Event, Thread
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 import pytest
@@ -27,7 +28,16 @@ import pytest
 from memoket_kite import Memory
 from memoket_kite.pipeline import extract
 from memoket_kite.research import Codebook, SymbolicQuery
-from memoket_kite.tools import audio, cli, memoket_source, operations, viewer, workflow, workspace
+from memoket_kite.tools import (
+    audio,
+    cli,
+    context,
+    memoket_source,
+    operations,
+    viewer,
+    workflow,
+    workspace,
+)
 from memoket_kite.tools.contracts import ToolError, decode_object, digest, encode, validate
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -6619,6 +6629,8 @@ def test_implementation_schedule_follows_a_date_from_the_earlier_discussion(work
     for task in (
         "Update the Delta opening schedule from the meeting notes, retaining the original plan and later changes.",
         "按会议纪要更新 Delta 开馆排期，保留原计划和后续变更。",
+        "Update the Delta opening schedule to the newly confirmed plan. Retain the original plan.",
+        "按刚确认的 Delta 开馆排期更新。保留原计划。",
     ):
         history = call("context", "--question", task, "--compact")
         assert history["compilation"]["current_plan_subject"] in {
@@ -6636,6 +6648,18 @@ def test_implementation_schedule_follows_a_date_from_the_earlier_discussion(work
         ("L3", "dated_plan_followup"),
     ]
     assert not replay["search_subquestion_branches"]
+    recorded = call(
+        "context",
+        "--question",
+        "Implement the Delta opening schedule from the meeting notes, retaining effective dates.",
+        "--compact",
+        "--end-date",
+        "2026-07-03",
+        "--explain",
+    )
+    assert recorded["compilation"]["current_plan_subject"] == "the Delta opening schedule"
+    assert recorded["packing_trace"]["candidates"][0]["selection"]["reason"] == "subquestion_clues"
+    assert recorded["spans"][0]["evidence"][0]["conversation_id"] == "original"
     unrelated = call(
         "context",
         "--question",
@@ -6674,6 +6698,150 @@ def test_context_matching_lines_preserves_mixed_unicode_tokens_across_versions(w
         pack = call(*args, *scope)
         quotes = [line["text"] for span in pack["spans"] for line in span["evidence"]]
         assert quotes == [original]
+
+
+def test_compact_task_keeps_grounded_output_names_and_filters_code_scaffolding(work):
+    directory, call = work
+    notes = text_input(
+        "freight", "The tariff_hold_code is QA-HOLD. The deadline is five working days."
+    )["source"]
+    distractor = text_input("other", "The upper dashboard metrics may include deadline intake.")[
+        "source"
+    ]
+    version = call(
+        "index-sources",
+        payload={
+            "sources": [
+                {
+                    "source": notes,
+                    "annotations": {
+                        "facts": [],
+                        "index_spans": [{"entities": ["Dockmaster"], "segment_ids": ["text-1"]}],
+                    },
+                },
+                {"source": distractor},
+            ]
+        },
+    )["memory_version"]
+    question = (
+        "Implement the freight intake policy. Set tariff_hold_code to the recorded value. "
+        "Populate upper_dashboard_metrics with the intake deadline in working days."
+    )
+    result = call("context", "--question", question, "--compact", "--save", "output-fields")
+    compiled = result["compilation"]
+    assert compiled["question"] == question
+    assert "tariff_hold_code" in compiled["output_search"]
+    assert "upper_dashboard_metrics" not in compiled["output_search"]
+    assert "working days" in compiled["output_search"]
+    assert not {"upper", "dashboard", "metrics"} & set(compiled["terms"])
+    assert any(
+        line["conversation_id"] == "freight"
+        for span in result["spans"]
+        for line in span["evidence"]
+    )
+    graph = viewer._snapshot(directory, [], run_id="output-fields")
+    assert graph["search_question"] == question
+    assert graph["search_trace"]["output_search"] == compiled["output_search"]
+    historical = call("context", "--question", question, "--compact", "--at-version", str(version))
+    assert "output_search" not in historical["compilation"]
+    quoted = call(
+        "context", "--question", 'Find the phrase "Set upper_dashboard_metrics to".', "--compact"
+    )
+    assert "output_search" not in quoted["compilation"]
+    chinese = call(
+        "context",
+        "--question",
+        "按会议实现入库校验。用 tariff_hold_code 保存已确认的值，用 dockmaster_deadline_days 记录入库期限。",
+        "--compact",
+    )["compilation"]
+    assert "tariff_hold_code" in chinese["output_search"]
+    assert "dockmaster_deadline_days" not in chinese["output_search"]
+    assert "dockmaster" in chinese["terms"]
+
+
+def test_compact_output_targets_reserve_original_measurements_with_their_own_clues(work):
+    directory, call = work
+    sources = [
+        {"source": text_input("speed", "At 300 rpm, settling takes 18 seconds.")["source"]},
+        {
+            "source": text_input("guard", "The pressure alarm guard time is 7 seconds.")["source"],
+            "annotations": {
+                "facts": [],
+                "index_spans": [
+                    {"facets": {"object": ["pressure alarm"]}, "segment_ids": ["text-1"]}
+                ],
+            },
+        },
+        {"source": text_input("draft", "The pressure alarm draft uses 90 seconds.")["source"]},
+    ]
+    call("index-sources", payload={"sources": sources})
+    question = (
+        "Implement the bench policy. Populate settling_time_value with the settling time at 300 rpm. "
+        "Set alarm_guard_value to the pressure alarm guard time. Store both in whole seconds."
+    )
+    call(
+        "start",
+        "context-search",
+        "--run-id",
+        "output-targets",
+        payload={"request": {"question": question, "compact": True, "explain": True}},
+    )
+    compiled = call("stage", "output-targets", "compile")["value"]
+    targets = compiled["output_targets"]
+    assert targets[0]["pairs"] == [["300 rpm", "seconds"]]
+    assert targets[1]["annotation_required"]
+    with workspace.Workspace.open(directory, read_only=True) as store:
+        progress = viewer.workflow_progress(store, "output-targets")
+    assert progress["stages"][0]["output_targets"] == targets
+    assert progress["stages"][1]["state"] == "pending"
+    result = call("stage", "output-targets", "search")["value"]
+    traced = [
+        row
+        for row in result["packing_trace"]["candidates"]
+        if row.get("selection", {}).get("reason") == "output_target"
+    ]
+    assert [(row["conversation_id"], row["reason"]) for row in traced] == [
+        ("speed", "quoted"),
+        ("guard", "quoted"),
+    ]
+    graph = viewer._snapshot(directory, [], run_id="output-targets")
+    assert graph["search_trace"]["output_targets"] == targets
+    assert graph["search_subquestion_branches"] == [target["description"] for target in targets]
+    routes = [route for span in graph["passages"] for route in span.get("retrieval", [])]
+    assert routes[1]["index_nodes"] == ["facet:object:pressure_alarm"]
+    assert result["quote_bytes"] <= result["quote_budget_bytes"]
+
+
+def test_compact_corroboration_requires_independent_clues_in_the_same_original_line():
+    records = {
+        identity: {"conversation": {"segments": [{"text": text} for text in lines]}}
+        for identity, lines in {
+            "first": ["Review the valve alarm before replacing the valve."],
+            "second": ["Review the valve alarm."],
+            "split": ["Review the valve alarm.", "The pump is ready."],
+            "target": ["The valve alarm shuts the pump down.", "Recheck the valve alarm."],
+        }.items()
+    }
+    candidates = [
+        {"checksum": identity, "start": start, "stop": stop, "day": ""}
+        for identity, start, stop in (
+            ("first", 0, 1),
+            ("second", 0, 1),
+            ("split", 0, 2),
+            ("target", 0, 1),
+            ("target", 1, 2),
+        )
+    ]
+    selected = context._reserve_corroborated_original(
+        SimpleNamespace(record=records.__getitem__),
+        candidates,
+        ["valve alarm", "valve", "pump"],
+        1000,
+        1,
+    )
+    assert selected[0]["checksum"] == "target" and selected[0]["direct_positions"] == [0]
+    assert selected[0]["selection"]["clues"] == ["valve alarm", "pump"]
+    assert selected[1] == candidates[-1]
 
 
 def test_context_followup_skips_only_previously_delivered_revisions(work):
@@ -6753,6 +6921,30 @@ def test_context_matching_lines_checks_the_original_segment_and_saved_plan(work)
         "context", "--term", "amber needle replacement", "--matching-lines", "--explain"
     )
     assert split_candidate["packing_trace"]["candidates"][0]["reason"] == "no_matching_line"
+
+    conjunction = ("context", "--all-terms", "--term", "needle", "--term", "AMBER", "--explain")
+    joined = call(*conjunction)
+    assert joined["candidate_sources"] == 2
+    assert [quote["conversation_id"] for span in joined["spans"] for quote in span["evidence"]] == [
+        "recorded"
+    ]
+    assert {row["reason"] for row in joined["packing_trace"]["candidates"]} == {
+        "quoted",
+        "no_matching_line",
+    }
+    call(*conjunction, "--save", "joint-terms")
+    assert call("artifact", "joint-terms", "compile")["value"]["request"]["all_terms"]
+    joint_graph = viewer._snapshot(directory, [], run_id="joint-terms")
+    assert joint_graph["search_all_terms"]
+    assert joint_graph["passages"][0]["terms"] == ["needle", "AMBER"]
+    route = joint_graph["passages"][0]["retrieval"][0]
+    assert route["reason"] == "all_terms" and route["clues"] == ["needle", "AMBER"]
+    assert not route.get("index_nodes")
+    assert not call(*conjunction, "--after", "joint-terms")["spans"]
+    assert not call(*conjunction, "--conversation-id", "split")["spans"]
+    call(*conjunction, "--neighbors", "1", error="invalid_input")
+    call("context", "--all-terms", "--term", "needle", "--term", "Needle", error="invalid_input")
+    call("context", "--all-terms", "--question", "amber needle?", error="invalid_input")
 
     terms = ["amber needle", "implementation notes", "amber needle replacement", "silver needle"]
     batch = ("context", "--matching-lines", *(arg for term in terms for arg in ("--term", term)))

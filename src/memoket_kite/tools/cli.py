@@ -222,8 +222,12 @@ def _parser() -> argparse.ArgumentParser:
     context.add_argument("--start-date", help="earliest source date, inclusive")
     context.add_argument("--end-date", help="latest source date, inclusive")
     context.add_argument("--latest", action="store_true", help="give newer dated sources priority")
-    context.add_argument(
+    context_lines = context.add_mutually_exclusive_group()
+    context_lines.add_argument(
         "--matching-lines", action="store_true", help="return only original lines matching a phrase"
+    )
+    context_lines.add_argument(
+        "--all-terms", action="store_true", help="require every --term on the same original line"
     )
     context.add_argument(
         "--explain", action="store_true", help="include packing order in JSON and saved searches"
@@ -792,9 +796,15 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             plan["latest"] = True
         if args.matching_lines:
             plan["matching_lines"] = True
+        if args.all_terms:
+            plan["all_terms"] = True
         if args.explain:
             plan["explain"] = True
-        neighbors = args.neighbors if args.neighbors is not None else int(not args.matching_lines)
+        neighbors = (
+            args.neighbors
+            if args.neighbors is not None
+            else int(not (args.matching_lines or args.all_terms))
+        )
         plan.update(
             {
                 key: value

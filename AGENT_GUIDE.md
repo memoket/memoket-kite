@@ -89,6 +89,12 @@ citations and see which candidates had outer lines trimmed.
 For an implementation request with questions about the original decision,
 pass the request as written. The graph shows the wording used for retrieval
 when the compiler keeps the task subject with its questions.
+For compact tasks that name output fields, the compiler can remove field
+assignments from the retrieval wording while keeping recorded identifiers.
+The original task and its output constraints still apply to the implementation.
+When multiple output descriptions supply distinct names or measurement clues,
+the search can give each description a share of the citation budget. The graph
+shows each description, the clues checked, and the resulting original lines.
 Add `--save` to complete and save both stages in one command. Open the returned
 run ID with `kite-tool view --run RUN_ID`.
 For the recording time or location of a known quotation, use
@@ -97,6 +103,9 @@ with quoted phrases, `--matching-lines` compiles those phrases and returns
 their original matching lines. Use `evidence` when you need surrounding turns.
 For missing or conditional evidence, repeat `--term` in one matching-line
 lookup. Use `--conversation-id` when the relevant recording is already known.
+Use `context --all-terms --term SUBJECT --term CLUE --text` when both phrases
+must occur on the same original line. Add `--explain --save` to replay the
+conjunction and inspect candidates in the graph.
 Add `--save` to inspect each phrase's candidate spans and cited lines in the
 graph. A phrase with zero cited lines may still have candidate spans.
 Use `--explain --save` to retain the first 80 packing candidates for each
@@ -107,6 +116,9 @@ original packing ranks. Without `--text`, these details are returned in JSON.
 For a question about a schedule change, KITE can follow a date and topic
 mentioned again in a later recording and quote a nearby line about the change.
 The graph shows the repeated date and links to the original turns.
+When a task names a newly confirmed schedule and asks to keep the original
+plan, use the same wording in the current workspace. Keep the original and
+revised dates tied to their own recordings when updating code.
 An instruction to prepare something using the latest confirmed plan can
 compile to the task subject. When a dated proposal and a later change can be
 linked through that subject and a repeated calendar date, compact search

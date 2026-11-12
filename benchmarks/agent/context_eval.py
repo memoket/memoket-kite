@@ -398,13 +398,16 @@ def codex_trial(
     codex_options: tuple[str, ...] = (),
     codex_env: dict[str, str] | None = None,
     trace_timing: bool = False,
+    persist_session: bool = False,
+    resume_session: str | None = None,
 ) -> dict:
+    keep_session = persist_session or resume_session is not None
     command = [
         binary,
         "exec",
         *codex_options,
         "--ignore-user-config",
-        "--ephemeral",
+        *([] if keep_session else ["--ephemeral"]),
         "--skip-git-repo-check",
         "--sandbox",
         sandbox,
@@ -413,6 +416,7 @@ def codex_trial(
         model,
         "-C",
         str(cwd),
+        *(["resume", resume_session] if resume_session else []),
         "-",
     ]
     start = time.perf_counter()
@@ -437,7 +441,7 @@ def codex_trial(
             "error": "timeout",
             "exit_code": None,
         }
-    usage = answer = error = None
+    usage = answer = error = session_id = None
     calls = stdout_bytes = 0
     commands = []
     events = []
@@ -449,6 +453,8 @@ def codex_trial(
         if trace_timing:
             events.append((timestamp, event))
         match event.get("type"):
+            case "thread.started":
+                session_id = event.get("thread_id")
             case "turn.completed":
                 usage = event.get("usage")
             case "turn.failed":
@@ -487,6 +493,7 @@ def codex_trial(
         "tool_stdout_bytes": stdout_bytes,
         "error": error,
         "exit_code": exit_code,
+        **({"session_id": session_id} if keep_session else {}),
         **({"timing": timing} if timing is not None else {}),
         **({"commands": commands} if record_tool_output else {}),
     }
@@ -663,7 +670,11 @@ def write_launcher(
     date_args: list[str] | None = None,
     kite_tool: str | None = None,
 ) -> None:
-    executable = [kite_tool] if kite_tool else [sys.executable, "-m", "memoket_kite.tools.cli"]
+    executable = (
+        [str(Path(kite_tool).absolute())]
+        if kite_tool
+        else [sys.executable, "-m", "memoket_kite.tools.cli"]
+    )
     command = shlex.join([*executable, "--workspace", str(workspace.resolve())])
     script = ["#!/bin/sh"]
     if questions is not None:

@@ -8,10 +8,28 @@ For an implementation request with evidence questions, pass the request as
 given. The compiler can keep the task subject and questions together and
 skip trailing implementation instructions during retrieval. Apply the user's
 implementation constraints after reading the cited original lines.
+For a compact lookup, explicit instructions to set an output field can be
+reduced to their evidence wording. A field supported by original text or the
+current index vocabulary stays in the search. Quote a field name when it is
+itself what the user wants to find. A saved graph shows the wording searched.
+For several distinct fields, keep their evidence descriptions in one task.
+When compact compilation has independent names or measurement clues, search
+can reserve quotes for each field. Use each original line with its own field
+and check its role, units, and status before applying it.
+For an ordinary compact task, a lower-ranked recording can contribute a line
+when independent query clues occur together in its original text. If the
+line points to a related action nearby, read that action in the same recording
+before making a broader search.
 For a qualified earlier date and a later schedule question, the search can
 follow a date repeated in a later recording with the same named subject.
 For a task asking to update a schedule from meeting notes and keep both the
 original plan and later changes, pass the whole task with `--compact`.
+For a follow-up that names a newly confirmed schedule and asks to keep the
+original plan, search the current workspace for both. Keep each effective
+date with its own quotation when editing the previous implementation.
+When the task asks to retain effective dates and only the original discussion
+is available, compact search can reserve that dated discussion. Read its words
+for approval status before making a decision based on it.
 When a saved first search leaves a gap, set `request.after` to its run ID and
 compile a question about the missing detail. The CLI equivalent is
 `context --after RUN_ID --question "$MISSING_DETAIL" --compact --text`.
@@ -50,6 +68,11 @@ each answer to the right discussion.
 Repeat `--term` for alternate phrases in one lookup. Add `--save` to show
 per-phrase candidate spans and cited lines in the viewer. A candidate span can
 be left out by the quote budget or can match across original line boundaries.
+When a missing detail requires a named subject and an independent phrase on
+the same original line, use `context --all-terms --term SUBJECT --term CLUE --text`.
+Choose words from the question or earlier cited evidence. If a conjunction has
+no match, check alternate wording or open neighboring turns for a known source.
+In `context-search`, set `request.all_terms: true` with explicit `request.terms`.
 In a pipeline, use `request.terms` or `request.question` and optionally set
 `request.matching_lines: true`.
 Set `request.explain: true` to retain packing order and inclusion reasons.

@@ -242,7 +242,11 @@ def _search_snapshot(
             )
             for line, selection in _selected_search_lines(result):
                 branch = selection.get("question")
-                if selection.get("reason") in {"subquestion_clues", "subquestion_index"}:
+                if selection.get("reason") in {
+                    "subquestion_clues",
+                    "subquestion_index",
+                    "output_target",
+                }:
                     branch = selection["term"]
                 if (
                     branch
@@ -327,7 +331,10 @@ def _search_snapshot(
                 citation += f"–{last['segment_id']}"
             passage = passages.setdefault(ids, {"label": citation, "evidence": ids, "terms": []})
             for line in ids:
-                if selection := selected_lines.get(line):
+                selection = selected_lines.get(line)
+                if pack["plan"].get("all_terms"):
+                    selection = {"reason": "all_terms", "clues": evidence[line]["matched_terms"]}
+                if selection:
                     routes = passage.setdefault("retrieval", [])
                     route = {
                         **selection,
@@ -394,6 +401,7 @@ def _search_snapshot(
         "search_version_comparison": version_comparison,
         "search_history": history,
         "search_matching_lines": packs[0][1]["plan"].get("matching_lines", False),
+        "search_all_terms": packs[0][1]["plan"].get("all_terms", False),
         "search_source_scope": {
             key: packs[0][1]["plan"][key]
             for key in ("source", "conversation_id")
@@ -417,9 +425,19 @@ def _search_snapshot(
             "repeated_terms": packs[0][1].get("compilation", {}).get("repeated_terms", []),
             "change_phases": packs[0][1].get("compilation", {}).get("change_phases", []),
             "subquestions": packs[0][1].get("compilation", {}).get("subquestions", []),
+            **(
+                {"output_targets": output_targets}
+                if (output_targets := packs[0][1].get("compilation", {}).get("output_targets"))
+                else {}
+            ),
             "implementation_search": packs[0][1]
             .get("compilation", {})
             .get("implementation_search"),
+            **(
+                {"output_search": output_search}
+                if (output_search := packs[0][1].get("compilation", {}).get("output_search"))
+                else {}
+            ),
             **(
                 {"current_plan_subject": subject}
                 if (subject := packs[0][1].get("compilation", {}).get("current_plan_subject"))
