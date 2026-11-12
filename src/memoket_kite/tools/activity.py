@@ -79,6 +79,12 @@ def workflow_progress(workspace, run_id: str) -> dict:
                 stage["priority_scope"] = value["priority_scope"]
             if value.get("route_scope"):
                 stage["route_scope"] = value["route_scope"]
+            if value.get("linked_detail"):
+                stage["linked_detail"] = value["linked_detail"]
+            if value.get("recorded_value"):
+                stage["recorded_value"] = value["recorded_value"]
+            if value.get("named_duration"):
+                stage["named_duration"] = value["named_duration"]
         if name == "search":
             parts = value.get("parts", [value])
             stage["counts"] = {
@@ -159,7 +165,18 @@ def _workflow_change(workspace, version):
                 ],
             }
         )
-    return {**change, "topic_graph": topic_graph is not None, "paths": paths}
+    return {
+        **change,
+        "topic_graph": topic_graph is not None,
+        "paths": paths,
+        "source_checksums": [
+            row["checksum"]
+            for row in db.execute(
+                "SELECT checksum FROM memory_activity_sources WHERE version=? ORDER BY checksum",
+                (version,),
+            )
+        ],
+    }
 
 
 def memory_activity(

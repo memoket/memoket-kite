@@ -24,7 +24,28 @@ For a compact request with separate route and schedule outputs, search can
 follow identifiers from a topic annotation into a recorded route and a
 separate scheduling discussion. Use the three original recordings to verify
 the selected route, the retained alternative, and the condition that affects
-the schedule. Competing paths return the ordinary evidence pack.
+the schedule. Read all matching scheduling turns in recording order, since a
+later turn can correct an earlier one. Competing paths or a path that exceeds
+the evidence budget return the ordinary evidence pack.
+For a short request to implement a delivery or routing configuration, compact
+search can infer those evidence targets when the indexed topic and original
+recordings support the complete path. The saved compile plan marks the scope
+as inferred.
+For an English implementation request that names a project and asks for an
+approved subject and its final or released parameter, compact search can follow
+the approved name from one original quote to a numeric value in a second
+recording. Check the name and requested detail in both quotes before applying
+the result. A competing recording or incomplete path keeps the ordinary search.
+For a short task with a named project and feature, the search can also follow
+an approval that explicitly refers to a final parameter for the approved name.
+The saved graph shows the project and feature used to find the approval and
+the original line that supplies the parameter.
+For a stated limit, threshold, budget or ratio in two dated chats, compact
+search can present the user's matching turns in recorded order. Read the words
+around the value to distinguish a suggestion from an applied change.
+For a duration task that names multiple completed activities, search can find a
+separate cited measurement for each named subject. Keep the source and unit
+with each value when computing a total.
 For an ordinary compact task, a lower-ranked recording can contribute a line
 when independent query clues occur together in its original text. If the
 line points to a related action nearby, read that action in the same recording

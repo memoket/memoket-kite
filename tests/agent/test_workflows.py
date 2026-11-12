@@ -688,6 +688,32 @@ def test_source_indexing_rejects_changed_preview_and_shows_committed_stages(work
     call("stage", "verify-spans", "verify", error="integrity_error")
 
 
+def test_graph_replay_tracks_every_changed_source_across_activity_pages(work, tmp_path):
+    directory, call = work
+    existing = {"source": text_input("existing", "Already indexed.")["source"]}
+    call("index-sources", payload={"sources": [existing]})
+    additions = [
+        {"source": text_input(f"review-{index:02}", f"Review session {index}.")["source"]}
+        for index in range(23)
+    ]
+    batch = tmp_path / "batch.json"
+    batch.write_text(json.dumps({"sources": [existing, *additions]}))
+    result = call("index-sources", "--save", "large-batch", "--input", str(batch))
+    assert result["sources_changed"] == 23
+    progress = viewer._workflow_snapshot(directory, "large-batch")
+    change = progress["change"]
+    assert change["retained_source_changes"] == 23
+    assert len(change["paths"]) == 3
+
+    last_page = viewer._activity_snapshot(directory, result["memory_version"], offset=20)["events"][
+        0
+    ]
+    all_changes = [*change["source_changes"], *last_page["source_changes"]]
+    assert len(all_changes) == 23
+    assert set(change["source_checksums"]) == {entry["checksum"] for entry in all_changes}
+    assert all(entry["conversation_id"] != "existing" for entry in all_changes)
+
+
 def test_activity_separates_recording_and_commit_time_for_index_changes(work, monkeypatch):
     directory, call = work
     moment = "2026-04-20T12:00:00+00:00"
@@ -6980,6 +7006,47 @@ def test_compact_route_search_requires_original_support_across_distinct_recordin
     assert selected[-1]["selection"]["clues"] == ["tkm", "primary route", "reschedule"]
     snapshot = viewer._snapshot(directory, [], run_id="route-plan")
     assert set(snapshot["search_subquestion_branches"]) == {"route", "the schedule"}
+    brief = call(
+        "context", "--question", "Implement the conveyor routing configuration.", "--compact"
+    )
+    assert brief["compilation"]["route_scope"]["inferred"]
+    assert [line["source_line_id"] for span in brief["spans"] for line in span["evidence"]] == [
+        line["source_line_id"] for span in result["spans"] for line in span["evidence"]
+    ]
+    broader = call(
+        "context",
+        "--question",
+        "Implement the conveyor routing configuration. Preserve the test volume.",
+        "--compact",
+    )
+    assert "route_scope" not in broader["compilation"]
+
+    revised = record(
+        "schedule",
+        "If TKM becomes the primary route, reschedule installation for May 8.",
+        "Next item: check the torque setting.",
+        "Correction: for the TKM primary route, reschedule installation for May 12 instead.",
+    )
+    revised["source"]["expected_checksum"] = result["spans"][-1]["evidence"][0]["revision_checksum"]
+    call("index-sources", payload={"sources": [revised]})
+    revised_search = call(*args, "--save", "route-correction")
+    schedule_lines = [
+        line
+        for span in revised_search["spans"]
+        for line in span["evidence"]
+        if line["conversation_id"] == "schedule"
+    ]
+    assert [line["segment_id"] for line in schedule_lines] == ["L1", "L3"]
+    graph = viewer._snapshot(directory, [], run_id="route-correction")
+    assert {
+        ref for ref, branch in graph["search_branch_evidence"].items() if branch == "the schedule"
+    } == {line["source_line_id"] for line in schedule_lines}
+    constrained = call(*args, "--limit", "4")
+    assert all(
+        row.get("selection", {}).get("term") != "the schedule"
+        for row in constrained["packing_trace"]["candidates"]
+    )
+
     call(
         "index-sources",
         payload={
@@ -7022,6 +7089,252 @@ def test_compact_corroboration_requires_independent_clues_in_the_same_original_l
     assert selected[0]["checksum"] == "target" and selected[0]["direct_positions"] == [0]
     assert selected[0]["selection"]["clues"] == ["valve alarm", "pump"]
     assert selected[1] == candidates[-1]
+
+
+def test_compact_linked_detail_uses_the_approved_name_in_a_second_original_recording(work):
+    directory, call = work
+    question = (
+        "Implement the Lark Observatory twilight handoff. "
+        "Use the approved filter and its confirmed exposure setting."
+    )
+
+    def indexed(*recordings):
+        call(
+            "index-sources",
+            payload={
+                "sources": [
+                    {"source": text_input(identity, text)["source"]}
+                    for identity, text in recordings
+                ]
+            },
+        )
+
+    indexed(
+        (
+            "handoff",
+            "We approved Vela Blue for Lark Observatory. Apply Vela Blue's confirmed exposure setting.",
+        ),
+        ("rehearsal", "Vela Blue used a provisional exposure setting of 80 milliseconds."),
+        ("other-filter", "Confirmed exposure setting for Vela Red: 90 milliseconds."),
+        ("signoff", "Confirmed exposure setting for Vela Blue: 120 milliseconds."),
+        ("unrelated", "Confirmed Vela Blue exposure review. File the humidity setting separately."),
+    )
+    call(
+        "start",
+        "context-search",
+        "--run-id",
+        "linked-detail",
+        payload={"request": {"question": question, "compact": True, "explain": True}},
+    )
+    call("stage", "linked-detail", "compile")
+    progress = viewer._workflow_snapshot(directory, "linked-detail")
+    assert progress["stages"][0]["linked_detail"] == {
+        "scope": "Lark Observatory",
+        "role": "filter",
+        "status": "confirmed",
+        "relation": "exposure setting",
+    }
+    result = call("stage", "linked-detail", "search")["value"]
+    lines = [line for span in result["spans"] for line in span["evidence"]]
+    assert [line["conversation_id"] for line in lines] == ["handoff", "signoff"]
+    graph = viewer._snapshot(directory, [], run_id="linked-detail")
+    assert graph["search_branch_evidence"] == {
+        lines[0]["source_line_id"]: "approved filter",
+        lines[1]["source_line_id"]: "confirmed exposure setting",
+    }
+
+    indexed(("other-signoff", "Confirmed exposure setting for Vela Blue: 140 milliseconds."))
+    ambiguous = call("context", "--question", question, "--compact", "--explain")
+    assert all("selection" not in row for row in ambiguous["packing_trace"]["candidates"])
+    assert not context._approved_reference(
+        "We never approved Vela Blue. Apply Vela Blue's confirmed exposure setting.",
+        "confirmed",
+        "exposure setting",
+    )
+
+
+@pytest.mark.parametrize(
+    "variation", ["other-feature", "same-name", "competing", "earlier", "withdrawn"]
+)
+def test_short_named_task_follows_an_unambiguous_parameter_reference(work, variation):
+    directory, call = work
+    question = "Implement Quartz Studio's preview playback ceiling."
+    approval = (
+        "We approved Prism Blue for Quartz Studio preview playback. "
+        "Use Prism Blue's released bitrate limit."
+    )
+    confirmed = "Released Prism Blue bitrate limit for preview playback: 12 Mbps."
+    if variation == "withdrawn":
+        confirmed += " This value is not yet final."
+    originals = [
+        ("handoff", "2026-06-02", approval),
+        ("signoff", "2026-06-01" if variation == "earlier" else "2026-06-03", confirmed),
+        ("export", "2026-06-03", "Released Prism Blue bitrate limit for archive exports: 24 Mbps."),
+        (
+            "proposal",
+            "2026-06-01",
+            "Prism Blue proposed bitrate limit for preview playback was 16 Mbps. It was never released.",
+        ),
+    ]
+    if variation == "same-name":
+        originals.append(
+            (
+                "annex",
+                "2026-06-02",
+                "We approved Prism Blue for Cedar Theater preview playback. Use Prism Blue's released bitrate limit.",
+            )
+        )
+    if variation == "competing":
+        originals.append(
+            (
+                "other",
+                "2026-06-04",
+                "Released Prism Blue bitrate limit for preview playback: 14 Mbps.",
+            )
+        )
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {"source": text_input(identity, text, date=day)["source"]}
+                for identity, day, text in originals
+            ]
+        },
+    )
+    call(
+        "start",
+        "context-search",
+        "--run-id",
+        "short-handoff",
+        payload={"request": {"question": question, "compact": True, "explain": True}},
+    )
+    call("stage", "short-handoff", "compile")
+    compiled = viewer._workflow_snapshot(directory, "short-handoff")["stages"][0]
+    assert compiled["linked_detail"] == {
+        "scope": "Quartz Studio",
+        "feature": "preview playback ceiling",
+    }
+    result = call("stage", "short-handoff", "search")["value"]
+    if variation != "other-feature":
+        assert all(
+            row.get("selection", {}).get("reason") != "subquestion_clues"
+            for row in result["packing_trace"]["candidates"]
+        )
+        return
+    lines = [line for span in result["spans"] for line in span["evidence"]]
+    assert [line["conversation_id"] for line in lines] == ["handoff", "signoff"]
+    graph = viewer._snapshot(directory, [], run_id="short-handoff")
+    assert graph["search_branch_evidence"] == {
+        lines[0]["source_line_id"]: "approved subject",
+        lines[1]["source_line_id"]: "released bitrate limit",
+    }
+    assert context._compile_short_handoff(question + " Include export settings.") is None
+
+
+def test_compact_recorded_value_keeps_dated_user_turns_and_their_original_order(work):
+    directory, call = work
+
+    def recording(identity, day, *lines):
+        source = text_input(identity, "unused", date=day)["source"]
+        source["format"] = "transcript"
+        source["payload"].pop("text")
+        source["payload"]["segments"] = [
+            {"segment_id": f"L{number}", "text": text} for number, text in enumerate(lines, 1)
+        ]
+        return {"source": source}
+
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                recording(
+                    "later",
+                    "2026-04-09",
+                    "User: I'm thinking of changing my balcony watering limit to three refills.",
+                    "Assistant: A balcony watering limit of four refills could work.",
+                    "User: I increased the balcony watering limit to three refills this morning.",
+                ),
+                recording(
+                    "earlier",
+                    "2026-04-02",
+                    "User: For balcony watering, I cut back to just two refills.",
+                ),
+            ]
+        },
+    )
+    question = (
+        "Implement the balcony watering limit from the recordings. "
+        "Preserve the previous and latest confirmed limits."
+    )
+    call(
+        "start",
+        "context-search",
+        "--run-id",
+        "dated-value",
+        payload={"request": {"question": question, "compact": True, "explain": True}},
+    )
+    call("stage", "dated-value", "compile")
+    compiled = viewer._workflow_snapshot(directory, "dated-value")["stages"][0]
+    assert compiled["recorded_value"] == {"subject": "balcony watering", "measure": "limit"}
+    result = call("stage", "dated-value", "search")["value"]
+    lines = [line for span in result["spans"] for line in span["evidence"]]
+    assert [(line["conversation_id"], line["segment_id"]) for line in lines] == [
+        ("earlier", "L1"),
+        ("later", "L1"),
+        ("later", "L3"),
+    ]
+    graph = viewer._snapshot(directory, [], run_id="dated-value")
+    assert set(graph["search_subquestion_branches"]) == {"earlier limit", "later limit"}
+    assert context._compile_recorded_value(question + " Include the nozzle model.") is None
+
+
+def test_compact_duration_groups_use_named_completed_measurements_from_separate_sources(work):
+    _, call = work
+    sources = [
+        ("alpha", "Inspection at Quay Alpha took 15 minutes."),
+        ("yard", "North Yard inspection was completed in 25 minutes."),
+        ("depot", "The inspection of Depot B lasted 30 minutes."),
+        ("planned", "The planned inspection of Depot B has a 45-minute allowance."),
+        ("other", "Quay Beta inspection was completed in 50 minutes."),
+    ]
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {"source": text_input(identity, line)["source"]} for identity, line in sources
+            ]
+        },
+    )
+    question = "Implement the recorded inspection duration report for Quay Alpha, North Yard and Depot B. Include the total."
+    args = ("context", "--question", question, "--compact", "--explain")
+    result = call(*args)
+    assert [span["evidence"][0]["conversation_id"] for span in result["spans"]] == [
+        "alpha",
+        "yard",
+        "depot",
+    ]
+    assert [row["selection"]["term"] for row in result["packing_trace"]["candidates"]] == [
+        "Quay Alpha",
+        "North Yard",
+        "Depot B",
+    ]
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {
+                    "source": text_input(
+                        "another", "Another Quay Alpha inspection took 20 minutes."
+                    )["source"]
+                }
+            ]
+        },
+    )
+    ambiguous = call(*args)
+    assert all(
+        row.get("selection", {}).get("reason") != "subquestion_clues"
+        for row in ambiguous["packing_trace"]["candidates"]
+    )
 
 
 def test_context_followup_skips_only_previously_delivered_revisions(work):

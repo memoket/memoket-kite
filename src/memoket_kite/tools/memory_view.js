@@ -3,6 +3,8 @@
   const snapshot = JSON.parse(byId('kite-memory-data').textContent);
   const query = new URLSearchParams(location.search);
   let progress = snapshot.workflow_progress;
+  const workflowSources = current => new Set(current?.change?.source_checksums || []);
+  let changedSources = workflowSources(progress);
   const filterTrace = snapshot.filter_trace;
   let filterStep = -1;
   let filterTimer;
@@ -232,7 +234,7 @@
   for (const term of snapshot.search_terms || []) {
     const part = comparison.find(part => part.key === term);
     const subject = groupedSearch && term === snapshot.search_question
-      ? term.match(/^([^。？！?]+?)(?:。|\.\s)/)?.[1] : undefined;
+      ? term.match(/^([^。？！?]+?)(?:。|(?<!\b[A-Z])\.\s)/)?.[1] : undefined;
     const label = part?.history ? `v${part.history.version}` : part?.question || subject || term;
     const parents = snapshot.search_subquestion_branches?.includes(term) ? [snapshot.search_question] : [];
     searchBranches.set(term, { id: 'term:' + term, kind: parents.length ? 'subquestion' : 'query',
@@ -344,7 +346,8 @@
   }
 
   function compareRecentSources(a, b) {
-    return Number(b.active !== false) - Number(a.active !== false)
+    return Number(changedSources.has(b.checksum)) - Number(changedSources.has(a.checksum))
+      || Number(b.active !== false) - Number(a.active !== false)
       || (b.opened_version ?? -1) - (a.opened_version ?? -1);
   }
 
@@ -355,11 +358,11 @@
   }
 
   function isImportedMemory(memory) {
-    return progress?.change?.paths?.some(path => memory.sources.some(source => source.checksum === path.checksum));
+    return memory.sources.some(source => changedSources.has(source.checksum));
   }
 
   function importedFirst(candidates) {
-    if (!progress?.change?.paths?.length) return candidates;
+    if (!changedSources.size) return candidates;
     const imported = [];
     const other = [];
     for (const memory of candidates) (isImportedMemory(memory) ? imported : other).push(memory);
@@ -505,7 +508,9 @@
     }
     const selectedMemories = [];
     const sourceSet = new Set(node?.kind === 'source' ? [node] : []);
-    if (!memories.size) for (const source of [...sources.values()].slice(0, 9)) sourceSet.add(source);
+    if (!memories.size) {
+      for (const source of [...sources.values()].sort(compareRecentSources).slice(0, 9)) sourceSet.add(source);
+    }
     for (const memory of new Set(candidates)) {
       const newSources = memory.sources.filter(source => !sourceSet.has(source));
       if (selectedMemories.length >= (focused || isAnnotation(node) ? 6 : 10)) break;
@@ -528,7 +533,7 @@
       for (const branch of memory.branches) addGroup(branch);
     }
     let quoted = focused?.evidence || [];
-    if (node?.kind === 'topic' && progress?.change?.paths?.length) {
+    if (node?.kind === 'topic' && changedSources.size) {
       quoted = [...new Set(selectedMemories.filter(isImportedMemory).flatMap(memory => memory.evidence))];
     }
     if (searching && isGroup(node)) {
@@ -646,7 +651,6 @@
     }
     view.reset();
     render();
-    if (progress?.change?.paths?.length) playWorkflowEffect();
   }
 
   function button(text, onClick, className) {
@@ -1132,6 +1136,7 @@
       search: '已找到原文', pending: '等待开始', failed: '阶段失败',
       unchanged: '无变更', empty: '没有命中原文', unavailable: '运行记录不可用',
       changes: '查看变更', evidence: '查看引用', replay: '重播', locateTopic: '定位主题', importedPath: '新增原文',
+      changedSources: '份来源已变更', firstSource: '首份变更原文', allChanges: '查看全部变更', updatedPath: '更新后原文',
     },
     en: {
       import: 'Memory import', query: 'Memory search', preview: 'Sources previewed',
@@ -1145,6 +1150,7 @@
       empty: 'No matching evidence', unavailable: 'Run unavailable',
       changes: 'View change', evidence: 'View citations', replay: 'Replay',
       locateTopic: 'Locate topic', importedPath: 'New source',
+      changedSources: 'sources changed', firstSource: 'First changed source', allChanges: 'View all changes', updatedPath: 'Updated source',
     },
   };
   const workflowKinds = {
@@ -1214,14 +1220,17 @@
       : committed?.changed === false ? labels.unchanged : labels[done?.name || 'pending'];
     byId('workflow-activity').hidden = false;
     const statusElement = byId('workflow-status');
-    const message = labels[kind] + ' · ' + status;
+    const totalChanges = progress.change?.retained_source_changes || 0;
+    const multipleSources = changedSources.size > 1;
+    const message = [labels[kind], status, multipleSources && `${number.format(totalChanges)} ${labels.changedSources}`]
+      .filter(Boolean).join(' · ');
     if (statusElement.textContent !== message) statusElement.textContent = message;
     const result = byId('workflow-result');
     const replay = byId('workflow-replay');
     const path = progress.change?.paths?.[0];
     const merge = progress.change?.topic_merge;
     const deleted = progress.change?.deleted_graph_counts;
-    replay.hidden = !(path || merge || deleted || (search && done?.citations?.length));
+    replay.hidden = !(changedSources.size || merge || deleted || (search && done?.citations?.length));
     replay.textContent = labels.replay;
     const topic = merge?.current_topic || path?.topics?.[0];
     const topicLink = byId('workflow-topic');
@@ -1237,26 +1246,33 @@
       sourceLink.href = '?' + new URLSearchParams({
         ...graph, ...(topic ? { topic } : {}), mode: 'memory', node: 'source:' + path.checksum,
       });
-      sourceLink.textContent = labels.importedPath;
+      sourceLink.textContent = labels[multipleSources ? 'firstSource' : kind === 'update' ? 'updatedPath' : 'importedPath'];
     }
     const changed = progress.change?.source_changes?.[0];
     const target = progress.saved_search ? { view: 'graph', run: progress.saved_search, follow: progress.run_id }
+      : multipleSources ? { view: 'activity', event: progress.commit_version }
       : merge && progress.change.topic_graph ? { view: 'changes', event: progress.commit_version }
       : changed?.has_graph ? { view: 'changes', event: progress.commit_version, checksum: changed.checksum }
       : progress.commit_version != null ? { view: 'activity', event: progress.commit_version } : null;
     result.hidden = !target;
     if (target) {
       result.href = '?' + new URLSearchParams({ ...target, lang: language });
-      result.textContent = labels[search ? 'evidence' : 'changes'];
+      result.textContent = labels[search ? 'evidence' : multipleSources ? 'allChanges' : 'changes'];
     }
     if (search && !searching) {
       const steps = byId('filter-trace-steps');
       const priority = done?.priority_scope;
       const route = done?.route_scope;
+      const linked = done?.linked_detail;
+      const recordedValue = done?.recorded_value;
       const details = done?.name === 'compile'
         ? (done.output_targets?.map(target => target.description)
           || (priority && [`${priority.topic} · ${priority.detail}`, priority.commitment])
           || (route && [`${route.topic} · ${route.route}`, route.schedule])
+          || (linked && (linked.feature ? [`${linked.scope} · ${linked.feature}`]
+            : [`${linked.scope} · ${linked.role}`, `${linked.status} ${linked.relation}`]))
+          || (recordedValue && [`${recordedValue.subject} · ${recordedValue.measure}`])
+          || done.named_duration?.subjects.map(subject => [subject.name, subject.description].filter(Boolean).join(' '))
           || done.terms || [])
         : (done?.citations?.map(citation => citation.reference) || []);
       steps.hidden = !details.length;
@@ -1347,17 +1363,25 @@
         ...topic.memories.map(memory => memory.id)]]);
       return;
     }
-    if (progress.change?.paths?.length) {
-      view.playWorkflowEffect('import', progress.change.paths.map(path => {
-        const source = sources.get(path.checksum);
-        return [
-          'source:' + path.checksum,
-          ...path.topics.map(code => topics.get(code)?.id).filter(Boolean),
-          ...(source?.memories || []).map(memory => memory.id),
-          ...(source?.memories || []).flatMap(memory => memory.evidence.map(line => line.id)),
-          ...path.lines.map(line => 'line:' + line.line_id),
-        ];
-      }));
+    if (changedSources.size) {
+      const affected = new Set();
+      function includeTopic(topic) {
+        if (affected.has(topic.id)) return;
+        affected.add(topic.id);
+        for (const code of topic.parents) if (topics.has(code)) includeTopic(topics.get(code));
+      }
+      for (const checksum of changedSources) {
+        const source = sources.get(checksum);
+        if (!source) continue;
+        affected.add(source.id);
+        for (const memory of source.memories) {
+          affected.add(memory.id);
+          for (const topic of memory.topics) includeTopic(topic);
+          for (const node of [...memory.entities, ...memory.facets]) affected.add(node.id);
+          for (const line of memory.evidence) if (line.revision_checksum === checksum) affected.add(line.id);
+        }
+      }
+      view.playWorkflowEffect('import', [affected]);
       return;
     }
     const citations = progress.stages.find(stage => stage.name === 'search')?.citations;
@@ -1391,6 +1415,7 @@
             }
             view.playWorkflowEffect(null, []);
             progress = undefined;
+            changedSources.clear();
             return;
           }
           if (!response.ok) throw new Error('Could not read progress');
@@ -1409,6 +1434,7 @@
           }
           const newResult = next.saved_search !== progress.saved_search || next.commit_version !== progress.commit_version;
           progress = next;
+          changedSources = workflowSources(progress);
           renderWorkflow();
           if (newResult) playWorkflowEffect();
         } catch {

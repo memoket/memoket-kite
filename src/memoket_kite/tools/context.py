@@ -274,12 +274,84 @@ _TASK_SUBJECT_START = re.compile(
 )
 _ROUTE_FIELD = re.compile(r"路线|线路|路由|(?:the\s+)?(?:route|routing|route selection)", re.I)
 _SCHEDULE_FIELD = re.compile(r"排期|时间安排|进度|(?:the\s+)?(?:schedule|timeline)", re.I)
+_DELIVERY_CONFIGURATION = re.compile(
+    r"(?P<zh>[^，,。.!?！？；;\n]{2,80}?(?:交付|路由)配置)|"
+    r"(?P<en>[a-z][a-z0-9 -]{1,80}?(?:delivery|routing) configuration)",
+    re.I,
+)
 _ROUTE_ROLES = ("主线", "primary route", "main route", "mainline")
 _REPLAN_ACTIONS = ("重新排", "replan", "replanning", "reschedule", "rescheduling")
 _ROUTE_CODE = re.compile(r"(?<![A-Za-z0-9])[A-Z][A-Z0-9]{2,7}(?![A-Za-z0-9])")
 _ROUTE_CONNECTOR = re.compile(r"[a-z][a-z0-9]{2,6}")
 _ROUTE_SPAN_LIMIT = 32
 _ROUTE_TERM_LIMIT = 8
+_NAMED_TASK_SCOPE = re.compile(r"[A-Z][\w-]+(?:\s+[A-Z][\w-]+){1,3}")
+_APPROVED_DETAIL = re.compile(
+    r"\bapproved\s+(?P<role>[a-z][a-z -]{0,30}?)\s+and\s+"
+    r"(?:(?:use|apply|enforce|retain|keep|follow)\s+)?its\s+"
+    r"(?P<status>final|released|confirmed)\s+"
+    r"(?P<relation>[a-z]+(?:[ -][a-z]+){0,3})[.!?]?\s*$",
+    re.I,
+)
+_APPROVED_REFERENCE = re.compile(
+    r"(?:^|[.:!?]\s+)(?P<action>(?i:(?:we|they|i)\s+approved|use))\s+"
+    r"(?P<name>[A-Z][A-Za-z0-9-]*(?:\s+[A-Z][A-Za-z0-9-]*){0,2})\b"
+)
+_CONFIRMED_ASSIGNMENT = re.compile(
+    r"\bthat\s+(?:assignment|choice|selection|decision)\s+(?:is|was)\s+approved\b", re.I
+)
+_SHORT_HANDOFF = re.compile(r"(?:['’]s)?\s+(?P<feature>[a-z][a-z-]*(?:\s+[a-z][a-z-]*){1,5})[.!]?")
+_HANDOFF_PARAMETER = re.compile(
+    r"(?:^|[.!?;]\s+)(?i:apply|use|follow|enforce)\s+"
+    r"(?P<name>[A-Z][A-Za-z0-9-]*(?:\s+[A-Z][A-Za-z0-9-]*){0,2})['’]s\s+"
+    r"(?P<status>final|released|confirmed)\s+"
+    r"(?P<relation>[a-z]+(?:[ -][a-z]+){0,3})(?=[.!?;]|$)"
+)
+_WITHDRAWN_PARAMETER = re.compile(
+    r"\b(?:not(?: yet)?|never|no longer)\s+(?:the\s+)?(?:final|released|confirmed)\b", re.I
+)
+_RECORDED_VALUE = re.compile(
+    r"(?P<subject>[a-z]+(?:[ -][a-z]+){1,4}?)\s+"
+    r"(?P<measure>limit|threshold|budget|ratio)\s+"
+    r"(?:from|discussed in|recorded in|based on)\s+(?:the\s+)?"
+    r"(?:recordings?|meetings?|notes?)\b",
+    re.I,
+)
+_RECORDED_VALUE_TAIL = re.compile(
+    r"[.;]\s*(?:keep|preserve|retain|show)\s+(?:the\s+)?(?:earlier|previous|prior)\s+"
+    r"and\s+(?:the\s+)?(?:latest|current)\s+(?:confirmed\s+)?"
+    r"(?P<measure>limits?|thresholds?|budgets?|ratios?)[.!]?\s*$",
+    re.I,
+)
+_NAMED_DURATION = re.compile(r"\b(?:duration|driving time|travel time|time spent)\b", re.I)
+_DURATION_EVENT = re.compile(r"\b(?:completed|recorded|past|actual)\b", re.I)
+_DURATION_OUTPUT = re.compile(
+    r"[.;]\s+(?:include|return|calculate)\s+(?:the\s+)?(?:total|sum)[.!]?\s*$", re.I
+)
+_NAME_PART = r"[A-Z][A-Za-z0-9-]*(?:\.[A-Z])*\.?"
+_LIST_NAME = re.compile(
+    rf"(?:the\s+)?(?P<name>{_NAME_PART}(?:\s+{_NAME_PART}){{0,3}})"
+    r"(?P<description>(?:\s+[a-z][a-z-]*){0,3})"
+)
+_NUMBER_WORD = r"(?:\d+(?:[.,]\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+_COUNT = re.compile(rf"\b{_NUMBER_WORD}\b", re.I)
+_VALUE_CHANGE = re.compile(r"\b(?:cut back|set|changed|reduced|increased|raised|lowered)\b", re.I)
+_DURATION_UNITS = (
+    "second",
+    "seconds",
+    "minute",
+    "minutes",
+    "hour",
+    "hours",
+    "day",
+    "days",
+    "week",
+    "weeks",
+)
+_DURATION_VALUE = re.compile(rf"\b{_NUMBER_WORD}[\s-]+(?:{'|'.join(_DURATION_UNITS)})\b", re.I)
+_DURATION_REPORT = ("completed", "finished", "took", "lasted", "spent", "drove", "elapsed")
+_DRIVE_TERMS = ("drive", "drove", "driven", "driving")
+_SPEAKER_PREFIX = re.compile(r"^\s*(User|Assistant):", re.I)
 _CHOICE_STATEMENT = re.compile(
     r"打样|选|渐变|确定|保留|定稿|\b(?:pick|choos\w+|select\w*|decid\w+|confirm\w+)\b",
     re.I,
@@ -366,7 +438,22 @@ CONTEXT_PLAN = object_schema(
         "priority_scope": object_schema(
             {"topic": TEXT, "detail": TEXT, "subject": TEXT, "commitment": TEXT}
         ),
-        "route_scope": object_schema({"topic": TEXT, "route": TEXT, "schedule": TEXT}),
+        "route_scope": object_schema(
+            {"topic": TEXT, "route": TEXT, "schedule": TEXT}, {"inferred": {"type": "boolean"}}
+        ),
+        "linked_detail": {
+            "oneOf": [
+                object_schema({"scope": TEXT, "role": TEXT, "status": TEXT, "relation": TEXT}),
+                object_schema({"scope": TEXT, "feature": TEXT}),
+            ]
+        },
+        "recorded_value": object_schema({"subject": TEXT, "measure": TEXT}),
+        "named_duration": object_schema(
+            {
+                "subjects": array(object_schema({"name": TEXT}, {"description": TEXT}), 2, 4),
+                "driving": {"type": "boolean"},
+            }
+        ),
         "current_plan_subject": TEXT,
         "keep_recorded_schedule": {"type": "boolean"},
     },
@@ -746,6 +833,14 @@ def _compile_questions(workspace, indexes, request, search, compare_search):
                 result["priority_scope"] = scope
             elif scope := _compile_route_scope(workspace, index, search):
                 result["route_scope"] = scope
+            elif link := _compile_linked_detail(search):
+                result["linked_detail"] = link
+            elif recorded := _compile_recorded_value(search):
+                result["recorded_value"] = recorded
+            elif durations := _compile_named_duration(search):
+                result["named_duration"] = durations
+            elif link := _compile_short_handoff(search):
+                result["linked_detail"] = link
     if compare_search is not None:
         terms, forms = _compile_terms(comparison.db, comparison.filters, compare_search)
         result["comparison_terms"] = terms
@@ -1055,13 +1150,20 @@ def _compile_priority_scope(workspace, index, question):
 def _compile_route_scope(workspace, index, question):
     details = _task_details(question)
     if details is None:
-        return None
-    heading, schedule, route = details
-    if _ROUTE_FIELD.fullmatch(schedule):
-        schedule, route = route, schedule
-    if not (_SCHEDULE_FIELD.fullmatch(schedule) and _ROUTE_FIELD.fullmatch(route)):
-        return None
-    heading = _TASK_SUBJECT_START.sub("", heading)
+        heading, prefix_count = _TASK_SUBJECT_START.subn("", question)
+        short = _DELIVERY_CONFIGURATION.fullmatch(heading.rstrip(".。 "))
+        if not (prefix_count and short):
+            return None
+        route, schedule = (
+            ("路线", "排期") if short["zh"] and _HAN.search(heading) else ("route", "schedule")
+        )
+    else:
+        heading, schedule, route = details
+        if _ROUTE_FIELD.fullmatch(schedule):
+            schedule, route = route, schedule
+        if not (_SCHEDULE_FIELD.fullmatch(schedule) and _ROUTE_FIELD.fullmatch(route)):
+            return None
+        heading = _TASK_SUBJECT_START.sub("", heading)
     terms, _ = _compile_terms(index.db, index.filters, heading)
     records = {}
     for term in terms:
@@ -1077,7 +1179,75 @@ def _compile_route_scope(workspace, index, question):
         if len(by_topic) == 1:
             topic, revisions = next(iter(by_topic.items()))
             if len(revisions) >= 2:
-                return {"topic": topic, "route": route, "schedule": schedule}
+                return {
+                    "topic": topic,
+                    "route": route,
+                    "schedule": schedule,
+                    **({"inferred": True} if details is None else {}),
+                }
+    return None
+
+
+def _compile_linked_detail(question):
+    task = _TASK_SUBJECT_START.match(question)
+    if task is None or _HAN.search(question):
+        return None
+    project = _NAMED_TASK_SCOPE.match(question, task.end())
+    detail = _APPROVED_DETAIL.search(question)
+    if project and detail:
+        return {"scope": project[0], **detail.groupdict()}
+    return None
+
+
+def _compile_short_handoff(question):
+    task = _TASK_SUBJECT_START.match(question)
+    project = _NAMED_TASK_SCOPE.match(question, task.end()) if task else None
+    if project and (short := _SHORT_HANDOFF.fullmatch(question[project.end() :])):
+        words = _tokens(short["feature"]).split()
+        if not set(words) & {"and", "or", "with", "without", "using", "from", "for", "then"}:
+            return {"scope": project[0], "feature": short["feature"]}
+    return None
+
+
+def _compile_recorded_value(question):
+    task = _TASK_SUBJECT_START.match(question)
+    if task is not None and not _HAN.search(question):
+        if match := _RECORDED_VALUE.match(question, task.end()):
+            rest = question[match.end() :]
+            tail = _RECORDED_VALUE_TAIL.fullmatch(rest)
+            if not rest.strip(".! ") or (
+                tail and tail["measure"].casefold().removesuffix("s") == match["measure"].casefold()
+            ):
+                return match.groupdict()
+    return None
+
+
+def _compile_named_duration(question):
+    task = _TASK_SUBJECT_START.match(question)
+    duration = _NAMED_DURATION.search(question)
+    if not (task and duration and _DURATION_EVENT.search(question)):
+        return None
+    heading = _DURATION_OUTPUT.split(question, maxsplit=1)[0].rstrip(".!? ")
+    for separator in reversed(list(re.finditer(r"\b(?:for|to)\s+", heading[duration.end() :]))):
+        names = re.split(r",\s*(?:and\s+)?|\s+and\s+", heading[duration.end() + separator.end() :])
+        if not 2 <= len(names) <= 4:
+            continue
+        matches = [_LIST_NAME.fullmatch(name.strip()) for name in names]
+        if all(matches) and len({match["name"].casefold() for match in matches}) == len(names):
+            return {
+                "subjects": [
+                    {
+                        "name": match["name"],
+                        **(
+                            {"description": match["description"].strip()}
+                            if match["description"]
+                            else {}
+                        ),
+                    }
+                    for match in matches
+                ],
+                "driving": duration[0].casefold() in {"driving time", "travel time"},
+            }
     return None
 
 
@@ -1276,6 +1446,9 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
             compact_context=bool(request.get("compact") and compare_terms is None),
             priority_scope=compiled.get("priority_scope"),
             route_scope=compiled.get("route_scope"),
+            linked_detail=compiled.get("linked_detail"),
+            recorded_value=compiled.get("recorded_value"),
+            named_duration=compiled.get("named_duration"),
             previous_evidence=previous_evidence,
             skipped=skipped,
         )
@@ -1291,6 +1464,12 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
                 result["compilation"]["priority_scope"] = compiled["priority_scope"]
             if "route_scope" in compiled:
                 result["compilation"]["route_scope"] = compiled["route_scope"]
+            if "linked_detail" in compiled:
+                result["compilation"]["linked_detail"] = compiled["linked_detail"]
+            if "recorded_value" in compiled:
+                result["compilation"]["recorded_value"] = compiled["recorded_value"]
+            if "named_duration" in compiled:
+                result["compilation"]["named_duration"] = compiled["named_duration"]
             if "current_plan_subject" in compiled:
                 result["compilation"]["current_plan_subject"] = compiled["current_plan_subject"]
             if forms:
@@ -2135,7 +2314,7 @@ def _topic_priority_evidence(workspace, index, scope, budget):
 
 
 @dataclass(frozen=True)
-class _RouteLine:
+class _LinkedLine:
     checksum: str
     position: int
     day: str | None
@@ -2177,12 +2356,12 @@ def _route_seeds(workspace, index, label, records):
                 for code in _ROUTE_CODE.findall(line["text"]):
                     seeds.setdefault(
                         code.casefold(),
-                        _RouteLine(checksum, position, source_day(conversation), line["text"]),
+                        _LinkedLine(checksum, position, source_day(conversation), line["text"]),
                     )
     return seeds if len(seeds) <= _ROUTE_TERM_LIMIT else {}
 
 
-def _route_original_lines(workspace, index, subject, required, records):
+def _linked_original_lines(workspace, index, subject, required, records):
     groups = [tuple(_tokens(term) for term in alternatives) for alternatives in required]
     clauses = [
         f'"{subject}"',
@@ -2220,13 +2399,13 @@ def _route_original_lines(workspace, index, subject, required, records):
                 for alternatives, group in zip(required, groups, strict=True)
             )
             if f" {subject} " in normalized and all(matches):
-                selected[checksum, position] = _RouteLine(
+                selected[checksum, position] = _LinkedLine(
                     checksum, position, row["day"], text, matches
                 )
     return list(selected.values())
 
 
-def _route_schedule_evidence(workspace, index, scope, budget):
+def _route_schedule_evidence(workspace, index, scope, limit, budget):
     records = {}
     seeds = _route_seeds(workspace, index, scope["topic"], records)
     relation_words = set(
@@ -2236,7 +2415,7 @@ def _route_schedule_evidence(workspace, index, scope, budget):
     for seed, initial in seeds.items():
         middle = [
             line
-            for line in _route_original_lines(workspace, index, seed, (_ROUTE_ROLES,), records)
+            for line in _linked_original_lines(workspace, index, seed, (_ROUTE_ROLES,), records)
             if line.checksum != initial.checksum
         ]
         if (
@@ -2261,7 +2440,7 @@ def _route_schedule_evidence(workspace, index, scope, budget):
         for connector in connectors:
             terminal = [
                 line
-                for line in _route_original_lines(
+                for line in _linked_original_lines(
                     workspace, index, connector, (_ROUTE_ROLES, _REPLAN_ACTIONS), records
                 )
                 if line.checksum not in {initial.checksum, middle[0].checksum}
@@ -2275,17 +2454,234 @@ def _route_schedule_evidence(workspace, index, scope, budget):
                 return []
             first = middle[0]
             second = next(line for line in middle if _tokens(line.text) != _tokens(first.text))
-            required = (initial, first, second, terminal[0])
-            if sum(len(line.text.encode("utf-8")) for line in required) <= budget:
-                found = [
-                    initial.candidate(scope["route"], [seed], topic=scope["topic"]),
-                    first.candidate(scope["route"], [seed, connector]),
-                    second.candidate(scope["route"], [seed, connector]),
-                    terminal[0].candidate(scope["schedule"], [connector]),
-                ]
-            else:
+            terminal.sort(key=lambda line: line.position)
+            # A later turn in the same recording can revise the first schedule.
+            required = (initial, first, second, *terminal)
+            if (
+                len(required) > limit
+                or sum(len(line.text.encode("utf-8")) for line in required) > budget
+            ):
                 return []
+            found = [
+                initial.candidate(scope["route"], [seed], topic=scope["topic"]),
+                first.candidate(scope["route"], [seed, connector]),
+                second.candidate(scope["route"], [seed, connector]),
+                *(line.candidate(scope["schedule"], [connector]) for line in terminal),
+            ]
     return found
+
+
+def _approved_reference(text, status, relation):
+    names = set()
+    for match in _APPROVED_REFERENCE.finditer(text):
+        name = match["name"]
+        rest = text[match.end() :]
+        if match["action"].casefold() == "use":
+            assignment = _CONFIRMED_ASSIGNMENT.search(rest)
+            if assignment and re.search(
+                rf"\bits\s+{re.escape(status)}\b", rest[assignment.end() :], re.I
+            ):
+                names.add(name)
+        elif re.search(
+            rf"\b{re.escape(name)}['’]s\s+{re.escape(status)}\s+{re.escape(relation)}\b",
+            rest,
+            re.I,
+        ):
+            names.add(name)
+    return names
+
+
+def _assignment_scope(text):
+    clause = _tokens(re.split(r"[.!?;]", text, maxsplit=1)[0])
+    return clause.removeprefix("for ").removeprefix("the ") if clause.startswith("for ") else ""
+
+
+def _infer_linked_detail(workspace, index, scope, feature, records):
+    expected = f"{scope} {feature}"
+    seeds = {}
+    for line in _linked_original_lines(
+        workspace, index, scope, [(feature,), ("approved",)], records
+    ):
+        for approval in _APPROVED_REFERENCE.finditer(line.text):
+            rest = line.text[approval.end() :]
+            assigned = _assignment_scope(rest)
+            if approval["action"].casefold() == "use" or not f"{assigned} ".startswith(
+                f"{expected} "
+            ):
+                continue
+            name = _tokens(approval["name"])
+            for detail in _HANDOFF_PARAMETER.finditer(rest):
+                if _tokens(detail["name"]) == name:
+                    key = (name, detail["status"], detail["relation"])
+                    if key not in seeds or (line.day or "") > (seeds[key].day or ""):
+                        seeds[key] = line
+    if len(seeds) != 1:
+        return None
+    (name, status, relation), seed = next(iter(seeds.items()))
+    approvals = _linked_original_lines(workspace, index, name, [(feature,), ("approved",)], records)
+    if not approvals:
+        return None
+    for line in approvals:
+        for approval in _APPROVED_REFERENCE.finditer(line.text):
+            assigned = _assignment_scope(line.text[approval.end() :])
+            if (
+                approval["action"].casefold() != "use"
+                and _tokens(approval["name"]) == name
+                and f" {feature} " in f" {assigned} "
+                and not f"{assigned} ".startswith(f"{expected} ")
+            ):
+                return None
+    return name, status, relation, seed
+
+
+def _parameter_statement(text, name, required):
+    phrases = tuple(f" {_tokens(group[0])} " for group in required)
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        original = f" {_tokens(sentence)} "
+        if all(phrase in original for phrase in phrases) and f" {name} " in original:
+            if re.search(r"\b\d", original.replace(f" {name} ", " ")):
+                return True
+    return False
+
+
+def _linked_detail_evidence(workspace, index, plan, limit, budget):
+    scope = _tokens(plan["scope"])
+    records = {}
+    feature = " ".join(_tokens(plan.get("feature", "")).split()[:2])
+    if "feature" in plan:
+        if not feature or not scope:
+            return []
+        inferred = _infer_linked_detail(workspace, index, scope, feature, records)
+        if not inferred:
+            return []
+        name, status, relation, seed = inferred
+    else:
+        status, relation = plan["status"], plan["relation"]
+        seeds = {}
+        for line in _linked_original_lines(workspace, index, scope, [(status,)], records):
+            for name in _approved_reference(line.text, status, relation):
+                seeds.setdefault(_tokens(name), line)
+        if len(seeds) != 1:
+            return []
+        name, seed = next(iter(seeds.items()))
+    required = [(status,), (relation,)]
+    if feature:
+        required.append((feature,))
+    terminal = [
+        line
+        for line in _linked_original_lines(workspace, index, name, required, records)
+        if line.checksum != seed.checksum
+        and (not feature or _parameter_statement(line.text, name, required))
+    ]
+    if (
+        len({line.checksum for line in terminal}) != 1
+        or len(terminal) + 1 > limit
+        or (
+            feature
+            and any(
+                (seed.day and line.day and line.day < seed.day)
+                or _WITHDRAWN_PARAMETER.search(line.text)
+                for line in terminal
+            )
+        )
+        or any(
+            not re.search(r"\b\d", f" {_tokens(line.text)} ".replace(f" {name} ", " "))
+            for line in terminal
+        )
+        or sum(len(line.text.encode("utf-8")) for line in [seed, *terminal]) > budget
+    ):
+        return []
+    detail = f"{status} {relation}"
+    seed_clues = [plan["scope"], name]
+    if not feature:
+        seed_clues.append("approved")
+    return [
+        seed.candidate(f"approved {plan.get('role', 'subject')}", seed_clues),
+        *(
+            line.candidate(detail, [name])
+            for line in sorted(terminal, key=lambda line: line.position)
+        ),
+    ]
+
+
+def _source_role(line, records):
+    segment = records[line.checksum]["conversation"]["segments"][line.position]
+    speaker = segment.get("speaker_id", "").casefold()
+    if speaker in {"user", "assistant"}:
+        return speaker
+    match = _SPEAKER_PREFIX.match(line.text)
+    return match[1].casefold() if match else None
+
+
+def _recorded_value_evidence(workspace, index, plan, limit, budget):
+    subject = _tokens(plan["subject"]).split()
+    if not subject:
+        return []
+    measure = _tokens(plan["measure"])
+    records = {}
+    lines = [
+        line
+        for line in _linked_original_lines(
+            workspace, index, subject[0], [(word,) for word in subject[1:]], records
+        )
+        if _source_role(line, records) == "user"
+        and _COUNT.search(line.text)
+        and (f" {measure} " in f" {_tokens(line.text)} " or _VALUE_CHANGE.search(line.text))
+    ]
+    days = {line.day for line in lines}
+    if (
+        len({line.checksum for line in lines}) != 2
+        or len(days) != 2
+        or None in days
+        or len(lines) > limit
+        or sum(len(line.text.encode("utf-8")) for line in lines) > budget
+    ):
+        return []
+    earlier = min(days)
+    return [
+        line.candidate(
+            f"{'earlier' if line.day == earlier else 'later'} {plan['measure']}", subject
+        )
+        for line in sorted(lines, key=lambda line: (line.day, line.position))
+    ]
+
+
+def _named_duration_evidence(workspace, index, plan, limit, budget):
+    records = {}
+    selected = []
+    revisions = set()
+    for subject in plan["subjects"]:
+        name = _tokens(subject["name"])
+        description = subject.get("description")
+        if not name:
+            return []
+        required = [_DURATION_UNITS, _DURATION_REPORT]
+        if plan["driving"]:
+            required.append(_DRIVE_TERMS)
+        if description:
+            required.append((description,))
+        original = _linked_original_lines(workspace, index, name, required, records)
+        roles = [(line, _source_role(line, records)) for line in original]
+        preferred_role = "user" if any(role for _, role in roles) else None
+        lines = [
+            line
+            for line, role in roles
+            if role == preferred_role and _DURATION_VALUE.search(line.text)
+        ]
+        scope = {line.checksum for line in lines}
+        if len(scope) != 1 or scope & revisions:
+            return []
+        revisions.update(scope)
+        label = " ".join(filter(None, (subject["name"], description)))
+        selected.extend(
+            (label, name, line) for line in sorted(lines, key=lambda line: line.position)
+        )
+    if (
+        len(selected) > limit
+        or sum(len(line.text.encode("utf-8")) for _, _, line in selected) > budget
+    ):
+        return []
+    return [line.candidate(label, [name]) for label, name, line in selected]
 
 
 def _named_commitment_evidence(workspace, index, scope, budget):
@@ -3639,6 +4035,9 @@ def _context_evidence(
     compact_context=False,
     priority_scope=None,
     route_scope=None,
+    linked_detail=None,
+    recorded_value=None,
+    named_duration=None,
     previous_evidence=None,
     skipped=None,
 ):
@@ -3901,16 +4300,27 @@ def _context_evidence(
         else:
             candidates[2:2] = priority_rows
         route_rows = (
-            _route_schedule_evidence(workspace, index, route_scope, max_bytes)
+            _route_schedule_evidence(workspace, index, route_scope, limit, max_bytes)
             if route_scope and limit >= 4 and not (matching_lines or task_dates)
             else []
         )
-        if route_rows:
-            candidates, compact, compact_copies = route_rows, {}, {}
+        linked_rows = (
+            _linked_detail_evidence(workspace, index, linked_detail, limit, max_bytes)
+            if linked_detail and not (preferred or matching_lines or task_dates or followup)
+            else []
+        )
+        path = route_rows or linked_rows
+        if not (path or preferred or matching_lines or task_dates or followup):
+            if recorded_value:
+                path = _recorded_value_evidence(workspace, index, recorded_value, limit, max_bytes)
+            elif named_duration:
+                path = _named_duration_evidence(workspace, index, named_duration, limit, max_bytes)
+        if path:
+            candidates, compact, compact_copies = path, {}, {}
         if (
             trim_neighbors
             and limit >= 4
-            and not (subquestions or output_targets or followup or priority_rows or route_rows)
+            and not (subquestions or output_targets or followup or priority_rows or path)
             and not reserved_clauses
             and previous_evidence is None
         ):
@@ -3932,7 +4342,7 @@ def _context_evidence(
             compact_copies=compact_copies,
             trace=trace,
             prioritize_first_lines=first_lines,
-            reuse_identical_text=focus and not (matching_lines or plan.get("latest") or route_rows),
+            reuse_identical_text=focus and not (matching_lines or plan.get("latest") or path),
             repeated=repeated,
             trim_neighbors=bool(trim_neighbors),
             previous_evidence=previous_evidence,

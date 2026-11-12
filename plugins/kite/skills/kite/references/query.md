@@ -1,5 +1,37 @@
 ## Query memory
 
+### Fill evidence gaps
+
+Quote a known topic name to focus a question. If one quote identifies the
+approved subject and refers to a separate detail, search for the exact subject
+and the missing detail together with
+`context --all-terms --term "$SUBJECT" --term "$DETAIL_PHRASE" --text`.
+Check the same subject in both quotes and cite both. If the first lookup has a
+saved run ID, add `--after RUN_ID` to skip already delivered evidence. Save
+successive follow-ups and use the newest run ID to retain the whole chain.
+
+Use `context --after RUN_ID --question "$MISSING_DETAIL" --compact --text`
+when the gap is a new question. Scope to a known recording with
+`--conversation-id`. If that recording lacks the detail, search for the detail
+across the workspace. Use `evidence 'ID#SEGMENT' --context 2 --text` for nearby
+turns, with one `--also 'ID#SEGMENT'` per additional citation. The maximum
+radius is 20. Overlapping original lines appear once per source revision.
+If a proposal and a decision conflict, check the context around both quotes.
+
+### Watch or save a search
+
+When the user asks to watch a search, start a `context-search` run with
+`{"request":{"question":"…","explain":true}}`. Open `view --follow RUN_ID`
+before advancing `compile` and `search`. Use `view --follow RUN_ID --no-open`
+to obtain a URL the host can open. Keep the same workspace and run ID across
+stages. The graph animates the cited paths and links to the saved evidence.
+For a saved lookup using `--after` and `--all-terms`, the graph can link
+original lines that share the subject across recordings.
+To save a lookup for later inspection, add `--save` and open the returned ID
+with `view --run RUN_ID`.
+
+### Scope and inspect evidence
+
 Add `--compact` to a question to keep the leading evidence and trim outer
 lines in later passages. The submit hook uses this option. Add
 `--explain --save` to show which passages were trimmed and open the cited

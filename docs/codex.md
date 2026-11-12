@@ -123,6 +123,9 @@ stages. An existing workspace starts recording new changes on upgrade.
 Add `--save` when indexing a transcript directory or a batch JSON file to see
 the preview, commit and verification counts under **Workflows**. Open the
 linked change to compare each affected source graph and read its original lines.
+When following a batch in the graph, replay highlights the affected sources and
+their memory paths in the current view. Open **View all changes** to browse the
+full batch and compare an individual source.
 Choose **View change** to inspect retained source changes or the recorded topic
 merge. For a revised source, **Compare before and after this commit** opens the
 two original versions from that commit. Deletion entries show counts and links

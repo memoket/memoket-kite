@@ -1,5 +1,5 @@
 id: context-search
-version: 15
+version: 19
 description: Search cited original passages, supplement a saved search, or compare workspace versions.
 inputs:
   request: context_request
@@ -11,7 +11,7 @@ stages:
     inputs:
       request: input.request
     output: context_plan
-    acceptance: Search phrases, task wording and any independent evidence targets are bound to the selected workspace snapshot.
+    acceptance: Search phrases, task wording, named subjects and recorded value requests are bound to the selected workspace snapshot.
   - id: search
     skill: skills/memory/context-search/SKILL.md
     tool: search_context
@@ -19,4 +19,4 @@ stages:
     inputs:
       compiled: stage.compile
     output: context_evidence
-    acceptance: The search stays within the shared quote budget and verifies the original lines that support selected clues.
+    acceptance: The search verifies the original lines supporting selected clues and any linked subject within the shared quote budget.

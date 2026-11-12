@@ -514,7 +514,9 @@ class MemoryScene {
     const importing = effect.kind === 'import';
     let moving = false;
     for (const [index, path] of effect.paths.entries()) {
-      const active = new Set([...path].map(id => visible.get(id)).filter(Boolean));
+      const active = new Set(path instanceof Set
+        ? [...visible.values()].filter(node => path.has(node.id))
+        : [...path].map(id => visible.get(id)).filter(Boolean));
       if (!active.size) continue;
       const age = reduceMotion ? 2700 : elapsed - (importing ? 0 : index * 360);
       const animating = age < 2700;
