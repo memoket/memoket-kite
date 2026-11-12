@@ -28,10 +28,22 @@ from memoket_kite import Memory
 from memoket_kite.pipeline import extract
 from memoket_kite.research import Codebook, SymbolicQuery
 from memoket_kite.tools import audio, cli, memoket_source, operations, viewer, workflow, workspace
-from memoket_kite.tools.contracts import ToolError, digest, encode, validate
+from memoket_kite.tools.contracts import ToolError, decode_object, digest, encode, validate
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES = ROOT / "examples" / "agent-workflows"
+
+
+def test_json_objects_validate_finite_numbers_when_decoded():
+    assert decode_object('{"amount":1.25,"values":[-0.5,3]}') == {
+        "amount": 1.25,
+        "values": [-0.5, 3],
+    }
+    for invalid in ('{"value":[NaN]}', '{"value":Infinity}', '{"value":-1e9999}'):
+        with pytest.raises(ToolError, match="finite, valid JSON"):
+            decode_object(invalid)
+    with pytest.raises(ToolError, match="duplicate JSON input keys"):
+        decode_object('{"value":{"amount":0,"amount":1}}')
 
 
 @pytest.fixture

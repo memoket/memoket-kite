@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,9 +36,16 @@ def decode_object(raw: str) -> dict:
             raise ToolError("invalid_input", "duplicate JSON input keys")
         return result
 
+    def finite_float(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("nonfinite JSON number")
+        return number
+
     try:
-        result = json.loads(raw, object_pairs_hook=pairs)
-        encode(result)
+        result = json.loads(
+            raw, object_pairs_hook=pairs, parse_float=finite_float, parse_constant=finite_float
+        )
     except (ValueError, RecursionError) as exc:
         raise ToolError("invalid_input", "input must be finite, valid JSON") from exc
     if not isinstance(result, dict):
