@@ -142,6 +142,10 @@ own source line and revision heading.
 When a long original turn supports an explicit decision phase or a repeated
 date followed by a schedule change, it can use more of its version's share
 of the quote budget. The shared total stays the same.
+The comparison can add a second original line for the same earlier date
+from another recording or for the roles of two options named by acronym
+from the same recording.
+Read both lines to establish what was scheduled or assigned.
 A topic merge can affect current label lookup. Both sides of a workspace
 version comparison use original text.
 When a question refers to an earlier or later discussion, check the dates

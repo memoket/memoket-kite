@@ -19,6 +19,9 @@ version. Check the quote for approval status. Text output can refer back to
 identical wording with the citation for the selected version.
 The graph links selected phase and schedule evidence from each version to
 the complete original line.
+Version comparison can reserve an additional original line for an earlier
+date repeated in another recording or a second statement about two options
+named by acronym.
 
 For a recording window such as “the last 30 days,” resolve the dates in the
 user's timezone and pass them as inclusive recording bounds. If there are no

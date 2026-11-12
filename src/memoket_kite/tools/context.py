@@ -140,6 +140,18 @@ _DECISION_STATUS = re.compile(
     r"\b(?:approv\w*|confirm\w*|reject\w*|paus\w*|resum\w*|cancel\w*|suspend\w*|halt\w*|deferr\w*)\b",
     re.I,
 )
+_ROLE_QUESTION = re.compile(
+    r"分工|各自负责|谁负责|主备|主用|备用|\b(?:roles?|responsibilit\w*|primary|backup|fallback)\b",
+    re.I,
+)
+_ROLE_STATEMENT = re.compile(
+    r"主线|主用|优先|负责|备用|备选|兜底|保留|并行|同时|接手|"
+    r"\b(?:primary|backup|fallback|parallel|retain\w*|own\w*|lead\w*|handl\w*)\b",
+    re.I,
+)
+_HYPOTHETICAL_DATE = re.compile(
+    r"假设|举例|比如|例如|\b(?:suppose|hypothetical|for example|for instance)\b", re.I
+)
 _QUERY_FILLERS = re.compile(
     r"(?:请问|根据|查找|查询|哪些|哪个|哪里|什么|如何|怎么|为什么|分别|"
     r"这场|那场|会上|那次|当时|原文|给出|引用|请|是否|有没有|的|了|吗|呢)"
@@ -1395,6 +1407,85 @@ def _change_clause_candidates(
     return selected
 
 
+def _phase_corroboration(index, phases, max_bytes, schedule_question):
+    """Find one additional original line for a selected comparison phase."""
+    where, scope = _search_scope(index.filters)
+    for position, phase in enumerate(phases, 1):
+        checksum = phase["checksum"]
+        record = index.records[checksum]
+        original = record["conversation"]["segments"][phase["start"]]["text"]
+        normalized = f" {_tokens(original)} "
+        term = phase["selection"]["term"]
+        names = sorted({name.casefold() for name in _ACRONYMS.findall(term)})
+        role_search = (
+            len(names) == 2
+            and _ROLE_QUESTION.search(term)
+            and all(f" {name} " in normalized for name in names)
+        )
+        if role_search:
+            expression = " AND ".join(f'text : "{name}"' for name in names)
+            compare_source = "checksum=?"
+            selection = {"reason": "role_corroboration", "term": term}
+        elif schedule_question and _EARLIER_PHASE.search(term):
+            dates = {_tokens(match[0]): match[0] for match in _CALENDAR_DAY.finditer(original)}
+            clues = tuple(
+                dict.fromkeys(
+                    tokens
+                    for clue in _question_phrases(_CLAUSE_FILLERS.sub(" ", term))
+                    if (tokens := _tokens(clue)) and f" {tokens} " in normalized
+                )
+            )[:8]
+            if len(dates) != 1 or not clues:
+                continue
+            date, display = next(iter(dates.items()))
+            alternatives = " OR ".join(f'"{clue}"' for clue in clues)
+            expression = f'text : "{date}" AND text : ({alternatives})'
+            compare_source = "checksum<>?"
+            selection = {"reason": "date_corroboration", "term": display}
+        else:
+            continue
+
+        best = None
+        best_score = None
+        for row in index.db.execute(
+            f"SELECT checksum, start, stop, day FROM context_spans WHERE {where} AND {compare_source} "
+            "ORDER BY bm25(context_spans), checksum, start LIMIT 48",
+            (expression, *scope, checksum),
+        ):
+            lines = index.records[row["checksum"]]["conversation"]["segments"]
+            for pos in range(row["start"], row["stop"]):
+                text = lines[pos]["text"]
+                size = len(text.encode("utf-8"))
+                if size > max_bytes // 3 or text == original:
+                    continue
+                tokens = f" {_tokens(text)} "
+                if role_search:
+                    roles = set(_ROLE_STATEMENT.findall(text.casefold()))
+                    if not roles or not all(f" {name} " in tokens for name in names):
+                        continue
+                    score = (len(roles), -size)
+                else:
+                    mentioned = {_tokens(match[0]) for match in _CALENDAR_DAY.finditer(text)}
+                    offsets = [tokens.find(f" {clue} ") for clue in clues if f" {clue} " in tokens]
+                    date_offset = tokens.find(f" {date} ")
+                    if date not in mentioned or date_offset < 0 or not offsets:
+                        continue
+                    distance = min(abs(date_offset - offset) for offset in offsets)
+                    score = (not _HYPOTHETICAL_DATE.search(text), -len(mentioned), -distance, -size)
+                if best_score is None or score > best_score:
+                    best_score = score
+                    best = {
+                        **dict(row),
+                        "start": pos,
+                        "stop": pos + 1,
+                        "direct_positions": [pos],
+                        "selection": selection,
+                    }
+        if best is not None:
+            return position, best
+    return None
+
+
 def _compact_sources(
     workspace, index: _SearchIndex, plan: dict, question: str, budget: int
 ) -> tuple[dict, dict]:
@@ -1953,6 +2044,13 @@ def _context_evidence(
                     implicit=True,
                     version_comparison=reserve_change_phases,
                 )
+            if reserve_change_phases and reserved_clauses:
+                corroboration = _phase_corroboration(
+                    index, reserved_clauses, max_bytes, _SCHEDULE_QUESTION.search(_question)
+                )
+                if corroboration is not None:
+                    position, candidate = corroboration
+                    reserved_clauses.insert(position, candidate)
             candidates[first:first] = reserved_clauses
             if reserve_change_phases and (followup or reserved_clauses):
                 # Protect the selected original lines from a long, general

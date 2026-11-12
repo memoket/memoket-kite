@@ -7271,6 +7271,106 @@ def test_historical_context_separates_recording_date_and_knowledge_time(
     assert all(part["history"]["later_deletions"] == 1 for part in erased["parts"])
 
 
+def test_version_comparison_corroborates_an_earlier_date_in_another_recording(work):
+    directory, call = work
+    texts = {
+        "brief": "The original plan places the harbor rehearsal on April 12.",
+        "minutes": "On April 12 the harbor rehearsal begins.",
+        "example": "Suppose the harbor rehearsal takes place on April 12 in this exercise.",
+        "payroll": "Payroll has an approval meeting on April 12.",
+    }
+    first = call(
+        "index-sources",
+        payload={
+            "sources": [
+                {"source": text_input(name, text, date="2026-03-21")["source"]}
+                for name, text in texts.items()
+            ]
+        },
+    )["memory_version"]
+    moved = "We rescheduled the harbor rehearsal to April 19."
+    call(
+        "index-sources",
+        payload={"sources": [{"source": text_input("update", moved, date="2026-04-01")["source"]}]},
+    )
+    question = "Describe the harbor rehearsal from the original date to the later reschedule."
+    args = ("context", "--question", question, "--from-version", str(first), "--explain")
+    result = call(*args, "--save", "date-corroboration")
+    before, after = result["parts"]
+    picks = before["phase_evidence"]
+    (corroboration,) = [item for item in picks if item["reason"] == "date_corroboration"]
+    assert corroboration["term"] == "April 12"
+    refs = {
+        line["source_line_id"]: line["conversation_id"]
+        for part in (before, after)
+        for span in part["spans"]
+        for line in span["evidence"]
+    }
+    assert refs[corroboration["source_line_id"]] in {"brief", "minutes"}
+    assert {refs[item["source_line_id"]] for item in picks} >= {"brief", "minutes"}
+    assert "update" in {
+        line["conversation_id"] for span in after["spans"] for line in span["evidence"]
+    }
+    assert result["quote_bytes"] <= result["quote_budget_bytes"] == 3800
+    saved = viewer._snapshot(directory, [], run_id="date-corroboration")
+    assert saved["search_comparison"][0]["phase_evidence"] == picks
+    scoped = call(*args, "--conversation-id", "brief")
+    assert not any(
+        item["reason"] == "date_corroboration"
+        for part in scoped["parts"]
+        for item in part.get("phase_evidence", [])
+    )
+
+
+def test_version_comparison_corroborates_roles_in_a_second_original_line(work):
+    _, call = work
+    original = "The original relay plan moves the timetable for QXR."
+    first = call(
+        "index-sources",
+        payload={"sources": [{"source": text_input("original", original)["source"]}]},
+    )["memory_version"]
+    lines = [
+        "For the later roles we decided QXR and MLT both run in parallel during transition.",
+        "The planning group took a break.",
+        "QXR will lead as primary. Keep MLT as backup.",
+        "QXR is primary. BRT is backup.",
+    ]
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {
+                    "source": {
+                        "format": "conversation",
+                        "payload": {
+                            "source": "transcript",
+                            "conversation_id": "followup",
+                            "metadata": {"source_reference": "followup"},
+                            "segments": [
+                                {"segment_id": str(i), "text": text}
+                                for i, text in enumerate(lines, 1)
+                            ],
+                        },
+                    }
+                }
+            ]
+        },
+    )
+    question = "Describe the relay plan from the original QXR timetable to the later roles for QXR and MLT."
+    result = call("context", "--question", question, "--from-version", str(first))
+    before, after = result["parts"]
+    assert not any(
+        item["reason"] == "role_corroboration" for item in before.get("phase_evidence", [])
+    )
+    (extra,) = [item for item in after["phase_evidence"] if item["reason"] == "role_corroboration"]
+    quotes = {
+        line["source_line_id"]: line["text"] for s in after["spans"] for line in s["evidence"]
+    }
+    assert quotes[extra["source_line_id"]] in {lines[0], lines[2]}
+    assert {lines[0], lines[2]} <= set(quotes.values())
+    assert result["quote_bytes"] <= result["quote_budget_bytes"] == 3800
+
+
 def test_version_context_prioritizes_changed_original_lines(work):
     directory, call = work
 
