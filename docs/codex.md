@@ -75,9 +75,9 @@ command = 'python3 -I "/absolute/path/to/scripts/codex_context.py"'
 timeout = 8
 ```
 
-Review and trust the hook in Codex Settings → Hooks or with `/hooks` in the
-CLI. Start the first line of a request with `KITE:` or `KITE：`, followed by
-the question you want to look up. Put implementation or formatting instructions
+Review and trust the hook in Codex Settings → Hooks or with `/hooks` in the CLI.
+Start the first line of a request with `KITE:` or `KITE：`, followed by the
+question you want to look up. Put implementation or formatting instructions
 on subsequent lines.
 
 ```text
@@ -86,12 +86,12 @@ Update the release checklist and cite the original discussion.
 ```
 
 The hook searches the current project's KITE workspace locally with
-`context --compact`. It includes
-the resulting original quotes and citations in Codex's model input for that
-turn. Prompts without the
-prefix continue without searching KITE. Empty or unavailable lookups also let
-the chat continue. Use the ordinary KITE context command for a follow-up or
-add `--save` to open the compile and search evidence in the graph.
+`context --compact` and includes original quotes and citations in Codex's
+model input for that turn. If the result exceeds the context budget, the
+hook retries once with a smaller quote budget. Ordinary prompts, empty
+results, and unavailable runtimes let the chat continue. Use the ordinary
+KITE context command for a follow-up or add `--save` to open the compile
+and search evidence in the graph.
 
 ## View the memory graph
 
@@ -178,3 +178,19 @@ bundled skill.
 Run `python3 tests/packaging/codex_smoke.py` from a checkout to test marketplace
 discovery, installation through Codex's app server, and a transcript import and
 query from the installed copy.
+
+To test a checkout in desktop Codex, build its wheel and assemble a local
+Memoket directory with that wheel bundled inside the plugin.
+
+```sh
+uv build --wheel --out-dir ./artifacts/codex-build
+python3 scripts/build_codex_marketplace.py ./artifacts/codex-marketplace \
+  --wheel ./artifacts/codex-build/memoket_kite-*-py3-none-any.whl
+codex plugin marketplace add "$PWD/artifacts/codex-marketplace"
+```
+
+Install KITE from this directory in **Plugins**. The launcher installs the
+bundled wheel into a runtime cache identified by its checksum. A first setup
+can still need uv, Python 3.12, and package dependencies. For an isolated
+installation check, pass `--marketplace ./artifacts/codex-marketplace` to the
+smoke test and set `--context-search-version` to the version in the checkout.

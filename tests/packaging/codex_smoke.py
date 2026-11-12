@@ -72,7 +72,14 @@ def install_plugin(codex: str, marketplace: dict, project: Path, env: dict) -> P
             server.wait(timeout=15)
 
 
-def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) -> None:
+def verify_workflows(
+    launcher: Path,
+    project: Path,
+    scratch: Path,
+    env: dict,
+    *,
+    context_search_version: int | None = None,
+) -> None:
     def run(*args: str | Path, cwd: Path = project, data: dict | None = None, check: bool = True):
         return subprocess.run(
             ["bash", str(launcher), *map(str, args)],
@@ -238,10 +245,21 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
     ).stdout
     assert "Saved search: installed-search" in saved and "[handoff#L4]" in saved, saved
     assert json.loads(run("status", "installed-search").stdout)["state"] == "completed"
-    assert (
-        json.loads(run("validate-pipeline", "context-search").stdout)["definition"]["id"]
-        == "context-search"
-    )
+    supplement = run(
+        "context",
+        "--term",
+        "rollout depends",
+        "--matching-lines",
+        "--after",
+        "installed-search",
+        "--text",
+    ).stdout
+    assert "No new evidence matched." in supplement, supplement
+    assert "1 previously cited lines skipped" in supplement, supplement
+    definition = json.loads(run("validate-pipeline", "context-search").stdout)["definition"]
+    assert definition["id"] == "context-search"
+    if context_search_version is not None:
+        assert definition["version"] == context_search_version, definition
     baseline = json.loads(run("source-history", "transcript", "handoff").stdout)["current_checksum"]
     handoff.write_text("00:01\nSpeaker A\n\nRollout depends on QA signoff.\n", encoding="utf-8")
     correction = json.loads(
@@ -257,6 +275,16 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
         ).stdout
     )
     run("index-sources", "--input", "-", data={"sources": [correction]})
+    supplement = run(
+        "context",
+        "--term",
+        "rollout depends",
+        "--matching-lines",
+        "--after",
+        "installed-search",
+        "--text",
+    ).stdout
+    assert "[handoff#L4] Speaker A: Rollout depends on QA signoff." in supplement, supplement
     difference = run("source-compare", baseline, "--text").stdout
     assert "− [handoff#L4] Rollout depends on the checklist." in difference, difference
     assert "+ [handoff#L4] Rollout depends on QA signoff." in difference, difference
@@ -283,7 +311,12 @@ def main() -> None:
     parser.add_argument("--marketplace", default=str(Path(__file__).resolve().parents[2]))
     parser.add_argument("--ref", help="Git branch for a remote marketplace")
     parser.add_argument("--sparse", action="append", help="Sparse Git marketplace path, repeatable")
+    parser.add_argument(
+        "--context-search-version", type=int, help="expected installed pipeline version"
+    )
     args = parser.parse_args()
+    local_marketplace = Path(args.marketplace).expanduser()
+    source = str(local_marketplace.resolve()) if local_marketplace.is_dir() else args.marketplace
     with TemporaryDirectory(prefix="kite-codex-smoke-") as directory:
         scratch = Path(directory).resolve()
         project = scratch / "Sample project"
@@ -300,12 +333,14 @@ def main() -> None:
         subprocess.run(["git", "init", "-q", str(project)], check=True)
         launcher = install_plugin(
             args.codex,
-            {"source": args.marketplace, "refName": args.ref, "sparsePaths": args.sparse},
+            {"source": source, "refName": args.ref, "sparsePaths": args.sparse},
             project,
             env,
         )
         print("KITE installed and discoverable in Codex", flush=True)
-        verify_workflows(launcher, project, scratch, env)
+        verify_workflows(
+            launcher, project, scratch, env, context_search_version=args.context_search_version
+        )
         print("KITE demo, transcript import, cited query, and viewer entry point passed")
 
 

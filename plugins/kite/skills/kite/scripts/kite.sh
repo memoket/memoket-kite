@@ -3,17 +3,37 @@ set -euo pipefail
 umask 077
 
 # Use a fixed runtime so the packaged skill and CLI contracts stay in sync.
-runtime_revision=ea5eaf7caa66bd53ab6608e876d5054a1e61d23c
-runtime="memoket-kite[agent] @ git+https://github.com/memoket/memoket-kite.git@${runtime_revision}"
+runtime_revision=fac9f142617ee1a79cb647d6b5d1684cd98af988
+runtime="memoket-kite[agent] @ https://github.com/memoket/memoket-kite/archive/${runtime_revision}.tar.gz"
 uv_version=0.11.16
 cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/kite/codex"
-runtime_dir="$cache_dir/runtime-$runtime_revision"
-runtime_bin="$runtime_dir/bin/kite-tool"
 
 case "$(uname -s)" in
     Darwin|Linux) ;;
     *) printf '%s\n' 'KITE for Codex requires macOS or Linux.' >&2; exit 1 ;;
 esac
+
+sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum
+    else
+        shasum -a 256
+    fi
+}
+
+plugin_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)
+bundled=("$plugin_dir"/runtime/memoket_kite-*-py3-none-any.whl)
+if [[ -f "${bundled[0]:-}" ]]; then
+    if (( ${#bundled[@]} != 1 )); then
+        printf '%s\n' 'KITE needs exactly one bundled runtime wheel.' >&2
+        exit 1
+    fi
+    fingerprint=$(sha256 < "${bundled[0]}")
+    runtime_revision="${fingerprint%% *}"
+    runtime="${bundled[0]}[agent]"
+fi
+runtime_dir="$cache_dir/runtime-$runtime_revision"
+runtime_bin="$runtime_dir/bin/kite-tool"
 
 find_uv() {
     local candidate
@@ -46,11 +66,7 @@ if [[ -z "${KITE_DATA_DIR:-}" ]]; then
     if git_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
         project=$(cd "$git_dir" && pwd -P)
     fi
-    if command -v sha256sum >/dev/null 2>&1; then
-        checksum=$(printf '%s' "$project" | sha256sum)
-    else
-        checksum=$(printf '%s' "$project" | shasum -a 256)
-    fi
+    checksum=$(printf '%s' "$project" | sha256)
     export KITE_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/kite/codex/${checksum%% *}"
 fi
 
