@@ -23,6 +23,8 @@ from memoket_kite.tools.resources import resource_root
 from memoket_kite.tools.transcript_text import transcript_recording_day, transcript_text_source
 from memoket_kite.tools.workspace import Workspace
 
+from . import codex_timing
+
 
 def kite(workspace: Path, *args: str, payload=None, expected_error=None) -> dict:
     result = subprocess.run(
@@ -397,6 +399,7 @@ def codex_trial(
     sandbox: str = "read-only",
     codex_options: tuple[str, ...] = (),
     codex_env: dict[str, str] | None = None,
+    trace_timing: bool = False,
 ) -> dict:
     command = [
         binary,
@@ -416,9 +419,14 @@ def codex_trial(
     ]
     start = time.perf_counter()
     try:
-        result = subprocess.run(
-            command, input=prompt, text=True, capture_output=True, timeout=180, env=codex_env
-        )
+        if trace_timing:
+            exit_code, raw_events = codex_timing.read_events(command, prompt, codex_env, start)
+        else:
+            result = subprocess.run(
+                command, input=prompt, text=True, capture_output=True, timeout=180, env=codex_env
+            )
+            exit_code = result.returncode
+            raw_events = [(None, line) for line in result.stdout.splitlines()]
     except subprocess.TimeoutExpired:
         return {
             "seconds": time.perf_counter() - start,
@@ -432,11 +440,14 @@ def codex_trial(
     usage = answer = error = None
     calls = stdout_bytes = 0
     commands = []
-    for line in result.stdout.splitlines():
+    events = []
+    for timestamp, line in raw_events:
         try:
             event = json.loads(line)
         except ValueError:
             continue
+        if trace_timing:
+            events.append((timestamp, event))
         match event.get("type"):
             case "turn.completed":
                 usage = event.get("usage")
@@ -456,10 +467,18 @@ def codex_trial(
                                 "command": item.get("command"),
                                 "exit_code": item.get("exit_code"),
                                 "output": output,
+                                **({"event_id": item.get("id")} if trace_timing else {}),
                             }
                         )
     if usage is None and error is None:
         error = "no completed Codex turn"
+    timing = None
+    if trace_timing:
+        timing, intervals = codex_timing.describe(events)
+        for item in commands:
+            interval = intervals.get(item.pop("event_id"))
+            if interval is not None:
+                item["interval_seconds"] = interval
     return {
         "seconds": time.perf_counter() - start,
         "usage": usage,
@@ -467,7 +486,8 @@ def codex_trial(
         "command_calls": calls,
         "tool_stdout_bytes": stdout_bytes,
         "error": error,
-        "exit_code": result.returncode,
+        "exit_code": exit_code,
+        **({"timing": timing} if timing is not None else {}),
         **({"commands": commands} if record_tool_output else {}),
     }
 

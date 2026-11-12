@@ -19,6 +19,7 @@ from tempfile import TemporaryDirectory
 from memoket_kite.tools.ingest import source_day
 from memoket_kite.tools.workspace import Workspace
 
+from . import codex_timing
 from .context_eval import codex_trial, corpus_hash, read_corpus, summarize_host, write_launcher
 
 _REFERENCE = re.compile(r"[\w-]+#(?:L[0-9]+|text-line-[0-9]+)\b")
@@ -130,12 +131,16 @@ def _score(checks: dict, answer: str | None, evidence: dict, valid_refs: set[str
 def _submit_hook(driver: Path, launcher: Path, metrics: Path, adapter: Path) -> tuple[str, ...]:
     path = driver / "submit_hook.py"
     path.write_text(
-        "import json, runpy, sys\n"
+        "import json, runpy, sys, time\n"
         "from pathlib import Path\n"
         f"adapter = runpy.run_path({str(adapter)!r})\n"
+        "started = time.perf_counter()\n"
         f"context = adapter['prepare_context'](json.load(sys.stdin), {str(launcher)!r})\n"
+        f"Path({str(metrics)!r}).write_text(json.dumps({{\n"
+        "    'bytes': len(context.encode('utf-8')) if context else 0,\n"
+        "    'seconds': time.perf_counter() - started,\n"
+        "}))\n"
         "if context:\n"
-        f"    Path({str(metrics)!r}).write_text(str(len(context.encode('utf-8'))))\n"
         "    print(json.dumps(adapter['hook_output'](context)))\n",
         encoding="utf-8",
     )
@@ -179,7 +184,7 @@ def _trial(args, case, bundle, arm, repetition):
         TemporaryDirectory(prefix="kite-task-driver-") as driver,
     ):
         cwd = Path(directory)
-        metrics = Path(driver) / "hook-bytes"
+        metrics = Path(driver) / "hook-metrics.json"
         codex_env = _isolated_codex_home(Path(driver)) if args.context_on_submit else None
         shutil.copytree(case["seed"], cwd, dirs_exist_ok=True)
         if arm == "kite" or arm in _SUBMIT_ARMS:
@@ -201,13 +206,14 @@ def _trial(args, case, bundle, arm, repetition):
             record_tool_output=True,
             sandbox="workspace-write",
             codex_env=codex_env,
+            trace_timing=args.trace_timing,
             **(
                 {"codex_options": _submit_hook(Path(driver), cwd / "kite", metrics, adapter)}
                 if arm in _SUBMIT_ARMS
                 else {}
             ),
         )
-        hook_bytes = int(metrics.read_text()) if metrics.exists() else 0
+        hook = json.loads(metrics.read_text()) if metrics.exists() else {}
         checks, verifier_error = _verify(case["verifier"], cwd, set(case["evidence"]))
         shutil.copytree(
             cwd,
@@ -221,6 +227,15 @@ def _trial(args, case, bundle, arm, repetition):
         source_commands = re.compile(r"\./kite\s+(?:context|evidence|query)\b")
     else:
         source_commands = re.compile(r"(?:\./)?kite\b")
+    source_calls = [
+        row for row in trial.get("commands", ()) if source_commands.search(row["command"] or "")
+    ]
+    if timing := trial.get("timing"):
+        timing["source_shell_seconds"] = codex_timing.interval_seconds(
+            row["interval_seconds"] for row in source_calls if "interval_seconds" in row
+        )
+        if "seconds" in hook:
+            timing["hook_seconds"] = hook["seconds"]
     return {
         **trial,
         "case": case["id"],
@@ -230,12 +245,8 @@ def _trial(args, case, bundle, arm, repetition):
         "prompt_bytes": len(task.encode()),
         "access_prompt_bytes": len(access.encode()),
         "prompt_sha256": hashlib.sha256(task.encode()).hexdigest(),
-        **({"hook_context_bytes": hook_bytes} if args.context_on_submit else {}),
-        "source_tool_bytes": sum(
-            len(row["output"].encode())
-            for row in trial.get("commands", ())
-            if source_commands.search(row["command"] or "")
-        ),
+        **({"hook_context_bytes": hook.get("bytes", 0)} if args.context_on_submit else {}),
+        "source_tool_bytes": sum(len(row["output"].encode()) for row in source_calls),
         "verifier_error": verifier_error,
         "score": _score(checks, trial["answer"], case["evidence"], bundle["refs"]),
     }
@@ -264,6 +275,9 @@ def main():
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument(
+        "--trace-timing", action="store_true", help="timestamp local Codex JSON and hook events"
+    )
+    parser.add_argument(
         "--context-on-submit",
         action="store_true",
         help="include a third arm with cited context delivered by a real Codex submit hook",
@@ -274,6 +288,8 @@ def main():
         help="include a fourth arm running this trusted prior submit adapter",
     )
     args = parser.parse_args()
+    if args.trace_timing and os.name != "posix":
+        parser.error("--trace-timing needs POSIX pipe event support")
     args.arms = ("kite", "files", "submit") if args.context_on_submit else ("kite", "files")
     if args.baseline_submit_adapter is not None:
         args.baseline_submit_adapter = args.baseline_submit_adapter.resolve()

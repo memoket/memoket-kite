@@ -1,9 +1,11 @@
 import json
 import subprocess
+import sys
+import time
 
 import pytest
 
-from benchmarks.agent import context_eval, task_eval
+from benchmarks.agent import codex_timing, context_eval, task_eval
 
 
 def test_identical_text_sources_keep_the_original_segment_references():
@@ -55,6 +57,33 @@ def test_submit_benchmark_counts_prefilled_evidence_even_without_a_tool_call():
     assert summary["both_passed_pairs"] == 1
     assert summary["both_passed_efficiency"]["submit"]["source_context_bytes"] == 100
     assert summary["arms"]["submit"]["hook_deliveries"] == 1
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="timed pipe observation uses POSIX selectors")
+def test_timing_observes_large_events_and_does_not_double_count_shell_intervals():
+    code = "import json; print(json.dumps({'text': 'x' * 70000}), flush=True)"
+    exit_code, events = codex_timing.read_events(
+        [sys.executable, "-c", code], "", None, time.perf_counter()
+    )
+    assert exit_code == 0 and len(json.loads(events[0][1])["text"]) == 70000
+    observed = [
+        (1, {"type": "turn.started"}),
+        (2, {"type": "item.started", "item": {"type": "command_execution", "id": "1"}}),
+        (3, {"type": "item.started", "item": {"type": "command_execution", "id": "2"}}),
+        (4, {"type": "item.completed", "item": {"type": "command_execution", "id": "1"}}),
+        (5, {"type": "item.completed", "item": {"type": "command_execution", "id": "2"}}),
+        (7, {"type": "turn.completed"}),
+    ]
+    timing, intervals = codex_timing.describe(observed)
+    assert intervals == {"1": (2, 4), "2": (3, 5)}
+    assert timing == {
+        "startup_seconds": 1,
+        "turn_seconds": 6,
+        "shell_seconds": 3,
+        "timed_shell_calls": 2,
+        "before_first_shell_seconds": 1,
+        "after_last_shell_seconds": 2,
+    }
 
 
 def test_comparison_benchmark_uses_disjoint_recording_windows(tmp_path):
