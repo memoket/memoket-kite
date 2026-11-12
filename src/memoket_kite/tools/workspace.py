@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import ExitStack, closing, contextmanager, suppress
 from hashlib import sha256
 from itertools import islice
@@ -85,6 +85,14 @@ CREATE TABLE IF NOT EXISTS memory_activity (
     version INTEGER PRIMARY KEY, kind TEXT NOT NULL, changed_count INTEGER NOT NULL,
     source_count INTEGER NOT NULL, committed_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS memory_activity_sources (
+    version INTEGER NOT NULL REFERENCES memory_activity(version) ON DELETE CASCADE,
+    checksum TEXT NOT NULL REFERENCES revisions(checksum) ON DELETE CASCADE,
+    segment_offset INTEGER CHECK (segment_offset >= 0),
+    PRIMARY KEY (version, checksum)
+);
+CREATE INDEX IF NOT EXISTS memory_activity_sources_by_checksum
+    ON memory_activity_sources(checksum);
 CREATE TABLE IF NOT EXISTS memory_versions (
     version INTEGER PRIMARY KEY, committed_at TEXT NOT NULL
 );
@@ -935,15 +943,37 @@ class Workspace:
         receipt = self._write_revision(record, append_annotations=append_annotations)
         if receipt["changed"]:
             result = self.replace_index(force=append_annotations)
-            self.record_activity(result, "update" if append_annotations else "ingest", 1, 1)
+            self.record_activity(
+                result,
+                "update" if append_annotations else "ingest",
+                1,
+                1,
+                sources=((receipt["checksum"], None),),
+            )
             return {**receipt, **result}
         return receipt
 
-    def record_activity(self, receipt: dict, kind: str, changed: int, seen: int) -> None:
+    def record_activity(
+        self,
+        receipt: dict,
+        kind: str,
+        changed: int,
+        seen: int,
+        *,
+        sources: Iterable[tuple[str, int | None]] = (),
+    ) -> None:
         if receipt["changed"]:
+            version = receipt["memory_version"]
             self.db.execute(
                 "INSERT INTO memory_activity VALUES(?, ?, ?, ?, ?)",
-                (receipt["memory_version"], kind, changed, seen, now()),
+                (version, kind, changed, seen, now()),
+            )
+            # Only retain source revisions visible after the transaction.
+            # A batch can write several revisions of one source atomically.
+            self.db.executemany(
+                "INSERT OR IGNORE INTO memory_activity_sources "
+                "SELECT ?, checksum, ? FROM revisions WHERE checksum=? AND active=1",
+                ((version, offset, checksum) for checksum, offset in sources),
             )
 
     def index_sources(self, records: list[dict]) -> dict:
@@ -959,7 +989,13 @@ class Workspace:
             result = {"changed": False, "memory_version": version}
         else:
             result = self.replace_index(force=bool(changed), refresh_context=True)
-        self.record_activity(result, "index", changed, len(receipts))
+        self.record_activity(
+            result,
+            "index",
+            changed,
+            len(receipts),
+            sources=((row["checksum"], None) for row in receipts if row["changed"]),
+        )
         return {
             **result,
             "sources_changed": changed,

@@ -9,6 +9,9 @@ or `context --known-at TIMESTAMP` with the original question. Supply an offset
 with the timestamp. Use `--start-date` and `--end-date` for recording dates and
 retain the shown revision checksum with historical citations.
 The question itself can include `workspace v12` or `workspace as of TIMESTAMP`.
+In **Workflows**, the change card shows workspace commit time and retained
+sources show their recording clocks separately. Read the cited lines for a
+decision's approval status and effective date.
 For the same question across a workspace change, run
 `context --question "$QUESTION" --from-version BEFORE --at-version AFTER --text`.
 The target defaults to the current version. Both sides use retained original

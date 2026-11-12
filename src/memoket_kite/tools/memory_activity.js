@@ -14,6 +14,10 @@
       savedSearch: '打开当次检索原文',
       changeDetails: '查看变更', back: '返回所有变更', searchPrevious: '检索提交前版本',
       sourceRevisions: '保留的来源变更', openSource: '查看此版本原文', compareSource: '对照提交前后的原文',
+      mergeSources: '融合影响的原文来源', changeRun: '本次变更的流程',
+      added: '新增来源', revised: '修订原文', annotated: '更新索引标注', retagged: '融合归类',
+      committedAt: '提交时间', recordedAt: '录制时间', localRecording: '录制当地时间（时区未知）',
+      recordingDay: '录制日期', unknownRecording: '录制时间未知',
       previousPage: '上一页', nextPage: '下一页', openTopic: '查看当前主题',
       missingDetails: '此提交没有可展示的来源版本或主题明细。',
       deletedEvidence: '删除记录保留数量。提交前的快照也无法读取已删除的原文。',
@@ -33,6 +37,10 @@
       savedSearch: 'Open saved search evidence',
       changeDetails: 'View change', back: 'Back to all changes', searchPrevious: 'Search before this change',
       sourceRevisions: 'Retained source changes', openSource: 'Read this revision', compareSource: 'Compare before and after this commit',
+      mergeSources: 'Original sources affected by this merge', changeRun: 'Workflow for this change',
+      added: 'Added source', revised: 'Revised original', annotated: 'Updated index annotations', retagged: 'Merged topic assignment',
+      committedAt: 'Committed at', recordedAt: 'Recorded at', localRecording: 'Local recording time (zone unknown)',
+      recordingDay: 'Recording date', unknownRecording: 'Recording time unknown',
       previousPage: 'Previous page', nextPage: 'Next page', openTopic: 'Open current topic',
       missingDetails: 'No retained source revisions or topic details are available for this commit.',
       deletedEvidence: 'The deletion record retains counts. Earlier snapshots omit the deleted originals.',
@@ -62,19 +70,29 @@
   function changeDetail(panel, event) {
     if (event.kind === 'delete') {
       panel.append(element('p', t('deletedEvidence'), 'detail-meta'));
-    } else if (event.topic_merge) {
+      return;
+    }
+    if (event.topic_merge) {
       const merge = event.topic_merge;
       panel.append(element('p', `${merge.from_topic} → ${merge.to_topic}`));
       if (merge.current_topic) panel.append(link('openTopic', { view: 'graph', topic: merge.current_topic }));
-    } else if (event.source_changes?.length) {
+    }
+    if (event.source_changes?.length) {
       const list = element('ul', undefined, 'change-sources');
       const first = event.source_offset + 1;
       const last = event.source_offset + event.source_changes.length;
-      panel.append(element('h4', `${t('sourceRevisions')} ${first}–${last}/${event.retained_source_changes}`));
+      const heading = t(event.kind === 'merge' ? 'mergeSources' : 'sourceRevisions');
+      panel.append(element('h4', `${heading} ${first}–${last}/${event.retained_source_changes}`));
       for (const source of event.source_changes) {
         const entry = element('li');
         entry.append(element('strong', source.title || source.conversation_id));
-        entry.append(link('openSource', { view: 'source', checksum: source.checksum }));
+        const recording = source.started_at ? `${t('recordedAt')} ${source.started_at.replace('T', ' ')}`
+          : source.local_started_at ? `${t('localRecording')} ${source.local_started_at.replace('T', ' ')}`
+            : source.source_date ? `${t('recordingDay')} ${source.source_date}` : t('unknownRecording');
+        entry.append(element('span', `${t(source.effect)} · ${recording}`, 'detail-meta'));
+        const original = { view: 'source', checksum: source.checksum };
+        if (source.segment_offset != null) original.offset = source.segment_offset;
+        entry.append(link('openSource', original));
         if (source.before) entry.append(link('compareSource', { view: 'revision', before: source.before, after: source.checksum }));
         list.append(entry);
       }
@@ -82,7 +100,7 @@
       const target = { view: 'activity', event: event.version };
       if (event.source_offset) panel.append(link('previousPage', { ...target, offset: Math.max(0, event.source_offset - 20) }));
       if (last < event.retained_source_changes) panel.append(link('nextPage', { ...target, offset: last }));
-    } else {
+    } else if (!event.topic_merge) {
       panel.append(element('p', t('missingDetails'), 'detail-meta'));
     }
   }
@@ -94,7 +112,7 @@
     byId('activity-version').textContent = t('version') + ' ' + data.version;
     byId('language').textContent = language === 'zh' ? 'English' : '中文';
     byId('refresh').textContent = t('refresh');
-    const date = value => new Date(value).toLocaleString(language);
+    const date = value => new Date(value).toLocaleString(language, { timeZoneName: 'short' });
     const events = byId('activity-events');
     events.replaceChildren(element('h3', t('events')));
     const details = data.selected_event != null;
@@ -104,9 +122,12 @@
       const row = element('section', undefined, 'activity-row');
       const counts = event.kind === 'delete'
         ? event.revision_count + ' ' + t('revisions') + ' · ' + event.fact_count + ' ' + t('facts')
-        : event.kind === 'merge' ? '' : t('changed') + ' ' + event.changed_count + '/' + event.source_count + ' ' + t('sources');
+        : event.kind === 'merge' ? (event.source_count ? event.source_count + ' ' + t('sources') : '')
+          : t('changed') + ' ' + event.changed_count + '/' + event.source_count + ' ' + t('sources');
       row.append(element('strong', t(event.kind) + ' · v' + event.version));
-      row.append(element('p', [counts, date(event.committed_at)].filter(Boolean).join(' · ')));
+      const commit = element('p', [counts, `${t('committedAt')} ${date(event.committed_at)}`].filter(Boolean).join(' · '));
+      commit.title = event.committed_at;
+      row.append(commit);
       if (!details) row.append(link('changeDetails', { view: 'activity', event: event.version }));
       if (details && event.can_search_previous) {
         row.append(link('searchPrevious', { view: 'graph', at: event.version - 1 }));
@@ -121,8 +142,8 @@
       events.append(row);
     }
     const runs = byId('activity-runs');
-    runs.hidden = details;
-    runs.replaceChildren(element('h3', t('runs')));
+    runs.hidden = details && !data.runs.length;
+    runs.replaceChildren(element('h3', t(details ? 'changeRun' : 'runs')));
     if (!data.runs.length) runs.append(element('p', t('emptyRuns')));
     for (const run of data.runs) {
       const row = element('section', undefined, 'activity-row');

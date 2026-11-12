@@ -437,6 +437,85 @@ def ingest(call, run_id, payload, pipeline="memory-ingestion", error=None):
     return receipt
 
 
+def test_activity_separates_recording_and_commit_time_for_index_changes(work, monkeypatch):
+    directory, call = work
+    moment = "2026-04-20T12:00:00+00:00"
+    monkeypatch.setattr(workspace, "now", lambda: moment)
+    source = {
+        "format": "conversation",
+        "payload": {
+            "source": "transcript",
+            "conversation_id": "backfilled-meeting",
+            "source_date": "2026-03-15",
+            "local_started_at": "2026-03-15T09:10:00",
+            "metadata": {"source_reference": "backfilled-meeting"},
+            "segments": [
+                {"segment_id": "opening", "text": "The meeting started."},
+                {"segment_id": "discussion", "text": "Discuss the release checklist."},
+            ],
+        },
+    }
+    first = call("index-sources", payload={"sources": [{"source": source}]})
+    imported = viewer._activity_snapshot(directory, first["memory_version"])["events"][0]
+    original = imported["source_changes"][0]
+    assert imported["committed_at"] == "2026-04-20T12:00:00.000000+00:00"
+    assert original["local_started_at"] == "2026-03-15T09:10:00"
+    assert original["source_date"] == "2026-03-15" and original["effect"] == "added"
+
+    # A clock adjustment cannot place a later version before this import.
+    moment = "2026-04-20T11:59:59+00:00"
+    amendment = {
+        "source": {**source, "expected_checksum": original["checksum"]},
+        "annotations": {
+            "facts": [],
+            "index_spans": [{"topics": ["draft label"], "segment_ids": ["discussion"]}],
+            "taxonomy": [{"name": "canonical label"}],
+        },
+    }
+    changed = ingest(call, "add-index-span", amendment, pipeline="memory-update")
+    repeat = ingest(call, "repeat-index-span", amendment, pipeline="memory-update")
+    assert not repeat["changed"]
+    activity = viewer._activity_snapshot(directory, changed["memory_version"])
+    updated = activity["events"][0]
+    assert updated["source_changes"] == [{**original, "effect": "annotated"}]
+    assert updated["committed_at"] == imported["committed_at"]
+    assert len(activity["runs"]) == 1
+    assert [stage["name"] for stage in activity["runs"][0]["stages"]] == [
+        "normalize",
+        "annotate",
+        "commit",
+        "verify",
+    ]
+
+    call(
+        "start",
+        "memory-consolidation",
+        "--run-id",
+        "merge-index-span",
+        payload={"merge": {"from_topic": "draft label", "to_topic": "canonical label"}},
+    )
+    merged = call("stage", "merge-index-span", "commit")["value"]
+    call("stage", "merge-index-span", "verify")
+    merged_activity = viewer._activity_snapshot(directory, merged["memory_version"])
+    merge = merged_activity["events"][0]
+    assert merge["topic_merge"]["current_topic"] == "canonical_label"
+    assert merge["source_changes"] == [{**original, "effect": "retagged", "segment_offset": 1}]
+    assert merge["source_count"] == 1
+    assert [stage["name"] for stage in merged_activity["runs"][0]["stages"]] == ["commit", "verify"]
+    with workspace.Workspace.open(directory, read_only=True) as db:
+        page = workflow.source_revision_page(db, original["checksum"], offset=1)
+        assert page["segments"][0]["segment_id"] == "discussion"
+
+    _delete_source(
+        call, "delete-index-span", {"source": "transcript", "conversation_id": "backfilled-meeting"}
+    )
+    redacted = viewer._activity_snapshot(directory, merged["memory_version"])["events"][0]
+    assert redacted["topic_merge"] is None
+    assert "source_changes" not in redacted
+    with workspace.Workspace.open(directory, read_only=True) as db:
+        assert db.db.execute("SELECT count(*) FROM memory_activity_sources").fetchone()[0] == 0
+
+
 def trace(call, run_id, query, pipeline="topic-tracing"):
     call("start", pipeline, "--run-id", run_id, payload={"query": query})
     for stage in ("resolve", "retrieve", "report"):

@@ -109,6 +109,11 @@ can include one additional passage within the question's quote budget. Pass
 `--limit` to use a fixed span limit.
 Open **Workflows** in the memory viewer to inspect a completed search and its
 saved citations, or to open a committed change and its retained source versions.
+The change card shows the workspace commit time. Each retained source shows
+its own recording clock or date, with unknown timezone and missing time labeled
+explicitly. An annotation-only update links to the existing original. A topic
+merge links directly assigned sources to the first affected segment when the
+change recorded those links.
 When separate term searches favor other meetings, KITE can prioritize a
 passage that matches the two leading clues and another clue in its original
 text. The candidate trace shows those clues. Comparison results show the
@@ -127,6 +132,8 @@ the whole note within its quote budget.
 Historical searches use the original text and titles of the selected revisions.
 Read any stated effective date and approval status from the quoted text. Use
 the revision checksum with `evidence` to read an exact historical quote.
+The historical version filter applies to evidence retrieval. The all-topics
+graph opens the current taxonomy and annotations.
 Use `context --question "$QUESTION" --from-version BEFORE --at-version AFTER --text`
 to ask the same question before and after a change. Omit `--at-version` to use
 the current version. Both sides search retained original text with the same

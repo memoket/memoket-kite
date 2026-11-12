@@ -368,8 +368,25 @@ def reclassify(context, merge: dict) -> dict:
         topic: sorted({new if parent == old else parent for parent in parents} - {topic})
         for topic, parents in hierarchy.items()
     }
+    affected = []
+    for record in index.revisions.values():
+        if not record["active"]:
+            continue
+        lines = {
+            segment_id
+            for annotation in (*record["facts"], *record.get("index_spans", ()))
+            if any(index.vocab.resolve_topic(topic) == old for topic in annotation["topics"])
+            for segment_id in annotation["segment_ids"]
+        }
+        if lines:
+            first = next(
+                offset
+                for offset, segment in enumerate(record["conversation"]["segments"])
+                if segment["segment_id"] in lines
+            )
+            affected.append((record["checksum"], first))
     result = context.workspace.replace_index(merges, hierarchy=hierarchy)
-    context.workspace.record_activity(result, "merge", 1, 0)
+    context.workspace.record_activity(result, "merge", 1, len(affected), sources=affected)
     return result
 
 
