@@ -27,6 +27,11 @@
       completed: '完成', pending: '待执行', failed: '失败', running: '运行中', awaiting_approval: '待批准',
       redacted: '已隐去明细',
       changed: '已变更', sources: '来源', revisions: '来源版本', facts: '事实', refresh: '刷新',
+      sources_seen: '本批来源', sources_changed: '本批变更', source_lines: '原文行',
+      index_spans: '标注片段', dated_sources: '有录制日期', search_spans: '可检索片段',
+      elapsed_time_repairs: '录制偏移修复',
+      stale_source: '来源在预览后有变更', invalid_input: '所选来源未通过校验',
+      integrity_error: '索引一致性校验失败',
       emptyEvents: '还没有可展示的提交记录。', emptyRuns: '还没有可展示的工作流运行。',
     },
     en: {
@@ -53,6 +58,11 @@
       completed: 'Completed', pending: 'Pending', failed: 'Failed', running: 'Running', awaiting_approval: 'Awaiting approval',
       redacted: 'Details redacted',
       changed: 'Changed', sources: 'sources', revisions: 'source revisions', facts: 'facts', refresh: 'Refresh',
+      sources_seen: 'batch sources', sources_changed: 'changed sources', source_lines: 'original lines',
+      index_spans: 'annotated spans', dated_sources: 'dated sources', search_spans: 'searchable spans',
+      elapsed_time_repairs: 'repaired offsets',
+      stale_source: 'Sources changed after preview', invalid_input: 'Selected sources failed validation',
+      integrity_error: 'Index verification failed',
       emptyEvents: 'No recorded changes yet.', emptyRuns: 'No visible workflow runs yet.',
     },
   };
@@ -163,17 +173,24 @@
     for (const run of data.runs) {
       const row = element('section', undefined, 'activity-row');
       row.append(element('strong', t(run.kind) + ' · ' + t(run.state)));
-      row.append(element('p', 'v' + run.version + ' · ' + date(run.updated_at)));
+      row.append(element('p', [run.run_id, 'v' + run.version, date(run.updated_at)].filter(Boolean).join(' · ')));
       const stages = element('ol', undefined, 'activity-stages');
       for (const stage of run.stages) {
         const label = t(stage.name) + ' · ' + t(stage.state);
         const item = element('li', stage.attempts > 1 ? label + ' ×' + stage.attempts : label, 'activity-stage');
         item.dataset.state = stage.state;
+        if (stage.counts) {
+          item.append(element('small', Object.entries(stage.counts).map(([key, count]) => count.toLocaleString(language) + ' ' + t(key)).join(' · ')));
+        }
+        if (stage.error) item.append(element('small', t(stage.error)));
         stages.append(item);
       }
       row.append(stages);
       if (run.saved_search) {
         row.append(link('savedSearch', { view: 'graph', run: run.saved_search }));
+      }
+      if (!details && run.commit_version != null) {
+        row.append(link('changeDetails', { view: 'activity', event: run.commit_version }));
       }
       runs.append(row);
     }

@@ -163,10 +163,18 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
     )
     indexed = json.loads(
         run(
-            "index-sources", "--transcripts", transcripts, "--recording-metadata", transcripts
+            "index-sources",
+            "--transcripts",
+            transcripts,
+            "--recording-metadata",
+            transcripts,
+            "--save",
+            "installed-source-index",
         ).stdout
     )
     assert indexed["sources_changed"] == 1, indexed
+    assert indexed["verification"]["sources"] == 2 and indexed["verification"]["search_spans"] >= 2
+    assert json.loads(run("status", "installed-source-index").stdout)["state"] == "completed"
     context = run(
         "context",
         "--question",

@@ -224,7 +224,9 @@ summary { color: var(--teal); cursor: pointer; font-size: 12px; }
 .deletion-counts dd { margin: 0; font-variant-numeric: tabular-nums; }
 .activity-stages { display: flex; flex-wrap: wrap; gap: 6px; padding: 0; margin: 0; list-style: none; }
 .activity-stage { padding: 4px 7px; border-radius: 5px; background: var(--paper); }
+.activity-stage small { display: block; margin-top: 3px; font-size: 11px; }
 .activity-stage[data-state="completed"] { background: #e3efe8; color: #125c50; }
+.activity-stage[data-state="failed"] { background: #f5e9e7; color: #8b413a; }
 .search-trace { display: grid; gap: 4px; margin-top: 10px; padding: 10px; background: var(--paper); border-radius: 7px; font-size: 12px; }
 .search-trace p { color: var(--muted); overflow-wrap: anywhere; }
 .term-coverage { display: flex; flex-wrap: wrap; gap: 4px 12px; list-style: none; padding: 0; margin: 0; }

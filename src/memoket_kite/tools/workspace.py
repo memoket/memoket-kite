@@ -1063,13 +1063,14 @@ class Workspace:
         checksum = record["checksum"]
         receipt = {"revision_id": revision_id(record), "checksum": checksum}
         state, key, prior = self._classify_source(conversation, checksum)
+        stored = None
         if key not in previous:
-            previous[key] = (
-                {**self._decode_revision(prior), "active": True} if prior is not None else None
-            )
+            stored = self._decode_revision(prior) if prior is not None else None
+            previous[key] = {**stored, "active": True} if stored is not None else None
         if state == "unchanged":
             if append_annotations:
-                return {**receipt, **self._append_annotations(prior, record)}
+                stored = stored if stored is not None else self._decode_revision(prior)
+                return {**receipt, **self._append_annotations(stored, record)}
             return {**receipt, "changed": False, "memory_version": self.version()}
         if (prior["checksum"] if prior else None) != record["expected_checksum"]:
             raise ToolError("conflict", "changed source requires the current expected_checksum")
@@ -1084,8 +1085,7 @@ class Workspace:
         )
         return {**receipt, "changed": True}
 
-    def _append_annotations(self, prior: sqlite3.Row, record: dict) -> dict:
-        stored = self._decode_revision(prior)
+    def _append_annotations(self, stored: dict, record: dict) -> dict:
         additions = {}
         for field in ("facts", "taxonomy", "entity_aliases", "index_spans"):
             seen = {digest(item) for item in stored.get(field, ())}
@@ -1097,15 +1097,15 @@ class Workspace:
                     additions[field].append(item)
         if not any(additions.values()):
             return {"changed": False, "memory_version": self.version()}
-        if record["expected_checksum"] != prior["checksum"]:
+        if record["expected_checksum"] != stored["checksum"]:
             raise ToolError("conflict", "new annotations require the current expected_checksum")
         self._validate_supersession({**record, "facts": additions["facts"]})
         for field, items in additions.items():
             if items:
-                stored.setdefault(field, []).extend(items)
+                stored[field] = [*stored.get(field, ()), *items]
         self.db.execute(
             "UPDATE revisions SET payload=? WHERE checksum=?",
-            (encode(stored), prior["checksum"]),
+            (encode(stored), stored["checksum"]),
         )
         return {"changed": True}
 

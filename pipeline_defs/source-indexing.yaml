@@ -1,0 +1,31 @@
+id: source-indexing
+version: 1
+description: Validate and index an authorized batch of original sources and span annotations.
+inputs:
+  selection: batch_selection
+stages:
+  - id: preview
+    skill: skills/memory/source-indexing/SKILL.md
+    tool: preview_source_batch
+    needs: []
+    inputs:
+      selection: input.selection
+    output: batch_preview
+    acceptance: Normalized sources and annotations validate and the preview reports their counts.
+  - id: commit
+    skill: skills/memory/source-indexing/SKILL.md
+    tool: commit_source_batch
+    needs: [preview]
+    inputs:
+      selection: input.selection
+      preview: stage.preview
+    output: batch_receipt
+    acceptance: The previewed batch is committed atomically to one workspace version.
+  - id: verify
+    skill: skills/memory/source-indexing/SKILL.md
+    tool: verify_source_batch
+    needs: [commit]
+    inputs:
+      receipt: stage.commit
+    output: batch_verified
+    acceptance: The Codebook and original-text search span boundaries agree with committed sources.

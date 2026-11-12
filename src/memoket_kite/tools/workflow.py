@@ -642,6 +642,27 @@ def save_context_search(
     return {**result["value"], "saved_run": run_id}, None
 
 
+def save_source_indexing(
+    context: Context, selection: dict, run_id: str | None
+) -> tuple[dict, ToolError | None]:
+    stages = (
+        ("preview", "preview_source_batch"),
+        ("commit", "commit_source_batch"),
+        ("verify", "verify_source_batch"),
+    )
+    checkpoint = start(
+        context, {"selection": selection}, run_id, expected_stages=stages, resume_existing=True
+    )
+    run_id = checkpoint["run_id"]
+    values = {}
+    for stage, _ in stages:
+        result, error = advance(context, run_id, stage, {})
+        if error is not None:
+            return {"saved_run": run_id}, error
+        values[stage] = result["value"]
+    return {**values["commit"], "verification": values["verify"], "saved_run": run_id}, None
+
+
 def committed_topic_merge(workspace, version: int) -> dict | None:
     for row in workspace.db.execute(
         "SELECT * FROM runs WHERE json_extract(checkpoint, '$.pipeline_id')='memory-consolidation' "

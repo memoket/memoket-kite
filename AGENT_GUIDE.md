@@ -32,6 +32,7 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
 | Task | Pipeline |
 | --- | --- |
 | Import text, a transcript or a Memoket record | `memory-ingestion` |
+| Preview, commit and verify a batch of original sources | `source-indexing` |
 | Compile a task and find original passages | `context-search` |
 | Propose facts with an authorized model endpoint | `memory-provider-ingestion` |
 | Recover discussions, proposals and decisions by topic | `topic-tracing` |
@@ -47,6 +48,15 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
 | Preview and apply permanent workspace deletion | `memory-deletion` |
 
 ## Advance and recover
+
+For a source-only batch, run `kite-tool index-sources --transcripts DIR --save`
+or `kite-tool index-sources --input FILE --save`. The run records the validated
+source and label counts, the atomic commit, and verification of the current
+Codebook and searchable spans. Open **Workflows** to see the stages and the
+commit's original citations. For a preview before the write, start
+`source-indexing` and advance its stages individually. Its input
+`selection` accepts an absolute `transcripts` directory or `batch_file`,
+with optional `recording_metadata` for transcript imports.
 
 Use `kite-tool topics` to find queryable topic codes, aliases and parent topics.
 `kite-tool topics --contains "first run"` searches normalized codes and aliases.

@@ -109,6 +109,9 @@ to see the compiled terms and cited passages, or start the viewer with
 `kite-tool view --term PHRASE` for a phrase search. Open **Workflows** to see
 committed imports, updates, merges, and deletions alongside recent pipeline
 stages. An existing workspace starts recording new changes on upgrade.
+Add `--save` when indexing a transcript directory or a batch JSON file to see
+the preview, commit and verification counts under **Workflows**. Open the
+linked change to compare each affected source graph and read its original lines.
 Choose **View change** to inspect retained source changes or the recorded topic
 merge. For a revised source, **Compare before and after this commit** opens the
 two original versions from that commit. Deletion entries show counts and links

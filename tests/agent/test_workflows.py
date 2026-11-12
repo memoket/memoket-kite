@@ -471,6 +471,78 @@ def ingest(call, run_id, payload, pipeline="memory-ingestion", error=None):
     return receipt
 
 
+def test_source_indexing_rejects_changed_preview_and_shows_committed_stages(work, tmp_path):
+    directory, call = work
+    source = text_input("launch", "Original checklist.")["source"]
+    path = tmp_path / "selected.json"
+    batch = {
+        "sources": [
+            {
+                "source": source,
+                "annotations": {
+                    "facts": [],
+                    "index_spans": [{"topics": ["rollout"], "segment_ids": ["text-1"]}],
+                },
+            }
+        ]
+    }
+    path.write_text(json.dumps(batch))
+    call(
+        "start",
+        "source-indexing",
+        "--run-id",
+        "preview",
+        payload={"selection": {"batch_file": str(path)}},
+    )
+    preview = call("stage", "preview", "preview")["value"]
+    assert (preview["sources_seen"], preview["source_lines"], preview["index_spans"]) == (1, 1, 1)
+    pending = viewer._activity_snapshot(directory)["runs"][0]
+    assert pending["run_id"] == "preview" and pending["stages"][0]["counts"]["index_spans"] == 1
+    assert not viewer._activity_snapshot(directory)["events"]
+    source["payload"]["text"] = "Revised launch checklist."
+    path.write_text(json.dumps(batch))
+    call("stage", "preview", "commit", error="stale_source")
+    assert not call("sources")["sources"]
+    failed = viewer._activity_snapshot(directory)["runs"][0]
+    assert failed["stages"][1]["error"] == "stale_source"
+
+    saved = ("index-sources", "--input", str(path), "--save", "saved-batch")
+    result = call(*saved)
+    version = result["memory_version"]
+    assert result["sources_changed"] == result["verification"]["search_spans"] == 1
+    assert call(*saved) == result
+    snapshot = viewer._activity_snapshot(directory, version)
+    run = snapshot["runs"][0]
+    assert run["run_id"] == "saved-batch" and run["commit_version"] == version
+    assert [stage["name"] for stage in run["stages"]] == ["preview", "commit", "verify"]
+    assert run["stages"][-1]["counts"] == {"sources": 1, "source_lines": 1, "search_spans": 1}
+    assert snapshot["events"][0]["source_changes"][0]["has_graph"]
+    assert "Revised launch checklist" not in json.dumps(snapshot)
+    assert str(path) not in json.dumps(snapshot)
+    assert "[launch#text-1] Revised launch checklist." in call(
+        "context", "--term", "launch checklist", "--text"
+    )
+    with workspace.Workspace.open(directory, read_only=True) as db:
+        artifacts = db.db.execute(
+            "SELECT value FROM artifacts WHERE run_id='saved-batch'"
+        ).fetchall()
+        assert len(artifacts) == 3 and all(
+            "Revised launch checklist" not in row[0] for row in artifacts
+        )
+    call(
+        "start",
+        "source-indexing",
+        "--run-id",
+        "verify-spans",
+        payload={"selection": {"batch_file": str(path)}},
+    )
+    call("stage", "verify-spans", "preview")
+    assert not call("stage", "verify-spans", "commit")["value"]["changed"]
+    with workspace.Workspace.open(directory) as db:
+        db.db.execute("DELETE FROM context_spans")
+    call("stage", "verify-spans", "verify", error="integrity_error")
+
+
 def test_activity_separates_recording_and_commit_time_for_index_changes(work, monkeypatch):
     directory, call = work
     moment = "2026-04-20T12:00:00+00:00"
@@ -643,8 +715,10 @@ def test_cli_help_still_prints_usage(capsys):
 def test_discovery_and_invalid_pipeline(work, tmp_path):
     _, call = work
     pipelines = call("pipelines")["pipelines"]
-    assert len(pipelines) == 14
-    assert {"context-search", "source-revision-review"} <= {entry["id"] for entry in pipelines}
+    assert len(pipelines) == 15
+    assert {"context-search", "source-indexing", "source-revision-review"} <= {
+        entry["id"] for entry in pipelines
+    }
     assert call("describe", "delete")["delete"]["effect"] == "delete"
     repo = tmp_path / "definitions"
     for folder in ("schemas", "skills", "pipeline_defs"):
@@ -681,7 +755,7 @@ def test_installable_extension_and_custom_connector(work, tmp_path):
 
     assert custom_call("resources")["extension_root"] == str(extension)
     catalog = custom_call("pipelines")
-    assert len(catalog["pipelines"]) == 15
+    assert len(catalog["pipelines"]) == len(call("pipelines")["pipelines"]) + 1
     assert "invalid_extensions" not in catalog
     built_in = "memory-ingestion"
     assert custom_call("validate-pipeline", built_in) == call("validate-pipeline", built_in)

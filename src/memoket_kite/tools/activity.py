@@ -1,9 +1,10 @@
 """Project committed changes and workflow stages for the memory viewer."""
 
 from .contracts import ToolError, decode_object
-from .workflow import committed_topic_merge
+from .workflow import _artifact, committed_topic_merge
 
 _PIPELINES = {
+    "source-indexing": "index",
     "memory-ingestion": "ingest",
     "memory-provider-ingestion": "ingest",
     "memory-update": "update",
@@ -12,6 +13,11 @@ _PIPELINES = {
     "topic-reclassification": "reclassify",
     "context-search": "search",
     "source-revision-review": "compare",
+}
+_BATCH_STAGE_FIELDS = {
+    "preview": ("sources_seen", "source_lines", "index_spans", "dated_sources"),
+    "commit": ("sources_changed", "sources_seen", "elapsed_time_repairs"),
+    "verify": ("sources", "source_lines", "search_spans"),
 }
 
 
@@ -66,26 +72,39 @@ def memory_activity(workspace, *, event_version: int | None = None, offset: int 
             args,
         ):
             record = decode_object(row["checkpoint"])
-            runs.append(
-                {
-                    "kind": _PIPELINES[record["pipeline_id"]],
-                    "state": record["state"],
-                    "version": record["memory_version"],
-                    "updated_at": record["updated_at"],
-                    **(
-                        {"saved_search": row["id"]}
-                        if record["pipeline_id"] == "context-search"
-                        and record["state"] == "completed"
-                        and record["stages"].get("search", {}).get("artifact", {}).get("kind")
-                        == "context_evidence"
-                        else {}
-                    ),
-                    "stages": [
-                        {"name": name, "state": stage["state"], "attempts": stage["attempts"]}
-                        for name, stage in record["stages"].items()
-                    ],
-                }
-            )
+            run = {
+                "kind": _PIPELINES[record["pipeline_id"]],
+                "state": record["state"],
+                "version": record["memory_version"],
+                "updated_at": record["updated_at"],
+                **(
+                    {"saved_search": row["id"]}
+                    if record["pipeline_id"] == "context-search"
+                    and record["state"] == "completed"
+                    and record["stages"].get("search", {}).get("artifact", {}).get("kind")
+                    == "context_evidence"
+                    else {}
+                ),
+                "stages": [
+                    {"name": name, "state": stage["state"], "attempts": stage["attempts"]}
+                    for name, stage in record["stages"].items()
+                ],
+            }
+            if record["pipeline_id"] == "source-indexing" and "artifacts" in tables:
+                run["run_id"] = row["id"]
+                for stage in run["stages"]:
+                    name = stage["name"]
+                    if error := record["stages"][name].get("error"):
+                        stage["error"] = error
+                    if stage["state"] != "completed":
+                        continue
+                    value = _artifact(workspace, record, name)["value"]
+                    stage["counts"] = {
+                        key: value[key] for key in _BATCH_STAGE_FIELDS[name] if key in value
+                    }
+                    if name == "commit" and value["changed"]:
+                        run["commit_version"] = value["memory_version"]
+            runs.append(run)
     # Normalized checkpoints are serialized with sorted keys, so recover the built-in stage order.
     stage_order = {
         name: i

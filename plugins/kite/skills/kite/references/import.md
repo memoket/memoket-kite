@@ -21,6 +21,12 @@ attach topics, entities, or facets to original segment IDs. The optional
 `source-check` and include it as `expected_checksum` in the source input. Reuse
 the original source identity.
 
+Add `--save` to a transcript-directory or JSON-file import to show its
+preview, commit and verification in **Workflows**. For a separate preview,
+run the `source-indexing` pipeline with the authorized file selection.
+Its stage artifacts contain a checksum and counts. The preview checks the
+sources again at commit time, so a changed file requires a fresh run.
+
 ## Import notes with recorded decisions
 
 Use this workflow when the user wants KITE to persist structured decisions,
