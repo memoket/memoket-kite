@@ -28,6 +28,7 @@
       planSubject: 'Schedule subject',
       outputTargets: 'Evidence needed for task outputs',
       previousSearch: 'Earlier search', skippedCitations: 'previously cited lines skipped',
+      sharedLookupPhrase: 'Lookup phrase shared by two recordings',
       noUsedLabels: 'This run records no topic, entity or facet selection for these quotes.',
       candidateLabels: 'Candidate labels',
       searchPlan: 'Search plan and candidates',
@@ -118,6 +119,7 @@
       planSubject: '排期主题',
       outputTargets: '任务输出所需的证据',
       previousSearch: '前序检索', skippedCitations: '行已引用原文被跳过',
+      sharedLookupPhrase: '两份录制共同命中的检索词',
       noUsedLabels: '本次记录未显示通过主题、实体或 Facet 选中这些引用。',
       candidateLabels: '候选标签',
       searchPlan: '检索计划和候选',
@@ -316,8 +318,10 @@
 
   let currentTopic = topics.get(query.get('topic')) || searchRoots[0] || roots[0];
   const requestedNode = query.get('node');
-  const linkedNode = requestedNode && [...entities.values(), ...facets.values(), ...sources.values()]
-    .find(node => node.id === requestedNode);
+  const linkedNode = searching && requestedNode?.startsWith('line:')
+    ? lines.get(requestedNode.slice('line:'.length))
+    : requestedNode && [...entities.values(), ...facets.values(), ...sources.values()]
+      .find(node => node.id === requestedNode);
   let selected = linkedNode || currentTopic || memories.values().next().value || sources.values().next().value;
   const overviewEntry = query.get('mode') === 'all' || query.has('show') || linkedNode;
   let browseTopic = topics.get(query.get('topic')) || (overviewEntry ? undefined : currentTopic);
@@ -332,7 +336,7 @@
   const catalogFilter = byId('catalog-filter');
   let relatedFrom;
   let displayed;
-  let referenceMemory;
+  let referenceMemory = linkedNode?.kind === 'line' ? linkedNode.memories[0] : undefined;
   let catalogRendered;
 
   function rankedMemories(topic) {
@@ -839,7 +843,9 @@
     if (!searching) params.set('mode', mode);
     if (catalog) params.set('show', catalog);
     else params.delete('show');
-    if (isAnnotation(selected) || selected?.kind === 'source') params.set('node', selected.id);
+    if (isAnnotation(selected) || selected?.kind === 'source' || (searching && selected?.kind === 'line')) {
+      params.set('node', selected.id);
+    }
     else params.delete('node');
     if (snapshot.comparison_available) params.set('view', 'graph');
     params.set('lang', language);
@@ -1245,8 +1251,13 @@
     }
     if (search && !searching) {
       const steps = byId('filter-trace-steps');
+      const priority = done?.priority_scope;
+      const route = done?.route_scope;
       const details = done?.name === 'compile'
-        ? (done.output_targets?.map(target => target.description) || done.terms || [])
+        ? (done.output_targets?.map(target => target.description)
+          || (priority && [`${priority.topic} · ${priority.detail}`, priority.commitment])
+          || (route && [`${route.topic} · ${route.route}`, route.schedule])
+          || done.terms || [])
         : (done?.citations?.map(citation => citation.reference) || []);
       steps.hidden = !details.length;
       steps.replaceChildren(...details.map(detail => element('li', detail)));
@@ -1593,12 +1604,24 @@
         trace.prepend(element('p', `${t('savedSearch')} v${saved.version} · ${new Date(saved.searched_at).toLocaleString(language)}${current}`));
       }
       if (snapshot.search_after) {
-        const { run_id, skipped } = snapshot.search_after;
+        const { run_id, skipped, cross_recording_matches = [] } = snapshot.search_after;
         const link = element('a', t('previousSearch'), 'citation-link');
         link.href = '?' + new URLSearchParams({ view: 'graph', run: run_id, lang: language });
         const note = element('p');
         note.append(link, ` · ${number.format(skipped)} ${t('skippedCitations')}`);
         trace.append(note);
+        for (const match of cross_recording_matches) {
+          const line = lines.get(match.later_line_id);
+          if (!line) continue;
+          const row = element('p', `${t('sharedLookupPhrase')} · ${match.term} · `);
+          const earlier = element('a', match.earlier_reference, 'citation-link');
+          earlier.href = '?' + new URLSearchParams({
+            view: 'graph', run: run_id, node: 'line:' + match.earlier_line_id, lang: language,
+          });
+          row.append(earlier, ' → ',
+            button(line.source_reference + '#' + line.segment_id, () => choose(line), 'citation-link'));
+          trace.append(row);
+        }
       }
       if (retrievalRoutes.length && !retrievalRoutes.some(({ route }) => route.labels?.length)) {
         trace.append(element('p', t('noUsedLabels')));

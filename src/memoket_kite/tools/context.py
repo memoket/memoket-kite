@@ -255,6 +255,31 @@ _COLOR_DETAIL = re.compile(
 )
 _COLOR_QUESTION = re.compile(r"颜色|配色|选色|色系|\bcolou?rs?\b", re.I)
 _DETAIL_CONJUNCTION = re.compile(r"以及|并且|然后|分别|\b(?:and|or)\b", re.I)
+_TASK_DETAILS = re.compile(r"[,，。.;；]\s*(?:保留|包含|包括|\b(?:include|retain|keep)\b)\s*", re.I)
+_TASK_DETAIL_AND = re.compile(r"以及|和|与|\band\b", re.I)
+_PRIORITY_REQUEST = re.compile(r"优先|先做|\b(?:priorit\w*|first)\b", re.I)
+_PRIORITY_ACTION = re.compile(
+    r"(?:优先|先)(?:做|搞|跑|推进|开展|完成|处理|实施|验证)"
+    r"|\b(?:prioriti[sz]\w*|start with|begin with|first (?:do|implement|run))\b",
+    re.I,
+)
+_COMMITMENT = re.compile(
+    r"承诺|保证|\b(?:guarantee[ds]?|commit(?:s|ted|ting|ments?)?|promise[ds]?)\b", re.I
+)
+_TOPIC_SCOPE_RECORDINGS = 8
+_TASK_SUBJECT_START = re.compile(
+    r"^(?:请\s*)?按(?:照)?(?:会议(?:纪要|记录)?|讨论|纪要)\s*(?:实现|编写|更新|修订)"
+    r"|^(?:please\s+)?(?:implement|write|update|build)\s+(?:the\s+)?",
+    re.I,
+)
+_ROUTE_FIELD = re.compile(r"路线|线路|路由|(?:the\s+)?(?:route|routing|route selection)", re.I)
+_SCHEDULE_FIELD = re.compile(r"排期|时间安排|进度|(?:the\s+)?(?:schedule|timeline)", re.I)
+_ROUTE_ROLES = ("主线", "primary route", "main route", "mainline")
+_REPLAN_ACTIONS = ("重新排", "replan", "replanning", "reschedule", "rescheduling")
+_ROUTE_CODE = re.compile(r"(?<![A-Za-z0-9])[A-Z][A-Z0-9]{2,7}(?![A-Za-z0-9])")
+_ROUTE_CONNECTOR = re.compile(r"[a-z][a-z0-9]{2,6}")
+_ROUTE_SPAN_LIMIT = 32
+_ROUTE_TERM_LIMIT = 8
 _CHOICE_STATEMENT = re.compile(
     r"打样|选|渐变|确定|保留|定稿|\b(?:pick|choos\w+|select\w*|decid\w+|confirm\w+)\b",
     re.I,
@@ -338,6 +363,10 @@ CONTEXT_PLAN = object_schema(
         "implementation_search": TEXT,
         "output_search": TEXT,
         "output_targets": array(_OUTPUT_TARGET, 2, 3),
+        "priority_scope": object_schema(
+            {"topic": TEXT, "detail": TEXT, "subject": TEXT, "commitment": TEXT}
+        ),
+        "route_scope": object_schema({"topic": TEXT, "route": TEXT, "schedule": TEXT}),
         "current_plan_subject": TEXT,
         "keep_recorded_schedule": {"type": "boolean"},
     },
@@ -697,6 +726,26 @@ def _compile_questions(workspace, indexes, request, search, compare_search):
                 )
             )[:8]
             result.pop("word_forms", None)
+        if (
+            request.get("compact")
+            and index.history is None
+            and request.get("limit", 8) >= 4
+            and not (
+                subquestions
+                or output_targets
+                or phases
+                or current_plan_subject
+                or request.get("after")
+                or request.get("latest")
+                or request.get("matching_lines")
+                or request.get("conversation_id")
+                or _quoted_phrases(search)
+            )
+        ):
+            if scope := _compile_priority_scope(workspace, index, search):
+                result["priority_scope"] = scope
+            elif scope := _compile_route_scope(workspace, index, search):
+                result["route_scope"] = scope
     if compare_search is not None:
         terms, forms = _compile_terms(comparison.db, comparison.filters, compare_search)
         result["comparison_terms"] = terms
@@ -942,6 +991,96 @@ def _label_expression(labels):
     return "labels : (" + " AND ".join(f'"{label}"' for label in labels) + ")"
 
 
+def _label_recordings(index, labels):
+    where, args = _search_scope(index.filters)
+    rows = index.db.execute(
+        f"SELECT DISTINCT checksum FROM context_spans WHERE {where} ORDER BY checksum LIMIT ?",
+        (_label_expression(labels), *args, _TOPIC_SCOPE_RECORDINGS + 1),
+    ).fetchall()
+    return [row["checksum"] for row in rows] if len(rows) <= _TOPIC_SCOPE_RECORDINGS else []
+
+
+def _task_details(question):
+    detail_start = _TASK_DETAILS.search(question) or re.search(r"[,，]\s*", question)
+    if detail_start is None:
+        return None
+    details = _TASK_DETAIL_AND.split(question[detail_start.end() :], maxsplit=1)
+    if len(details) != 2:
+        return None
+    first, second = (part.strip(" .。") for part in details)
+    return question[: detail_start.start()], first, second
+
+
+def _compile_priority_scope(workspace, index, question):
+    details = _task_details(question)
+    if details is None:
+        return None
+    heading, first, second = details
+    if _PRIORITY_REQUEST.search(second) and not _PRIORITY_REQUEST.search(first):
+        first, second = second, first
+    subjects = _question_anchors(_HAN.sub(" ", second))
+    if not (_PRIORITY_REQUEST.search(first) and _COMMITMENT.search(second) and len(subjects) == 1):
+        return None
+    terms, _ = _compile_terms(index.db, index.filters, heading)
+    phrases = [_tokens(term) for term in terms]
+    records = {}
+    exact = [(phrase,) for phrase in phrases if " " in phrase]
+    for labels in (*exact, *combinations(phrases, 2)):
+        if len(labels) == 2 and set(labels[0].split()) & set(labels[1].split()):
+            continue
+        by_topic = defaultdict(set)
+        for checksum in _label_recordings(index, labels):
+            if checksum not in records:
+                records[checksum] = workspace.record(checksum)
+            for span in records[checksum].get("index_spans", ()):
+                for topic in span["topics"]:
+                    text = _tokens(topic)
+                    if (
+                        text == labels[0]
+                        if len(labels) == 1
+                        else all(f" {label} " in f" {text} " for label in labels)
+                    ):
+                        by_topic[topic].add(checksum)
+        topics = [topic for topic, revisions in by_topic.items() if len(revisions) >= 2]
+        if len(topics) == 1:
+            return {
+                "topic": topics[0],
+                "detail": first,
+                "subject": subjects[0],
+                "commitment": second,
+            }
+    return None
+
+
+def _compile_route_scope(workspace, index, question):
+    details = _task_details(question)
+    if details is None:
+        return None
+    heading, schedule, route = details
+    if _ROUTE_FIELD.fullmatch(schedule):
+        schedule, route = route, schedule
+    if not (_SCHEDULE_FIELD.fullmatch(schedule) and _ROUTE_FIELD.fullmatch(route)):
+        return None
+    heading = _TASK_SUBJECT_START.sub("", heading)
+    terms, _ = _compile_terms(index.db, index.filters, heading)
+    records = {}
+    for term in terms:
+        phrase = _tokens(term)
+        by_topic = defaultdict(set)
+        for checksum in _label_recordings(index, (phrase,)):
+            if checksum not in records:
+                records[checksum] = workspace.record(checksum)
+            for span in records[checksum].get("index_spans", ()):
+                for topic in span["topics"]:
+                    if f" {phrase} " in f" {_tokens(topic)} ":
+                        by_topic[topic].add(checksum)
+        if len(by_topic) == 1:
+            topic, revisions = next(iter(by_topic.items()))
+            if len(revisions) >= 2:
+                return {"topic": topic, "route": route, "schedule": schedule}
+    return None
+
+
 def _compile_indexed_routes(index, question, terms):
     where, args = _search_scope(index.filters)
     labels = []
@@ -1021,24 +1160,65 @@ def search_question(workspace, compiled: dict) -> dict:
         return _search_questions(workspace, compiled, indexes)
 
 
+def _evidence_lines(value):
+    return (
+        line
+        for part in value.get("parts", [value])
+        for span in part["spans"]
+        for line in span["evidence"]
+    )
+
+
 def _previous_evidence(workspace, run_id):
     from .workflow import saved_context_search
 
     seen = set()
     citations = set()
+    parent_lines = None
     while run_id is not None:
         if run_id in seen:
             raise ToolError("integrity_error", "saved searches reference each other")
         seen.add(run_id)
         value = saved_context_search(workspace, run_id)["value"]
-        citations.update(
-            (line["revision_checksum"], line["segment_id"])
-            for part in value.get("parts", [value])
-            for span in part["spans"]
-            for line in span["evidence"]
-        )
+        lines = list(_evidence_lines(value))
+        if parent_lines is None:
+            parent_lines = lines
+        citations.update((line["revision_checksum"], line["segment_id"]) for line in lines)
         run_id = value.get("after")
-    return citations
+    return citations, parent_lines or []
+
+
+def _cross_recording_matches(terms, earlier, result):
+    def source(line):
+        return line["source"], line["conversation_id"]
+
+    earlier_texts = [(line, f" {_tokens(line['text'])} ") for line in earlier]
+    later_texts = [(line, f" {_tokens(line['text'])} ") for line in _evidence_lines(result)]
+    matches = []
+    for term in dict.fromkeys(terms):
+        phrase = f" {_tokens(term)} "
+        origins = [line for line, text in earlier_texts if phrase in text]
+        pair = next(
+            (
+                (origin, later)
+                for later, text in later_texts
+                if phrase in text
+                for origin in origins
+                if source(origin) != source(later)
+            ),
+            None,
+        )
+        if pair:
+            origin, later = pair
+            matches.append(
+                {
+                    "term": term,
+                    "earlier_reference": f"{origin['source_reference']}#{origin['segment_id']}",
+                    "earlier_line_id": origin["source_line_id"],
+                    "later_line_id": later["source_line_id"],
+                }
+            )
+    return matches
 
 
 def _search_questions(workspace, compiled: dict, indexes) -> dict:
@@ -1053,7 +1233,9 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
     if (compare_terms is not None) != ("compare_with" in request or version_comparison):
         raise ToolError("invalid_input", "compile both comparison questions before searching")
     after = request.get("after")
-    previous_evidence = _previous_evidence(workspace, after) if after is not None else None
+    previous_evidence, parent_lines = (
+        _previous_evidence(workspace, after) if after is not None else (None, [])
+    )
     skipped = set()
 
     def search(
@@ -1092,6 +1274,8 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
                 else None
             ),
             compact_context=bool(request.get("compact") and compare_terms is None),
+            priority_scope=compiled.get("priority_scope"),
+            route_scope=compiled.get("route_scope"),
             previous_evidence=previous_evidence,
             skipped=skipped,
         )
@@ -1103,6 +1287,10 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
                 result["compilation"]["output_search"] = compiled["output_search"]
             if "output_targets" in compiled:
                 result["compilation"]["output_targets"] = compiled["output_targets"]
+            if "priority_scope" in compiled:
+                result["compilation"]["priority_scope"] = compiled["priority_scope"]
+            if "route_scope" in compiled:
+                result["compilation"]["route_scope"] = compiled["route_scope"]
             if "current_plan_subject" in compiled:
                 result["compilation"]["current_plan_subject"] = compiled["current_plan_subject"]
             if forms:
@@ -1125,6 +1313,10 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
         result = search(question, compiled["terms"], limit, budget, index, forms, phases)
         if after is not None:
             result.update(after=after, previously_cited_lines=len(skipped))
+            if request.get("all_terms") and (
+                shared := _cross_recording_matches(compiled["terms"], parent_lines, result)
+            ):
+                result["cross_recording_matches"] = shared
         return result
     first_limit, first_budget = (limit + 1) // 2, (budget + 1) // 2
     date_overrides = _comparison_dates(request)
@@ -1886,6 +2078,255 @@ def _subquestion_evidence(workspace, index, subquestions, max_bytes):
                 )
                 break
     return list(selected.values())
+
+
+def _topic_priority_evidence(workspace, index, scope, budget):
+    topic = _tokens(scope["topic"])
+    if not topic:
+        return []
+    by_recording = []
+    for checksum in _label_recordings(index, (topic,)):
+        record = workspace.record(checksum)
+        tagged = {
+            segment_id
+            for span in record.get("index_spans", ())
+            if any(_tokens(label) == topic for label in span["topics"])
+            for segment_id in span["segment_ids"]
+        }
+        selected = {}
+        conversation = record["conversation"]
+        for position, segment in enumerate(conversation["segments"]):
+            if segment["segment_id"] not in tagged:
+                continue
+            text = segment["text"]
+            match = _PRIORITY_ACTION.search(text)
+            size = len(text.encode("utf-8"))
+            if match and size <= budget:
+                selected.setdefault(
+                    _tokens(text),
+                    (
+                        size,
+                        {
+                            "checksum": checksum,
+                            "start": position,
+                            "stop": position + 1,
+                            "day": source_day(conversation),
+                            "direct_positions": [position],
+                            "selection": {
+                                "reason": "subquestion_index",
+                                "term": scope["detail"],
+                                "labels": [scope["topic"]],
+                                "clues": [match.group()],
+                            },
+                        },
+                    ),
+                )
+        if selected:
+            by_recording.append(list(selected.values()))
+    by_recording.sort(key=len, reverse=True)
+    if not by_recording or (len(by_recording) > 1 and len(by_recording[0]) == len(by_recording[1])):
+        return []
+    picks = []
+    for size, row in by_recording[0][:2]:
+        if size <= budget:
+            picks.append(row)
+            budget -= size
+    return picks
+
+
+@dataclass(frozen=True)
+class _RouteLine:
+    checksum: str
+    position: int
+    day: str | None
+    text: str
+    matched: tuple[str, ...] = ()
+
+    def candidate(self, detail, clues, *, topic=None):
+        return {
+            "checksum": self.checksum,
+            "start": self.position,
+            "stop": self.position + 1,
+            "day": self.day,
+            "direct_positions": [self.position],
+            "selection": {
+                "reason": "subquestion_index" if topic else "subquestion_clues",
+                "term": detail,
+                "clues": [*clues, *self.matched],
+                **({"labels": [topic]} if topic else {}),
+            },
+        }
+
+
+def _route_seeds(workspace, index, label, records):
+    topic = _tokens(label)
+    seeds = {}
+    for checksum in _label_recordings(index, (topic,)):
+        if checksum not in records:
+            records[checksum] = workspace.record(checksum)
+        record = records[checksum]
+        tagged = {
+            sid
+            for span in record.get("index_spans", ())
+            if any(_tokens(name) == topic for name in span["topics"])
+            for sid in span["segment_ids"]
+        }
+        conversation = record["conversation"]
+        for position, line in enumerate(conversation["segments"]):
+            if line["segment_id"] in tagged:
+                for code in _ROUTE_CODE.findall(line["text"]):
+                    seeds.setdefault(
+                        code.casefold(),
+                        _RouteLine(checksum, position, source_day(conversation), line["text"]),
+                    )
+    return seeds if len(seeds) <= _ROUTE_TERM_LIMIT else {}
+
+
+def _route_original_lines(workspace, index, subject, required, records):
+    groups = [tuple(_tokens(term) for term in alternatives) for alternatives in required]
+    clauses = [
+        f'"{subject}"',
+        *("(" + " OR ".join(f'"{phrase}"' for phrase in group) + ")" for group in groups),
+    ]
+    expression = "text : (" + " AND ".join(clauses) + ")"
+    where, args = _search_scope(index.filters)
+    rows = index.db.execute(
+        f"SELECT checksum, start, stop, day FROM context_spans WHERE {where} "
+        "ORDER BY checksum, start LIMIT ?",
+        (expression, *args, _ROUTE_SPAN_LIMIT + 1),
+    ).fetchall()
+    if len(rows) > _ROUTE_SPAN_LIMIT:
+        return []
+    selected = {}
+    for row in rows:
+        checksum = row["checksum"]
+        if checksum not in records:
+            records[checksum] = workspace.record(checksum)
+        segments = records[checksum]["conversation"]["segments"]
+        if not 0 <= row["start"] < row["stop"] <= len(segments):
+            raise ToolError("integrity_error", "context index does not match its source revision")
+        for position in range(row["start"], row["stop"]):
+            text = segments[position]["text"]
+            normalized = f" {_tokens(text)} "
+            matches = tuple(
+                next(
+                    (
+                        label
+                        for label, phrase in zip(alternatives, group, strict=True)
+                        if f" {phrase} " in normalized
+                    ),
+                    "",
+                )
+                for alternatives, group in zip(required, groups, strict=True)
+            )
+            if f" {subject} " in normalized and all(matches):
+                selected[checksum, position] = _RouteLine(
+                    checksum, position, row["day"], text, matches
+                )
+    return list(selected.values())
+
+
+def _route_schedule_evidence(workspace, index, scope, budget):
+    records = {}
+    seeds = _route_seeds(workspace, index, scope["topic"], records)
+    relation_words = set(
+        " ".join(_tokens(phrase) for phrase in (*_ROUTE_ROLES, *_REPLAN_ACTIONS)).split()
+    )
+    found = []
+    for seed, initial in seeds.items():
+        middle = [
+            line
+            for line in _route_original_lines(workspace, index, seed, (_ROUTE_ROLES,), records)
+            if line.checksum != initial.checksum
+        ]
+        if (
+            len({line.checksum for line in middle}) != 1
+            or len({_tokens(line.text) for line in middle}) < 2
+        ):
+            continue
+        common = set.intersection(*(set(_tokens(line.text).split()) for line in middle))
+        # Spoken identifiers in mixed-language recordings can be transcribed
+        # in lower case. For English prose require an observed technical code.
+        mixed_language = all(_HAN.search(line.text) for line in middle)
+        observed_codes = {
+            code.casefold() for line in middle for code in _ROUTE_CODE.findall(line.text)
+        }
+        connectors = sorted(
+            word
+            for word in common - relation_words - _ENGLISH_FUNCTION_WORDS - {seed}
+            if _ROUTE_CONNECTOR.fullmatch(word) and (mixed_language or word in observed_codes)
+        )
+        if len(connectors) > _ROUTE_TERM_LIMIT:
+            continue
+        for connector in connectors:
+            terminal = [
+                line
+                for line in _route_original_lines(
+                    workspace, index, connector, (_ROUTE_ROLES, _REPLAN_ACTIONS), records
+                )
+                if line.checksum not in {initial.checksum, middle[0].checksum}
+            ]
+            revisions = {line.checksum for line in terminal}
+            if len(revisions) > 1:
+                return []
+            if not revisions:
+                continue
+            if found:
+                return []
+            first = middle[0]
+            second = next(line for line in middle if _tokens(line.text) != _tokens(first.text))
+            required = (initial, first, second, terminal[0])
+            if sum(len(line.text.encode("utf-8")) for line in required) <= budget:
+                found = [
+                    initial.candidate(scope["route"], [seed], topic=scope["topic"]),
+                    first.candidate(scope["route"], [seed, connector]),
+                    second.candidate(scope["route"], [seed, connector]),
+                    terminal[0].candidate(scope["schedule"], [connector]),
+                ]
+            else:
+                return []
+    return found
+
+
+def _named_commitment_evidence(workspace, index, scope, budget):
+    subject = _tokens(scope["subject"])
+    if not subject:
+        return []
+    where, args = _search_scope(index.filters)
+    rows = index.db.execute(
+        f"SELECT checksum, start, stop, day FROM context_spans WHERE {where} LIMIT 25",
+        (f'text : "{subject}"', *args),
+    ).fetchall()
+    if len(rows) == 25:
+        return []
+    records = {}
+    matches = {}
+    for row in rows:
+        checksum = row["checksum"]
+        if checksum not in records:
+            records[checksum] = workspace.record(checksum)["conversation"]["segments"]
+        segments = records[checksum]
+        if not 0 <= row["start"] < row["stop"] <= len(segments):
+            raise ToolError("integrity_error", "context index does not match its source revision")
+        for position in range(row["start"], row["stop"]):
+            text = segments[position]["text"]
+            if f" {subject} " not in f" {_tokens(text)} " or len(text.encode("utf-8")) > budget:
+                continue
+            if match := _COMMITMENT.search(text):
+                matches[checksum, position] = {
+                    **dict(row),
+                    "start": position,
+                    "stop": position + 1,
+                    "direct_positions": [position],
+                    "selection": {
+                        "reason": "subquestion_clues",
+                        "term": scope["commitment"],
+                        "clues": [scope["subject"], match.group()],
+                    },
+                }
+                if len(matches) > 1:
+                    return []
+    return list(matches.values())
 
 
 def _matching_index_labels(record, segment_id, labels):
@@ -3196,6 +3637,8 @@ def _context_evidence(
     earlier_snapshot=False,
     other_records=None,
     compact_context=False,
+    priority_scope=None,
+    route_scope=None,
     previous_evidence=None,
     skipped=None,
 ):
@@ -3443,10 +3886,31 @@ def _context_evidence(
             )
             and not _quoted_phrases(_question)
         )
+        priority_rows = (
+            _topic_priority_evidence(workspace, index, priority_scope, max_bytes // 3)
+            if priority_scope and not (preferred or matching_lines or task_dates)
+            else []
+        )
+        commitment = (
+            _named_commitment_evidence(workspace, index, priority_scope, max_bytes // 3)
+            if len(priority_rows) == 2
+            else []
+        )
+        if commitment and commitment[0]["checksum"] != priority_rows[0]["checksum"]:
+            candidates = [*priority_rows, *commitment]
+        else:
+            candidates[2:2] = priority_rows
+        route_rows = (
+            _route_schedule_evidence(workspace, index, route_scope, max_bytes)
+            if route_scope and limit >= 4 and not (matching_lines or task_dates)
+            else []
+        )
+        if route_rows:
+            candidates, compact, compact_copies = route_rows, {}, {}
         if (
             trim_neighbors
             and limit >= 4
-            and not (subquestions or output_targets or followup)
+            and not (subquestions or output_targets or followup or priority_rows or route_rows)
             and not reserved_clauses
             and previous_evidence is None
         ):
@@ -3468,7 +3932,7 @@ def _context_evidence(
             compact_copies=compact_copies,
             trace=trace,
             prioritize_first_lines=first_lines,
-            reuse_identical_text=focus and not (matching_lines or plan.get("latest")),
+            reuse_identical_text=focus and not (matching_lines or plan.get("latest") or route_rows),
             repeated=repeated,
             trim_neighbors=bool(trim_neighbors),
             previous_evidence=previous_evidence,
@@ -3590,7 +4054,7 @@ def render_context(pack: dict) -> str:
                     lines.append(f"Recording started at: {started}")
                 elif span["source_date"]:
                     lines.append(f"Date: {span['source_date']}")
-                if history:
+                if history or span.get("source_revision_active") is False:
                     lines.append(f"Revision: {revision}")
                 previous_revision = revision
             copies = span.get("same_text_sources", ())

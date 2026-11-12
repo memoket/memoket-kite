@@ -16,6 +16,15 @@ For several distinct fields, keep their evidence descriptions in one task.
 When compact compilation has independent names or measurement clues, search
 can reserve quotes for each field. Use each original line with its own field
 and check its role, units, and status before applying it.
+When the request separately asks for priority actions and a named subject's
+commitment, compact search can use topic annotations to find the priority
+discussion and verify the commitment in the original line naming the subject.
+Read both branches before applying the decisions.
+For a compact request with separate route and schedule outputs, search can
+follow identifiers from a topic annotation into a recorded route and a
+separate scheduling discussion. Use the three original recordings to verify
+the selected route, the retained alternative, and the condition that affects
+the schedule. Competing paths return the ordinary evidence pack.
 For an ordinary compact task, a lower-ranked recording can contribute a line
 when independent query clues occur together in its original text. If the
 line points to a related action nearby, read that action in the same recording
@@ -35,6 +44,10 @@ compile a question about the missing detail. The CLI equivalent is
 `context --after RUN_ID --question "$MISSING_DETAIL" --compact --text`.
 Use the original and new citations together. An identical revision and
 segment from the earlier searches does not spend the new quote budget.
+When an earlier quote identifies the subject of a separate decision, set
+`request.after` to that search and use `request.terms` with the subject and
+the missing detail, plus `request.all_terms: true`. The saved graph links
+both original lines when they share a lookup phrase across recordings.
 Keep recording dates separate from the dates mentioned in the plan.
 Pass two questions together when the user gave them as one request. The
 compiler can keep named subquestions and the search can reserve a line when a
@@ -83,6 +96,11 @@ If the evidence lists sources with the same transcript text, quote the
 original segment ID under the source that supports the answer. Check its
 recording clock separately when timing matters.
 Open nearby lines with `kite-tool evidence 'CONVERSATION#SEGMENT' --context 2 --text`.
+Repeat `--also 'CONVERSATION#SEGMENT'` in that call to check up to eight
+citations together. The same revision-bound line appears once. A shared
+`--byte-budget` limits the JSON evidence payload while retaining the
+requested lines in full. If some citations are missing or ambiguous, the
+response returns the available lines and reports the affected citation positions.
 Use `--at-version VERSION` or `--known-at TIMESTAMP` for what the workspace
 knew at a historical point. Use recording dates for meeting windows. Keep
 historical revision checksums with their quotes.

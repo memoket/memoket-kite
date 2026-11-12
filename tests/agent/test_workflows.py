@@ -3750,6 +3750,12 @@ def test_evidence_context_reads_the_cited_revision_until_deletion(work):
     )
     assert active["evidence"]["text"] == "Rae now owns the launch."
     assert call("evidence", "handoff#owner")["value"] == active
+    batch = call("evidence", line_id, "--also", "handoff#owner")["value"]["windows"]
+    assert [window["source_revision_active"] for window in batch] == [False, True]
+    assert [window["evidence"][0] for window in batch] == [citation, active["evidence"]]
+    batch_text = call("evidence", line_id, "--also", "handoff#owner", "--text")
+    assert f"Revision: {first['checksum']}" in batch_text
+    assert "I own the launch." in batch_text and "Rae now owns the launch." in batch_text
     previous = call(*lines, "--revision", first_page["revision_checksum"], "--offset", "1")
     assert not previous["source_revision_active"]
     assert previous["segments"][0]["source_line_id"] == line_id
@@ -3845,6 +3851,55 @@ def test_evidence_byte_budget_keeps_the_cited_line_and_contiguous_neighbors(work
     for invalid in ("127", "1048577"):
         call("evidence", line_id, "--byte-budget", invalid, error="invalid_input")
     assert database.read_bytes() == before
+
+
+def test_batched_evidence_merges_overlapping_windows_and_keeps_all_anchors(work):
+    _, call = work
+    payload = text_input("launch", "unused")
+    payload["source"]["format"] = "transcript"
+    conversation = payload["source"]["payload"]
+    del conversation["text"]
+    conversation["segments"] = [
+        {"segment_id": f"line-{index}", "text": f"Original turn {index}."} for index in range(1, 6)
+    ]
+    receipt = call(
+        "index-sources",
+        payload={
+            "sources": [
+                {"source": payload["source"]},
+                {"source": text_input("other", "Exit.")["source"]},
+            ]
+        },
+    )
+    assert receipt["sources_changed"] == 2
+    command = ("evidence", "launch#line-2", "--also", "launch#line-4", "--also", "other#text-1")
+    full = call(*command, "--context", "2")["value"]
+    first, second = full["windows"]
+    assert [line["segment_id"] for line in first["evidence"]] == [f"line-{i}" for i in range(1, 6)]
+    assert first["anchors"] == [first["evidence"][i]["source_line_id"] for i in (1, 3)]
+    assert [line["text"] for line in second["evidence"]] == ["Exit."]
+    text = call(*command, "--context", "2", "--text")
+    assert text.count("[launch#line-3]") == 1 and "[other#text-1] Exit." in text
+    small = call(*command, "--context", "2", "--byte-budget", "128")["value"]
+    lines = [line for window in small["windows"] for line in window["evidence"]]
+    assert [line["segment_id"] for line in lines] == ["line-2", "line-4", "text-1"]
+    assert small["context_budget"] == {
+        "limit_bytes": 128,
+        "payload_bytes": len(encode(lines)),
+        "over_budget": True,
+        "omitted_neighbors": 3,
+    }
+    partial = call(*command, "--also", "other#unknown", "--context", "2")["value"]
+    assert partial["windows"] == full["windows"]
+    assert partial["unavailable"] == [
+        {
+            "index": 4,
+            "code": "not_found",
+            "message": "segment ID was not found in the selected revision",
+        }
+    ]
+    assert "Citation 4:" in call(*command, "--also", "other#unknown", "--text")
+    call("evidence", "launch#unknown", "--also", "other#unknown", error="not_found")
 
 
 def test_related_trace_labels_are_ranked_and_bound_to_the_evidence_page(work):
@@ -6812,6 +6867,131 @@ def test_compact_output_targets_reserve_original_measurements_with_their_own_clu
     assert result["quote_bytes"] <= result["quote_budget_bytes"]
 
 
+def test_compact_priority_and_named_commitment_use_separate_original_recordings(work):
+    directory, call = work
+    topic = "release quality and inspection routing"
+    fixture = [
+        ("steering", ["Start with the seal check.", "Then prioritize the door alarm."], [1, 2]),
+        ("other", ["Begin with a paint check.", "Prioritize an unrelated job."], [1]),
+        ("supplier", ["Gannet does not guarantee next-day pickup."], []),
+        ("other-supplier", ["Heron guarantees next-day pickup."], []),
+    ]
+    records = []
+    for identity, texts, annotated in fixture:
+        source = text_input(identity, "unused")["source"]
+        source["format"] = "transcript"
+        payload = source["payload"]
+        del payload["text"]
+        payload["segments"] = [
+            {"segment_id": f"L{i}", "text": line} for i, line in enumerate(texts, 1)
+        ]
+        record = {"source": source}
+        if annotated:
+            record["annotations"] = {
+                "facts": [],
+                "taxonomy": [{"name": topic}],
+                "index_spans": [
+                    {"topics": [topic], "segment_ids": [f"L{i}" for i in annotated]},
+                ],
+            }
+        records.append(record)
+    call("index-sources", payload={"sources": records})
+    pack = call(
+        "context",
+        "--question",
+        "Implement release inspection routing policy, retain priority checks and Gannet's commitment.",
+        "--compact",
+        "--explain",
+        "--save",
+        "priorities",
+    )
+    assert pack["compilation"]["priority_scope"]["topic"] == topic.replace(" ", "_")
+    assert [
+        (line["conversation_id"], line["segment_id"])
+        for span in pack["spans"]
+        for line in span["evidence"]
+    ] == [("steering", "L1"), ("steering", "L2"), ("supplier", "L1")]
+    snapshot = viewer._snapshot(directory, [], run_id="priorities")
+    assert set(snapshot["search_subquestion_branches"]) == {
+        "priority checks",
+        "Gannet's commitment",
+    }
+    shortened = call(
+        "context",
+        "--question",
+        "Release inspection routing, priority checks and Gannet's commitment",
+        "--compact",
+    )
+    assert shortened["spans"] == pack["spans"]
+
+
+def test_compact_route_search_requires_original_support_across_distinct_recordings(work):
+    directory, call = work
+    topic = "conveyor routing"
+
+    def record(identity, *texts, tagged=False):
+        source = text_input(identity, "unused")["source"]
+        source["format"] = "transcript"
+        del source["payload"]["text"]
+        source["payload"]["segments"] = [
+            {"segment_id": f"L{i}", "text": text} for i, text in enumerate(texts, 1)
+        ]
+        item = {"source": source}
+        if tagged:
+            item["annotations"] = {
+                "facts": [],
+                "taxonomy": [{"name": topic}],
+                "index_spans": [{"topics": [topic], "segment_ids": ["L1"]}],
+            }
+        return item
+
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                record("bench", "The bench still uses RVP.", tagged=True),
+                record("layout", "Review the conveyor footprint.", tagged=True),
+                record(
+                    "route",
+                    "TKM is the primary route and RVP stays on the bench.",
+                    "The primary route is TKM. Keep RVP for bench work.",
+                ),
+                record("schedule", "If TKM becomes the primary route, reschedule installation."),
+                record("trial", "Replan the unrelated trial using TKM."),
+            ]
+        },
+    )
+    args = (
+        "context",
+        "--question",
+        "Implement the conveyor routing configuration, retain the schedule and route.",
+        "--compact",
+        "--explain",
+    )
+    result = call(*args, "--save", "route-plan")
+    assert result["compilation"]["route_scope"]["topic"] == "conveyor_routing"
+    assert [
+        (line["conversation_id"], line["segment_id"])
+        for span in result["spans"]
+        for line in span["evidence"]
+    ] == [("bench", "L1"), ("route", "L1"), ("route", "L2"), ("schedule", "L1")]
+    selected = result["packing_trace"]["candidates"]
+    assert selected[0]["selection"]["labels"] == ["conveyor_routing"]
+    assert selected[-1]["selection"]["clues"] == ["tkm", "primary route", "reschedule"]
+    snapshot = viewer._snapshot(directory, [], run_id="route-plan")
+    assert set(snapshot["search_subquestion_branches"]) == {"route", "the schedule"}
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                record("conflict", "Replan a separate installation if TKM is its primary route.")
+            ]
+        },
+    )
+    competing = call(*args)
+    assert all("selection" not in row for row in competing["packing_trace"]["candidates"])
+
+
 def test_compact_corroboration_requires_independent_clues_in_the_same_original_line():
     records = {
         identity: {"conversation": {"segments": [{"text": text} for text in lines]}}
@@ -6870,6 +7050,46 @@ def test_context_followup_skips_only_previously_delivered_revisions(work):
     ]
     _delete_source(call, "delete-first", {"source": "text", "conversation_id": "first"})
     call("context", *flags, "--after", "followup", error="invalidated_run")
+
+
+def test_context_followup_graph_links_the_same_phrase_in_distinct_recordings(work):
+    directory, call = work
+    records = [
+        text_input("approval", "The annex approved the amber route. Use its signed card."),
+        text_input("release", "The signed amber route card specifies a ten-minute delay."),
+        text_input("other", "The signed violet route card specifies a twenty-minute delay."),
+    ]
+    call("index-sources", payload={"sources": [{"source": row["source"]} for row in records]})
+    first = call("context", "--term", "annex", "--save", "approval-search")
+    next_search = call(
+        "context",
+        "--after",
+        "approval-search",
+        "--all-terms",
+        "--term",
+        "amber route",
+        "--term",
+        "delay",
+        "--save",
+        "release-search",
+    )
+    earlier = first["spans"][0]["evidence"][0]
+    terminal = next_search["spans"][0]["evidence"][0]
+    assert terminal["conversation_id"] == "release"
+    assert next_search["cross_recording_matches"] == [
+        {
+            "term": "amber route",
+            "earlier_reference": "approval#text-1",
+            "earlier_line_id": earlier["source_line_id"],
+            "later_line_id": terminal["source_line_id"],
+        }
+    ]
+    snapshot = viewer._snapshot(directory, [], run_id="release-search")
+    assert (
+        snapshot["search_after"]["cross_recording_matches"]
+        == next_search["cross_recording_matches"]
+    )
+    assert set(snapshot["evidence"]) == {terminal["source_line_id"]}
 
 
 def test_context_matching_lines_checks_the_original_segment_and_saved_plan(work):

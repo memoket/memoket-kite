@@ -414,6 +414,11 @@ def _search_snapshot(
                 "search_after": {
                     "run_id": result["after"],
                     "skipped": result["previously_cited_lines"],
+                    **(
+                        {"cross_recording_matches": result["cross_recording_matches"]}
+                        if "cross_recording_matches" in result
+                        else {}
+                    ),
                 }
             }
             if saved is not None and "after" in result

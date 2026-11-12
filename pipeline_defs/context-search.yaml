@@ -1,5 +1,5 @@
 id: context-search
-version: 12
+version: 15
 description: Search cited original passages, supplement a saved search, or compare workspace versions.
 inputs:
   request: context_request

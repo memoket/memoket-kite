@@ -226,6 +226,13 @@ For a revision experiment with successive turns, use `codex_trial` with
 session ID, source snapshot, prompt digest, and resulting code for each turn.
 Report source preparation time separately from Codex turn time.
 
+For a run with the installed plugin, set `load_user_config=True` on
+`codex_trial` and pass the environment of a temporary Codex home where KITE
+is installed. This lets Codex discover the actual skill. Use a separate empty
+home for the file comparison, and record the plugin version and skill digest
+with the model and case manifests. Count skill loading in end-to-end time and
+token usage. Report source lookup commands separately from all commands.
+
 ## Evaluate original conversation context
 
 The source-context benchmark uses a local directory of UTF-8 TXT transcripts.

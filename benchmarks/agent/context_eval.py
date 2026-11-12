@@ -400,13 +400,14 @@ def codex_trial(
     trace_timing: bool = False,
     persist_session: bool = False,
     resume_session: str | None = None,
+    load_user_config: bool = False,
 ) -> dict:
     keep_session = persist_session or resume_session is not None
     command = [
         binary,
         "exec",
         *codex_options,
-        "--ignore-user-config",
+        *([] if load_user_config else ["--ignore-user-config"]),
         *([] if keep_session else ["--ephemeral"]),
         "--skip-git-repo-check",
         "--sandbox",

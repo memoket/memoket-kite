@@ -327,6 +327,62 @@ def _validate_context_window(radius: int, byte_budget: int | None) -> None:
         raise ToolError("invalid_input", "context byte budget must be 128–1048576")
 
 
+def merge_evidence_windows(windows: list[dict], byte_budget: int | None) -> dict:
+    """Keep every requested citation and pack unique nearby lines across windows."""
+    _validate_context_window(0, byte_budget)
+    groups = {}
+    anchors = {}
+    nearby = {}
+    for window in windows:
+        anchor = window["evidence"]
+        line_id = anchor["source_line_id"]
+        revision = anchor["revision_checksum"]
+        group = groups.setdefault(
+            revision,
+            {
+                "source_revision_active": window["source_revision_active"],
+                "source_date": window["source_time"],
+                "anchors": [],
+                "evidence": [],
+            },
+        )
+        if line_id not in anchors:
+            group["anchors"].append(line_id)
+            anchors[line_id] = anchor
+        for lines in (reversed(window["before"]), window["after"]):
+            for distance, line in enumerate(lines, 1):
+                line_id = line["source_line_id"]
+                if line_id not in nearby or distance < nearby[line_id][0]:
+                    nearby[line_id] = (distance, line)
+
+    selected = list(anchors.values())
+    size = len(encode(selected)) if byte_budget is not None else 0
+    omitted = 0
+    for line_id, (_, line) in sorted(nearby.items(), key=lambda item: item[1][0]):
+        if line_id in anchors:
+            continue
+        if byte_budget is not None:
+            next_size = size + 1 + len(encode(line))
+            if next_size > byte_budget:
+                omitted += 1
+                continue
+            size = next_size
+        selected.append(line)
+    for line in selected:
+        groups[line["revision_checksum"]]["evidence"].append(line)
+    for group in groups.values():
+        group["evidence"].sort(key=lambda line: int(line["source_line_id"].rpartition("L")[2]))
+    result = {"windows": list(groups.values()), "memory_version": windows[0]["memory_version"]}
+    if byte_budget is not None:
+        result["context_budget"] = {
+            "limit_bytes": byte_budget,
+            "payload_bytes": size,
+            "over_budget": size > byte_budget,
+            "omitted_neighbors": omitted,
+        }
+    return result
+
+
 def _context_window(
     workspace, record: dict, offset: int, radius: int, byte_budget: int | None
 ) -> dict:

@@ -260,6 +260,48 @@ def verify_workflows(
     assert definition["id"] == "context-search"
     if context_search_version is not None:
         assert definition["version"] == context_search_version, definition
+    if "--also" in run("evidence", "--help").stdout:
+        evidence = json.loads(
+            run(
+                "evidence",
+                "launch#text-line-3",
+                "--also",
+                "handoff#L4",
+                "--also",
+                "handoff#missing",
+                "--context",
+                "1",
+            ).stdout
+        )["value"]
+        assert [len(window["anchors"]) for window in evidence["windows"]] == [1, 1]
+        assert [
+            line["conversation_id"]
+            for window in evidence["windows"]
+            for line in window["evidence"]
+            if line["source_line_id"] in window["anchors"]
+        ] == ["launch", "handoff"]
+        assert evidence["unavailable"][0]["index"] == 3
+    if definition["version"] >= 13:
+        bridge = json.loads(
+            run(
+                "context",
+                "--after",
+                "installed-search",
+                "--all-terms",
+                "--term",
+                "checklist",
+                "--term",
+                "short",
+                "--save",
+                "installed-bridge",
+            ).stdout
+        )
+        (shared,) = bridge["cross_recording_matches"]
+        assert shared["term"] == "checklist"
+        assert shared["earlier_reference"] == "handoff_transcript.txt#L4"
+        (release_line,) = [line for span in bridge["spans"] for line in span["evidence"]]
+        assert release_line["conversation_id"] == "launch"
+        assert release_line["source_line_id"] == shared["later_line_id"]
     baseline = json.loads(run("source-history", "transcript", "handoff").stdout)["current_checksum"]
     handoff.write_text("00:01\nSpeaker A\n\nRollout depends on QA signoff.\n", encoding="utf-8")
     correction = json.loads(

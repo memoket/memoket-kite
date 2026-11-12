@@ -31,6 +31,7 @@ from .resources import resource_root
 from .retrieve import (
     compare_revisions,
     evidence_context,
+    merge_evidence_windows,
     render_revision_comparison,
     segment_context,
     topic_inventory,
@@ -303,6 +304,13 @@ def _parser() -> argparse.ArgumentParser:
         "source_line_id", nargs="?", help="citation such as 184#L4 or a revision-bound line ID"
     )
     evidence_id.add_argument("--segment-id", help="original segment ID in a conversation")
+    evidence.add_argument(
+        "--also",
+        action="append",
+        default=[],
+        metavar="CITATION",
+        help="read another citation in the same response, up to eight citations total",
+    )
     evidence.add_argument("--source", help="source namespace for a short citation or --segment-id")
     evidence.add_argument("--conversation-id", help="original conversation ID for --segment-id")
     evidence.add_argument("--revision", metavar="CHECKSUM", help="select a retained revision")
@@ -613,12 +621,13 @@ def _ingest(
     return {**output, "integrity": result["value"]}, None
 
 
-def _read_evidence(args: argparse.Namespace, workspace: Workspace) -> dict:
-    reference = args.source_line_id
+def _read_evidence_reference(
+    args: argparse.Namespace, workspace: Workspace, reference: str | None, byte_budget: int | None
+) -> dict:
     if reference is not None and "#" not in reference:
         if any(value is not None for value in (args.source, args.conversation_id, args.revision)):
             raise ToolError("invalid_input", "source and revision options require --segment-id")
-        return evidence_context(workspace, reference, args.context, byte_budget=args.byte_budget)
+        return evidence_context(workspace, reference, args.context, byte_budget=byte_budget)
     source, conversation, segment = args.source, args.conversation_id, args.segment_id
     if reference is not None:
         if conversation is not None:
@@ -648,8 +657,32 @@ def _read_evidence(args: argparse.Namespace, workspace: Workspace) -> dict:
         segment_id=segment,
         checksum=args.revision,
         radius=args.context,
-        byte_budget=args.byte_budget,
+        byte_budget=byte_budget,
     )
+
+
+def _read_evidence(args: argparse.Namespace, workspace: Workspace) -> dict:
+    if not args.also:
+        return _read_evidence_reference(args, workspace, args.source_line_id, args.byte_budget)
+    if args.source_line_id is None or len(args.also) > 7:
+        raise ToolError(
+            "invalid_input", "--also requires a positional citation and up to seven extras"
+        )
+    windows, unavailable = [], []
+    for index, reference in enumerate((args.source_line_id, *args.also), 1):
+        try:
+            windows.append(_read_evidence_reference(args, workspace, reference, None))
+        except ToolError as error:
+            if error.code not in {"not_found", "ambiguous_source"}:
+                raise
+            unavailable.append({"index": index, "code": error.code, "message": str(error)})
+    if not windows:
+        first = unavailable[0]
+        raise ToolError(first["code"], first["message"])
+    batch = merge_evidence_windows(windows, args.byte_budget)
+    if unavailable:
+        batch["unavailable"] = unavailable
+    return batch
 
 
 def _check_source(args: argparse.Namespace, root: Path) -> dict:
@@ -1099,6 +1132,11 @@ def main(argv=None) -> int:
         print(render_revision_comparison(result))
     elif args.command == "evidence" and args.text:
         window = result["value"]
+        if "windows" in window:
+            print(render_context({"spans": window["windows"]}))
+            for unavailable in window.get("unavailable", ()):
+                print(f"Citation {unavailable['index']}: {unavailable['message']}")
+            return 0
         if not window["source_revision_active"]:
             print(f"Historical revision: {window['evidence']['revision_checksum']}")
         print(

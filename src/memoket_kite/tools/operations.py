@@ -282,10 +282,10 @@ TOOLS = {
     "preview_delete": Tool(_preview, {"target": "deletion_target"}, "deletion_plan", version=4),
     "delete": Tool(_delete, {"plan": "deletion_plan"}, "receipt", "delete", version=4),
     "compile_context": Tool(
-        _compile_context, {"request": "context_request"}, "context_plan", version=22
+        _compile_context, {"request": "context_request"}, "context_plan", version=24
     ),
     "search_context": Tool(
-        _search_context, {"compiled": "context_plan"}, "context_evidence", version=38
+        _search_context, {"compiled": "context_plan"}, "context_evidence", version=41
     ),
     "compare_revisions": Tool(
         _compare_revisions, {"request": "revision_comparison"}, "revision_difference", version=2

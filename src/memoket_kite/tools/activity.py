@@ -75,6 +75,10 @@ def workflow_progress(workspace, run_id: str) -> dict:
                 stage["comparison_terms"] = value["comparison_terms"]
             if value.get("output_targets"):
                 stage["output_targets"] = value["output_targets"]
+            if value.get("priority_scope"):
+                stage["priority_scope"] = value["priority_scope"]
+            if value.get("route_scope"):
+                stage["route_scope"] = value["route_scope"]
         if name == "search":
             parts = value.get("parts", [value])
             stage["counts"] = {

@@ -44,10 +44,20 @@ def test_codex_trial_resumes_the_captured_session_and_keeps_default_runs_ephemer
         "codex", "model", tmp_path, "Next", resume_session=first["session_id"]
     )
     ordinary = context_eval.codex_trial("codex", "model", tmp_path, "Independent")
+    context_eval.codex_trial(
+        "codex",
+        "model",
+        tmp_path,
+        "Use installed KITE",
+        codex_env={"CODEX_HOME": str(tmp_path)},
+        load_user_config=True,
+    )
     assert first["session_id"] == second["session_id"] == session
     assert commands[1][-3:] == ["resume", session, "-"]
     assert all("--ephemeral" not in command for command in commands[:2])
     assert "--ephemeral" in commands[2] and "session_id" not in ordinary
+    assert all("--ignore-user-config" in command for command in commands[:3])
+    assert "--ignore-user-config" not in commands[3]
 
 
 def test_task_benchmark_requires_both_behavior_and_supporting_citation():

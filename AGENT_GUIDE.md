@@ -101,11 +101,16 @@ For the recording time or location of a known quotation, use
 `kite-tool context --term "$QUOTATION" --matching-lines --text`. For a question
 with quoted phrases, `--matching-lines` compiles those phrases and returns
 their original matching lines. Use `evidence` when you need surrounding turns.
+Read several citations in one call with `evidence FIRST --also SECOND --context 2 --text`.
+Overlapping turns are returned once per revision.
 For missing or conditional evidence, repeat `--term` in one matching-line
 lookup. Use `--conversation-id` when the relevant recording is already known.
 Use `context --all-terms --term SUBJECT --term CLUE --text` when both phrases
 must occur on the same original line. Add `--explain --save` to replay the
 conjunction and inspect candidates in the graph.
+If a saved search identifies a subject and you need to check a detail in
+another recording, add `--after RUN_ID` to the conjunction. Save the
+supplement to inspect the original lines that share a query phrase.
 Add `--save` to inspect each phrase's candidate spans and cited lines in the
 graph. A phrase with zero cited lines may still have candidate spans.
 Use `--explain --save` to retain the first 80 packing candidates for each
