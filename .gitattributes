@@ -1,0 +1,3 @@
+# The Codex launcher uses GitHub source archives. Leave large demo media in Git.
+/assets/KITE-inside-MemoChat.mp4 export-ignore
+/assets/kite-architecture-flow.png export-ignore
