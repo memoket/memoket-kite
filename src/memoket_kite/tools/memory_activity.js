@@ -6,6 +6,7 @@
     zh: {
       activity: '记忆工作流', version: '工作区版本', events: '已提交变更', runs: '近期运行',
       index: '批量构建索引', ingest: '导入', update: '修订', merge: '融合', delete: '删除',
+      reclassify: '调整主题层次',
       normalize: '整理来源', annotate: '关联原文', extract: '准备标注', commit: '写入',
       verify: '校验', preview: '预览', apply: '执行', compile: '编译检索', search: '搜索',
       compare: '原文版本对照',
@@ -15,6 +16,8 @@
       changeDetails: '查看变更', back: '返回所有变更', searchPrevious: '检索提交前版本',
       sourceRevisions: '保留的来源变更', openSource: '查看此版本原文', compareSource: '对照提交前后的原文',
       mergeSources: '融合影响的原文来源', changeRun: '本次变更的流程',
+      compareGraph: '对照记忆图谱', compareTopics: '对照主题结构',
+      deletedScope: '删除范围内的连接', memories: '记忆', citations: '引用行', memberships: '主题归属',
       added: '新增来源', revised: '修订原文', annotated: '更新索引标注', retagged: '融合归类',
       committedAt: '提交时间', recordedAt: '录制时间', localRecording: '录制当地时间（时区未知）',
       recordingDay: '录制日期', unknownRecording: '录制时间未知',
@@ -29,6 +32,7 @@
     en: {
       activity: 'Memory workflows', version: 'Workspace version', events: 'Committed changes', runs: 'Recent runs',
       index: 'Build source index', ingest: 'Ingest', update: 'Update', merge: 'Merge', delete: 'Delete',
+      reclassify: 'Move topic',
       normalize: 'Normalize source', annotate: 'Link evidence', extract: 'Prepare annotations', commit: 'Commit',
       verify: 'Verify', preview: 'Preview', apply: 'Apply', compile: 'Compile query', search: 'Search',
       compare: 'Compare source revisions',
@@ -38,6 +42,8 @@
       changeDetails: 'View change', back: 'Back to all changes', searchPrevious: 'Search before this change',
       sourceRevisions: 'Retained source changes', openSource: 'Read this revision', compareSource: 'Compare before and after this commit',
       mergeSources: 'Original sources affected by this merge', changeRun: 'Workflow for this change',
+      compareGraph: 'Compare memory graph', compareTopics: 'Compare topic structure',
+      deletedScope: 'Connections in the deleted scope', memories: 'Memories', citations: 'Cited lines', memberships: 'Topic memberships',
       added: 'Added source', revised: 'Revised original', annotated: 'Updated index annotations', retagged: 'Merged topic assignment',
       committedAt: 'Committed at', recordedAt: 'Recorded at', localRecording: 'Local recording time (zone unknown)',
       recordingDay: 'Recording date', unknownRecording: 'Recording time unknown',
@@ -70,6 +76,13 @@
   function changeDetail(panel, event) {
     if (event.kind === 'delete') {
       panel.append(element('p', t('deletedEvidence'), 'detail-meta'));
+      if (event.deleted_graph_counts) {
+        const counts = element('dl', undefined, 'deletion-counts');
+        for (const [kind, count] of Object.entries(event.deleted_graph_counts)) {
+          counts.append(element('dt', t(kind)), element('dd', `${count} → 0`));
+        }
+        panel.append(element('h4', t('deletedScope')), counts);
+      }
       return;
     }
     if (event.topic_merge) {
@@ -77,6 +90,7 @@
       panel.append(element('p', `${merge.from_topic} → ${merge.to_topic}`));
       if (merge.current_topic) panel.append(link('openTopic', { view: 'graph', topic: merge.current_topic }));
     }
+    if (event.topic_graph) panel.append(link('compareTopics', { view: 'changes', event: event.version }));
     if (event.source_changes?.length) {
       const list = element('ul', undefined, 'change-sources');
       const first = event.source_offset + 1;
@@ -93,6 +107,7 @@
         const original = { view: 'source', checksum: source.checksum };
         if (source.segment_offset != null) original.offset = source.segment_offset;
         entry.append(link('openSource', original));
+        if (source.has_graph) entry.append(link('compareGraph', { view: 'changes', event: event.version, checksum: source.checksum }));
         if (source.before) entry.append(link('compareSource', { view: 'revision', before: source.before, after: source.checksum }));
         list.append(entry);
       }
@@ -100,7 +115,7 @@
       const target = { view: 'activity', event: event.version };
       if (event.source_offset) panel.append(link('previousPage', { ...target, offset: Math.max(0, event.source_offset - 20) }));
       if (last < event.retained_source_changes) panel.append(link('nextPage', { ...target, offset: last }));
-    } else if (!event.topic_merge) {
+    } else if (!event.topic_merge && !event.topic_graph) {
       panel.append(element('p', t('missingDetails'), 'detail-meta'));
     }
   }
@@ -122,7 +137,7 @@
       const row = element('section', undefined, 'activity-row');
       const counts = event.kind === 'delete'
         ? event.revision_count + ' ' + t('revisions') + ' · ' + event.fact_count + ' ' + t('facts')
-        : event.kind === 'merge' ? (event.source_count ? event.source_count + ' ' + t('sources') : '')
+        : ['merge', 'reclassify'].includes(event.kind) ? (event.source_count ? event.source_count + ' ' + t('sources') : '')
           : t('changed') + ' ' + event.changed_count + '/' + event.source_count + ' ' + t('sources');
       row.append(element('strong', t(event.kind) + ' · v' + event.version));
       const commit = element('p', [counts, `${t('committedAt')} ${date(event.committed_at)}`].filter(Boolean).join(' · '));

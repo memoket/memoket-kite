@@ -350,6 +350,8 @@ def build_index(
 
 
 def reclassify(context, merge: dict) -> dict:
+    from .change_graph import GraphActivity
+
     index = context.workspace.index()
     old = index.vocab.resolve_topic(merge["from_topic"])
     new = index.vocab.resolve_topic(merge["to_topic"])
@@ -385,12 +387,16 @@ def reclassify(context, merge: dict) -> dict:
                 if segment["segment_id"] in lines
             )
             affected.append((record["checksum"], first))
-    result = context.workspace.replace_index(merges, hierarchy=hierarchy)
-    context.workspace.record_activity(result, "merge", 1, len(affected), sources=affected)
-    return result
+    return context.workspace.replace_index(
+        merges,
+        hierarchy=hierarchy,
+        activity=GraphActivity("merge", 1, len(affected), affected, topics=(old, new)),
+    )
 
 
 def move_topic(context, move: dict) -> dict:
+    from .change_graph import GraphActivity
+
     index = context.workspace.index()
     topic = index.vocab.resolve_topic(move["topic"])
     parents = {index.vocab.resolve_topic(parent) for parent in move["parents"]}
@@ -402,4 +408,7 @@ def move_topic(context, move: dict) -> dict:
         return {"changed": False, "memory_version": context.workspace.version()}
     hierarchy = context.workspace.topic_hierarchy()
     hierarchy[topic] = sorted(parents)
-    return context.workspace.replace_index(hierarchy=hierarchy)
+    return context.workspace.replace_index(
+        hierarchy=hierarchy,
+        activity=GraphActivity("reclassify", 1, 0, [], topics=(topic,)),
+    )

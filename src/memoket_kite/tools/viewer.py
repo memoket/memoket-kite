@@ -15,6 +15,7 @@ from time import monotonic
 from urllib.parse import parse_qs, urlencode
 
 from .activity import memory_activity
+from .change_graph import change_comparison
 from .context import _tokens, context_enabled, context_pack, question_pack
 from .contracts import ToolError
 from .index import revision_id
@@ -420,7 +421,6 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
             ("revision", "memory_revision.js"),
             ("source", "memory_source.js"),
         )
-        if view != "changes" or comparison_data is not None
     }
     route = f"/{token_urlsafe(24)}/"
     last_access = monotonic()
@@ -510,6 +510,21 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                                 offset=_version_parameter(params, "offset") or 0,
                             ),
                         )
+                elif (
+                    requested_view == "changes"
+                    and (version := _version_parameter(params, "event")) is not None
+                ):
+                    checksum = params.get("checksum", [""])[0]
+                    with Workspace.open(directory, read_only=True) as workspace:
+                        view, snapshot = (
+                            "changes",
+                            change_comparison(
+                                workspace,
+                                version,
+                                checksum,
+                                _version_parameter(params, "offset") or 0,
+                            ),
+                        )
                 elif comparison_data is not None and (
                     requested_view == "changes"
                     or (requested_view is None and not terms and not question and run_id is None)
@@ -556,6 +571,10 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                 elif exc.code == "invalidated_run":
                     self.send_error(
                         HTTPStatus.GONE, "A permanent deletion removed this saved search"
+                    )
+                elif exc.code == "invalidated_change":
+                    self.send_error(
+                        HTTPStatus.GONE, "A permanent deletion removed prior change graphs"
                     )
                 elif exc.code == "history_unavailable":
                     self.send_error(HTTPStatus.NOT_FOUND, "This workspace version was not tracked")

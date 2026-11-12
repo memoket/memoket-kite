@@ -291,6 +291,16 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
             import_event = read(f"?view=activity&event={ingested['memory_version']}")["events"][0]
             assert import_event["source_changes"][0]["checksum"] == baseline
             assert import_event["source_changes"][0]["before"] is None
+            assert import_event["source_changes"][0]["has_graph"]
+            import_graph = read(
+                f"?view=changes&event={ingested['memory_version']}&checksum={baseline}"
+            )["comparison"][0]
+            assert not import_graph["before"]["revisions"]
+            assert import_graph["after"]["revisions"][0]["checksum"] == baseline
+            assert (
+                list(import_graph["after"]["evidence"].values())[0]["text"]
+                == "Review the release checklist."
+            )
             source_query = f"?view=source&checksum={baseline}"
             original_source = read(source_query)
             assert original_source["segments"][0]["text"] == "Review the release checklist."
@@ -309,6 +319,19 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
             updated = revision["after"]["checksum"]
             assert changed["source_changes"][0]["before"] == baseline
             assert changed["source_changes"][0]["checksum"] == updated
+            update_graph_path = f"?view=changes&event={update['memory_version']}&checksum={updated}"
+            update_graph = read(update_graph_path)["comparison"][0]
+            assert {r["checksum"]: r["active"] for r in update_graph["before"]["revisions"]} == {
+                baseline: True
+            }
+            assert {r["checksum"]: r["active"] for r in update_graph["after"]["revisions"]} == {
+                baseline: False,
+                updated: True,
+            }
+            assert {line["text"] for line in update_graph["after"]["evidence"].values()} == {
+                "Review the release checklist.",
+                "Publish the release checklist.",
+            }
             assert read(saved_query)["evidence"] == saved["evidence"]
             assert not read(saved_query)["revisions"][0]["active"]
             assert not read(source_query)["source_revision_active"]
@@ -387,6 +410,17 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
             delete_event = read(f"?view=activity&event={deleted['memory_version']}")["events"][0]
             assert delete_event["revision_count"] == 3 and delete_event["can_search_previous"]
             assert "source_changes" not in delete_event
+            assert delete_event["deleted_graph_counts"] == {
+                "revisions": 3,
+                "memories": 1,
+                "citations": 1,
+                "memberships": 1,
+            }
+            redacted_graph = read(update_graph_path, status=410)
+            assert (
+                b"permanent deletion" in redacted_graph
+                and b"release checklist" not in redacted_graph
+            )
             assert not read(f"?view=activity&event={update['memory_version']}")["events"][0][
                 "source_changes"
             ]
@@ -468,8 +502,18 @@ def test_activity_separates_recording_and_commit_time_for_index_changes(work, mo
         "source": {**source, "expected_checksum": original["checksum"]},
         "annotations": {
             "facts": [],
-            "index_spans": [{"topics": ["draft label"], "segment_ids": ["discussion"]}],
-            "taxonomy": [{"name": "canonical label"}],
+            "index_spans": [
+                {
+                    "topics": ["draft label"],
+                    "segment_ids": ["discussion"],
+                    "facets": {"event": ["signoff"]},
+                    "entities": ["pilot"],
+                }
+            ],
+            "taxonomy": [
+                {"name": "canonical label"},
+                {"name": "subtopic", "parents": ["draft label"]},
+            ],
         },
     }
     changed = ingest(call, "add-index-span", amendment, pipeline="memory-update")
@@ -505,6 +549,42 @@ def test_activity_separates_recording_and_commit_time_for_index_changes(work, mo
     with workspace.Workspace.open(directory, read_only=True) as db:
         page = workflow.source_revision_page(db, original["checksum"], offset=1)
         assert page["segments"][0]["segment_id"] == "discussion"
+        update_frame = viewer.change_comparison(
+            db, changed["memory_version"], original["checksum"], 0
+        )["comparison"][0]
+        assert update_frame["before"]["revisions"] == update_frame["after"]["revisions"]
+        assert update_frame["before"]["version"] < update_frame["after"]["version"]
+        assert update_frame["before"]["committed_at"] == imported["committed_at"]
+        assert update_frame["after"]["committed_at"] == updated["committed_at"]
+        revision = update_frame["after"]["revisions"][0]
+        assert revision["day"] == "2026-03-15"
+        assert revision["local_started_at"] == original["local_started_at"]
+        assert "started_at" not in revision
+        assert not update_frame["before"]["passages"]
+        assert update_frame["after"]["passages"][0]["facets"] == {"event": ["signoff"]}
+        assert update_frame["after"]["passages"][0]["entities"] == ["pilot"]
+        assert update_frame["after"]["passages"][0]["topics"] == ["draft_label"]
+        frame = viewer.change_comparison(db, merged["memory_version"], original["checksum"], 0)[
+            "comparison"
+        ][0]
+        old, new = (frame[phase]["passages"][0] for phase in ("before", "after"))
+        assert old["id"] == new["id"] and old["evidence"] == new["evidence"]
+        assert old["topics"] == ["draft_label"] and new["topics"] == ["canonical_label"]
+        assert frame["after"]["evidence"][new["evidence"][0]]["offset"] == 1
+        hierarchy = viewer.change_comparison(db, merged["memory_version"], "", 0)["comparison"][0]
+        assert next(t for t in hierarchy["before"]["topics"] if t["code"] == "subtopic")[
+            "parents"
+        ] == ["draft_label"]
+        assert next(t for t in hierarchy["after"]["topics"] if t["code"] == "subtopic")[
+            "parents"
+        ] == ["canonical_label"]
+        assert (
+            "Discuss the release checklist."
+            not in db.db.execute(
+                "SELECT after FROM memory_activity_graphs WHERE version=? AND checksum=?",
+                (merged["memory_version"], original["checksum"]),
+            ).fetchone()[0]
+        )
 
     _delete_source(
         call, "delete-index-span", {"source": "transcript", "conversation_id": "backfilled-meeting"}
@@ -1324,7 +1404,7 @@ def test_revision_correction_consolidation_and_query_scopes(work):
 
 
 def test_topic_reclassification_preserves_evidence_and_rejects_cycles(work):
-    _, call = work
+    directory, call = work
     source = text_input("launch", "The kickoff checklist is approved.", topic="onboarding")
     source["annotations"]["taxonomy"] = [
         {"name": "onboarding", "aliases": ["kickoff"], "parents": ["growth"]},
@@ -1350,6 +1430,14 @@ def test_topic_reclassification_preserves_evidence_and_rejects_cycles(work):
 
     receipt = move("move", "kickoff", ["product team"])
     assert receipt["changed"]
+    version = receipt["memory_version"]
+    event = viewer._activity_snapshot(directory, version)["events"][0]
+    assert event["kind"] == "reclassify" and event["topic_graph"]
+    with workspace.Workspace.open(directory, read_only=True) as db:
+        graph = viewer.change_comparison(db, version, "", 0)["comparison"][0]
+    for phase, parent in (("before", "growth"), ("after", "product")):
+        topic = next(topic for topic in graph[phase]["topics"] if topic["code"] == "onboarding")
+        assert topic["parents"] == [parent]
     assert not move("no-op", "onboarding", ["product"])["changed"]
     for topic in ("product", "kickoff"):
         row = trace(call, f"by-{topic}", {"topics": [topic]})["timeline"][0]

@@ -1,8 +1,9 @@
 (() => {
   const byId = id => document.getElementById(id);
-  const { comparison } = JSON.parse(byId('kite-memory-data').textContent);
+  const data = JSON.parse(byId('kite-memory-data').textContent);
+  const { comparison } = data;
   const phases = ['before', 'after'];
-  const kinds = ['topic', 'entity', 'memory', 'line', 'source'];
+  const kinds = ['topic', 'entity', 'facet', 'memory', 'line', 'source'];
   const zh = {
     before: '操作前', after: '操作后', title: '记忆变更对照', version: '工作区版本',
     topic: '主题', entity: '实体', memory: '记忆', line: '引用行', source: '来源版本',
@@ -11,6 +12,10 @@
     hierarchy: '上下级', shared: '共享记忆', membership: '归属主题', mention: '关联实体', citation: '引用',
     links: '连接', select: '点任一图中的节点查看引用。两侧视角同步。',
     same: '无变化', snapshot: '演示快照',
+    recorded: '已提交变更', topicStructure: '主题结构', facet: 'Facet',
+    committedAt: '工作区提交', recordedAt: '录制时间', localRecording: '录制当地时间（时区未知）',
+    recordingDay: '录制日期', unknownRecording: '录制时间未知',
+    back: '返回工作流', prev: '上一页', next: '下一页', visible: '本页记忆', openOriginal: '打开原文位置',
   };
   const en = {
     before: 'Before', after: 'After', title: 'Compare memory changes', version: 'Workspace version',
@@ -20,6 +25,10 @@
     hierarchy: 'Parent and child', shared: 'Shared memory', membership: 'Filed under', mention: 'Mentions', citation: 'Cites',
     links: 'Connections', select: 'Select a node on either side. Both views rotate together.',
     same: 'Unchanged', snapshot: 'Example snapshots',
+    recorded: 'Committed change', topicStructure: 'Topic structure', facet: 'Facet',
+    committedAt: 'Workspace commit', recordedAt: 'Recorded at', localRecording: 'Local recording time (zone unknown)',
+    recordingDay: 'Recording date', unknownRecording: 'Recording time unknown',
+    back: 'Back to workflow', prev: 'Previous page', next: 'Next page', visible: 'Memories on this page', openOriginal: 'Open original position',
   };
   const query = new URLSearchParams(location.search);
   let chinese = query.get('lang') !== 'en';
@@ -29,6 +38,12 @@
     if (text !== undefined) node.textContent = text;
     if (className) node.className = className;
     return node;
+  }
+
+  function recordingTime(revision) {
+    if (revision.started_at) return t('recordedAt') + ' ' + revision.started_at.replace('T', ' ');
+    if (revision.local_started_at) return t('localRecording') + ' ' + revision.local_started_at.replace('T', ' ');
+    return revision.day ? t('recordingDay') + ' ' + revision.day : t('unknownRecording');
   }
 
   function graph(frame) {
@@ -47,7 +62,7 @@
     for (const revision of frame.revisions) {
       const label = revision.title?.startsWith('演示记录') ? '演示来源 · ' + revision.checksum.slice(0, 6)
         : revision.title || revision.reference;
-      add('source', revision.checksum, label, { active: revision.active });
+      add('source', revision.checksum, label, { active: revision.active, revision });
     }
     const active = new Map(frame.revisions.map(revision => [revision.checksum, revision.active]));
     for (const [key, line] of Object.entries(frame.evidence)) {
@@ -56,9 +71,9 @@
       link(id, 'source:' + line.revision_checksum, 'citation');
     }
     for (const memory of frame.passages) {
-      const key = JSON.stringify([memory.label, ...memory.evidence]);
+      const key = memory.id || JSON.stringify([memory.label, ...memory.evidence]);
       const id = add('memory', key, memory.label, {
-        active: memory.active, quotes: memory.evidence.map(key => frame.evidence[key]).filter(Boolean),
+        active: memory.active, quotes: memory.evidence.map(key => frame.evidence[key]).filter(Boolean), citationTotal: memory.citation_total,
       });
       for (const topic of memory.topics) link('topic:' + topic, id, 'membership');
       if (memory.active !== false && memory.evidence.length) {
@@ -68,6 +83,12 @@
         }
       }
       for (const entity of memory.entities || []) link('entity:' + entity, id, 'mention');
+      for (const [axis, values] of Object.entries(memory.facets || {})) {
+        for (const value of Array.isArray(values) ? values : [values]) {
+          const facet = add('facet', axis + ':' + value, value);
+          link(facet, id, 'facet');
+        }
+      }
       for (const line of memory.evidence) link(id, 'line:' + line, 'citation');
     }
     for (const topic of frame.topics) for (const parent of topic.parents || []) {
@@ -95,7 +116,7 @@
     const addedEdges = [...after.edges].filter(([id]) => !before.edges.has(id));
     const removedEdges = [...before.edges].filter(([id]) => !after.edges.has(id));
     for (const [, edge] of [...addedEdges, ...removedEdges]) {
-      if (edge.kind === 'membership' && !changeFor.has(edge.to)) changeFor.set(edge.to, 'changed');
+      if (['membership', 'mention', 'facet', 'hierarchy'].includes(edge.kind) && !changeFor.has(edge.to)) changeFor.set(edge.to, 'changed');
     }
     for (const [id, change] of changeFor) changes[change].push(union.get(id));
 
@@ -176,6 +197,7 @@
       return;
     }
     panel.append(element('p', t(selection.phase) + ' · ' + t(node.kind), 'detail-meta'), element('h2', node.label));
+    if (node.revision && data.change_event != null) panel.append(element('p', recordingTime(node.revision), 'detail-meta'));
     if (node.aliases?.length) panel.append(element('p', t('aliases') + ' · ' + node.aliases.join('、')));
     if (node.active === false) panel.append(element('p', t('historical'), 'detail-meta'));
     const connections = [...frame.edges.values()].filter(edge => edge.from === node.id || edge.to === node.id);
@@ -189,9 +211,14 @@
       citations.append(element('h3', t('citations')));
       for (const quote of quotes) {
         const row = element('div', undefined, 'citation');
-        row.append(element('p', quote.source_reference + '#' + quote.segment_id), element('blockquote', quote.text));
+        row.append(element('p', quote.source_reference + '#' + quote.segment_id));
+        const source = frame.nodes.get('source:' + quote.revision_checksum);
+        if (source && data.change_event != null) row.append(element('p', recordingTime(source.revision), 'detail-meta'));
+        row.append(element('blockquote', quote.text));
+        if (quote.offset != null) row.append(navigate('openOriginal', { view: 'source', checksum: quote.revision_checksum, offset: quote.offset }));
         citations.append(row);
       }
+      if (node.citationTotal > quotes.length) citations.append(element('p', quotes.length + '/' + node.citationTotal, 'detail-meta'));
       panel.append(citations);
     }
     if (connections.length) {
@@ -208,17 +235,34 @@
     }
   }
 
+  function navigate(label, target) {
+    const link = element('a', t(label), 'citation-link');
+    link.href = '?' + new URLSearchParams({ lang: chinese ? 'zh' : 'en', ...target });
+    return link;
+  }
+
   function render() {
     const example = comparison[exampleIndex];
     result = compare(example);
     byId('title').textContent = t('title');
     document.documentElement.lang = chinese ? 'zh-CN' : 'en';
-    renderViewerNavigation(chinese ? 'zh' : 'en', 'changes', query, true);
+    const recorded = data.change_event != null;
+    renderViewerNavigation(chinese ? 'zh' : 'en', 'changes', query, recorded || data.comparison_available);
     byId('language').textContent = chinese ? 'English' : '中文';
-    byId('compare-title').textContent = example.title;
-    byId('compare-snapshot').textContent = t('snapshot');
+    byId('compare-title').textContent = example.title || t('topicStructure');
+    byId('compare-snapshot').textContent = recorded ? t('recorded') + ' · v' + data.change_event : t('snapshot');
     byId('compare-description').textContent = example.description;
-    byId('compare-examples').replaceChildren(...comparison.map((item, index) => {
+    const controls = byId('compare-examples');
+    controls.replaceChildren();
+    if (recorded) {
+      controls.append(navigate('back', { view: 'activity', event: data.change_event }));
+      const current = { view: 'changes', event: data.change_event };
+      if (data.change_checksum) current.checksum = data.change_checksum;
+      const end = Math.min(data.page_offset + data.page_size, data.passage_total);
+      if (data.page_offset) controls.append(navigate('prev', { ...current, offset: Math.max(0, data.page_offset - data.page_size) }));
+      if (data.passage_total > data.page_size) controls.append(element('span', t('visible') + ' ' + (data.page_offset + 1) + '–' + end + '/' + data.passage_total));
+      if (end < data.passage_total) controls.append(navigate('next', { ...current, offset: end }));
+    } else controls.append(...comparison.map((item, index) => {
       const button = element('button', item.name);
       button.type = 'button';
       button.setAttribute('aria-pressed', String(index === exampleIndex));
@@ -237,7 +281,10 @@
     }
     for (const phase of phases) {
       byId(phase + '-heading').textContent = t(phase);
-      byId(phase + '-version').textContent = t('version') + ' ' + example[phase].version;
+      const frame = example[phase];
+      const heading = [t('version') + ' ' + frame.version];
+      if (frame.committed_at) heading.push(t('committedAt') + ' ' + frame.committed_at.replace('T', ' '));
+      byId(phase + '-version').textContent = heading.join(' · ');
     }
     const panel = byId('compare-changes');
     panel.replaceChildren(element('h3', t('changes')));

@@ -125,6 +125,12 @@ its own recording clock or date, with unknown timezone and missing time labeled
 explicitly. An annotation-only update links to the existing original. A topic
 merge links directly assigned sources to the first affected segment when the
 change recorded those links.
+Choose **Compare memory graph** for a source or **Compare topic structure**
+for a merge or reclassification. The two sides show the workspace versions
+and commit times. Source nodes and original citations show their own recording
+times. Graph comparisons are available for changes recorded with this feature.
+Permanent deletion clears earlier graph comparisons and keeps aggregate counts
+of the removed revisions, memories, citations, and topic memberships.
 When separate term searches favor other meetings, KITE can prioritize a
 passage that matches the two leading clues and another clue in its original
 text. The candidate trace shows those clues. Comparison results show the

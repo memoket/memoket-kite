@@ -9,6 +9,7 @@ _PIPELINES = {
     "memory-update": "update",
     "memory-deletion": "delete",
     "memory-consolidation": "merge",
+    "topic-reclassification": "reclassify",
     "context-search": "search",
     "source-revision-review": "compare",
 }
@@ -123,6 +124,15 @@ def memory_activity(workspace, *, event_version: int | None = None, offset: int 
         if not events:
             raise ToolError("not_found", "memory change was not found")
         event = events[0]
+        graphs = "memory_activity_graphs" in tables
+        if graphs:
+            event["topic_graph"] = (
+                db.execute(
+                    "SELECT 1 FROM memory_activity_graphs WHERE version=? AND checksum=''",
+                    (event_version,),
+                ).fetchone()
+                is not None
+            )
         recorded = (
             "memory_activity_sources" in tables
             and db.execute(
@@ -132,11 +142,21 @@ def memory_activity(workspace, *, event_version: int | None = None, offset: int 
         )
         if event["kind"] in {"ingest", "update", "index"}:
             if "revision_visibility" in tables and (recorded or event.get("can_search_previous")):
-                event.update(_changed_sources(db, event, offset, recorded=recorded))
+                event.update(_changed_sources(db, event, offset, recorded=recorded, graphs=graphs))
         elif event["kind"] == "merge" and {"runs", "artifacts"} <= tables:
             event["topic_merge"] = committed_topic_merge(workspace, event_version)
             if recorded and event["topic_merge"] is not None:
-                event.update(_changed_sources(db, event, offset, recorded=True))
+                event.update(_changed_sources(db, event, offset, recorded=True, graphs=graphs))
+        elif event["kind"] == "delete" and "memory_deletion_graph" in tables:
+            counts = db.execute(
+                "SELECT memories, citations, memberships FROM memory_deletion_graph WHERE version=?",
+                (event_version,),
+            ).fetchone()
+            if counts is not None:
+                event["deleted_graph_counts"] = {
+                    "revisions": event["revision_count"],
+                    **dict(counts),
+                }
     return {
         "version": workspace.version(),
         "events": events,
@@ -145,7 +165,7 @@ def memory_activity(workspace, *, event_version: int | None = None, offset: int 
     }
 
 
-def _changed_sources(db, event: dict, offset: int, *, recorded: bool) -> dict:
+def _changed_sources(db, event: dict, offset: int, *, recorded: bool, graphs: bool) -> dict:
     version = event["version"]
     affected = (
         "SELECT checksum, version, segment_offset FROM memory_activity_sources"
@@ -157,6 +177,11 @@ def _changed_sources(db, event: dict, offset: int, *, recorded: bool) -> dict:
     ]
     if offset > total:
         raise ToolError("invalid_input", "offset is past the end of the changed sources")
+    graph = (
+        "EXISTS (SELECT 1 FROM memory_activity_graphs g WHERE g.version=a.version AND g.checksum=a.checksum)"
+        if graphs
+        else "0"
+    )
     rows = db.execute(
         "SELECT r.conversation_id, r.source, r.checksum, "
         "json_extract(r.payload, '$.conversation.title') AS title, "
@@ -164,6 +189,7 @@ def _changed_sources(db, event: dict, offset: int, *, recorded: bool) -> dict:
         "json_extract(r.payload, '$.conversation.started_at') AS started_at, "
         "json_extract(r.payload, '$.conversation.local_started_at') AS local_started_at, "
         "a.segment_offset, v.opened_version, "
+        f"{graph} AS has_graph, "
         "CASE WHEN v.opened_version=a.version THEN (SELECT prior.checksum FROM revisions prior "
         " JOIN revision_visibility p ON p.checksum=prior.checksum "
         " WHERE prior.source_key=r.source_key AND p.closed_version=a.version) END AS before "
@@ -187,6 +213,7 @@ def _changed_sources(db, event: dict, offset: int, *, recorded: bool) -> dict:
                     for key in ("conversation_id", "source", "checksum", "title", "before")
                 },
                 "effect": effect,
+                **({"has_graph": True} if row["has_graph"] else {}),
                 **{
                     key: row[key]
                     for key in ("source_date", "started_at", "local_started_at")

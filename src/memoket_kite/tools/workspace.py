@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, closing, contextmanager, suppress
 from hashlib import sha256
 from itertools import islice
@@ -13,6 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
+from .change_graph import GraphActivity, graph_structure, vocabulary_at_commit
 from .context import context_current, context_enabled, enable_context, rebuild_context
 from .contracts import (
     CURSOR,
@@ -93,8 +94,18 @@ CREATE TABLE IF NOT EXISTS memory_activity_sources (
 );
 CREATE INDEX IF NOT EXISTS memory_activity_sources_by_checksum
     ON memory_activity_sources(checksum);
+CREATE TABLE IF NOT EXISTS memory_activity_graphs (
+    version INTEGER NOT NULL REFERENCES memory_activity(version) ON DELETE CASCADE,
+    checksum TEXT NOT NULL,
+    before TEXT NOT NULL, after TEXT NOT NULL,
+    PRIMARY KEY (version, checksum)
+);
 CREATE TABLE IF NOT EXISTS memory_versions (
     version INTEGER PRIMARY KEY, committed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS memory_deletion_graph (
+    version INTEGER PRIMARY KEY REFERENCES memory_versions(version),
+    memories INTEGER NOT NULL, citations INTEGER NOT NULL, memberships INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS revision_visibility (
     checksum TEXT PRIMARY KEY REFERENCES revisions(checksum) ON DELETE CASCADE,
@@ -780,6 +791,7 @@ class Workspace:
         force: bool = False,
         verify_sources: bool = False,
         refresh_context: bool = False,
+        activity: GraphActivity | None = None,
     ) -> dict:
         current = self._memory()
         previous_hierarchy = self.topic_hierarchy()
@@ -822,6 +834,8 @@ class Workspace:
         if context_enabled(self.db):
             rebuild_context(self.db, records, index.vocab, version + 1)
         self._record_version(version + 1)
+        if activity is not None:
+            self._record_activity(version + 1, activity, current["xml"], index)
         return {"changed": True, "memory_version": version + 1}
 
     def _record_version(self, version: int) -> None:
@@ -940,41 +954,70 @@ class Workspace:
 
     def commit(self, record: dict, *, append_annotations: bool = False) -> dict:
         self._require_current_index()
-        receipt = self._write_revision(record, append_annotations=append_annotations)
+        previous = {}
+        receipt = self._write_revision(
+            record, append_annotations=append_annotations, previous=previous
+        )
         if receipt["changed"]:
-            result = self.replace_index(force=append_annotations)
-            self.record_activity(
-                result,
-                "update" if append_annotations else "ingest",
-                1,
-                1,
-                sources=((receipt["checksum"], None),),
+            result = self.replace_index(
+                force=append_annotations,
+                activity=GraphActivity(
+                    "update" if append_annotations else "ingest",
+                    1,
+                    1,
+                    [(receipt["checksum"], None)],
+                    previous,
+                ),
             )
             return {**receipt, **result}
         return receipt
 
-    def record_activity(
-        self,
-        receipt: dict,
-        kind: str,
-        changed: int,
-        seen: int,
-        *,
-        sources: Iterable[tuple[str, int | None]] = (),
-    ) -> None:
-        if receipt["changed"]:
-            version = receipt["memory_version"]
+    def _record_activity(self, version, activity, old_xml, index) -> None:
+        self.db.execute(
+            "INSERT INTO memory_activity VALUES(?, ?, ?, ?, ?)",
+            (version, activity.kind, activity.changed, activity.seen, now()),
+        )
+        if not (activity.sources or activity.topics):
+            return
+        before_vocab = vocabulary_at_commit(old_xml)
+        revisions = {
+            record["checksum"]: record for record in index.revisions.values() if record["active"]
+        }
+        for checksum, offset in dict(activity.sources).items():
+            # An intermediate revision within a batch has no committed graph.
+            record = revisions.get(checksum)
+            if record is None:
+                continue
             self.db.execute(
-                "INSERT INTO memory_activity VALUES(?, ?, ?, ?, ?)",
-                (version, kind, changed, seen, now()),
+                "INSERT INTO memory_activity_sources VALUES(?, ?, ?)", (version, checksum, offset)
             )
-            # Only retain source revisions visible after the transaction.
-            # A batch can write several revisions of one source atomically.
-            self.db.executemany(
-                "INSERT OR IGNORE INTO memory_activity_sources "
-                "SELECT ?, checksum, ? FROM revisions WHERE checksum=? AND active=1",
-                ((version, offset, checksum) for checksum, offset in sources),
+            prior = (
+                record
+                if activity.kind == "merge"
+                else activity.previous.get(source_key(record["conversation"]))
             )
+            retained = (
+                [{**prior, "active": False}] if prior and prior["checksum"] != checksum else []
+            )
+            self._store_change_graph(
+                version,
+                checksum,
+                graph_structure([prior] if prior else [], before_vocab),
+                graph_structure([*retained, record], index.vocab),
+            )
+        if activity.topics:
+            self._store_change_graph(
+                version,
+                "",
+                graph_structure([], before_vocab, activity.topics),
+                graph_structure([], index.vocab, activity.topics),
+            )
+
+    def _store_change_graph(self, version, checksum, before, after):
+        self.db.execute(
+            "INSERT INTO memory_activity_graphs VALUES(?, ?, ?, ?)",
+            (version, checksum, encode(before), encode(after)),
+        )
 
     def index_sources(self, records: list[dict]) -> dict:
         """Commit a batch of source-only records as one searchable snapshot."""
@@ -982,27 +1025,36 @@ class Workspace:
         enable_context(self.db)
         if any(record["facts"] for record in records):
             raise ToolError("invalid_input", "index-sources accepts original spans without facts")
-        receipts = [self._write_revision(record, append_annotations=True) for record in records]
+        previous = {}
+        receipts = [
+            self._write_revision(record, append_annotations=True, previous=previous)
+            for record in records
+        ]
         changed = sum(row["changed"] for row in receipts)
         version = self.version()
         if receipts and not changed and context_current(self.db, version):
             result = {"changed": False, "memory_version": version}
         else:
-            result = self.replace_index(force=bool(changed), refresh_context=True)
-        self.record_activity(
-            result,
-            "index",
-            changed,
-            len(receipts),
-            sources=((row["checksum"], None) for row in receipts if row["changed"]),
-        )
+            result = self.replace_index(
+                force=bool(changed),
+                refresh_context=True,
+                activity=GraphActivity(
+                    "index",
+                    changed,
+                    len(receipts),
+                    [(row["checksum"], None) for row in receipts if row["changed"]],
+                    previous,
+                ),
+            )
         return {
             **result,
             "sources_changed": changed,
             "sources_seen": len(receipts),
         }
 
-    def _write_revision(self, record: dict, *, append_annotations: bool = False) -> dict:
+    def _write_revision(
+        self, record: dict, *, append_annotations: bool = False, previous: dict
+    ) -> dict:
         conversation = record["conversation"]
         uid = conversation["conversation_id"]
         self.require_source_allowed(
@@ -1011,6 +1063,10 @@ class Workspace:
         checksum = record["checksum"]
         receipt = {"revision_id": revision_id(record), "checksum": checksum}
         state, key, prior = self._classify_source(conversation, checksum)
+        if key not in previous:
+            previous[key] = (
+                {**self._decode_revision(prior), "active": True} if prior is not None else None
+            )
         if state == "unchanged":
             if append_annotations:
                 return {**receipt, **self._append_annotations(prior, record)}
@@ -1213,6 +1269,7 @@ class Workspace:
         if approval != plan["approval_token"]:
             raise ToolError("permission_denied", "approval does not match the deletion preview")
         records, tombstones = self._deletion_scope(plan, run_id=run_id)
+        before_vocab = vocabulary_at_commit(self._memory()["xml"])
         self.db.executemany("INSERT OR IGNORE INTO tombstones VALUES(?, ?)", tombstones)
         deleted = {}
         for record in records:
@@ -1251,6 +1308,7 @@ class Workspace:
         # A global report can depend on several sources, including a source not
         # named in its request. Invalidate all prior artifacts conservatively.
         self.db.execute("DELETE FROM artifacts")
+        self.db.execute("DELETE FROM memory_activity_graphs")
         for row in self.db.execute("SELECT id, checkpoint FROM runs").fetchall():
             self._redact_run(row)
         merges, hierarchy = self._supported_taxonomy(retained)
@@ -1258,5 +1316,28 @@ class Workspace:
         self.db.execute(
             "INSERT INTO deletion_audit VALUES(?, ?, ?, ?, ?)",
             (approval, receipt["memory_version"], len(records), plan["facts"], now()),
+        )
+        annotations = [(*record["facts"], *record.get("index_spans", ())) for record in records]
+        self.db.execute(
+            "INSERT INTO memory_deletion_graph VALUES(?, ?, ?, ?)",
+            (
+                receipt["memory_version"],
+                sum(len(items) for items in annotations),
+                sum(
+                    len({sid for item in items for sid in item["segment_ids"]})
+                    for items in annotations
+                ),
+                sum(
+                    len(
+                        {
+                            code
+                            for topic in item["topics"]
+                            if (code := before_vocab.resolve_topic(topic))
+                        }
+                    )
+                    for items in annotations
+                    for item in items
+                ),
+            ),
         )
         return {**receipt, "deleted_revisions": len(records), "operation_id": approval}

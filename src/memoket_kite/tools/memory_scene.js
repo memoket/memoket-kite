@@ -34,7 +34,12 @@ function renderViewerNavigation(language, activeView, parameters, comparisonAvai
       query.delete('checksum');
       query.delete('offset');
     }
-    if (view !== 'activity') {
+    const eventGraph = activeView === 'changes' && parameters.has('event');
+    if (eventGraph && view !== 'changes') {
+      query.delete('checksum');
+      query.delete('offset');
+    }
+    if (view !== 'activity' && !(eventGraph && view === 'changes')) {
       query.delete('event');
       query.delete('offset');
     }

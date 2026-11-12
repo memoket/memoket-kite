@@ -12,6 +12,10 @@ The question itself can include `workspace v12` or `workspace as of TIMESTAMP`.
 In **Workflows**, the change card shows workspace commit time and retained
 sources show their recording clocks separately. Read the cited lines for a
 decision's approval status and effective date.
+Open **Compare memory graph** on a committed source change to see both
+workspace versions and the recording clock on each original citation.
+**Compare topic structure** shows the parent links before and after a
+recorded topic change.
 For the same question across a workspace change, run
 `context --question "$QUESTION" --from-version BEFORE --at-version AFTER --text`.
 The target defaults to the current version. Both sides use retained original

@@ -220,6 +220,8 @@ summary { color: var(--teal); cursor: pointer; font-size: 12px; }
 .activity-row p, .activity-stage { color: var(--muted); font-size: 12px; }
 .change-sources { list-style: none; margin: 0; padding: 0; }
 .change-sources li { display: grid; justify-items: start; gap: 3px; padding: 8px 0; border-top: 1px solid var(--line); }
+.deletion-counts { display: grid; grid-template-columns: 1fr auto; gap: 5px 16px; margin: 8px 0; }
+.deletion-counts dd { margin: 0; font-variant-numeric: tabular-nums; }
 .activity-stages { display: flex; flex-wrap: wrap; gap: 6px; padding: 0; margin: 0; list-style: none; }
 .activity-stage { padding: 4px 7px; border-radius: 5px; background: var(--paper); }
 .activity-stage[data-state="completed"] { background: #e3efe8; color: #125c50; }
