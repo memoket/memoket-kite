@@ -168,6 +168,39 @@ repeatable tool and index checks. Host scores depend on the selected runtime and
 model. LoCoMo and LongMemEval-S retain their own datasets, scoring and reproduction
 commands.
 
+## Implement and verify a change
+
+Run paired writable Codex sessions on a disposable seed project. Both arms
+receive the same task, seed code and original source content. The KITE arm
+uses a prebuilt index. The file arm can read the corresponding source files
+with the recording dates from the index. The runner verifies matching source
+segments before launching either session.
+
+```sh
+python -m benchmarks.agent.task_eval "$CASES" "$OUTPUT" --model "$MODEL" \
+  --codex "$CODEX" --kite-tool "$KITE_TOOL"
+```
+
+The case file contains a JSON array. Each entry supplies `id`, `dataset`,
+`task`, `source_format` (`transcript-text` or `text`), `sources`, `workspace`,
+`seed`, `verifier`, and `evidence`. Paths resolve relative to the case file.
+`seed` is a directory with the starter project and its public tests. A trusted
+Python `verifier` runs from the completed project directory and prints a JSON
+object with a boolean for each acceptance check. Keep the verifier outside the
+seed project. The verifier runs in isolated Python mode. Use its working
+directory to locate the implementation. `evidence` maps each check to
+acceptable original citation IDs.
+A passing check requires correct behavior and a supporting citation in the
+final answer. Use `--repeat` to repeat each paired task in fresh directories.
+
+The output preserves both implementations, hidden acceptance results, prompt
+and source digests, model usage, command output and wall time. Source tool
+bytes count output from commands referring to the supplied retrieval entry.
+Total tool bytes include coding and test commands. Timings start after the
+project is seeded and the source index is ready. Compare efficiency on tasks
+both arms passed and keep failed checks visible. Keep private case data,
+source corpora and results under an ignored directory.
+
 ## Evaluate original conversation context
 
 The source-context benchmark uses a local directory of UTF-8 TXT transcripts.

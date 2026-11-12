@@ -3,7 +3,7 @@ import subprocess
 
 import pytest
 
-from benchmarks.agent import context_eval
+from benchmarks.agent import context_eval, task_eval
 
 
 def test_identical_text_sources_keep_the_original_segment_references():
@@ -17,6 +17,20 @@ def test_identical_text_sources_keep_the_original_segment_references():
         ]
     }
     assert context_eval.evidence_ids(pack) == {"first#L10", "second#L10", "third#L14"}
+
+
+def test_task_benchmark_requires_both_behavior_and_supporting_citation():
+    evidence = {"boundary": ["first#L3"], "value": ["second#L5"]}
+    scope = {"first#L3", "second#L5", "second#L8"}
+    checks = {"boundary": False, "value": True}
+    score = task_eval._score(checks, "[first#L3] [second#L8]", evidence, scope)
+    assert score["passed_claims"] == 0
+    assert score["claims"]["value"]["behavior_correct"]
+    assert score["claims"]["boundary"]["supporting_citations"] == ["first#L3"]
+    supported = task_eval._score(checks, "[second#L5]", evidence, scope)
+    assert supported["passed_claims"] == 1 and not supported["full_pass"]
+    outside = task_eval._score(checks, "[second#L5] [outside#L2]", evidence, scope)
+    assert outside["passed_claims"] == 0
 
 
 def test_comparison_benchmark_uses_disjoint_recording_windows(tmp_path):

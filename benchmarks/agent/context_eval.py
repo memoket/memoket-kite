@@ -388,7 +388,13 @@ def retrieval_audit(pack: dict, selected: set[str], claims: dict) -> dict:
 
 
 def codex_trial(
-    binary: str, model: str, cwd: Path, prompt: str, *, record_tool_output: bool = False
+    binary: str,
+    model: str,
+    cwd: Path,
+    prompt: str,
+    *,
+    record_tool_output: bool = False,
+    sandbox: str = "read-only",
 ) -> dict:
     command = [
         binary,
@@ -397,7 +403,7 @@ def codex_trial(
         "--ephemeral",
         "--skip-git-repo-check",
         "--sandbox",
-        "read-only",
+        sandbox,
         "--json",
         "-m",
         model,
@@ -630,16 +636,10 @@ def write_launcher(
     *,
     matching_lines: bool = False,
     date_args: list[str] | None = None,
+    kite_tool: str | None = None,
 ) -> None:
-    command = shlex.join(
-        [
-            sys.executable,
-            "-m",
-            "memoket_kite.tools.cli",
-            "--workspace",
-            str(workspace.resolve()),
-        ]
-    )
+    executable = [kite_tool] if kite_tool else [sys.executable, "-m", "memoket_kite.tools.cli"]
+    command = shlex.join([*executable, "--workspace", str(workspace.resolve())])
     script = ["#!/bin/sh"]
     if questions is not None:
         default = ["--question", questions[0]]
