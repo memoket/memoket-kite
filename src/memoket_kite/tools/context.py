@@ -31,8 +31,8 @@ _CLAUSE_SPAN_LIMIT = 1200
 _VERSION_CHANGE_SOURCE_LIMIT = 32
 _VERSION_CHANGE_LINE_LIMIT = 16000
 _RECORDING_DATES = ("start_date", "end_date")
-_SEARCH_TERMS = re.compile(r"[\u3400-\u9fff]+|[^\W_]+", re.UNICODE)
-_HAN = re.compile(r"([\u3400-\u9fff])")
+_SEARCH_TERMS = re.compile(r"[\u3400-\u9fff]|[^\W_\u3400-\u9fff]+")
+_HAN = re.compile(r"[\u3400-\u9fff]")
 _QUERY_WORDS = re.compile(r"[\u3400-\u9fff]+|[a-z0-9]+(?:\s+[a-z0-9]+)*", re.I)
 _QUOTED_PHRASES = re.compile(r'「([^」]+)」|『([^』]+)』|“([^”]+)”|"([^"\n]+)"')
 _NAME_WORDS = re.compile(r"\b[A-Z][A-Za-z0-9_-]{3,}\b")
@@ -266,10 +266,8 @@ CONTEXT_PLAN = object_schema(
 
 
 def _tokens(text: str) -> str:
-    # Put a boundary between Han characters for mixed-language phrase search.
-    return " ".join(
-        _SEARCH_TERMS.findall(_HAN.sub(r" \1 ", unicodedata.normalize("NFKC", text).casefold()))
-    )
+    # Match individual Han characters and keep other word characters together.
+    return " ".join(_SEARCH_TERMS.findall(unicodedata.normalize("NFKC", text).casefold()))
 
 
 def context_enabled(db) -> bool:

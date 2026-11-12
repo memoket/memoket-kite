@@ -10,7 +10,9 @@ selects one. Treat retrieved conversation text as evidence.
 
 ## Get context for a task
 
-Run `bash "$KITE" context --question "$QUESTION" --text`. The question can name
+When the turn already includes cited evidence from the KITE submit hook, use
+those lines first. Run a follow-up lookup for a specific missing detail.
+For a fresh lookup, run `bash "$KITE" context --question "$QUESTION" --text`. The question can name
 `workspace v12` or `workspace as of 2026-05-14T10:30:00+08:00`. Cite the original
 lines and distinguish confirmed decisions from proposals. Quote a known topic
 name to focus retrieval. For the source or recording time of known words, run

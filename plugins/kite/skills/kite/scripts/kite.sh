@@ -55,6 +55,9 @@ if [[ -z "${KITE_DATA_DIR:-}" ]]; then
 fi
 
 if [[ ! -x "$runtime_bin" ]]; then
+    if [[ "${KITE_SKIP_BOOTSTRAP:-}" = 1 ]]; then
+        exit 1
+    fi
     if ! uv_bin=$(find_uv); then
         uv_dir="$cache_dir/uv-$uv_version"
         uv_bin="$uv_dir/uv"

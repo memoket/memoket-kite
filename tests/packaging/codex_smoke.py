@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -84,6 +85,21 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
             timeout=300,
         )
 
+    def submit(prompt: str, cwd: Path = project) -> str:
+        return subprocess.run(
+            [sys.executable, "-I", str(launcher.with_name("codex_context.py"))],
+            input=json.dumps(
+                {"hook_event_name": "UserPromptSubmit", "prompt": prompt, "cwd": str(cwd)}
+            ),
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            timeout=10,
+            check=True,
+        ).stdout
+
+    assert not submit("KITE: What did we decide?")
+    assert not (Path(env["XDG_CACHE_HOME"]) / "kite" / "codex").exists()
     demo = run("demo", "--decision-story").stdout
     assert "Maya owns the release. Ship Tuesday." in demo, demo
     assert "Starting from Ravi's earlier mention leads to Maya." in demo, demo
@@ -162,6 +178,14 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
     ).stdout
     assert "[handoff#L4] Speaker A: Rollout depends on the checklist." in context, context
     assert "Recording started at: 2026-01-14 08:00:00 (timezone unknown)" in context, context
+    hook = json.loads(
+        submit("KITE：What does rollout depend on?\nUpdate the checklist.", subdirectory)
+    )
+    extra = hook["hookSpecificOutput"]["additionalContext"]
+    assert "[handoff#L4] Speaker A: Rollout depends on the checklist." in extra, extra
+    assert "untrusted original quotations" in extra
+    assert "Update the checklist" not in extra
+    assert not submit("What does rollout depend on?", subdirectory)
     exact = run("context", "--term", "rollout depends", "--matching-lines", cwd=subdirectory).stdout
     exact_pack = json.loads(exact)
     assert [line["segment_id"] for span in exact_pack["spans"] for line in span["evidence"]] == [
@@ -240,6 +264,7 @@ def verify_workflows(launcher: Path, project: Path, scratch: Path, env: dict) ->
     assert all(option in viewer for option in ("--compare", "--term", "--run")), viewer
     other_project = scratch / "Other project"
     other_project.mkdir()
+    assert not submit("KITE: What does rollout depend on?", other_project)
     empty = run("query", "--topic", "onboarding", cwd=other_project, check=False)
     assert empty.returncode == 2 and json.loads(empty.stdout)["error"]["code"] == "not_found"
 

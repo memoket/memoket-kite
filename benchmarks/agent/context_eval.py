@@ -395,10 +395,13 @@ def codex_trial(
     *,
     record_tool_output: bool = False,
     sandbox: str = "read-only",
+    codex_options: tuple[str, ...] = (),
+    codex_env: dict[str, str] | None = None,
 ) -> dict:
     command = [
         binary,
         "exec",
+        *codex_options,
         "--ignore-user-config",
         "--ephemeral",
         "--skip-git-repo-check",
@@ -413,7 +416,9 @@ def codex_trial(
     ]
     start = time.perf_counter()
     try:
-        result = subprocess.run(command, input=prompt, text=True, capture_output=True, timeout=180)
+        result = subprocess.run(
+            command, input=prompt, text=True, capture_output=True, timeout=180, env=codex_env
+        )
     except subprocess.TimeoutExpired:
         return {
             "seconds": time.perf_counter() - start,
@@ -811,6 +816,17 @@ def _efficiency(rows: list[dict]) -> dict:
         "cached_input_tokens": cached,
         "output_tokens": outputs,
         "tool_stdout_bytes": sum(row["tool_stdout_bytes"] for row in rows),
+        **(
+            {
+                "source_context_bytes": sum(
+                    row["source_tool_bytes"] + row["hook_context_bytes"] for row in rows
+                ),
+                "hook_context_bytes": sum(row["hook_context_bytes"] for row in rows),
+                "hook_deliveries": sum(row["hook_context_bytes"] > 0 for row in rows),
+            }
+            if rows and all("hook_context_bytes" in row for row in rows)
+            else {}
+        ),
         **{
             f"median_{key}": statistics.median(row[key] for row in rows) if rows else None
             for key in ("seconds", "access_prompt_bytes", "prompt_bytes", "command_calls")
@@ -818,11 +834,10 @@ def _efficiency(rows: list[dict]) -> dict:
     }
 
 
-def summarize_host(trials: list[dict]) -> dict:
+def summarize_host(trials: list[dict], *, arms: tuple[str, ...] = ("kite", "files")) -> dict:
     pairs = {}
     for trial in trials:
         pairs.setdefault((trial["case"], trial["repetition"]), {})[trial["arm"]] = trial
-    arms = ("kite", "files")
     complete = [
         pair
         for pair in pairs.values()

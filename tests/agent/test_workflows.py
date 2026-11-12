@@ -6301,6 +6301,18 @@ def test_implementation_schedule_follows_a_date_from_the_earlier_discussion(work
     ]
 
 
+def test_context_matching_lines_preserves_mixed_unicode_tokens_across_versions(work):
+    _, call = work
+    original = "部署ＡＰＰ负责人 Straße équipe版本٢。"
+    source = text_input("mixed", original)["source"]
+    version = call("index-sources", payload={"sources": [{"source": source}]})["memory_version"]
+    args = ("context", "--term", "部署app负责人 STRASSE équipe版本٢", "--matching-lines")
+    for scope in ((), ("--at-version", str(version))):
+        pack = call(*args, *scope)
+        quotes = [line["text"] for span in pack["spans"] for line in span["evidence"]]
+        assert quotes == [original]
+
+
 def test_context_matching_lines_checks_the_original_segment_and_saved_plan(work):
     directory, call = work
     sources = []

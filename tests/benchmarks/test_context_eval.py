@@ -33,6 +33,30 @@ def test_task_benchmark_requires_both_behavior_and_supporting_citation():
     assert outside["passed_claims"] == 0
 
 
+def test_submit_benchmark_counts_prefilled_evidence_even_without_a_tool_call():
+    trial = {
+        "case": "release",
+        "repetition": 1,
+        "seconds": 1.0,
+        "access_prompt_bytes": 6,
+        "prompt_bytes": 50,
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+        "exit_code": 0,
+        "tool_stdout_bytes": 15,
+        "command_calls": 1,
+        "score": {"full_pass": True},
+    }
+    rows = [
+        {**trial, "arm": "kite", "source_tool_bytes": 12, "hook_context_bytes": 0},
+        {**trial, "arm": "files", "source_tool_bytes": 15, "hook_context_bytes": 0},
+        {**trial, "arm": "submit", "source_tool_bytes": 0, "hook_context_bytes": 100},
+    ]
+    summary = context_eval.summarize_host(rows, arms=("kite", "files", "submit"))
+    assert summary["both_passed_pairs"] == 1
+    assert summary["both_passed_efficiency"]["submit"]["source_context_bytes"] == 100
+    assert summary["arms"]["submit"]["hook_deliveries"] == 1
+
+
 def test_comparison_benchmark_uses_disjoint_recording_windows(tmp_path):
     corpus = tmp_path / "transcripts"
     corpus.mkdir()

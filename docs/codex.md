@@ -58,6 +58,40 @@ Removing the plugin leaves the memory files on disk. Codex receives the source
 text it reads for annotation. The KITE CLI itself stores and queries the
 workspace locally.
 
+## Load evidence before Codex starts
+
+For a project that already uses KITE, you can configure an optional local
+Codex [UserPromptSubmit hook](https://learn.chatgpt.com/docs/hooks#userpromptsubmit).
+Run a normal KITE command once to install its runtime. Add this to the trusted
+project's `.codex/config.toml`, using the absolute path to `codex_context.py`
+beside the installed skill's `scripts/kite.sh`.
+
+```toml
+[[hooks.UserPromptSubmit]]
+
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = 'python3 -I "/absolute/path/to/scripts/codex_context.py"'
+timeout = 8
+```
+
+Review and trust the hook in Codex Settings → Hooks or with `/hooks` in the
+CLI. Start the first line of a request with `KITE:` or `KITE：`, followed by
+the question you want to look up. Put implementation or formatting instructions
+on subsequent lines.
+
+```text
+KITE: What did we decide about rollout and who owns the handoff?
+Update the release checklist and cite the original discussion.
+```
+
+The hook searches the current project's KITE workspace locally. It includes
+the resulting original quotes and citations in Codex's model input for that
+turn. Prompts without the
+prefix continue without searching KITE. Empty or unavailable lookups also let
+the chat continue. Use the ordinary KITE context command for a follow-up or
+add `--save` to open the compile and search evidence in the graph.
+
 ## View the memory graph
 
 Ask Codex “Open my KITE memory graph.” KITE opens a local browser page on
