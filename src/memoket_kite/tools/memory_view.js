@@ -44,6 +44,8 @@
         dated_plan_followup: 'A later recording cites the earlier date and mentions a change',
         date_corroboration: 'Another recording mentions this date for the phase',
         role_corroboration: 'Another original line discusses both named roles',
+        focused_date: 'Original date statement for the named subject',
+        focused_color: 'Original color statement for the named subject',
         change_subquestion: 'Original evidence selected for this subquestion',
         change_phase: 'Original evidence selected for this phase of the question',
         version_evidence: 'Original line is missing or differs in the other snapshot',
@@ -114,6 +116,8 @@
         dated_plan_followup: '后续录制重提原日期并讨论改期',
         date_corroboration: '另一份录制提到该阶段的同一日期',
         role_corroboration: '另一句原文讨论了两个对象的分工',
+        focused_date: '主题相关的日期原文',
+        focused_color: '主题相关的颜色原文',
         change_subquestion: '为这个子问题选取的原文',
         change_phase: '为问题中这个阶段选取的原文',
         version_evidence: '该原文在对照版本中缺失或措辞不同',
@@ -1064,7 +1068,7 @@
           for (const pick of phaseEvidence) {
             const line = lines.get(pick.source_line_id);
             if (!line) continue;
-            const label = ['dated_plan_followup', 'date_corroboration', 'role_corroboration'].includes(pick.reason)
+            const label = ['dated_plan_followup', 'date_corroboration', 'role_corroboration', 'focused_date', 'focused_color'].includes(pick.reason)
               ? t('recordingSelection')[pick.reason] : '';
             branch.append(button([label, pick.term, line.conversation_id + '#' + line.segment_id].filter(Boolean).join(' · '),
               () => choose(line), 'citation-link'));

@@ -51,6 +51,8 @@ line supporting a decision phase before expanding nearby context.
 For a date or role assignment, read the selected original lines together.
 An additional line may clarify the same date in another recording or the
 roles of two options named by acronym in the same recording.
+For a short date or color question, use the user's quoted subject or acronym.
+Read the focused original line and its nearby context in each version.
 For questions about earlier or later discussions, check the recording dates
 and the quoted wording for each answer. Keep the sequence uncertain when
 the citations leave competing recordings or tied times.

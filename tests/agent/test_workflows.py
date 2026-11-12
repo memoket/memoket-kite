@@ -7271,6 +7271,76 @@ def test_historical_context_separates_recording_date_and_knowledge_time(
     assert all(part["history"]["later_deletions"] == 1 for part in erased["parts"])
 
 
+@pytest.mark.parametrize(
+    ("question", "reason", "old", "new", "distractor"),
+    [
+        (
+            'When is the "HBR rehearsal"?',
+            "focused_date",
+            "The HBR rehearsal is planned for April 12.",
+            "The rehearsal moved to April 19 for the HBR group.",
+            "Notify the HBR rehearsal participants by April 10.",
+        ),
+        (
+            "「园区标识」怎么选色？",
+            "focused_color",
+            "园区的标识先选红色和白色，各做一版样品。",
+            "园区的标识最后选蓝色，样品已确认。",
+            "园区入口路面的灰色材料已经到了。",
+        ),
+    ],
+)
+def test_short_version_comparison_prioritizes_the_requested_detail(
+    work, question, reason, old, new, distractor
+):
+    directory, call = work
+    start = call(
+        "index-sources",
+        payload={"sources": [{"source": text_input("plan", old)["source"]}]},
+    )["memory_version"]
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {"source": text_input("update", new)["source"]},
+                {"source": text_input("distractor", distractor)["source"]},
+            ]
+        },
+    )
+    args = ("context", "--question", question, "--from-version", str(start))
+    result = call(*args, "--explain", "--save", "specific-detail")
+    snapshot = viewer._snapshot(directory, [], run_id="specific-detail")
+    for pack, branch, value in zip(
+        result["parts"], snapshot["search_comparison"], (old, new), strict=True
+    ):
+        (focus,) = [item for item in pack["phase_evidence"] if item["reason"] == reason]
+        assert focus in branch["phase_evidence"]
+        assert snapshot["evidence"][focus["source_line_id"]]["text"] == value
+    assert distractor not in {line["text"] for line in snapshot["evidence"].values()}
+    assert result["quote_bytes"] <= result["quote_budget_bytes"] == 3800
+    exact = call(*args, "--matching-lines")
+    assert all("phase_evidence" not in part for part in exact["parts"])
+    compound = call(
+        "context",
+        "--question",
+        f"{question.rstrip('?？')} and why?",
+        "--from-version",
+        str(start),
+    )
+    assert all(
+        item["reason"] != reason
+        for part in compound["parts"]
+        for item in part.get("phase_evidence", [])
+    )
+    scoped = call(*args, "--conversation-id", "plan")
+    assert all(
+        line["conversation_id"] == "plan"
+        for part in scoped["parts"]
+        for span in part["spans"]
+        for line in span["evidence"]
+    )
+
+
 def test_version_comparison_corroborates_an_earlier_date_in_another_recording(work):
     directory, call = work
     texts = {

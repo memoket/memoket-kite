@@ -146,6 +146,11 @@ The comparison can add a second original line for the same earlier date
 from another recording or for the roles of two options named by acronym
 from the same recording.
 Read both lines to establish what was scheduled or assigned.
+For a short version question about a date or color, quote the subject or
+use its acronym. KITE can select the original line with that detail and keep
+nearby context from the same recording. In a date question, a line stating
+an event date can rank above a notice deadline. The graph links the selection
+to its original line.
 A topic merge can affect current label lookup. Both sides of a workspace
 version comparison use original text.
 When a question refers to an earlier or later discussion, check the dates

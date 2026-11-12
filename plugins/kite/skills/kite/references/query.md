@@ -22,6 +22,9 @@ the complete original line.
 Version comparison can reserve an additional original line for an earlier
 date repeated in another recording or a second statement about two options
 named by acronym.
+For a short date or color question, quote the subject or give its acronym.
+The version comparison can return a focused original statement and its
+nearby context.
 
 For a recording window such as “the last 30 days,” resolve the dates in the
 user's timezone and pass them as inclusive recording bounds. If there are no

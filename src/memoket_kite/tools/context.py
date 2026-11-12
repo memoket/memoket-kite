@@ -63,11 +63,13 @@ _SCHEDULE_SEQUENCE = re.compile(
     r"\b(?:original\w*|initial\w*|earlier|later|subsequently|previous\w*)\b",
     re.I,
 )
+_MONTHS = tuple(
+    "january february march april may june july august september october november december".split()
+)
 _CALENDAR_DAY = re.compile(
     r"(?<!\d)(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|"
     r"(?:1[0-2]|0?[1-9])\s*月\s*(?:3[01]|[12][0-9]|0?[1-9]))(?!\d)|"
-    r"\b(?:january|february|march|april|may|june|july|august|september|"
-    r"october|november|december)\s+(?:3[01]|[12][0-9]|0?[1-9])\b",
+    rf"\b(?:{'|'.join(_MONTHS)})\s+(?:3[01]|[12][0-9]|0?[1-9])\b",
     re.I,
 )
 _SCHEDULE_CHANGE = re.compile(
@@ -151,6 +153,32 @@ _ROLE_STATEMENT = re.compile(
 )
 _HYPOTHETICAL_DATE = re.compile(
     r"假设|举例|比如|例如|\b(?:suppose|hypothetical|for example|for instance)\b", re.I
+)
+_DATE_WORDS = ("月", *_MONTHS)
+_DATE_DETAIL = re.compile(
+    rf"{_CALENDAR_DAY.pattern}|\d{{1,2}}\s*月\s*(?:上旬|中旬|下旬|初|底|末)|"
+    rf"\b(?:early|mid|late)\s+(?:{'|'.join(_MONTHS)})\b",
+    re.I,
+)
+_DATE_DETAIL_QUESTION = re.compile(
+    rf"{_SCHEDULE_QUESTION.pattern}|什么时候|何时|"
+    r"(?:上线|发布|开售|发货|投产).{0,12}(?:安排|何时|什么时候)|\bwhen\b",
+    re.I,
+)
+_DATE_QUESTION_FILLERS = re.compile(r"日期|什么时候|时间|安排|排期|怎么|什么|是")
+_DATE_BOUNDARY_SUFFIX = re.compile(r"^\s*(?:[日号]\s*)?(?:前|之前|以前|以后|之后)")
+_DATE_BOUNDARY_PREFIX = re.compile(r"\b(?:before|after|by)\s*$", re.I)
+_COLOR_NAMES = "黑白灰红蓝绿紫黄橙粉银金棕"
+_ENGLISH_COLORS = "black white gray grey red blue green purple yellow orange pink silver gold brown"
+_COLOR_WORDS = (*_COLOR_NAMES, *_ENGLISH_COLORS.split())
+_COLOR_DETAIL = re.compile(
+    rf"黑白|[{_COLOR_NAMES}](?=色|的)|\b(?:{'|'.join(_ENGLISH_COLORS.split())})\b", re.I
+)
+_COLOR_QUESTION = re.compile(r"颜色|配色|选色|色系|\bcolou?rs?\b", re.I)
+_DETAIL_CONJUNCTION = re.compile(r"以及|并且|然后|分别|\b(?:and|or)\b", re.I)
+_CHOICE_STATEMENT = re.compile(
+    r"打样|选|渐变|确定|保留|定稿|\b(?:pick|choos\w+|select\w*|decid\w+|confirm\w+)\b",
+    re.I,
 )
 _QUERY_FILLERS = re.compile(
     r"(?:请问|根据|查找|查询|哪些|哪个|哪里|什么|如何|怎么|为什么|分别|"
@@ -564,6 +592,7 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
             word_forms=forms,
             change_phases=phases,
             reserve_change_phases=version_comparison,
+            earlier_snapshot=version_comparison and search_index is index,
             other_records=(
                 (comparison if search_index is index else index).records
                 if version_comparison
@@ -1426,7 +1455,9 @@ def _phase_corroboration(index, phases, max_bytes, schedule_question):
             expression = " AND ".join(f'text : "{name}"' for name in names)
             compare_source = "checksum=?"
             selection = {"reason": "role_corroboration", "term": term}
-        elif schedule_question and _EARLIER_PHASE.search(term):
+        elif schedule_question and (
+            phase["selection"]["reason"] == "focused_date" or _EARLIER_PHASE.search(term)
+        ):
             dates = {_tokens(match[0]): match[0] for match in _CALENDAR_DAY.finditer(original)}
             clues = tuple(
                 dict.fromkeys(
@@ -1850,6 +1881,155 @@ def _trace_sources(workspace, trace: dict) -> None:
         row.update(sources[row["revision_checksum"]])
 
 
+def _focused_comparison_evidence(index, other_records, question, max_bytes):
+    if len(question) > 120 or question.count("?") + question.count("？") > 1:
+        return None
+    quoted = _quoted_phrases(question)
+    acronyms = {word.casefold() for word in _ACRONYMS.findall(question)}
+    names = quoted or acronyms
+    if len(names) != 1:
+        return None
+    name = next(iter(names))
+    detail = _QUOTED_PHRASES.sub(" ", question) if quoted else _ACRONYMS.sub(" ", question)
+    if _DETAIL_CONJUNCTION.search(detail):
+        return None
+    date_question = bool(_DATE_DETAIL_QUESTION.search(detail))
+    if date_question == bool(_COLOR_QUESTION.search(detail)):
+        return None
+    marker_words, values = (
+        (_DATE_WORDS, _DATE_DETAIL) if date_question else (_COLOR_WORDS, _COLOR_DETAIL)
+    )
+    name_tokens = _tokens(name)
+    words = name_tokens.split()
+    # A quoted subject may be split across turns or paraphrased with its
+    # shorter components. Keep the complete name as an extra ranking signal.
+    if len(words) >= 4 and all(_HAN.fullmatch(word) for word in words):
+        components = tuple(dict.fromkeys(f"{a} {b}" for a, b in zip(words, words[1:])))
+    else:
+        components = tuple(
+            dict.fromkeys(
+                _tokens(part)
+                for block in _QUERY_WORDS.findall(name)
+                for part in block.split()
+                if len(part) >= 2 and part not in _ENGLISH_FUNCTION_WORDS
+            )
+        )
+    detail_terms = ()
+    if date_question:
+        detail_terms = tuple(
+            dict.fromkeys(
+                tokens
+                for phrase in _question_phrases(_DATE_QUESTION_FILLERS.sub(" ", detail))
+                if (tokens := _tokens(phrase)) and len(tokens.replace(" ", "")) >= 2
+            )
+        )[:12]
+    topical = tuple(dict.fromkeys((name_tokens, *components, *detail_terms)))
+    markers = " OR ".join(f'"{term}"' for term in marker_words)
+    subjects = " OR ".join(f'"{term}"' for term in topical)
+    expression = f"text : ({subjects}) AND text : ({markers})"
+    where, scope = _search_scope(index.filters)
+    changed = sorted(index.records.keys() - other_records.keys())
+    # Search a small set of revised or newly visible sources first. Fall back
+    # to the full snapshot when there is no eligible statement in that set.
+    scopes = (changed, ()) if 0 < len(changed) <= _VERSION_CHANGE_SOURCE_LIMIT else ((),)
+    normalized = defaultdict(dict)
+
+    def original_tokens(checksum, position):
+        cache = normalized[checksum]
+        if position not in cache:
+            line = index.records[checksum]["conversation"]["segments"][position]["text"]
+            cache[position] = f" {_tokens(line)} "
+        return cache[position]
+
+    name_phrases = tuple(f" {term} " for term in (name_tokens, *components))
+    for revisions in scopes:
+        restriction = f" AND checksum IN ({','.join('?' for _ in revisions)})" if revisions else ""
+        rows = index.db.execute(
+            f"SELECT checksum, start, stop, day FROM context_spans WHERE {where}{restriction} "
+            "ORDER BY bm25(context_spans), checksum, start LIMIT 256",
+            (expression, *scope, *revisions),
+        )
+        best = None
+        best_score = None
+        for row in rows:
+            checksum = row["checksum"]
+            segments = index.records[checksum]["conversation"]["segments"]
+            for pos in range(row["start"], row["stop"]):
+                line = segments[pos]["text"]
+                size = len(line.encode("utf-8"))
+                if size > max_bytes // 2:
+                    continue
+                hits = list(values.finditer(line))
+                if not hits:
+                    continue
+                found = {hit[0].casefold() for hit in hits}
+                text = original_tokens(checksum, pos)
+                direct = any(phrase in text for phrase in name_phrases)
+                matches = sum(f" {term} " in text for term in detail_terms)
+                if not (direct or matches):
+                    continue
+                nearby = [
+                    original_tokens(checksum, i)
+                    for i in range(max(0, pos - 6), min(len(segments), pos + 7))
+                ]
+                topic_matches = sum(
+                    any(phrase in item for item in nearby) for phrase in name_phrases
+                )
+                if not topic_matches:
+                    continue
+                status = bool(_DECISION_STATUS.search(line))
+                full_name = name_phrases[0] in text
+                decision = bool(_CLAUSE_DECISION.search(line))
+                if date_question:
+                    event_date = any(
+                        not _DATE_BOUNDARY_SUFFIX.match(line[hit.end() :])
+                        and not _DATE_BOUNDARY_PREFIX.search(
+                            line[max(0, hit.start() - 12) : hit.start()]
+                        )
+                        for hit in hits
+                    )
+                    score = (
+                        matches,
+                        event_date,
+                        status,
+                        not _HYPOTHETICAL_DATE.search(line),
+                        direct,
+                        full_name,
+                        topic_matches,
+                        decision,
+                        len(found),
+                        -size,
+                    )
+                    reason = "focused_date"
+                else:
+                    if "黑白" in found:
+                        found.update(("黑", "白"))
+                        found.remove("黑白")
+                    score = (
+                        bool(_CHOICE_STATEMENT.search(line)),
+                        topic_matches,
+                        direct,
+                        len(found),
+                        status,
+                        decision,
+                        full_name,
+                        -size,
+                    )
+                    reason = "focused_color"
+                if best_score is None or score > best_score:
+                    best_score = score
+                    best = {
+                        **dict(row),
+                        "start": pos,
+                        "stop": pos + 1,
+                        "direct_positions": [pos],
+                        "selection": {"reason": reason, "term": question},
+                    }
+        if best is not None:
+            return best
+    return None
+
+
 def _version_evidence(records, other_records, question, terms, max_bytes, compact):
     changed = records.keys() - other_records.keys()
     if not changed or len(changed) > _VERSION_CHANGE_SOURCE_LIMIT:
@@ -1938,6 +2118,7 @@ def _context_evidence(
     word_forms=(),
     change_phases=(),
     reserve_change_phases=False,
+    earlier_snapshot=False,
     other_records=None,
 ):
     validate(_CONTEXT_SCHEMA, plan, "context plan")
@@ -2057,6 +2238,33 @@ def _context_evidence(
                 # match at the front of this version's half of the budget.
                 leading = candidates.pop(0)
                 candidates.insert(first + len(reserved_clauses) - 1, leading)
+        if other_records is not None and not (
+            change_phases or reserved_clauses or followup or matching_lines or plan.get("latest")
+        ):
+            focused = _focused_comparison_evidence(index, other_records, _question, max_bytes)
+            if focused is not None:
+                compact, compact_copies = {}, {}
+                reserved_clauses.append(focused)
+                if (
+                    limit >= 2
+                    and earlier_snapshot
+                    and focused["selection"]["reason"] == "focused_date"
+                ):
+                    corroboration = _phase_corroboration(index, reserved_clauses, max_bytes, True)
+                    if corroboration is not None:
+                        reserved_clauses.append(corroboration[1])
+                # This question asks for one detail. Keep the selected
+                # original and nearby context from its own recording.
+                candidates = [
+                    *reserved_clauses,
+                    *(
+                        row
+                        for row in candidates
+                        if row["checksum"] == focused["checksum"]
+                        and row["start"] <= focused["start"] + 2
+                        and row["stop"] > focused["start"] - 2
+                    ),
+                ]
         selected_version = None
         if other_records is not None and not (
             reserved_clauses or matching_lines or plan.get("latest")
