@@ -43,7 +43,9 @@ codex plugin marketplace add memoket/memoket-kite --ref codex/agent-native-memor
 ```
 
 See the [Codex installation guide](docs/codex.md) for first-run setup, import,
-and citation examples. Ask **“Open my KITE memory graph”** and choose **All topics**
+and citation examples. The [optional submit hook](docs/codex.md#load-evidence-before-codex-starts)
+loads cited evidence before Codex starts an explicitly prefixed `KITE:` turn.
+Ask **“Open my KITE memory graph”** and choose **All topics**
 to see the whole workspace in one rotatable view. Select a topic to see its
 parents, children, and other topics that share its memories. Open a memory to
 follow its citations to the original lines and source revisions, and inspect
