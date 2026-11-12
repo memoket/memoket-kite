@@ -26,6 +26,10 @@ preview, commit and verification in **Workflows**. For a separate preview,
 run the `source-indexing` pipeline with the authorized file selection.
 Its stage artifacts contain a checksum and counts. The preview checks the
 sources again at commit time, so a changed file requires a fresh run.
+When the user asks to watch the import, start `source-indexing` with the
+authorized selection, open `view --follow RUN_ID`, then advance preview,
+commit and verify separately. After commit, the new memory paths glow on
+the same graph and link to the before-and-after comparison.
 
 ## Import notes with recorded decisions
 
@@ -56,6 +60,8 @@ owners, or commitments for decision tracing.
    run `bash "$KITE" stage RUN_ID normalize`. Use the exact normalized segment
    IDs when annotating. For large inputs, run `stage RUN_ID normalize --summary`
    and page the transcript with `segments RUN_ID normalize --limit 50`.
+   When the user asks to watch, open `view --follow RUN_ID` before normalize
+   and keep it on that run through verification.
 5. Create `{"annotations":{"taxonomy":[...],"facts":[...]}}` using the
    fact-extraction skill and `bash "$KITE" describe annotate`. Ground every fact
    in its cited segments. For decisions, owners, and commitments that may change,

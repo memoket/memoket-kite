@@ -43,6 +43,26 @@ _IMPLEMENTATION_LEAD = re.compile(
     r"(?P<subject>[^?？\n]{2,100}?)(?:。|\.(?=\s|$))\s*",
     re.I,
 )
+_CURRENT_PLAN_TASK = re.compile(
+    r"^(?:请\s*)?(?:把|将)\s*(?P<zh>[^\n。！？!?；;，,]{2,100}?)\s*"
+    r"按(?:照)?\s*(?:最新|最近)(?:一次)?(?:已)?确认的?(?:计划|方案|排期)"
+    r"|^(?:please\s+)?(?:prepare|update|set up|carry out)\s+"
+    r"(?P<en>[^\n.!?;,]{2,100}?)\s+(?:using|based on|according to)\s+"
+    r"(?:the\s+)?(?:latest|most recent)\s+(?:confirmed|approved)\s+(?:plan|schedule)\b",
+    re.I,
+)
+_EARLIER_PLAN_WORDS = (
+    "原定",
+    "原计划",
+    "暂定",
+    "保守",
+    "初步",
+    "originally",
+    "proposed",
+    "tentative",
+    "conservative",
+    "initial",
+)
 _ENGLISH_WORD = re.compile(r"[a-z]{4,}")
 _VOWEL_GROUP = re.compile(r"[aeiou]+")
 _FINAL_CONSONANT = re.compile(r"[^aeiou][aeiou][^aeiouwxy]$")
@@ -200,6 +220,11 @@ _QUERY_FILLERS = re.compile(
     r"(?:请问|根据|查找|查询|哪些|哪个|哪里|什么|如何|怎么|为什么|分别|"
     r"这场|那场|会上|那次|当时|原文|给出|引用|请|是否|有没有|的|了|吗|呢)"
 )
+_MILESTONE_QUERY_FILLERS = re.compile(
+    r"最初|安排哪天|哪天|早先讨论|后来|哪个|是什么|日期|"
+    r"\b(?:initially|earlier|later|when|what|which|date)\b",
+    re.I,
+)
 _ENGLISH_FUNCTION_WORDS = frozenset(
     "a an and are as at be been being by can could did do does for from had has have how in is "
     "it its of on or that the their them these they this those to was were what when where which "
@@ -246,7 +271,7 @@ _SUBQUESTIONS = array(
         {"indexed_routes": array(_INDEXED_ROUTE, 1, _INDEXED_ROUTE_LIMIT)},
     ),
     1,
-    2,
+    3,
 )
 CONTEXT_PLAN = object_schema(
     {
@@ -262,6 +287,7 @@ CONTEXT_PLAN = object_schema(
         "comparison_change_phases": _CHANGE_PHASES,
         "subquestions": _SUBQUESTIONS,
         "implementation_search": TEXT,
+        "current_plan_subject": TEXT,
     },
 )
 
@@ -544,6 +570,7 @@ def _context_scope(request: dict) -> tuple[dict, str | None, str | None]:
 def _compile_questions(workspace, indexes, request, search, compare_search):
     index, comparison = indexes
     implementation = None
+    current_plan_subject = None
     if (
         search
         and compare_search is None
@@ -552,6 +579,10 @@ def _compile_questions(workspace, indexes, request, search, compare_search):
         implementation = _implementation_search(search)
         if implementation:
             search = implementation
+        elif "from_version" not in request and not _quoted_phrases(search):
+            task = _CURRENT_PLAN_TASK.match(search)
+            if task and (subject := (task["zh"] or task["en"]).strip()):
+                current_plan_subject = search = subject
     terms, forms = (
         (request["terms"], [])
         if search is None
@@ -562,6 +593,7 @@ def _compile_questions(workspace, indexes, request, search, compare_search):
         "terms": terms,
         "memory_version": workspace.version(),
         **({"implementation_search": implementation} if implementation else {}),
+        **({"current_plan_subject": current_plan_subject} if current_plan_subject else {}),
     }
     if forms:
         result["word_forms"] = forms
@@ -571,6 +603,13 @@ def _compile_questions(workspace, indexes, request, search, compare_search):
         subquestions = _compile_subquestions(index, request, search)
         if subquestions:
             result["subquestions"] = subquestions
+        if len(subquestions) == 3:
+            result["terms"] = list(
+                dict.fromkeys(
+                    term for part in subquestions for term in (*part["anchors"], *part["terms"][:2])
+                )
+            )[:8]
+            result.pop("word_forms", None)
     if compare_search is not None:
         terms, forms = _compile_terms(comparison.db, comparison.filters, compare_search)
         result["comparison_terms"] = terms
@@ -596,6 +635,19 @@ def _implementation_search(question):
     return f"{subject}, {question[lead.end() : following[-1].end()]}"
 
 
+def _question_anchors(text):
+    return list(
+        dict.fromkeys(
+            match.group().casefold()
+            for match in sorted(
+                (*_NAME_WORDS.finditer(text), *_ACRONYMS.finditer(text)),
+                key=lambda match: match.start(),
+            )
+            if match.group().casefold() not in _ENGLISH_FUNCTION_WORDS
+        )
+    )[:2]
+
+
 def _compile_subquestions(index, request, question):
     if (
         request.get("latest")
@@ -604,22 +656,46 @@ def _compile_subquestions(index, request, question):
         or _quoted_phrases(question)
     ):
         return []
-    parts = [part.strip() for part in _EXPLICIT_QUESTIONS.findall(question)]
-    if len(parts) != 2 or not all(parts) or parts[0] == parts[1]:
+    matches = list(_EXPLICIT_QUESTIONS.finditer(question))
+    parts = [match[1].strip() for match in matches]
+    if len(parts) not in (2, 3) or not all(parts) or len(set(parts)) != len(parts):
         return []
+    shared = []
+    if len(parts) == 3:
+        if index.history is not None or "from_version" in request or request.get("limit", 8) < 4:
+            return []
+        lead = question[: matches[0].start()]
+        if not lead.strip():
+            prefix, separator, clause = parts[0].rpartition(". ")
+            if separator:
+                lead, parts[0] = prefix, clause.strip()
+        lead = re.sub(
+            r"^(?:summarize|trace|review|map|explain|compare|list)\s+", "", lead, flags=re.I
+        )
+        shared = _question_anchors(lead)
+        if not shared or not (
+            _SCHEDULE_QUESTION.search(parts[0])
+            and _PLAN_QUALIFIER.search(parts[1])
+            and _LATER_PHASE.search(parts[2])
+            and _SCHEDULE_QUESTION.search(parts[2])
+        ):
+            return []
     result = []
     for part in parts:
-        anchors = list(
-            dict.fromkeys(
-                match.group().casefold()
-                for match in sorted(
-                    (*_NAME_WORDS.finditer(part), *_ACRONYMS.finditer(part)),
-                    key=lambda match: match.start(),
-                )
-                if match.group().casefold() not in _ENGLISH_FUNCTION_WORDS
-            )
-        )[:2]
-        terms, _ = _compile_terms(index.db, index.filters, part)
+        anchors = _question_anchors(part) or shared
+        clues_text = _MILESTONE_QUERY_FILLERS.sub(" ", part).strip() if shared else part
+        terms, _ = _compile_terms(index.db, index.filters, clues_text or part)
+        if shared and clues_text:
+            blocks = _QUERY_WORDS.findall(clues_text)
+            # Keep the edge of a spoken phrase rather than a fragment that
+            # straddles two words after the question scaffolding is removed.
+            grounded = [
+                term
+                for term in terms
+                if not _HAN.search(term)
+                or any(block.startswith(term) or block.endswith(term) for block in blocks)
+            ]
+            terms = grounded or terms
         indexed_routes = (
             _compile_indexed_routes(index, part, terms) if index.history is None else []
         )
@@ -759,6 +835,7 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
             _index=search_index,
             _question=compiled.get("implementation_search", question),
             implementation_task="implementation_search" in compiled,
+            current_plan_subject=compiled.get("current_plan_subject"),
             prioritize_first_lines=compare_terms is not None and "limit" not in request,
             word_forms=forms,
             change_phases=phases,
@@ -776,6 +853,8 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
             result["compilation"] = {"question": question, "terms": terms}
             if "implementation_search" in compiled:
                 result["compilation"]["implementation_search"] = compiled["implementation_search"]
+            if "current_plan_subject" in compiled:
+                result["compilation"]["current_plan_subject"] = compiled["current_plan_subject"]
             if forms:
                 result["compilation"]["word_forms"] = forms
             if phases:
@@ -1640,9 +1719,66 @@ def _implementation_schedule(workspace, index, question, subquestions, max_bytes
     if not earlier or not earlier["anchors"]:
         return []
     picked = _subquestion_evidence(workspace, index, [{**earlier, "terms": qualifiers}], max_bytes)
-    if not picked or not picked[0]["day"]:
+    if not picked:
         return []
-    original = picked[0]
+    return _linked_schedule(workspace, index, picked[0], parts[1].strip(), max_bytes)
+
+
+def _three_schedule_milestones(workspace, index, subquestions, max_bytes):
+    first, earlier, later = subquestions
+    shared = set(first["anchors"]) & set(earlier["anchors"]) & set(later["anchors"])
+    if not shared:
+        return []
+    proposals = _subquestion_evidence(
+        workspace,
+        index,
+        [
+            {
+                **earlier,
+                "anchors": sorted(shared),
+                "terms": _PLAN_QUALIFIER.findall(earlier["question"]),
+            }
+        ],
+        max_bytes,
+    )
+    if not proposals:
+        return []
+    pair = _linked_schedule(workspace, index, proposals[0], later["question"], max_bytes)
+    if not pair:
+        return []
+    original = pair[0]
+    segments = workspace.record(original["checksum"])["conversation"]["segments"]
+    for term in first["terms"]:
+        clue = _tokens(term)
+        if len(clue.replace(" ", "")) < 3 or clue in shared:
+            continue
+        positions = [
+            pos
+            for pos, line in enumerate(segments)
+            if f" {clue} " in f" {_tokens(line['text'])} " and _CALENDAR_DAY.search(line["text"])
+        ]
+        if len(positions) == 1 and positions[0] != original["start"]:
+            pos = positions[0]
+            if len(segments[pos]["text"].encode("utf-8")) > max_bytes // 3:
+                continue
+            milestone = {
+                **original,
+                "start": pos,
+                "stop": pos + 1,
+                "direct_positions": [pos],
+                "selection": {
+                    "reason": "subquestion_clues",
+                    "term": first["question"],
+                    "clues": [term],
+                },
+            }
+            return [milestone, *pair]
+    return []
+
+
+def _linked_schedule(workspace, index, original, later_question, max_bytes):
+    if not original["day"]:
+        return []
     records = {}
 
     def segments(row):
@@ -1678,8 +1814,46 @@ def _implementation_schedule(workspace, index, question, subquestions, max_bytes
         return []
     revised = next(iter(matches.values()))
     revised["start"] = revised["direct_positions"][0]
-    revised["selection"]["question"] = parts[1].strip()
+    revised["selection"]["question"] = later_question
     return [original, revised]
+
+
+def _current_plan_schedule(workspace, index, subject, terms, max_bytes, neighbors):
+    names = [
+        match.group()
+        for match in (*_ACRONYMS.finditer(subject), *_NAME_WORDS.finditer(subject))
+        if match.group().casefold() not in _ENGLISH_FUNCTION_WORDS
+    ]
+    anchors = list(dict.fromkeys(map(_tokens, (*names, *terms))))[:3]
+    pairs = {}
+    for anchor in anchors:
+        for qualifier in _EARLIER_PLAN_WORDS:
+            clue = {"question": subject, "anchors": [anchor], "terms": [qualifier]}
+            originals = _subquestion_evidence(workspace, index, [clue], max_bytes)
+            if not originals:
+                continue
+            rows = _linked_schedule(workspace, index, originals[0], subject, max_bytes)
+            if not rows:
+                continue
+            key = tuple((row["checksum"], row["start"]) for row in rows)
+            pairs.setdefault(key, rows)
+            if len(pairs) > 1:
+                return []
+    if not pairs:
+        return []
+    rows = next(iter(pairs.values()))
+    for row in rows:
+        record = (
+            index.records[row["checksum"]]
+            if index.records is not None
+            else workspace.record(row["checksum"])
+        )
+        pos = row["start"]
+        size = len(record["conversation"]["segments"])
+        # Quote the decision line first, then the neighboring rationale and constraints.
+        nearby = range(max(0, pos - neighbors), min(size, pos + neighbors + 1))
+        row["direct_positions"] = [pos, *(i for i in nearby if i != pos)]
+    return rows
 
 
 def _compiled_change_phases(request, question):
@@ -2528,6 +2702,7 @@ def _context_evidence(
     _index,
     _question,
     implementation_task=False,
+    current_plan_subject=None,
     prioritize_first_lines=False,
     word_forms=(),
     change_phases=(),
@@ -2606,6 +2781,22 @@ def _context_evidence(
             if implementation_task and limit >= 3 and not preferred
             else []
         )
+        milestones = (
+            _three_schedule_milestones(workspace, index, subquestions, max_bytes)
+            if len(subquestions) == 3 and not preferred
+            else []
+        )
+        task_dates.extend(milestones)
+        current_plan = (
+            _current_plan_schedule(
+                workspace, index, current_plan_subject, plan["terms"], max_bytes, neighbors
+            )
+            if current_plan_subject and limit >= 2 and not preferred
+            else []
+        )
+        if (current_plan or milestones) and compact_context:
+            candidates = []
+        task_dates.extend(current_plan)
         candidates[:0] = task_dates
         if (
             _question
@@ -2724,6 +2915,8 @@ def _context_evidence(
         # before expanding the leading candidate with its surrounding turns.
         first_lines = (
             first_lines
+            or bool(current_plan)
+            or bool(milestones)
             or (reserve_change_phases and bool(followup or reserved_clauses))
             or selected_version is not None
         )

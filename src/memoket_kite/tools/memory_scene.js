@@ -25,6 +25,9 @@ function renderViewerNavigation(language, activeView, parameters, comparisonAvai
     const link = document.getElementById('workspace-' + view);
     link.hidden = view === 'changes' && !comparisonAvailable;
     const query = new URLSearchParams(parameters);
+    if (view !== 'graph') {
+      for (const key of ['follow', 'trace_topic', 'trace_entity', 'trace_facet']) query.delete(key);
+    }
     if (activeView === 'revision') {
       query.delete('before');
       query.delete('after');
@@ -353,6 +356,22 @@ class MemoryScene {
     if (shared || correction || cooccurrence || edge.change === 'removed') context.setLineDash([4, 4]);
     context.stroke();
     context.setLineDash([]);
+    const mark = this.workflowMarks?.edges.get(edge);
+    if (mark) {
+      context.save();
+      context.strokeStyle = mark.color;
+      context.globalAlpha = mark.strength * .7;
+      context.lineWidth = 1.8;
+      context.stroke();
+      if (mark.flow) {
+        context.globalAlpha = .95;
+        context.lineWidth = 2.6;
+        context.setLineDash([8, 20]);
+        context.lineDashOffset = -mark.age / 24;
+        context.stroke();
+      }
+      context.restore();
+    }
   }
 
   block(node, at) {
@@ -408,6 +427,19 @@ class MemoryScene {
       const border = ring.map(([px, py, pz]) => [x + (px - x) * 1.29, py, z + (pz - z) * 1.30]);
       this.polygon(border, null, this.changeColors[node.change] || glow + 'a0', node.change ? 1.5 : 1);
     }
+    const mark = this.workflowMarks?.nodes.get(node);
+    if (mark) {
+      const halo = ring.map(([px, py, pz]) => [x + (px - x) * 1.25, py, z + (pz - z) * 1.25]);
+      context.save();
+      context.globalAlpha = mark.strength;
+      context.shadowColor = mark.color;
+      context.shadowBlur = 9 + 20 * mark.strength;
+      this.polygon(halo, null, mark.color, 3);
+      context.shadowBlur = 0;
+      context.globalAlpha = mark.strength * .45;
+      this.polygon(ring, mark.color);
+      context.restore();
+    }
   }
 
   positionLabels() {
@@ -419,6 +451,7 @@ class MemoryScene {
     }
     const prioritized = [...this.projected].sort((a, b) =>
       Number(b.node === this.selected) - Number(a.node === this.selected)
+      || Number(Boolean(this.workflowMarks?.nodes.has(b.node))) - Number(Boolean(this.workflowMarks?.nodes.has(a.node)))
       || Number(allTopics && Boolean(b.node.overviewRoot)) - Number(allTopics && Boolean(a.node.overviewRoot))
       || Number(connected.has(b.node)) - Number(connected.has(a.node))
       || Number(b.node.kind === 'topic') - Number(a.node.kind === 'topic')
@@ -428,7 +461,10 @@ class MemoryScene {
     for (const { node, screen } of prioritized) {
       const tag = this.tags.get(node.id);
       if (!tag) continue;
-      if (allTopics && !node.overviewRoot && !connected.has(node) && node !== this.selected && this.camera.zoom < 1.35) {
+      const marked = this.workflowMarks?.nodes.has(node);
+      if (marked) tag.dataset.workflow = this.workflowEffect.kind;
+      else delete tag.dataset.workflow;
+      if (allTopics && !marked && !node.overviewRoot && !connected.has(node) && node !== this.selected && this.camera.zoom < 1.35) {
         tag.hidden = true;
         continue;
       }
@@ -456,10 +492,50 @@ class MemoryScene {
     }
   }
 
+  playWorkflowEffect(kind, paths) {
+    this.workflowEffect = kind && paths.length ? { kind, paths, started: performance.now() } : null;
+    if (this.workflowEffect) this.canvas.dataset.workflowEffect = kind;
+    else delete this.canvas.dataset.workflowEffect;
+    this.requestDraw();
+  }
+
+  workflowHighlights() {
+    const effect = this.workflowEffect;
+    if (!effect) return null;
+    const nodes = new Map();
+    const edges = new Map();
+    const visible = new Map([...this.positions.keys()].map(node => [node.id, node]));
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const elapsed = performance.now() - effect.started;
+    const importing = effect.kind === 'import';
+    let moving = false;
+    for (const [index, path] of effect.paths.entries()) {
+      const active = new Set([...path].map(id => visible.get(id)).filter(Boolean));
+      if (!active.size) continue;
+      const age = reduceMotion ? 2700 : elapsed - (importing ? 0 : index * 360);
+      const animating = age < 2700;
+      moving ||= animating;
+      if (age < 0) continue;
+      const pulse = (1 - Math.cos(age * 2 * Math.PI / 900)) / 2;
+      const strength = animating ? (importing ? .12 + .88 * pulse : .55 + .45 * pulse) : .46;
+      const mark = {
+        color: importing ? '#88f5b8' : '#89d8ff',
+        strength, age, flow: !importing && animating,
+      };
+      for (const node of active) nodes.set(node, mark);
+      for (const edge of this.scene.edges) {
+        if ((edge.kind === 'association' || edge.kind === 'citation')
+            && active.has(edge.from) && active.has(edge.to)) edges.set(edge, mark);
+      }
+    }
+    return { nodes, edges, moving };
+  }
+
   draw() {
     if (!this.context || !this.width || !this.height || !this.bounds) return;
     this.context.clearRect(0, 0, this.width, this.height);
     if (!this.positions.size) return;
+    this.workflowMarks = this.workflowHighlights();
     const floor = this.surfaces.at(-1).y - .57;
     const extent = Math.ceil(this.bounds.x + 1.1);
     for (let i = -extent; i <= extent; i++) {
@@ -479,5 +555,6 @@ class MemoryScene {
       .sort((a, b) => a.screen.depth - b.screen.depth);
     for (const { node, at } of this.projected) this.block(node, at);
     this.positionLabels();
+    if (this.workflowMarks?.moving && !document.hidden) this.requestDraw();
   }
 }

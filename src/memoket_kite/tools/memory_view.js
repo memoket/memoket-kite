@@ -2,8 +2,13 @@
   const byId = id => document.getElementById(id);
   const snapshot = JSON.parse(byId('kite-memory-data').textContent);
   const query = new URLSearchParams(location.search);
+  let progress = snapshot.workflow_progress;
+  const filterTrace = snapshot.filter_trace;
+  let filterStep = -1;
+  let filterTimer;
   const number = new Intl.NumberFormat();
   const searching = Boolean(snapshot.search_terms?.length);
+  const groupedSearch = snapshot.search_subquestion_branches?.length > 0;
   const comparison = snapshot.search_comparison || [];
   const versionComparison = snapshot.search_version_comparison;
   const recordingBounds = snapshot.search_recording_bounds || {};
@@ -13,7 +18,7 @@
   let explainCandidates = Boolean(snapshot.search_trace?.packing?.length);
   const copy = {
     en: {
-      title: 'Memory Graph', searchTitle: 'Search Evidence', topics: 'Topics', terms: 'Search terms',
+      title: 'Memory Graph', searchTitle: 'Search Evidence', topics: 'Topics', terms: 'Search terms', questions: 'Search questions',
       topic: 'Topic', memory: 'Memory', line: 'Quoted line', source: 'Source revision', state: 'State',
       allMode: 'All topics', topicMode: 'Topic hierarchy', memoryMode: 'Evidence path', overview: 'Back to topics',
       entity: 'Entity', entities: 'Related entities', entityCatalog: 'Entities', mention: 'Entity link', aliases: 'Aliases',
@@ -26,7 +31,7 @@
       compile: 'Compiled phrases', candidates: 'candidate spans', quoteBytes: 'quote bytes',
       sharedQuotes: 'shared lines',
       candidateSources: 'candidate sources', compareRevision: 'Compare with current version',
-      readRevision: 'Read this revision',
+      readRevision: 'Read full transcript', topicSources: 'Original sources in this topic', sourceLines: 'lines',
       anchorSources: 'sources matching the name',
       matchedTerms: 'Terms in this quote',
       inspectCandidates: 'Rerun with candidate details', packingOrder: 'Packing order',
@@ -92,7 +97,7 @@
       record: 'original passages', records: 'memory records', coverage: 'sources with topics', workspace: 'sources in workspace', remaining: 'more',
     },
     zh: {
-      title: '记忆图谱', searchTitle: '原文检索', topics: '主题', terms: '检索词',
+      title: '记忆图谱', searchTitle: '原文检索', topics: '主题', terms: '检索词', questions: '检索问题',
       topic: '主题', memory: '记忆', line: '原文行', source: '来源版本', state: '状态',
       allMode: '全部主题', topicMode: '主题层级', memoryMode: '原文路径', overview: '返回主题图谱',
       entity: '实体', entities: '相关实体', entityCatalog: '实体', mention: '实体关联', aliases: '别名',
@@ -105,7 +110,7 @@
       compile: '编译出的检索词', candidates: '个候选片段', quoteBytes: '字节原文',
       sharedQuotes: '行共用引文',
       candidateSources: '份候选来源', compareRevision: '与当前版本对照',
-      readRevision: '查看此版本原文',
+      readRevision: '查看全部原文', topicSources: '该主题的原文来源', sourceLines: '行',
       anchorSources: '份来源命中名称',
       matchedTerms: '原文命中',
       inspectCandidates: '重查并查看候选', packingOrder: '引文选取顺序',
@@ -200,7 +205,9 @@
   }
   for (const term of snapshot.search_terms || []) {
     const part = comparison.find(part => part.key === term);
-    const label = part?.history ? `v${part.history.version}` : part?.question || term;
+    const subject = groupedSearch && term === snapshot.search_question
+      ? term.match(/^([^。？！?]+?)(?:。|\.\s)/)?.[1] : undefined;
+    const label = part?.history ? `v${part.history.version}` : part?.question || subject || term;
     const parents = snapshot.search_subquestion_branches?.includes(term) ? [snapshot.search_question] : [];
     topics.set(term, { id: 'term:' + term, kind: 'topic', code: term, label, parents, aliases: [], children: [], memories: [] });
   }
@@ -299,6 +306,29 @@
 
   function rankedMemories(topic) {
     return topic ? topicMemories(topic) : [...memories.values()];
+  }
+
+  function compareRecentSources(a, b) {
+    return Number(b.active !== false) - Number(a.active !== false)
+      || (b.opened_version ?? -1) - (a.opened_version ?? -1);
+  }
+
+  function newestTopicMemories(candidates) {
+    const version = memory => Math.max(-1, ...memory.sources
+      .filter(source => source.active !== false).map(source => source.opened_version ?? -1));
+    return [...candidates].sort((a, b) => version(b) - version(a));
+  }
+
+  function isImportedMemory(memory) {
+    return progress?.change?.paths?.some(path => memory.sources.some(source => source.checksum === path.checksum));
+  }
+
+  function importedFirst(candidates) {
+    if (!progress?.change?.paths?.length) return candidates;
+    const imported = [];
+    const other = [];
+    for (const memory of candidates) (isImportedMemory(memory) ? imported : other).push(memory);
+    return [...imported, ...other];
   }
 
   function neighbors(memory) {
@@ -433,6 +463,7 @@
       candidates = [...ranked.filter(memory => related.has(memory)), ...diverse, ...ranked];
     }
     if (searching && node?.kind === 'topic') candidates = [...candidates, ...memories.values()];
+    if (node?.kind === 'topic' && !searching) candidates = importedFirst(newestTopicMemories(candidates));
     if (focused) {
       const explicit = [memories.get(focused.supersedes), ...focused.corrections].filter(Boolean);
       candidates = [focused, ...explicit, ...neighbors(focused).keys(), ...candidates];
@@ -455,6 +486,12 @@
       for (const topic of memory.topics) if (topicSet.size < 9) topicSet.add(topic);
     }
     let quoted = focused?.evidence || [];
+    if (node?.kind === 'topic' && progress?.change?.paths?.length) {
+      quoted = [...new Set(selectedMemories.filter(isImportedMemory).flatMap(memory => memory.evidence))];
+    }
+    if (searching && node?.kind === 'topic' && progress?.saved_search) {
+      quoted = [...new Set(selectedMemories.flatMap(memory => memory.evidence))];
+    }
     if (isAnnotation(node) || node?.kind === 'source') {
       quoted = [...new Set(selectedMemories.flatMap(memory => memory.evidence))];
       if (node.kind === 'entity') quoted = MemoryScene.entityQuotes(node, quoted);
@@ -546,6 +583,13 @@
 
   function changeMode(next) {
     if (next === mode) return;
+    if (mode === 'all' && next !== 'all' && !browseTopic) {
+      const imported = progress?.change?.paths?.[0];
+      const topic = topics.get(imported?.topics?.[0]);
+      if (topic) {
+        currentTopic = browseTopic = selected = topic;
+      }
+    }
     mode = next;
     if (mode !== 'memory') {
       selected = currentTopic;
@@ -553,6 +597,7 @@
     }
     view.reset();
     render();
+    if (progress?.change?.paths?.length) playWorkflowEffect();
   }
 
   function button(text, onClick, className) {
@@ -583,7 +628,8 @@
     const term = catalogFilter.value.normalize('NFKC').trim().toLowerCase().replaceAll('_', ' ');
     const matched = nodes.filter(node => [node.label, node.reference, ...(node.aliases || [])]
       .some(label => label?.normalize('NFKC').toLowerCase().replaceAll('_', ' ').includes(term)))
-      .sort((a, b) => b.memories.length - a.memories.length || a.label.localeCompare(b.label));
+      .sort((a, b) => (catalog === 'source' ? compareRecentSources(a, b) : 0)
+        || b.memories.length - a.memories.length || a.label.localeCompare(b.label));
     if (!matched.length) {
       list.append(element('p', t(nodes.length ? 'noMatches' : empty), 'catalog-group'));
       return;
@@ -631,7 +677,7 @@
   }
 
   function renderNavigation() {
-    byId('nav-title').textContent = t(searching ? 'terms' : 'topics');
+    byId('nav-title').textContent = t(searching ? (snapshot.search_question ? 'questions' : 'terms') : 'topics');
     byId('coverage').textContent = searching || !topics.size
       ? number.format(snapshot.sources) + ' ' + t('workspace')
       : number.format(covered) + '/' + number.format(snapshot.sources) + ' ' + t('coverage');
@@ -812,6 +858,14 @@
       const all = rankedMemories(selected);
       header.append(element('p', number.format(all.length) + ' ' + t('records'), 'detail-meta'));
       if (searching && !all.length) panel.append(element('p', t('noMatches'), 'detail-meta'));
+      if (!searching) {
+        const originals = [...new Set(all.flatMap(memory => memory.sources))]
+          .filter(source => source.active !== false)
+          .sort((a, b) => compareRecentSources(a, b) || a.label.localeCompare(b.label));
+        section(panel, 'topicSources', originals.map(node => ({
+          node, note: node.line_count != null ? number.format(node.line_count) + ' ' + t('sourceLines') : undefined,
+        })));
+      }
       section(panel, 'parents', selected.parents.map(key => topics.get(key)).filter(Boolean));
       section(panel, 'children', selected.children.map(node => ({ node, note: number.format(topicMemories(node).length) + ' ' + t('records') })));
       section(panel, 'relatedTopics', sharedTopics(selected).map(([node, count]) => ({ node, note: number.format(count) + ' ' + t('shared') })));
@@ -819,7 +873,8 @@
       section(panel, 'facets', [...new Set(all.flatMap(memory => memory.facets))].map(node => ({ node, note: t(node.axis) })));
       if (mode !== 'memory' && all.length) panel.append(button(t('openEvidence'), () => changeMode('memory'), 'overview'));
       if (!searching || !recordingTimeline(panel, all)) {
-        section(panel, 'memories', mode === 'memory' ? all : selected.memories);
+        const entries = mode === 'memory' ? all : selected.memories;
+        section(panel, 'memories', searching ? entries : importedFirst(newestTopicMemories(entries)));
       }
       return;
     }
@@ -858,8 +913,12 @@
       header.append(element('p', metadata.join(' · '), 'detail-meta'));
       const count = selected.memories.filter(memory => memory.entities.length || memory.facets.length).length;
       header.append(element('p', count ? number.format(count) + ' ' + t('annotated') : t('unannotated'), 'detail-meta'));
-      const original = element('a', t('readRevision'), 'citation-link');
-      original.href = '?' + new URLSearchParams({ view: 'source', checksum: selected.checksum, lang: language });
+      const countLabel = selected.line_count != null ? ' · ' + number.format(selected.line_count) + ' ' + t('sourceLines') : '';
+      const original = element('a', t('readRevision') + countLabel, 'citation-link');
+      original.href = '?' + new URLSearchParams({
+        view: 'source', checksum: selected.checksum, lang: language,
+        mode: 'memory', node: selected.id, ...(currentTopic && !searching ? { topic: currentTopic.code } : {}),
+      });
       header.append(original);
       if (selected.active === false) {
         const link = element('a', t('compareRevision'), 'citation-link');
@@ -999,9 +1058,186 @@
     return details;
   }
 
+  const workflowCopy = {
+    zh: {
+      import: '记忆导入', query: '记忆查询', preview: '已预览来源', normalize: '已整理原文',
+      annotate: '已关联标注', commit: '已写入', verify: '已验证', compile: '已编译检索词',
+      search: '已找到原文', pending: '等待开始', failed: '阶段失败',
+      unchanged: '无新增记忆', empty: '没有命中原文', unavailable: '运行记录不可用',
+      changes: '查看变更', evidence: '查看引用', replay: '重播', locateTopic: '定位主题', importedPath: '新增原文',
+    },
+    en: {
+      import: 'Memory import', query: 'Memory search', preview: 'Sources previewed',
+      normalize: 'Original normalized', annotate: 'Annotations linked', commit: 'Committed',
+      verify: 'Verified', compile: 'Query compiled', search: 'Evidence found',
+      pending: 'Waiting to start', failed: 'Stage failed', unchanged: 'No new memory',
+      empty: 'No matching evidence', unavailable: 'Run unavailable',
+      changes: 'View change', evidence: 'View citations', replay: 'Replay',
+      locateTopic: 'Locate topic', importedPath: 'New source',
+    },
+  };
+
+  function renderFilterTrace() {
+    if (!filterTrace) return;
+    const zh = language === 'zh';
+    const overlay = byId('workflow-activity');
+    overlay.hidden = false;
+    byId('workflow-status').textContent = (zh ? '已标注片段' : 'Annotated passages')
+      + ' · ' + number.format(filterTrace.initial_count);
+    const replay = byId('workflow-replay');
+    replay.hidden = false;
+    replay.textContent = workflowCopy[language].replay;
+    const steps = byId('filter-trace-steps');
+    steps.hidden = false;
+    steps.replaceChildren(...filterTrace.steps.map((step, i) => {
+      const shown = i <= filterStep;
+      const item = element('li', `${t(step.axis || step.kind)}：${step.label} · ${shown ? number.format(step.count) : '…'}`);
+      if (i === filterStep) item.setAttribute('aria-current', 'step');
+      if (shown && step.count === 0) item.dataset.empty = 'true';
+      return item;
+    }));
+
+    byId('filter-trace-details')?.remove();
+    if (filterStep !== filterTrace.steps.length - 1) return;
+    const details = element('section', undefined, 'filter-trace-details');
+    details.id = 'filter-trace-details';
+    const count = number.format(filterTrace.reference_count);
+    details.append(element('h3', zh ? `同时符合三项 · ${count} 条原文` : `All three labels · ${count} citations`));
+    if (!filterTrace.reference_count) {
+      details.append(element('p', zh ? '没有片段同时标注这三项。' : 'No passage has all three labels.'));
+    } else {
+      const quotes = filterTrace.references.map(id => lines.get(id)).filter(Boolean);
+      citationSection(details, t('original'), quotes);
+    }
+    byId('detail').prepend(details);
+  }
+
+  function playFilterTrace() {
+    clearTimeout(filterTimer);
+    filterStep = -1;
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    function advance() {
+      filterStep = reduced ? filterTrace.steps.length - 1 : filterStep + 1;
+      const step = filterTrace.steps[filterStep];
+      view.playWorkflowEffect(step.count ? 'query' : null, step.count ? [[step.id]] : []);
+      renderFilterTrace();
+      if (filterStep + 1 < filterTrace.steps.length) filterTimer = setTimeout(advance, 950);
+    }
+    advance();
+  }
+
+  function renderWorkflow() {
+    if (!progress) return;
+    const labels = workflowCopy[language];
+    const search = progress.pipeline === 'context-search';
+    const done = [...progress.stages].reverse().find(stage => stage.state === 'completed');
+    const committed = progress.stages.find(stage => stage.name === 'commit');
+    const status = progress.state === 'failed' ? labels.failed
+      : search && done?.name === 'search' && !done.citations?.length ? labels.empty
+      : committed?.changed === false ? labels.unchanged : labels[done?.name || 'pending'];
+    byId('workflow-activity').hidden = false;
+    const statusElement = byId('workflow-status');
+    const message = labels[search ? 'query' : 'import'] + ' · ' + status;
+    if (statusElement.textContent !== message) statusElement.textContent = message;
+    const result = byId('workflow-result');
+    const replay = byId('workflow-replay');
+    const path = progress.change?.paths?.[0];
+    replay.hidden = !path && !(search && done?.citations?.length);
+    replay.textContent = labels.replay;
+    const topic = path?.topics?.[0];
+    const topicLink = byId('workflow-topic');
+    const sourceLink = byId('workflow-source');
+    const graph = { view: 'graph', lang: language, follow: progress.run_id };
+    topicLink.hidden = !topic;
+    sourceLink.hidden = !path;
+    if (topic) {
+      topicLink.href = '?' + new URLSearchParams({ ...graph, topic, mode: 'topic' });
+      topicLink.textContent = labels.locateTopic;
+    }
+    if (path) {
+      sourceLink.href = '?' + new URLSearchParams({
+        ...graph, ...(topic ? { topic } : {}), mode: 'memory', node: 'source:' + path.checksum,
+      });
+      sourceLink.textContent = labels.importedPath;
+    }
+    const changed = progress.change?.source_changes?.[0];
+    const target = progress.saved_search ? { view: 'graph', run: progress.saved_search, follow: progress.run_id }
+      : changed?.has_graph ? { view: 'changes', event: progress.commit_version, checksum: changed.checksum }
+      : progress.commit_version != null ? { view: 'activity', event: progress.commit_version } : null;
+    result.hidden = !target;
+    if (target) {
+      result.href = '?' + new URLSearchParams({ ...target, lang: language });
+      result.textContent = labels[search ? 'evidence' : 'changes'];
+    }
+  }
+
+  function playWorkflowEffect() {
+    if (!progress) return;
+    if (progress.change?.paths?.length) {
+      view.playWorkflowEffect('import', progress.change.paths.map(path => {
+        const source = sources.get(path.checksum);
+        return [
+          'source:' + path.checksum,
+          ...path.topics.map(code => topics.get(code)?.id).filter(Boolean),
+          ...(source?.memories || []).map(memory => memory.id),
+          ...(source?.memories || []).flatMap(memory => memory.evidence.map(line => line.id)),
+          ...path.lines.map(line => 'line:' + line.line_id),
+        ];
+      }));
+      return;
+    }
+    const citations = progress.stages.find(stage => stage.name === 'search')?.citations;
+    if (!citations?.length) return;
+    const paths = new Map();
+    for (const citation of citations) {
+      if (!paths.has(citation.checksum)) {
+        paths.set(citation.checksum, new Set(['source:' + citation.checksum]));
+      }
+      const path = paths.get(citation.checksum);
+      const line = lines.get(citation.line_id);
+      for (const memory of line?.memories || []) {
+        path.add(memory.id);
+        for (const topic of memory.topics) path.add(topic.id);
+      }
+      path.add('line:' + citation.line_id);
+    }
+    view.playWorkflowEffect('query', [...paths.values()].slice(0, 3));
+  }
+
+  function watchWorkflow() {
+    if (!progress || progress.state === 'completed') return;
+    setTimeout(async () => {
+      if (!document.hidden) {
+        try {
+          const params = new URLSearchParams({ progress: progress.run_id });
+          const response = await fetch('?' + params, { cache: 'no-store' });
+          if ([404, 410].includes(response.status)) {
+            byId('workflow-status').textContent = workflowCopy[language].unavailable;
+            for (const id of ['workflow-result', 'workflow-topic', 'workflow-source', 'workflow-replay']) {
+              byId(id).hidden = true;
+            }
+            view.playWorkflowEffect(null, []);
+            progress = undefined;
+            return;
+          }
+          if (!response.ok) throw new Error('Could not read progress');
+          const next = await response.json();
+          const newResult = next.saved_search !== progress.saved_search || next.commit_version !== progress.commit_version;
+          progress = next;
+          renderWorkflow();
+          if (newResult) playWorkflowEffect();
+        } catch {
+          // A local read can race the writer; retry without disturbing the graph.
+        }
+      }
+      watchWorkflow();
+    }, 800);
+  }
+
   function render() {
     displayed = mode === 'all' ? allTopicScene() : mode === 'topic' ? topicScene(currentTopic) : memoryScene(selected);
     document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en';
+    renderWorkflow();
     byId('title').textContent = t(searching ? 'searchTitle' : 'title');
     byId('graph-title').textContent = mode === 'all' ? t('allMode') : selected?.label || t('fallback');
     const scope = mode === 'all' ? rankedMemories()
@@ -1010,7 +1246,8 @@
     const passageCount = scope.filter(node => !node.fact_id).length;
     const nodeCount = displayed.layers.reduce((count, layer) => count + layer.nodes.length, 0);
     byId('graph-summary').textContent = [
-      number.format(topics.size) + ' ' + t(searching ? 'terms' : 'topics'),
+      number.format(groupedSearch ? snapshot.search_subquestion_branches.length : topics.size)
+        + ' ' + t(searching ? (snapshot.search_question ? 'questions' : 'terms') : 'topics'),
       number.format(passageCount) + ' ' + t('record'),
       number.format(nodeCount) + ' ' + t('scope'),
     ].join(' · ');
@@ -1111,8 +1348,16 @@
           const list = element('ul');
           for (const part of stats.subquestions) {
             const labels = [...new Set((part.indexed_routes || []).flatMap(route => route.labels))];
-            const item = [part.question, part.anchors.join(' / '), labels.length ? `${t('indexLabels')} ${labels.join(' / ')}` : ''];
-            list.append(element('li', item.filter(Boolean).join(' · ')));
+            const clues = [...new Set([...part.anchors, ...part.terms])];
+            const item = [part.question, clues.join(' / '), labels.length ? `${t('indexLabels')} ${labels.join(' / ')}` : ''];
+            const row = element('li', item.filter(Boolean).join(' · '));
+            for (const [id, question] of Object.entries(snapshot.search_branch_evidence || {})) {
+              const line = lines.get(id);
+              if (question === part.question && line) {
+                row.append(' ', button(`${line.conversation_id}#${line.segment_id}`, () => choose(line), 'citation-link'));
+              }
+            }
+            list.append(row);
           }
           trace.append(element('h4', t('subquestions')), list);
         }
@@ -1186,6 +1431,7 @@
     renderLegend();
     renderDetail();
     view.show(displayed, selected, mode);
+    renderFilterTrace();
   }
 
   byId('search-terms').value = snapshot.search_question || (snapshot.search_terms || []).join('，');
@@ -1316,6 +1562,22 @@
   byId('zoom-out').addEventListener('click', () => view.scale(1 / 1.18));
   byId('zoom-in').addEventListener('click', () => view.scale(1.18));
   byId('zoom-reset').addEventListener('click', () => view.reset());
+  byId('workflow-replay').addEventListener('click', filterTrace ? playFilterTrace : playWorkflowEffect);
+  for (const [id, next] of [['workflow-topic', 'topic'], ['workflow-source', 'memory']]) {
+    byId(id).addEventListener('click', event => {
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const path = progress?.change?.paths?.[0];
+      const node = next === 'topic' ? topics.get(path?.topics?.[0]) : sources.get(path?.checksum);
+      if (!node) return;
+      event.preventDefault();
+      mode = next;
+      choose(node);
+      playWorkflowEffect();
+    });
+  }
   render();
+  if (filterTrace) playFilterTrace();
+  else playWorkflowEffect();
+  watchWorkflow();
   if (query.has('at') && !searching && snapshot.search_available) byId('search-terms').focus();
 })();

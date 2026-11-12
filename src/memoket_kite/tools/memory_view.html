@@ -97,6 +97,14 @@
       <div class="viewport">
         <canvas id="graph" tabindex="0" aria-describedby="gesture" aria-label="Three-dimensional memory graph"></canvas>
         <div id="graph-labels" class="graph-labels"></div>
+        <div id="workflow-activity" class="workflow-activity" hidden>
+          <span id="workflow-status" role="status"></span>
+          <button id="workflow-replay" type="button" hidden></button>
+          <a id="workflow-topic" hidden></a>
+          <a id="workflow-source" hidden></a>
+          <a id="workflow-result" hidden></a>
+          <ol id="filter-trace-steps" class="filter-trace-steps" hidden></ol>
+        </div>
         <p id="empty" class="empty" hidden></p>
         <div id="legend" class="legend"></div>
         <div class="viewport-controls">

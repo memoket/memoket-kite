@@ -100,6 +100,15 @@ Ask Codex “Open my KITE memory graph.” KITE opens a local browser page on
 sidebar to expand its children. Drag to rotate, scroll or use the zoom buttons
 to zoom, and click the zoom percentage to reset.
 
+Ask “Index these transcripts with KITE and show the import in the graph” or
+“Use KITE to find the latest rollout decision and show the search in the
+graph.” With that request, Codex opens the graph for the current run before
+advancing its stages. After commit, new memory paths glow on the current
+graph. Search animates the links to the returned citations. The current view,
+rotation and zoom stay in place while the run advances. Click the result to
+open the existing change comparison or evidence view. The graph opens on
+request.
+
 Open **Entities**, **Facets**, or **Sources** beside the topic tree. In the
 evidence view, topics, entities, facets, passages, quoted lines, and source
 revisions occupy separate levels. Select a passage to see its original quotes,

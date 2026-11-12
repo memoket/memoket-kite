@@ -12,7 +12,10 @@
       compare: '原文版本对照',
       searchVersion: '在此版本检索',
       compareVersions: '对照变更前后的检索',
-      savedSearch: '打开当次检索原文',
+      savedSearch: '查看检索结果',
+      replaySearch: '在图谱中重播搜索',
+      selectedRun: '本次运行',
+      followRun: '在图谱中查看过程',
       changeDetails: '查看变更', back: '返回所有变更', searchPrevious: '检索提交前版本',
       sourceRevisions: '保留的来源变更', openSource: '查看此版本原文', compareSource: '对照提交前后的原文',
       mergeSources: '融合影响的原文来源', changeRun: '本次变更的流程',
@@ -43,7 +46,10 @@
       compare: 'Compare source revisions',
       searchVersion: 'Search this version',
       compareVersions: 'Compare search before and after',
-      savedSearch: 'Open saved search evidence',
+      savedSearch: 'View search results',
+      replaySearch: 'Replay search in graph',
+      selectedRun: 'Selected run',
+      followRun: 'Show progress in graph',
       changeDetails: 'View change', back: 'Back to all changes', searchPrevious: 'Search before this change',
       sourceRevisions: 'Retained source changes', openSource: 'Read this revision', compareSource: 'Compare before and after this commit',
       mergeSources: 'Original sources affected by this merge', changeRun: 'Workflow for this change',
@@ -168,7 +174,7 @@
     }
     const runs = byId('activity-runs');
     runs.hidden = details && !data.runs.length;
-    runs.replaceChildren(element('h3', t(details ? 'changeRun' : 'runs')));
+    runs.replaceChildren(element('h3', t(details ? 'changeRun' : data.selected_run ? 'selectedRun' : 'runs')));
     if (!data.runs.length) runs.append(element('p', t('emptyRuns')));
     for (const run of data.runs) {
       const row = element('section', undefined, 'activity-row');
@@ -188,6 +194,11 @@
       row.append(stages);
       if (run.saved_search) {
         row.append(link('savedSearch', { view: 'graph', run: run.saved_search }));
+      }
+      if (run.follow_run) {
+        const replay = run.saved_search ? { run: run.saved_search } : {};
+        row.append(link(run.saved_search ? 'replaySearch' : 'followRun',
+          { view: 'graph', follow: run.follow_run, ...replay }));
       }
       if (!details && run.commit_version != null) {
         row.append(link('changeDetails', { view: 'activity', event: run.commit_version }));

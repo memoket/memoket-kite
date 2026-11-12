@@ -137,6 +137,8 @@ button:focus-visible, input:focus-visible, canvas:focus-visible {
   font-size: 11px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .graph-label[aria-current="true"] { max-width: 180px; border-color: #91e7ce; color: #f4fffc; background: #163831; font-weight: 650; }
+.graph-label[data-workflow="import"] { border-color: #88f5b8; }
+.graph-label[data-workflow="query"] { border-color: #89d8ff; }
 .graph-label:hover, .graph-label:focus-visible { border-color: #a8e8db; color: #fff; }
 .empty { position: absolute; top: 42%; inset-inline: 12%; text-align: center; color: #c7dadc; }
 .legend {
@@ -227,6 +229,23 @@ summary { color: var(--teal); cursor: pointer; font-size: 12px; }
 .activity-stage small { display: block; margin-top: 3px; font-size: 11px; }
 .activity-stage[data-state="completed"] { background: #e3efe8; color: #125c50; }
 .activity-stage[data-state="failed"] { background: #f5e9e7; color: #8b413a; }
+.workflow-activity {
+  position: absolute; top: 38px; right: 12px; display: flex; flex-wrap: wrap;
+  gap: 6px 10px; max-width: calc(100% - 24px); padding: 5px 9px; border-radius: 6px;
+  background: #172634ed; color: #f1f7fa; font-size: 12px;
+}
+.workflow-activity a, #workflow-replay { color: #b9e7ff; }
+#workflow-replay {
+  padding: 0; border: 0; background: transparent; text-decoration: underline;
+}
+.filter-trace-steps {
+  flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 5px;
+  list-style: none; margin: 0; padding: 0;
+}
+.filter-trace-steps li { border: 1px solid #435567; border-radius: 4px; padding: 2px 6px; }
+.filter-trace-steps [aria-current="step"] { border-color: #89d8ff; background: #254457; }
+.filter-trace-steps [data-empty="true"] { color: #ffd1a5; }
+.filter-trace-details { border-bottom: 1px solid var(--line); padding-bottom: 10px; }
 .search-trace { display: grid; gap: 4px; margin-top: 10px; padding: 10px; background: var(--paper); border-radius: 7px; font-size: 12px; }
 .search-trace p { color: var(--muted); overflow-wrap: anywhere; }
 .term-coverage { display: flex; flex-wrap: wrap; gap: 4px 12px; list-style: none; padding: 0; margin: 0; }

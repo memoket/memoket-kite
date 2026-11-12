@@ -689,6 +689,15 @@ def _indexed_passages(index, evidence: dict) -> list[dict]:
 def memory_snapshot(workspace) -> dict:
     """Read all retained memories, with the same state semantics as a complete trace."""
     index = workspace.index()
+    opened_versions = {}
+    if workspace.db.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='revision_visibility'"
+    ).fetchone():
+        opened_versions = dict(
+            workspace.db.execute(
+                "SELECT checksum, opened_version FROM revision_visibility"
+            ).fetchall()
+        )
     superseded, _ = _supersession(index, "source", None)
     timeline = [_evidence(index, fid) for fid in index.facts]
     for row in timeline:
@@ -744,6 +753,8 @@ def memory_snapshot(workspace) -> dict:
                 "reference": record["conversation"]["metadata"]["source_reference"],
                 "title": record["conversation"].get("title"),
                 "day": source_day(record["conversation"]),
+                "opened_version": opened_versions.get(record["checksum"]),
+                "line_count": len(record["conversation"]["segments"]),
                 **{
                     key: record["conversation"][key]
                     for key in RECORDING_CLOCK_FIELDS

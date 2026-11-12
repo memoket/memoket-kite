@@ -80,6 +80,51 @@ def fixture(name):
     return json.loads((EXAMPLES / f"{name}.json").read_text())
 
 
+def test_graph_filter_trace_intersects_labels_on_active_passages():
+    def passage(ref, topic, entity, event, active=True):
+        return {
+            "active": active,
+            "topics": [topic],
+            "entities": [entity],
+            "facets": {"event": [event]},
+            "evidence": [ref],
+        }
+
+    snapshot = {
+        "topics": [{"code": "release", "aliases": ["Rollout"]}],
+        "entities": [{"code": "acme", "aliases": ["Acme Corp"]}],
+        "passages": [
+            passage("L1", "release", "acme", "payment"),
+            passage("L2", "release", "acme", "review"),
+            passage("L3", "release", "other", "payment"),
+            passage("L4", "support", "acme", "payment"),
+            passage("L5", "release", "acme", "payment", active=False),
+        ],
+    }
+    trace = viewer._filter_trace(snapshot, "Rollout", "Acme Corp", "event:payment")
+    assert trace["initial_count"] == 4
+    assert [step["count"] for step in trace["steps"]] == [3, 2, 1]
+    assert trace["references"] == ["L1"]
+
+
+def test_start_opens_workflow_graph_only_when_requested(work, monkeypatch):
+    directory, call = work
+    opened = []
+
+    def open_graph(path, *, open_browser, follow):
+        assert path == directory and open_browser
+        assert viewer._workflow_snapshot(path, follow)["state"] == "pending"
+        opened.append(follow)
+        return {"url": "http://127.0.0.1:8000/local/", "opened": True}
+
+    monkeypatch.setattr(cli, "view_memory", open_graph)
+    request = {"request": {"question": "What changed in the launch checklist?"}}
+    plain = call("start", "context-search", "--run-id", "plain", payload=request)
+    assert not opened and "viewer" not in plain
+    watched = call("start", "context-search", "--run-id", "watched", "--visualize", payload=request)
+    assert opened == ["watched"] and watched["viewer"]["opened"]
+
+
 def test_memory_viewer_reads_fresh_committed_state(work):
     directory, call = work
     with subprocess.Popen(
@@ -120,6 +165,8 @@ def test_memory_viewer_reads_fresh_committed_state(work):
             call("ingest", payload=kickoff)
             first = snapshot()
             assert first["version"] == first["sources"] == 1
+            assert first["revisions"][0]["opened_version"] == 1
+            assert first["revisions"][0]["line_count"] == 1
             assert first["states"]["owner"]["value"] == original
             assert first["facts"][0]["facets"] == {"event": ["release_decision"]}
             assert next(topic for topic in first["topics"] if topic["code"] == "onboarding")[
@@ -256,6 +303,9 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
                     if status != 200:
                         return body
                     assert response.getheader("Cache-Control") == "no-store"
+                    if query.startswith("?progress="):
+                        assert response.getheader("Content-Type").startswith("application/json")
+                        return json.loads(body)
                 return json.loads(
                     re.search(rb'id="kite-memory-data"[^>]*>(.*?)</script>', body, re.S)[1]
                 )
@@ -276,8 +326,16 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
             call(
                 "start", "context-search", "--run-id", "visual-search", payload={"request": request}
             )
+            follow_query = "?view=graph&follow=visual-search"
+            initial = read(follow_query)
+            assert initial["workflow_progress"]["state"] == "pending"
+            assert "workflow_progress" not in graph
             compiled = call("stage", "visual-search", "compile")["value"]
             assert compiled["terms"] == question["search_trace"]["terms"]
+            progress = read("?progress=visual-search")
+            assert progress["stages"][0]["terms"] == compiled["terms"]
+            assert progress["stages"][1]["state"] == "pending"
+            assert "saved_search" not in progress
             searched = call("stage", "visual-search", "search")["value"]
             assert searched["spans"][0]["evidence"][0]["conversation_id"] == "release"
             activity = read("?view=activity")
@@ -285,6 +343,10 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
             assert activity["events"][0]["can_search_version"]
             assert activity["runs"][0]["kind"] == "search"
             assert activity["runs"][0]["saved_search"] == "visual-search"
+            selected = read("?view=activity&run=visual-search")
+            assert selected["selected_run"] == "visual-search"
+            assert [run["follow_run"] for run in selected["runs"]] == ["visual-search"]
+            read("?view=activity&run=missing", status=404)
             assert [stage["name"] for stage in activity["runs"][0]["stages"]] == [
                 "compile",
                 "search",
@@ -294,7 +356,18 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
             baseline = searched["spans"][0]["evidence"][0]["revision_checksum"]
             saved_query = "?view=graph&run=visual-search"
             saved = read(saved_query)
+            followed = read(follow_query)
+            assert followed["workflow_progress"]["state"] == "completed"
+            assert followed["workflow_progress"]["stages"][1]["counts"]["cited_spans"] == 1
+            assert followed["evidence"] == initial["evidence"]
+            assert (
+                followed["workflow_progress"]["stages"][1]["citations"][0]["line_id"]
+                in saved["evidence"]
+            )
             assert saved["search_trace"] == question["search_trace"]
+            replay = read(saved_query + "&follow=visual-search")
+            assert replay["workflow_progress"]["saved_search"] == "visual-search"
+            assert replay["evidence"] == saved["evidence"]
             assert saved["evidence"] == question["evidence"]
             assert saved["saved_search"]["version"] == question["version"]
             scoped = read("?view=graph&term=checklist&matching_lines=1&conversation_id=release")
@@ -441,6 +514,7 @@ def test_memory_viewer_switches_between_live_graph_and_comparison(work, tmp_path
                 is None
             )
             assert not any(run.get("saved_search") for run in read("?view=activity")["runs"])
+            read("?progress=visual-search", status=410)
         finally:
             process.terminate()
             process.wait(timeout=10)
@@ -510,6 +584,10 @@ def test_source_indexing_rejects_changed_preview_and_shows_committed_stages(work
     assert (preview["sources_seen"], preview["source_lines"], preview["index_spans"]) == (1, 1, 1)
     pending = viewer._activity_snapshot(directory)["runs"][0]
     assert pending["run_id"] == "preview" and pending["stages"][0]["counts"]["index_spans"] == 1
+    progress = viewer._workflow_snapshot(directory, "preview")
+    assert progress["stages"][0]["state"] == "completed"
+    assert progress["stages"][1]["state"] == "pending"
+    assert "change" not in progress
     assert not viewer._activity_snapshot(directory)["events"]
     source["payload"]["text"] = "Revised launch checklist."
     path.write_text(json.dumps(batch))
@@ -517,6 +595,8 @@ def test_source_indexing_rejects_changed_preview_and_shows_committed_stages(work
     assert not call("sources")["sources"]
     failed = viewer._activity_snapshot(directory)["runs"][0]
     assert failed["stages"][1]["error"] == "stale_source"
+    failed = viewer._workflow_snapshot(directory, "preview")
+    assert failed["state"] == "failed" and "commit_version" not in failed
 
     saved = ("index-sources", "--input", str(path), "--save", "saved-batch")
     result = call(*saved)
@@ -529,6 +609,12 @@ def test_source_indexing_rejects_changed_preview_and_shows_committed_stages(work
     assert [stage["name"] for stage in run["stages"]] == ["preview", "commit", "verify"]
     assert run["stages"][-1]["counts"] == {"sources": 1, "source_lines": 1, "search_spans": 1}
     assert snapshot["events"][0]["source_changes"][0]["has_graph"]
+    progress = viewer._workflow_snapshot(directory, "saved-batch")
+    assert progress["commit_version"] == version
+    assert progress["change"]["source_changes"] == snapshot["events"][0]["source_changes"]
+    assert progress["change"]["paths"][0]["topics"] == ["rollout"]
+    assert progress["change"]["paths"][0]["lines"][0]["reference"] == "launch#text-1"
+    assert progress["stages"][-1]["counts"]["search_spans"] == 1
     assert "Revised launch checklist" not in json.dumps(snapshot)
     assert str(path) not in json.dumps(snapshot)
     assert "[launch#text-1] Revised launch checklist." in call(
@@ -550,6 +636,7 @@ def test_source_indexing_rejects_changed_preview_and_shows_committed_stages(work
     )
     call("stage", "verify-spans", "preview")
     assert not call("stage", "verify-spans", "commit")["value"]["changed"]
+    assert "change" not in viewer._workflow_snapshot(directory, "verify-spans")
     with workspace.Workspace.open(directory) as db:
         db.db.execute("DELETE FROM context_spans")
     call("stage", "verify-spans", "verify", error="integrity_error")
@@ -6435,6 +6522,42 @@ def test_implementation_schedule_follows_a_date_from_the_earlier_discussion(work
     followup = next(p for p in graph["passages"] if "What was the later date" in p["terms"])
     assert [graph["evidence"][line]["text"] for line in followup["evidence"]] == [
         "We moved to August 18 for the opening."
+    ]
+
+    task = "Prepare the Delta opening based on the latest confirmed plan. Run the preflight."
+    direct = call("context", "--question", task, "--compact")
+    saved = call("context", "--question", task, "--compact", "--save", "current-plan")
+    assert saved["compilation"]["current_plan_subject"] == "the Delta opening"
+    assert direct["spans"] == saved["spans"]
+    assert [
+        (span["source_date"], [line["segment_id"] for line in span["evidence"]])
+        for span in direct["spans"]
+    ] == [("2026-07-01", ["L2", "L3"]), ("2026-07-04", ["L2", "L3"])]
+    assert [line["conversation_id"] for span in direct["spans"] for line in span["evidence"]] == [
+        "original",
+        "original",
+        "revision",
+        "revision",
+    ]
+
+    task = (
+        "Summarize the Delta schedule. Which date did the read-through start? "
+        "What was the conservative opening date? What was the later opening date?"
+    )
+    pack = call("context", "--question", task, "--compact", "--explain", "--save", "milestones")
+    assert [part["anchors"] for part in pack["compilation"]["subquestions"]] == [["delta"]] * 3
+    assert [
+        (line["conversation_id"], line["segment_id"])
+        for span in pack["spans"]
+        for line in span["evidence"]
+    ] == [("original", "L2"), ("original", "L3"), ("revision", "L3")]
+    graph = viewer._snapshot(directory, [], run_id="milestones")
+    assert len(graph["search_subquestion_branches"]) == 3
+    replay = viewer._workflow_snapshot(directory, "milestones")
+    assert [line["reference"] for line in replay["stages"][1]["citations"]] == [
+        "original#L2",
+        "original#L3",
+        "revision#L3",
     ]
 
 

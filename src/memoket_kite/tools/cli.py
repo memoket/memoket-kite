@@ -8,6 +8,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from .activity import FOLLOW_STAGES
 from .audio import audio_source
 from .captions import CAPTION_FORMATS
 from .context import context_pack, question_pack, render_context
@@ -179,6 +180,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     view_options.add_argument("--compare", type=Path, help="compare saved graph snapshots")
     view_options.add_argument("--run", help="open the evidence from a saved search")
+    view_options.add_argument("--follow", metavar="RUN_ID", help="follow an import or search run")
     source_index = commands.add_parser("index-sources", help="index original sources without facts")
     index_input = source_index.add_mutually_exclusive_group()
     index_input.add_argument("--input", metavar="FILE", help="source batch JSON or - for stdin")
@@ -387,6 +389,9 @@ def _parser() -> argparse.ArgumentParser:
     begin.add_argument("pipeline")
     begin.add_argument("--run-id")
     begin.add_argument("--input", metavar="FILE", help="JSON input file or - for stdin")
+    begin.add_argument(
+        "--visualize", action="store_true", help="open the live graph for an import or search"
+    )
     stage = commands.add_parser("stage", help="advance or retry a single stage")
     stage.add_argument("run_id")
     stage.add_argument("stage_id")
@@ -694,6 +699,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             terms=args.term,
             comparison=args.compare,
             run_id=args.run,
+            follow=args.follow,
         ), None
     if args.command == "describe":
         return _describe(args.tool), None
@@ -954,6 +960,19 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
     supplied = (
         _query_object(args) if args.command == "query" else _object(getattr(args, "input", None))
     )
+    if args.command == "start":
+        if args.visualize and args.pipeline not in FOLLOW_STAGES:
+            raise ToolError("invalid_input", "--visualize supports import and context-search runs")
+        with Workspace.open(args.workspace) as workspace:
+            context = Context(root, workspace, args.pipeline, extension_root=extension_root)
+            checkpoint = start(context, supplied, args.run_id)
+        if not args.visualize:
+            return checkpoint, None
+        try:
+            viewer = view_memory(args.workspace, open_browser=True, follow=checkpoint["run_id"])
+        except (OSError, ToolError) as error:
+            viewer = {"error": str(error)}
+        return {**checkpoint, "viewer": viewer}, None
     if args.command in {"query", "evidence", "deletion-impact"}:
         with Workspace.open(args.workspace, read_only=True) as workspace:
             if args.command == "deletion-impact":
@@ -984,8 +1003,6 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             getattr(args, "allow_provider", False),
             extension_root=extension_root,
         )
-        if args.command == "start":
-            return start(context, supplied, args.run_id), None
         if args.command == "stage":
             result, error = advance(context, args.run_id, args.stage_id, supplied)
             if args.summary:

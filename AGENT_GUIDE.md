@@ -58,6 +58,16 @@ commit's original citations. For a preview before the write, start
 `selection` accepts an absolute `transcripts` directory or `batch_file`,
 with optional `recording_metadata` for transcript imports.
 
+If the user asks to watch an import or a search, start the workflow and open
+`kite-tool view --follow RUN_ID` before advancing the first stage. Pass
+`--no-open` to use the returned URL in a host browser, or use
+`kite-tool start PIPELINE --input FILE --visualize` to start and open it in
+one command. Follow the same run ID through all stages. New memory paths glow
+on the existing graph after commit. Search results animate the cited paths on
+the same view. Open the change or citations from the graph to inspect details.
+This works for `source-indexing`, `memory-ingestion`,
+`memory-update`, and `context-search`.
+
 Use `kite-tool topics` to find queryable topic codes, aliases and parent topics.
 `kite-tool topics --contains "first run"` searches normalized codes and aliases.
 Each `direct_fact_count` counts retained facts assigned to that exact topic,
@@ -94,6 +104,11 @@ original packing ranks. Without `--text`, these details are returned in JSON.
 For a question about a schedule change, KITE can follow a date and topic
 mentioned again in a later recording and quote a nearby line about the change.
 The graph shows the repeated date and links to the original turns.
+An instruction to prepare something using the latest confirmed plan can
+compile to the task subject. When a dated proposal and a later change can be
+linked through that subject and a repeated calendar date, compact search
+returns the two original passages and their nearby context. Read the evidence
+to verify what the change authorizes and whether the scope is sufficient.
 For several subquestions about a decision's evolution, KITE can reserve
 original evidence for each subquestion within one quote budget. The saved
 candidate trace names the subquestion and links to the selected passage.

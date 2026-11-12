@@ -14,11 +14,13 @@ from secrets import token_urlsafe
 from time import monotonic
 from urllib.parse import parse_qs, urlencode
 
-from .activity import memory_activity
+from memoket_kite.core.vocab import norm_code
+
+from .activity import memory_activity, workflow_progress
 from .change_graph import change_comparison
 from .context import _tokens, context_enabled, context_pack, question_pack
 from .contracts import ToolError
-from .index import revision_id
+from .index import SPAN_FACET_AXES, revision_id
 from .ingest import RECORDING_CLOCK_FIELDS
 from .retrieve import compare_revisions, memory_snapshot
 from .workflow import saved_context_search, source_revision_page
@@ -26,6 +28,57 @@ from .workspace import Workspace
 
 IDLE_TIMEOUT = 3600
 _RECORDING_DATE_PARAMS = ("start_date", "end_date", "compare_start_date", "compare_end_date")
+_FILTER_TRACE_PARAMS = ("trace_topic", "trace_entity", "trace_facet")
+
+
+def _filter_trace(snapshot: dict, topic: str, entity: str, facet: str) -> dict:
+    def resolve(items, name):
+        key = norm_code(name)
+        for item in items:
+            if key in {item["code"], *(norm_code(alias) for alias in item["aliases"])}:
+                return item["code"]
+        raise ToolError("invalid_input", f"unknown graph label: {name}")
+
+    topic_code = resolve(snapshot["topics"], topic)
+    entity_code = resolve(snapshot["entities"], entity)
+    axis, _, value = facet.partition(":")
+    if axis not in (*SPAN_FACET_AXES, "duration") or not value.strip():
+        raise ToolError("invalid_input", "use a facet such as event:payment")
+    value = value.strip().upper() if axis == "duration" else norm_code(value)
+    if not value:
+        raise ToolError("invalid_input", "facet value is empty")
+
+    active = [passage for passage in snapshot["passages"] if passage["active"]]
+    in_topic = [passage for passage in active if topic_code in passage["topics"]]
+    with_entity = [passage for passage in in_topic if entity_code in passage["entities"]]
+
+    def matches_facet(passage):
+        labels = passage["facets"].get(axis, ())
+        return value == labels if isinstance(labels, str) else value in labels
+
+    matches = [passage for passage in with_entity if matches_facet(passage)]
+    refs = list(dict.fromkeys(ref for passage in matches for ref in passage["evidence"]))
+    return {
+        "initial_count": len(active),
+        "steps": [
+            {"kind": "topic", "id": f"topic:{topic_code}", "label": topic, "count": len(in_topic)},
+            {
+                "kind": "entity",
+                "id": f"entity:{entity_code}",
+                "label": entity,
+                "count": len(with_entity),
+            },
+            {
+                "kind": "facet",
+                "axis": axis,
+                "id": f"facet:{axis}:{value}",
+                "label": value,
+                "count": len(matches),
+            },
+        ],
+        "reference_count": len(refs),
+        "references": refs[:12],
+    }
 
 
 def _recording_dates(plan: dict) -> dict:
@@ -226,6 +279,7 @@ def _search_snapshot(
         "search_available": True,
         "search_terms": [*terms, *dict.fromkeys(subquestion_branches.values())],
         "search_subquestion_branches": list(dict.fromkeys(subquestion_branches.values())),
+        "search_branch_evidence": subquestion_branches,
         "search_question": question,
         "search_comparison": comparison,
         "search_version_comparison": version_comparison,
@@ -293,6 +347,7 @@ def _snapshot(
     matching_lines: bool = False,
     explain: bool = False,
     run_id: str | None = None,
+    filter_trace: tuple[str, str, str] | None = None,
 ) -> dict:
     try:
         with Workspace.open(directory, read_only=True) as workspace:
@@ -340,8 +395,11 @@ def _snapshot(
                     **_search_snapshot(workspace, terms, question, scope),
                     "history_origin": origin,
                 }
+            snapshot = memory_snapshot(workspace)
+            if filter_trace is not None:
+                snapshot["filter_trace"] = _filter_trace(snapshot, *filter_trace)
             return {
-                **memory_snapshot(workspace),
+                **snapshot,
                 "search_available": searchable or historical_search,
                 "history_origin": origin,
             }
@@ -385,10 +443,14 @@ def _read_comparison(path: Path) -> dict:
         raise ToolError("invalid_input", "could not read graph comparison snapshots") from exc
 
 
-def _activity_snapshot(directory: Path, event_version: int | None = None, offset: int = 0) -> dict:
+def _activity_snapshot(
+    directory: Path, event_version: int | None = None, offset: int = 0, run_id: str | None = None
+) -> dict:
     try:
         with Workspace.open(directory, read_only=True) as workspace:
-            return memory_activity(workspace, event_version=event_version, offset=offset)
+            return memory_activity(
+                workspace, event_version=event_version, offset=offset, run_id=run_id
+            )
     except ToolError as exc:
         if (
             exc.code != "not_found"
@@ -406,6 +468,11 @@ def _version_parameter(params: dict, name: str) -> int | None:
     if not value.isascii() or not value.isdigit() or len(value) > 19 or int(value) >= 2**63:
         raise ValueError("invalid workspace version")
     return int(value)
+
+
+def _workflow_snapshot(directory: Path, run_id: str) -> dict:
+    with Workspace.open(directory, read_only=True) as workspace:
+        return workflow_progress(workspace, run_id)
 
 
 def _serve(directory: Path, comparison: Path | None = None) -> None:
@@ -438,15 +505,33 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
         def log_message(self, format, *args) -> None:
             pass
 
+        def send_progress(self, progress: dict) -> None:
+            body = json.dumps(progress, ensure_ascii=False).encode("utf-8")
+            try:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
         def do_GET(self) -> None:
             nonlocal last_access
             path, _, query = self.path.partition("?")
             if path != route or self.headers.get("Host") != host:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            last_access = monotonic()
             try:
                 params = parse_qs(query, max_num_fields=24)
+                if "progress" in params:
+                    if set(params) != {"progress"} or len(params["progress"]) != 1:
+                        raise ValueError("invalid workflow progress request")
+                    self.send_progress(_workflow_snapshot(directory, params["progress"][0]))
+                    return
+                last_access = monotonic()
                 terms = list(dict.fromkeys(params.get("term", ())))
                 question = params.get("q", [None])[0]
                 compare_with = params.get("q2", [None])[0]
@@ -488,6 +573,27 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                 ):
                     raise ValueError("invalid terms")
                 requested_view = params.get("view", [None])[0]
+                follow = params.get("follow", [None])[0]
+                trace = None
+                if any(key in params for key in _FILTER_TRACE_PARAMS):
+                    if (
+                        requested_view != "graph"
+                        or follow is not None
+                        or run_id is not None
+                        or terms
+                        or question is not None
+                        or any(
+                            len(params.get(key, ())) != 1 or len(params[key][0]) > 128
+                            for key in _FILTER_TRACE_PARAMS
+                        )
+                    ):
+                        raise ValueError("invalid graph filters")
+                    trace = tuple(params[key][0] for key in _FILTER_TRACE_PARAMS)
+                progress = None
+                if follow is not None:
+                    if requested_view not in (None, "graph") or len(params["follow"]) != 1:
+                        raise ValueError("invalid workflow view parameters")
+                    progress = _workflow_snapshot(directory, follow)
                 if requested_view == "activity":
                     view, snapshot = (
                         "activity",
@@ -495,6 +601,7 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                             directory,
                             _version_parameter(params, "event"),
                             _version_parameter(params, "offset") or 0,
+                            run_id,
                         ),
                     )
                 elif requested_view == "revision":
@@ -532,7 +639,13 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                         )
                 elif comparison_data is not None and (
                     requested_view == "changes"
-                    or (requested_view is None and not terms and not question and run_id is None)
+                    or (
+                        requested_view is None
+                        and not terms
+                        and not question
+                        and run_id is None
+                        and follow is None
+                    )
                 ):
                     view, snapshot = "changes", comparison_data
                 else:
@@ -559,10 +672,13 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                             matching_lines=matching_lines == ["1"],
                             explain=explain == ["1"],
                             run_id=run_id,
+                            filter_trace=trace,
                         ),
                     )
                 if comparison_data is not None:
                     snapshot = {**snapshot, "comparison_available": True}
+                if progress is not None:
+                    snapshot["workflow_progress"] = progress
             except (ValueError, ToolError) as exc:
                 if isinstance(exc, ValueError):
                     self.send_error(HTTPStatus.BAD_REQUEST, "Invalid memory view parameters")
@@ -610,7 +726,8 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                 self.send_header(
                     "Content-Security-Policy",
                     f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; "
-                    "base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+                    "base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+                    + ("; connect-src 'self'" if progress is not None else ""),
                 )
                 self.end_headers()
                 self.wfile.write(body)
@@ -632,12 +749,15 @@ def view_memory(
     terms: list[str] | None = None,
     comparison: Path | None = None,
     run_id: str | None = None,
+    follow: str | None = None,
 ) -> dict:
     if terms and (len(terms) > 3 or any(not term.strip() or len(term) > 128 for term in terms)):
         raise ToolError("invalid_input", "use up to three nonempty search phrases")
     if run_id is not None:
         with Workspace.open(directory, read_only=True) as workspace:
             saved_context_search(workspace, run_id)
+    if follow is not None:
+        _workflow_snapshot(directory, follow)
     command = [sys.executable, "-m", __name__, str(directory.expanduser().resolve())]
     if comparison is not None:
         comparison = comparison.expanduser().resolve()
@@ -663,6 +783,8 @@ def view_memory(
         url += "?" + urlencode({"term": terms}, doseq=True)
     if run_id is not None:
         url += "?" + urlencode({"view": "graph", "run": run_id})
+    if follow is not None:
+        url += "?" + urlencode({"view": "graph", "follow": follow})
 
     opened = False
     if open_browser:

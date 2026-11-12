@@ -21,6 +21,12 @@ or only covers a conditional case, repeat `--term` in one matching-line lookup.
 Add `--conversation-id` when you know the recording. Read nearby lines with
 `evidence 'ID#SEGMENT' --context 2 --text`.
 State any unresolved gaps.
+If the user explicitly asks to watch the search in the graph, start a
+`context-search` run with `{"request":{"question":"…","explain":true}}`.
+Open `view --follow RUN_ID` before advancing `compile` and `search`.
+Use `view --follow RUN_ID --no-open` to obtain the URL if the host can open
+it in its own browser. Keep the same workspace and run ID across stages.
+The graph animates the cited paths in place and links to the saved evidence.
 When asked to save the exact search for inspection, add `--save` and open the
 returned ID with `view --run ID`.
 For comparisons across questions or workspace versions, date filters, and decision history, read
@@ -34,6 +40,8 @@ For comparisons across questions or workspace versions, date filters, and decisi
 - For setup or a demo, run `bash "$KITE" demo --decision-story`. Show the
   changed decision, the later proposal, and the original citation.
 - For an authorized import or source update, read [import.md](references/import.md).
+- Open the graph during import only when the user asks to see it. Start the
+  import workflow, open `view --follow RUN_ID`, then advance its stages.
 - For a requested deletion or topic merge, read `agent_guide` from
   `bash "$KITE" resources`. Validate `memory-deletion` or
   `memory-consolidation` and follow its stage skills.

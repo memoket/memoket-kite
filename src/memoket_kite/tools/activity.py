@@ -1,7 +1,8 @@
 """Project committed changes and workflow stages for the memory viewer."""
 
-from .contracts import ToolError, decode_object
-from .workflow import _artifact, committed_topic_merge
+from .contracts import ID, ToolError, decode_object, validate
+from .index import revision_id
+from .workflow import _artifact, _run, committed_topic_merge
 
 _PIPELINES = {
     "source-indexing": "index",
@@ -19,9 +20,120 @@ _BATCH_STAGE_FIELDS = {
     "commit": ("sources_changed", "sources_seen", "elapsed_time_repairs"),
     "verify": ("sources", "source_lines", "search_spans"),
 }
+FOLLOW_STAGES = {
+    "source-indexing": ("preview", "commit", "verify"),
+    "memory-ingestion": ("normalize", "annotate", "commit", "verify"),
+    "memory-update": ("normalize", "annotate", "commit", "verify"),
+    "context-search": ("compile", "search"),
+}
 
 
-def memory_activity(workspace, *, event_version: int | None = None, offset: int = 0) -> dict:
+def workflow_progress(workspace, run_id: str) -> dict:
+    """Read one workflow's durable progress without exposing its stored inputs."""
+    _, checkpoint = _run(workspace, run_id)
+    pipeline = checkpoint["pipeline_id"]
+    if pipeline not in FOLLOW_STAGES:
+        raise ToolError("invalid_input", "this workflow does not support live viewing")
+    if checkpoint["state"] == "invalidated":
+        raise ToolError("invalidated_run", "the workflow was invalidated by deletion")
+
+    progress = {
+        "run_id": run_id,
+        "pipeline": pipeline,
+        "state": checkpoint["state"],
+        "stages": [],
+    }
+    for name in FOLLOW_STAGES[pipeline]:
+        state = checkpoint["stages"][name]
+        stage = {"name": name, "state": state["state"], "attempts": state["attempts"]}
+        progress["stages"].append(stage)
+        if state["error"]:
+            stage["error"] = state["error"]
+        if state["state"] != "completed":
+            continue
+        manifest = state["artifact"]
+        stage["version"] = manifest["memory_version"]
+        stage["completed_at"] = manifest["created_at"]
+        if pipeline == "source-indexing" or name in {"compile", "search", "commit"}:
+            value = _artifact(workspace, checkpoint, name)["value"]
+        if pipeline == "source-indexing":
+            stage["counts"] = {key: value[key] for key in _BATCH_STAGE_FIELDS[name] if key in value}
+        if name == "compile":
+            stage["terms"] = value["terms"]
+            if value.get("comparison_terms"):
+                stage["comparison_terms"] = value["comparison_terms"]
+        if name == "search":
+            parts = value.get("parts", [value])
+            stage["counts"] = {
+                "candidate_spans": sum(part["candidate_spans"] for part in parts),
+                "cited_spans": sum(len(part["spans"]) for part in parts),
+                "quote_bytes": value["quote_bytes"],
+            }
+            stage["citations"] = [
+                {
+                    "reference": f"{line['conversation_id']}#{line['segment_id']}",
+                    "line_id": line["source_line_id"],
+                    "checksum": line["revision_checksum"],
+                }
+                for part in parts
+                for span in part["spans"][:3]
+                for line in span["evidence"][:3]
+            ]
+            progress["saved_search"] = run_id
+        if name == "commit":
+            stage["changed"] = value["changed"]
+            if value["changed"]:
+                progress["commit_version"] = value["memory_version"]
+    if "commit_version" in progress:
+        progress["change"] = _workflow_change(workspace, progress["commit_version"])
+    return progress
+
+
+def _workflow_change(workspace, version):
+    db = workspace.db
+    event = db.execute(
+        "SELECT kind, version FROM memory_activity WHERE version=?", (version,)
+    ).fetchone()
+    if event is None:
+        return {}
+    topic_graph = db.execute(
+        "SELECT 1 FROM memory_activity_graphs WHERE version=? AND checksum=''", (version,)
+    ).fetchone()
+    change = _changed_sources(db, dict(event), 0, recorded=True, graphs=True)
+    paths = []
+    for source in change["source_changes"][:3]:
+        graph = db.execute(
+            "SELECT after FROM memory_activity_graphs WHERE version=? AND checksum=?",
+            (version, source["checksum"]),
+        ).fetchone()
+        passages = decode_object(graph["after"])["passages"] if graph else []
+        record = workspace.record(source["checksum"])
+        segments = record["conversation"]["segments"]
+        position = source.get("segment_offset") or (
+            passages[0]["offsets"][0] - 1 if passages else 0
+        )
+        paths.append(
+            {
+                "checksum": source["checksum"],
+                "label": source["title"] or source["conversation_id"],
+                "topics": sorted({topic for passage in passages for topic in passage["topics"]}),
+                "lines": [
+                    {
+                        "line_id": f"{revision_id(record)}L{offset + 1}",
+                        "reference": f"{source['conversation_id']}#{segment['segment_id']}",
+                    }
+                    for offset, segment in enumerate(segments[position : position + 2], position)
+                ],
+            }
+        )
+    return {**change, "topic_graph": topic_graph is not None, "paths": paths}
+
+
+def memory_activity(
+    workspace, *, event_version: int | None = None, offset: int = 0, run_id: str | None = None
+) -> dict:
+    if run_id is not None:
+        validate(ID, run_id, "run ID")
     db = workspace.db
     tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     events = []
@@ -63,6 +175,9 @@ def memory_activity(workspace, *, event_version: int | None = None, offset: int 
                 "AND json_extract(value, '$.changed')=1) "
             )
             args += (event_version, stage)
+        if run_id is not None:
+            commit_scope += "AND id=? "
+            args += (run_id,)
         for row in db.execute(
             "SELECT id, checkpoint FROM runs "
             f"WHERE json_extract(checkpoint, '$.pipeline_id') IN ({placeholders}) "
@@ -77,6 +192,7 @@ def memory_activity(workspace, *, event_version: int | None = None, offset: int 
                 "state": record["state"],
                 "version": record["memory_version"],
                 "updated_at": record["updated_at"],
+                **({"follow_run": row["id"]} if record["pipeline_id"] in FOLLOW_STAGES else {}),
                 **(
                     {"saved_search": row["id"]}
                     if record["pipeline_id"] == "context-search"
@@ -105,6 +221,8 @@ def memory_activity(workspace, *, event_version: int | None = None, offset: int 
                     if name == "commit" and value["changed"]:
                         run["commit_version"] = value["memory_version"]
             runs.append(run)
+    if run_id is not None and not runs:
+        raise ToolError("not_found", "memory workflow run was not found")
     # Normalized checkpoints are serialized with sorted keys, so recover the built-in stage order.
     stage_order = {
         name: i
@@ -181,6 +299,7 @@ def memory_activity(workspace, *, event_version: int | None = None, offset: int 
         "events": events,
         "runs": runs,
         "selected_event": event_version,
+        **({"selected_run": run_id} if run_id is not None else {}),
     }
 
 
