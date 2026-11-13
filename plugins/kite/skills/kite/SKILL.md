@@ -1,6 +1,6 @@
 ---
 name: kite
-description: Use team conversations as cited context for Codex tasks. Recall decisions, see what changed, import transcripts, and explore the KITE memory graph.
+description: Find missing cited conversation context, inspect the graph, or manage KITE memories. When a KITE evidence pack already covers the task, use that pack directly. Load this skill for missing evidence or a requested KITE operation.
 ---
 
 Run `bash "$KITE" COMMAND` from the current project. Substitute the absolute

@@ -7231,6 +7231,98 @@ def test_short_named_task_follows_an_unambiguous_parameter_reference(work, varia
     assert context._compile_short_handoff(question + " Include export settings.") is None
 
 
+@pytest.mark.parametrize("variation", ["valid", "competing", "after-date", "budget", "same-line"])
+def test_compact_opening_guidance_joins_original_lines_in_the_named_recording(work, variation):
+    directory, call = work
+    question = "DTR产品演示里，教练说应该从哪一部分讲起？"
+    scope = "Next we will rehearse the DTR product presentation."
+    guidance = "Feedback: begin with the customer's constraint."
+    if variation == "budget":
+        scope += " The rehearsal includes several review exercises." * 10
+    source = [scope, guidance] if variation != "same-line" else ["DTR feedback: begin with a map."]
+    recordings = [
+        ("rehearsal", "2026-05-03", source),
+        ("different-project", "2026-05-03", ["NFX feedback: begin with the maintenance log."]),
+        ("similar-name", "2026-05-03", ["DTR2 feedback: begin with the historical overview."]),
+        (
+            "wrong-turn",
+            "2026-05-03",
+            ["For DTR, the feedback was lengthy. We start with lunch."],
+        ),
+        ("negative", "2026-05-03", ["DTR feedback: do not start with an org chart."]),
+        ("separate-sentences", "2026-05-03", ["DTR feedback was sent. Start with lunch."]),
+    ]
+    if variation in {"competing", "after-date"}:
+        recordings.append(
+            ("second-rehearsal", "2026-05-04", ["DTR advice: open with the checklist."])
+        )
+    sources = []
+    for identity, day, lines in recordings:
+        original = text_input(identity, "unused", date=day)["source"]
+        original["format"] = "transcript"
+        original["payload"].pop("text")
+        original["payload"]["segments"] = [
+            {"segment_id": f"L{number}", "text": text} for number, text in enumerate(lines, 1)
+        ]
+        sources.append({"source": original})
+    call("index-sources", payload={"sources": sources})
+    request = {"question": question, "compact": True, "explain": True}
+    if variation == "after-date":
+        request["end_date"] = "2026-05-03"
+    if variation == "budget":
+        request["max_bytes"] = 512
+    call("start", "context-search", "--run-id", "opening", payload={"request": request})
+    call("stage", "opening", "compile")
+    compiled = viewer._workflow_snapshot(directory, "opening")["stages"][0]
+    assert compiled["opening_scope"] == {"subject": "DTR"}
+    result = call("stage", "opening", "search")["value"]
+    selections = [
+        row["selection"] for row in result["packing_trace"]["candidates"] if "selection" in row
+    ]
+    if variation in {"competing", "budget"}:
+        assert not {"recording_scope", "opening_guidance"} & {row["reason"] for row in selections}
+        return
+    lines = [line for span in result["spans"] for line in span["evidence"]]
+    assert [line["text"] for line in lines] == source
+    assert {line["conversation_id"] for line in lines} == {"rehearsal"}
+    assert result["quote_bytes"] == sum(len(text.encode()) for text in source)
+    graph = viewer._snapshot(directory, [], run_id="opening")
+    routes = [route for passage in graph["passages"] for route in passage["retrieval"]]
+    assert {route["line_id"] for route in routes} == {line["source_line_id"] for line in lines}
+    assert [row["reason"] for row in selections] == (
+        ["opening_guidance"]
+        if variation == "same-line"
+        else ["recording_scope", "opening_guidance"]
+    )
+    assert selections[-1]["clues"] == (
+        ["DTR", "feedback", "begin with"]
+        if variation == "same-line"
+        else ["feedback", "begin with"]
+    )
+    assert not context._compile_opening_scope(question + "再补上结尾。")
+    assert not context._compile_opening_scope("DTR 和 NFX 的反馈里，演示该从哪里讲起？")
+    assert not context._compile_opening_scope("DTR 的教练说演示几点开始？")
+
+
+def test_compact_opening_guidance_finds_a_chinese_original_from_an_english_question(work):
+    _, call = work
+    original = "RGV 彩排反馈，建议先从社区现场遇到的困难讲起。"
+    call(
+        "index-sources",
+        payload={"sources": [{"source": text_input("rehearsal", original)["source"]}]},
+    )
+    result = call(
+        "context",
+        "--compact",
+        "--explain",
+        "--question",
+        "In the RGV rehearsal feedback, what should the pitch begin with?",
+    )
+    assert result["compilation"]["opening_scope"] == {"subject": "RGV"}
+    assert result["spans"][0]["evidence"][0]["text"] == original
+    assert result["packing_trace"]["candidates"][0]["selection"]["clues"] == ["RGV", "反馈", "先从"]
+
+
 def test_compact_recorded_value_keeps_dated_user_turns_and_their_original_order(work):
     directory, call = work
 

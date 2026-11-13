@@ -110,6 +110,9 @@ from another recording can move up when it matches the leading clues plus
 an additional clue in its original text. The graph shows those matches.
 The compile trace also shows when a question word was matched through an
 English plural or verb form found in the original text.
+A short question about how to start an answer or presentation can use a
+recorded identifier to scope Chinese or English coaching phrases. In replay,
+open the scope match and the original advice to verify the two steps.
 For related Chinese questions, the compile trace shows repeated clues.
 The graph marks nearby follow-up quotes from the same recording that match
 one of those clues.

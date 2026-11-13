@@ -85,6 +85,8 @@ def workflow_progress(workspace, run_id: str) -> dict:
                 stage["recorded_value"] = value["recorded_value"]
             if value.get("named_duration"):
                 stage["named_duration"] = value["named_duration"]
+            if value.get("opening_scope"):
+                stage["opening_scope"] = value["opening_scope"]
         if name == "search":
             parts = value.get("parts", [value])
             stage["counts"] = {

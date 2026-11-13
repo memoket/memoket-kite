@@ -323,6 +323,44 @@ _RECORDED_VALUE_TAIL = re.compile(
     r"(?P<measure>limits?|thresholds?|budgets?|ratios?)[.!]?\s*$",
     re.I,
 )
+_GUIDANCE_QUESTION = re.compile(
+    r"辅导|教练|建议|反馈|指导|\b(?:coach\w*|feedback|advice|suggest\w*|recommend\w*)\b",
+    re.I,
+)
+_PRESENTATION_QUESTION = re.compile(
+    r"回答|答题|陈述|演示|发言|讲解|介绍|报告|"
+    r"\b(?:answer\w*|response\w*|pitch\w*|present\w*|speech|demo\w*)\b",
+    re.I,
+)
+_OPENING_QUESTION = re.compile(
+    r"从(?:哪|什么|哪一)[^，。？?]{0,12}(?:讲起|说起|开始|切入)|"
+    r"(?:开头|起头)(?:应该|应当|要|先)?(?:讲|说|放|写)(?:什么|哪)|"
+    r"\b(?:what|which)\b[^?.!]{0,100}\b(?:start|begin|lead|open)\s+with\b",
+    re.I,
+)
+_GUIDANCE_CLUES = (
+    "feedback",
+    "advice",
+    "suggestion",
+    "suggest",
+    "recommendation",
+    "recommend",
+    "反馈",
+    "建议",
+)
+_OPENING_CLUES = (
+    "start with",
+    "begin with",
+    "lead with",
+    "open with",
+    "start by",
+    "先从",
+    "开头先",
+)
+_OPENING_NEGATION = re.compile(
+    r"\b(?:not|never|don t|shouldn t|avoid)\b|不 要|不 应|不 能|切 勿|别 "
+)
+_GUIDANCE_SENTENCE_BREAK = re.compile(r"[.!?。！？;；]")
 _NAMED_DURATION = re.compile(r"\b(?:duration|driving time|travel time|time spent)\b", re.I)
 _DURATION_EVENT = re.compile(r"\b(?:completed|recorded|past|actual)\b", re.I)
 _DURATION_OUTPUT = re.compile(
@@ -448,6 +486,7 @@ CONTEXT_PLAN = object_schema(
             ]
         },
         "recorded_value": object_schema({"subject": TEXT, "measure": TEXT}),
+        "opening_scope": object_schema({"subject": TEXT}),
         "named_duration": object_schema(
             {
                 "subjects": array(object_schema({"name": TEXT}, {"description": TEXT}), 2, 4),
@@ -839,6 +878,8 @@ def _compile_questions(workspace, indexes, request, search, compare_search):
                 result["recorded_value"] = recorded
             elif durations := _compile_named_duration(search):
                 result["named_duration"] = durations
+            elif opening := _compile_opening_scope(search):
+                result["opening_scope"] = opening
             elif link := _compile_short_handoff(search):
                 result["linked_detail"] = link
     if compare_search is not None:
@@ -1222,6 +1263,19 @@ def _compile_recorded_value(question):
     return None
 
 
+def _compile_opening_scope(question):
+    clauses = [part.strip() for part in _CLAUSE_BREAK.split(question) if part.strip()]
+    if len(clauses) != 1 or not all(
+        pattern.search(clauses[0])
+        for pattern in (_GUIDANCE_QUESTION, _PRESENTATION_QUESTION, _OPENING_QUESTION)
+    ):
+        return None
+    subjects = list(dict.fromkeys(_ROUTE_CODE.findall(clauses[0])))
+    if len(subjects) == 1:
+        return {"subject": subjects[0]}
+    return None
+
+
 def _compile_named_duration(question):
     task = _TASK_SUBJECT_START.match(question)
     duration = _NAMED_DURATION.search(question)
@@ -1449,6 +1503,7 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
             linked_detail=compiled.get("linked_detail"),
             recorded_value=compiled.get("recorded_value"),
             named_duration=compiled.get("named_duration"),
+            opening_scope=compiled.get("opening_scope"),
             previous_evidence=previous_evidence,
             skipped=skipped,
         )
@@ -1470,6 +1525,8 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
                 result["compilation"]["recorded_value"] = compiled["recorded_value"]
             if "named_duration" in compiled:
                 result["compilation"]["named_duration"] = compiled["named_duration"]
+            if "opening_scope" in compiled:
+                result["compilation"]["opening_scope"] = compiled["opening_scope"]
             if "current_plan_subject" in compiled:
                 result["compilation"]["current_plan_subject"] = compiled["current_plan_subject"]
             if forms:
@@ -2321,7 +2378,7 @@ class _LinkedLine:
     text: str
     matched: tuple[str, ...] = ()
 
-    def candidate(self, detail, clues, *, topic=None):
+    def candidate(self, detail, clues, *, topic=None, reason=None):
         return {
             "checksum": self.checksum,
             "start": self.position,
@@ -2329,7 +2386,7 @@ class _LinkedLine:
             "day": self.day,
             "direct_positions": [self.position],
             "selection": {
-                "reason": "subquestion_index" if topic else "subquestion_clues",
+                "reason": reason or ("subquestion_index" if topic else "subquestion_clues"),
                 "term": detail,
                 "clues": [*clues, *self.matched],
                 **({"labels": [topic]} if topic else {}),
@@ -2361,14 +2418,16 @@ def _route_seeds(workspace, index, label, records):
     return seeds if len(seeds) <= _ROUTE_TERM_LIMIT else {}
 
 
-def _linked_original_lines(workspace, index, subject, required, records):
+def _linked_original_lines(workspace, index, subject, required, records, *, recording_term=None):
     groups = [tuple(_tokens(term) for term in alternatives) for alternatives in required]
-    clauses = [
-        f'"{subject}"',
-        *("(" + " OR ".join(f'"{phrase}"' for phrase in group) + ")" for group in groups),
-    ]
+    clauses = ["(" + " OR ".join(f'"{phrase}"' for phrase in group) + ")" for group in groups]
+    if subject:
+        clauses.insert(0, f'"{subject}"')
     expression = "text : (" + " AND ".join(clauses) + ")"
     where, args = _search_scope(index.filters)
+    if recording_term:
+        where += " AND checksum IN (SELECT checksum FROM context_spans WHERE context_spans MATCH ?)"
+        args.append(f'text : "{recording_term}"')
     rows = index.db.execute(
         f"SELECT checksum, start, stop, day FROM context_spans WHERE {where} "
         "ORDER BY checksum, start LIMIT ?",
@@ -2398,11 +2457,64 @@ def _linked_original_lines(workspace, index, subject, required, records):
                 )
                 for alternatives, group in zip(required, groups, strict=True)
             )
-            if f" {subject} " in normalized and all(matches):
+            if (not subject or f" {subject} " in normalized) and all(matches):
                 selected[checksum, position] = _LinkedLine(
                     checksum, position, row["day"], text, matches
                 )
     return list(selected.values())
+
+
+def _opening_evidence(workspace, index, scope, budget):
+    subject = _tokens(scope["subject"])
+    if not subject:
+        return []
+    records = {}
+    choices = []
+    for line in _linked_original_lines(
+        workspace, index, "", (_GUIDANCE_CLUES, _OPENING_CLUES), records, recording_term=subject
+    ):
+        if clues := _opening_statement_clues(line.text):
+            choices.append(replace(line, matched=clues))
+    if len(choices) != 1:
+        return []
+    line = choices[0]
+    conversation = records[line.checksum]["conversation"]
+    anchors = (
+        (position, segment["text"])
+        for position, segment in enumerate(conversation["segments"])
+        if f" {subject} " in f" {_tokens(segment['text'])} "
+    )
+    scope_line = min(
+        anchors,
+        key=lambda match: (abs(match[0] - line.position), match[0]),
+        default=None,
+    )
+    if scope_line is None:
+        return []
+    position, text = scope_line
+    guidance = line.candidate("opening guidance", [], reason="opening_guidance")
+    if position == line.position:
+        guidance["selection"]["clues"].insert(0, scope["subject"])
+        return [guidance] if len(line.text.encode("utf-8")) <= budget else []
+    if len(line.text.encode("utf-8")) + len(text.encode("utf-8")) > budget:
+        return []
+    anchor = _LinkedLine(line.checksum, position, line.day, text)
+    return [
+        anchor.candidate("recording scope", [scope["subject"]], reason="recording_scope"),
+        guidance,
+    ]
+
+
+def _opening_statement_clues(text):
+    for sentence in _GUIDANCE_SENTENCE_BREAK.split(text):
+        normalized = f" {_tokens(sentence)} "
+        for opening in _OPENING_CLUES:
+            before, found, after = normalized.partition(f" {_tokens(opening)} ")
+            if found and after.strip() and not _OPENING_NEGATION.search(before):
+                for cue in _GUIDANCE_CLUES:
+                    if f" {_tokens(cue)} " in f"{before} ":
+                        return cue, opening
+    return ()
 
 
 def _route_schedule_evidence(workspace, index, scope, limit, budget):
@@ -4038,6 +4150,7 @@ def _context_evidence(
     linked_detail=None,
     recorded_value=None,
     named_duration=None,
+    opening_scope=None,
     previous_evidence=None,
     skipped=None,
 ):
@@ -4310,6 +4423,8 @@ def _context_evidence(
             else []
         )
         path = route_rows or linked_rows
+        if opening_scope and not (path or matching_lines or task_dates or followup):
+            path = _opening_evidence(workspace, index, opening_scope, max_bytes)
         if not (path or preferred or matching_lines or task_dates or followup):
             if recorded_value:
                 path = _recorded_value_evidence(workspace, index, recorded_value, limit, max_bytes)

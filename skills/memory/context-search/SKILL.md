@@ -46,6 +46,10 @@ around the value to distinguish a suggestion from an applied change.
 For a duration task that names multiple completed activities, search can find a
 separate cited measurement for each named subject. Keep the source and unit
 with each value when computing a total.
+For a short question about coaching on how to open an answer or presentation,
+compact search can use an exact recording identifier and Chinese or English
+guidance phrases. The saved graph shows the line that establishes the scope
+and the original advice. Competing advice keeps the ordinary search.
 For an ordinary compact task, a lower-ranked recording can contribute a line
 when independent query clues occur together in its original text. If the
 line points to a related action nearby, read that action in the same recording

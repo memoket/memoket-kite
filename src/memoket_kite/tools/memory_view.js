@@ -26,6 +26,7 @@
       query: 'Query', subquestion: 'Search subquestion', queryLink: 'Search path',
       retrievalPath: 'How this line was found', retrievalReplay: 'Replay search',
       sourceTextRoute: 'Text in the same recording', textIndexRoute: 'Full-text index',
+      findOpeningGuidance: 'Find opening guidance',
       dateIndexRoute: 'Recording dates + date in the transcript', labelIndexRoute: 'Annotation index + full text',
       planSubject: 'Schedule subject',
       outputTargets: 'Evidence needed for task outputs',
@@ -67,6 +68,8 @@
         focused_color: 'Original color statement for the named subject',
         change_subquestion: 'Original evidence selected for this subquestion',
         subquestion_clues: 'Name and another clue match the same original line',
+        recording_scope: 'Name found in the same recording',
+        opening_guidance: 'Opening guidance found in the original text',
         corroborated_original: 'Independent clues match this original line',
         subquestion_index: 'A cited index label and original wording locate this line',
         change_phase: 'Original evidence selected for this phase of the question',
@@ -117,6 +120,7 @@
       query: '检索请求', subquestion: '检索子问题', queryLink: '检索路径',
       retrievalPath: '原文如何命中', retrievalReplay: '重播检索',
       sourceTextRoute: '同一录制的正文', textIndexRoute: '全文索引',
+      findOpeningGuidance: '查找开场建议',
       dateIndexRoute: '录制日期索引＋原文日期', labelIndexRoute: '标注索引＋正文',
       planSubject: '排期主题',
       outputTargets: '任务输出所需的证据',
@@ -157,6 +161,8 @@
         focused_color: '主题相关的颜色原文',
         change_subquestion: '为这个子问题选取的原文',
         subquestion_clues: '名称和另一条线索命中同一行原文',
+        recording_scope: '名称命中同一份录音',
+        opening_guidance: '原文命中开场建议',
         corroborated_original: '多个独立线索命中这一行原文',
         subquestion_index: '索引标签和原文措辞定位这一行',
         change_phase: '为问题中这个阶段选取的原文',
@@ -1273,6 +1279,7 @@
             : [`${linked.scope} · ${linked.role}`, `${linked.status} ${linked.relation}`]))
           || (recordedValue && [`${recordedValue.subject} · ${recordedValue.measure}`])
           || done.named_duration?.subjects.map(subject => [subject.name, subject.description].filter(Boolean).join(' '))
+          || (done.opening_scope && [done.opening_scope.subject, t('findOpeningGuidance')])
           || done.terms || [])
         : (done?.citations?.map(citation => citation.reference) || []);
       steps.hidden = !details.length;
