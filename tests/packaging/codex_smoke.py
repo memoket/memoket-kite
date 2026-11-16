@@ -414,6 +414,63 @@ def verify_workflows(
     empty = run("query", "--topic", "onboarding", cwd=other_project, check=False)
     assert empty.returncode == 2 and json.loads(empty.stdout)["error"]["code"] == "not_found"
 
+    archive = scratch / "Semantic source test"
+    archive.mkdir()
+    sample = archive / "relocation.txt"
+    original = "Acme moved calibration to the east bay."
+    sample.write_text(f"00:08\nSpeaker B\n{original}\n", encoding="utf-8")
+    page = json.loads(run("annotation-blocks", "--transcript", sample).stdout)
+    labels = scratch / "Prepared labels"
+    labels.mkdir()
+    (labels / page["annotation_filename"]).write_text(
+        json.dumps(
+            {
+                "source_checksum": page["source_checksum"],
+                "annotations": {
+                    "facts": [],
+                    "index_spans": [
+                        {
+                            "segment_ids": ["L3"],
+                            "topics": ["equipment testing"],
+                            "entities": ["Acme"],
+                            "entity_mentions": [
+                                {"entity": "Acme", "segment_id": "L3", "text": "Acme"}
+                            ],
+                            "facets": {"place": ["east bay"]},
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    run("index-sources", "--transcripts", archive, "--annotations", labels, "--save")
+    typed = json.loads(
+        run(
+            "symbolic",
+            "--input",
+            "-",
+            data={
+                "queries": [
+                    {
+                        "select": "lines",
+                        "where": {
+                            "topics": ["equipment testing"],
+                            "entities": ["Acme"],
+                            "place": ["east bay"],
+                        },
+                    }
+                ]
+            },
+        ).stdout
+    )
+    assert typed["engine"] == "memoket_kite.core.algebra.execute_plan"
+    assert all(
+        any(step.get("atom") == axis and step.get("matched_labels") for step in typed["trace"])
+        for axis in ("topics", "entities", "place")
+    )
+    assert typed["spans"][0]["evidence"][0]["text"] == original
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)

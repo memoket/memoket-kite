@@ -29,14 +29,26 @@ if TYPE_CHECKING:
 BATCH_INPUT = object_schema(
     {
         "sources": array(
-            object_schema({"source": SOURCE}, {"annotations": ANNOTATIONS}), maximum=1000
+            object_schema(
+                {"source": SOURCE}, {"annotations": ANNOTATIONS, "source_checksum": HASH}
+            ),
+            maximum=1000,
         )
-    }
+    },
+)
+BATCH_INPUT["properties"]["sources"]["items"]["dependentRequired"] = {
+    "source_checksum": ["annotations"]
+}
+ANNOTATION_FILE = object_schema(
+    {"source_checksum": HASH, "annotations": ANNOTATIONS}, {"expected_checksum": HASH}
 )
 BATCH_SELECTION = {
-    **object_schema({}, {"batch_file": TEXT, "transcripts": TEXT, "recording_metadata": TEXT}),
+    **object_schema(
+        {},
+        {"batch_file": TEXT, "transcripts": TEXT, "recording_metadata": TEXT, "annotations": TEXT},
+    ),
     "oneOf": [{"required": ["batch_file"]}, {"required": ["transcripts"]}],
-    "dependentRequired": {"recording_metadata": ["transcripts"]},
+    "dependentRequired": {"recording_metadata": ["transcripts"], "annotations": ["transcripts"]},
 }
 BATCH_PREVIEW = object_schema(
     {
@@ -62,7 +74,23 @@ BATCH_VERIFIED = object_schema(
 )
 
 
-def read_transcript_batch(directory: Path, metadata: Path | None) -> tuple[dict, dict]:
+def read_selected_transcript(path: Path, metadata: Path | None) -> tuple[dict, list[dict] | None]:
+    path = path.expanduser()
+    if path.suffix != ".txt" or path.is_symlink() or not path.is_file():
+        raise ToolError("invalid_input", "select a regular TXT transcript")
+    source, legacy = transcript_text_reimport(path, read_utf8(path))
+    if metadata is not None:
+        metadata = metadata.expanduser()
+        if not metadata.is_dir():
+            raise ToolError("invalid_input", "recording metadata needs a directory")
+        conversation = source["payload"]
+        conversation.update(transcript_recording_time(metadata, conversation["conversation_id"]))
+    return source, legacy
+
+
+def read_transcript_batch(
+    directory: Path, metadata: Path | None, annotations: Path | None = None
+) -> tuple[dict, dict]:
     files = sorted(directory.expanduser().glob("*.txt"))
     if (
         not files
@@ -70,21 +98,27 @@ def read_transcript_batch(directory: Path, metadata: Path | None) -> tuple[dict,
         or any(path.is_symlink() or not path.is_file() for path in files)
     ):
         raise ToolError("invalid_input", "provide a directory of 1–1000 regular TXT transcripts")
-    if metadata is not None:
-        metadata = metadata.expanduser()
-        if not metadata.is_dir():
-            raise ToolError(
-                "invalid_input", "recording metadata needs a directory and --transcripts"
-            )
+    sidecars = {}
+    if annotations is not None:
+        directory = annotations.expanduser()
+        if not directory.is_dir():
+            raise ToolError("invalid_input", "annotations needs a readable directory")
+        sidecars = {file.name: file for file in directory.glob("*.json")}
+        if not sidecars or not sidecars.keys() <= {f"{path.name}.json" for path in files}:
+            raise ToolError("invalid_input", "annotation files must match selected TXT filenames")
     entries, legacy_transcripts = [], {}
     for path in files:
-        source, legacy = transcript_text_reimport(path, read_utf8(path))
-        if metadata is not None:
-            conversation = source["payload"]
-            conversation.update(
-                transcript_recording_time(metadata, conversation["conversation_id"])
-            )
-        entries.append({"source": source})
+        source, legacy = read_selected_transcript(path, metadata)
+        entry = {"source": source}
+        if sidecar := sidecars.get(f"{path.name}.json"):
+            if sidecar.is_symlink() or not sidecar.is_file():
+                raise ToolError("invalid_input", "annotations must be regular JSON files")
+            labels = decode_object(read_utf8(sidecar))
+            validate(ANNOTATION_FILE, labels, "transcript annotations")
+            if "expected_checksum" in labels:
+                source["expected_checksum"] = labels.pop("expected_checksum")
+            entry.update(labels)
+        entries.append(entry)
         if legacy is not None:
             legacy_transcripts[path.name] = legacy
     return {"sources": entries}, legacy_transcripts
@@ -159,19 +193,53 @@ def prepare_batch(
     for entry in value["sources"]:
         normalized = normalize(context, entry["source"])
         annotations = entry.get("annotations", {"facts": []})
+        bound = "source_checksum" in entry
+        if bound and entry["source_checksum"] != normalized["checksum"]:
+            raise ToolError("stale_source", "annotations were prepared for a different transcript")
+        if bound and any(
+            span.get("entities") and not span.get("entity_mentions")
+            for span in annotations.get("index_spans", ())
+        ):
+            raise ToolError(
+                "invalid_evidence", "each indexed entity needs a cited original mention"
+            )
+        if annotations["facts"]:
+            raise ToolError("invalid_input", "index-sources accepts original spans without facts")
         conversation = normalized["conversation"]
         legacy = (legacy_transcripts or {}).get(conversation["metadata"]["source_reference"])
-        if legacy is not None or (backfill_recording_time and "source_date" in conversation):
+        repair_possible = legacy is not None or (
+            backfill_recording_time and "source_date" in conversation
+        )
+        if bound or repair_possible:
             previous = context.workspace.records(
                 source=conversation["source"],
                 conversation_id=conversation["conversation_id"],
                 active_only=True,
             )
-            if previous and (
-                preserved := _preserve_transcript_revision(context, normalized, previous[0], legacy)
-            ):
-                normalized, annotations, repaired = preserved
-                elapsed_time_repairs += repaired
+            if previous:
+                prior = previous[0]
+                expected = normalized["expected_checksum"]
+                if repair_possible and (
+                    preserved := _preserve_transcript_revision(context, normalized, prior, legacy)
+                ):
+                    normalized, retained, repaired = preserved
+                    if bound:
+                        annotations = {
+                            **retained,
+                            **{
+                                field: [*retained.get(field, ()), *items]
+                                for field, items in annotations.items()
+                                if field != "facts"
+                            },
+                        }
+                    else:
+                        annotations = retained
+                    elapsed_time_repairs += repaired
+                if bound:
+                    if expected is not None:
+                        normalized["expected_checksum"] = expected
+                    elif normalized["checksum"] == prior["checksum"]:
+                        normalized["expected_checksum"] = prior["checksum"]
         if annotations["facts"]:
             raise ToolError("invalid_input", "index-sources accepts original spans without facts")
         records.append(annotate(context, normalized, annotations))
@@ -194,7 +262,9 @@ def _selected_batch(context: Context, selection: dict) -> tuple[list[dict], int]
         if "batch_file" in paths:
             payload, legacy = decode_object(read_utf8(paths["batch_file"])), {}
         else:
-            payload, legacy = read_transcript_batch(paths["transcripts"], metadata)
+            payload, legacy = read_transcript_batch(
+                paths["transcripts"], metadata, paths.get("annotations")
+            )
     except OSError as exc:
         raise ToolError("invalid_input", "selected batch inputs are not readable") from exc
     return prepare_batch(

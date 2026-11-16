@@ -6525,6 +6525,89 @@ def test_content_annotation_build_and_typed_search(work):
     assert {line["segment_id"] for line in graph["evidence"].values()} == {"a"}
 
 
+def test_transcript_annotation_sidecar_upgrades_originals_and_native_retrieval(work, tmp_path):
+    directory, call = work
+    transcripts = tmp_path / "transcripts"
+    metadata = tmp_path / "metadata"
+    annotations = tmp_path / "annotations"
+    for folder in (transcripts, metadata, annotations):
+        folder.mkdir()
+    source = transcripts / "inventory_transcript.txt"
+    original = "00:02\nSpeaker A\nAcme brought the calibrated meter.\n"
+    source.write_text(original, encoding="utf-8")
+    (transcripts / "other.txt").write_text(
+        "00:10\nSpeaker A\nA meter was missing.\n", encoding="utf-8"
+    )
+    (metadata / "inventory.json").write_text(
+        json.dumps({"conversation_id": "inventory", "started_at": "2025-02-15T10:00:00Z"}),
+        encoding="utf-8",
+    )
+    import_flags = ("--transcripts", str(transcripts), "--recording-metadata", str(metadata))
+    base = call("index-sources", *import_flags)
+    page = call(
+        "annotation-blocks", "--transcript", str(source), "--recording-metadata", str(metadata)
+    )
+    assert page["next_offset"] is None
+    assert "facts set to an empty array" in page["instructions"]
+    assert page["blocks"][0]["segments"][0]["segment_id"] == "L3"
+    assert page["annotation_filename"] == "inventory_transcript.txt.json"
+    sidecar = annotations / page["annotation_filename"]
+    labels = {
+        "source_checksum": page["source_checksum"],
+        "annotations": {
+            "facts": [],
+            "index_spans": [
+                {
+                    "segment_ids": ["L3"],
+                    "topics": ["equipment verification"],
+                    "entities": ["Acme"],
+                    "entity_mentions": [{"entity": "Acme", "segment_id": "L3", "text": "Acme"}],
+                    "facets": {"object": ["meter"]},
+                }
+            ],
+        },
+    }
+    sidecar.write_text(json.dumps(labels), encoding="utf-8")
+    annotate_flags = (*import_flags, "--annotations", str(annotations))
+    source.write_text(original.replace("calibrated", "unopened"), encoding="utf-8")
+    call("index-sources", *annotate_flags, error="stale_source")
+    source.write_text(original, encoding="utf-8")
+
+    changed = call("index-sources", *annotate_flags, "--save", "content-labels")
+    assert changed["memory_version"] == base["memory_version"] + 1
+    assert changed["sources_changed"] == 1 and changed["sources_seen"] == 2
+    assert not call("index-sources", *annotate_flags)["changed"]
+    with workspace.Workspace.open(directory, read_only=True) as db:
+        records = db.records(active_only=False)
+        assert len(records) == 2 and all(not record["facts"] for record in records)
+        assert page["source_checksum"] in {record["checksum"] for record in records}
+    result = call(
+        "symbolic",
+        payload={
+            "queries": [
+                {
+                    "select": "lines",
+                    "where": {
+                        "topics": ["equipment verification"],
+                        "entities": ["Acme"],
+                        "obj": ["meter"],
+                    },
+                }
+            ]
+        },
+    )
+    assert result["engine"] == "memoket_kite.core.algebra.execute_plan"
+    assert {row["atom"] for row in result["trace"] if row.get("matched_labels")} == {
+        "topics",
+        "entities",
+        "obj",
+    }
+    originals = [line for span in result["spans"] for line in span["evidence"]]
+    assert [(line["conversation_id"], line["segment_id"], line["text"]) for line in originals] == [
+        ("inventory", "L3", "Acme brought the calibrated meter.")
+    ]
+
+
 def test_requirement_lines_share_budget_and_can_use_one_search_window(work):
     _, call = work
     call(

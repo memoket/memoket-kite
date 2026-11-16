@@ -25,13 +25,26 @@ For conversation JSON, `metadata.project` can hold the stable project name and
 project. Preserve these fields on revisions. Use known aliases supplied by the
 user or source metadata.
 
-For a semantic index, prepare the source JSON and run
-`bash "$KITE" annotation-blocks --input SOURCE_JSON` to read suggested blocks
-with adjacent turns. Assign supported topics, entities and facets to the
-smallest cited spans. Keep the IDs from the original turns. Add
-`entity_mentions` entries with `entity`, `segment_id` and verbatim `text` for
-the named entities, and leave `facts` empty. Review the three annotation counts
-in the source-indexing preview.
+When the user asks to build Topic, Entity and Facet indexes, run
+`bash "$KITE" annotation-blocks --transcript FILE.txt` for each selected
+transcript. Pass the same `--recording-metadata` option as the import if used.
+Follow the returned instructions and page through `next_offset` with
+`--offset`. Review labels for all the pages together, reuse labels for the
+same subject and attach them to the smallest supporting original spans.
+Write one JSON file with the returned `annotation_filename` in an annotation
+directory. Include `source_checksum` from the page and merge the annotations
+into one `annotations` object. Use `index-sources --transcripts DIR
+--annotations ANNOTATION_DIR --save` to import the originals and labels in
+one batch. Existing unchanged originals can gain labels by the same command.
+If a transcript changes while you annotate it, prepare the pages again from
+the new source. When the user requests a source revision, get the original
+checksum with `source-check` and provide it as `expected_checksum` in its
+annotation file.
+
+For source JSON such as a Memoket conversation, use
+`annotation-blocks --input SOURCE_JSON --prepare`. Put `source_checksum`
+alongside `source` and `annotations` in the usual source batch entry. Review
+the three annotation counts in the source-indexing preview.
 
 Add `--save` to a transcript-directory or JSON-file import to show its
 preview, commit and verification in **Workflows**. For a separate preview,

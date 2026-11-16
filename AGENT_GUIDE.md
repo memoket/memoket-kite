@@ -64,14 +64,22 @@ Codebook and searchable spans. Open **Workflows** to see the stages and the
 commit's original citations. For a preview before the write, start
 `source-indexing` and advance its stages individually. Its input
 `selection` accepts an absolute `transcripts` directory or `batch_file`,
-with optional `recording_metadata` for transcript imports.
+with optional `recording_metadata` and `annotations` directories for
+transcript imports.
 
 When preparing source-backed annotations, run
-`kite-tool annotation-blocks --input SOURCE.json` on the source-only JSON.
-The output suggests contiguous blocks and shows the adjacent turns. The host
-can join or split them to fit the conversation and supply original segment
-IDs, topics, entities, and facets in the batch JSON. To verify an entity's
-provenance, supply its exact original wording and segment in `entity_mentions`.
+`kite-tool annotation-blocks --transcript FILE.txt` or
+`kite-tool annotation-blocks --input SOURCE.json --prepare`. The output
+includes annotation instructions, the source checksum, suggested blocks and
+adjacent turns. Continue with `--offset` set to the returned `next_offset`.
+Supply topics, entities and facets with the supporting segment IDs and
+leave facts empty. Include each entity's exact original wording and segment
+in `entity_mentions`. For a transcript, put the combined `annotations`
+object and `source_checksum` in the returned `annotation_filename` and
+import the folder with `index-sources --transcripts DIR --annotations LABELS
+--save`. For other sources, provide `source_checksum` alongside `source`
+and `annotations` in the batch entry. KITE checks the named entity evidence
+and that the labels were prepared against the imported source version.
 
 Use `kite-tool context --term "prototype" --topic design --entity Apple --facet object=buttons --text`
 to require those labels on one cited span in a current search.

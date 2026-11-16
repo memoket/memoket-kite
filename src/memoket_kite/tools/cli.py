@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from .activity import FOLLOW_STAGES
-from .annotation_blocks import annotation_blocks
+from .annotation_blocks import annotation_blocks, prepare_annotation_page
 from .audio import audio_source
 from .captions import CAPTION_FORMATS
 from .context import context_pack, question_pack, render_context, render_evidence
@@ -34,7 +34,12 @@ from .retrieve import (
     render_revision_comparison,
     topic_inventory,
 )
-from .source_batch import commit_batch, prepare_batch, read_transcript_batch
+from .source_batch import (
+    commit_batch,
+    prepare_batch,
+    read_selected_transcript,
+    read_transcript_batch,
+)
 from .source_diff import source_changes
 from .symbolic import (
     fit_symbolic_delivery,
@@ -201,6 +206,11 @@ def _parser() -> argparse.ArgumentParser:
         help="directory of same-ID JSON recording times for TXT import",
     )
     source_index.add_argument(
+        "--annotations",
+        type=Path,
+        help="directory of checksum-bound transcript annotation JSON files",
+    )
+    source_index.add_argument(
         "--save",
         nargs="?",
         const="",
@@ -210,9 +220,17 @@ def _parser() -> argparse.ArgumentParser:
     blocks = commands.add_parser(
         "annotation-blocks", help="prepare original turns for content annotation"
     )
+    blocks_source = blocks.add_mutually_exclusive_group(required=True)
+    blocks_source.add_argument("--input", metavar="FILE", help="source-only JSON or - for stdin")
+    blocks_source.add_argument("--transcript", type=Path, help="one original timestamped TXT file")
     blocks.add_argument(
-        "--input", required=True, metavar="FILE", help="source-only JSON or - for stdin"
+        "--recording-metadata", type=Path, help="same metadata directory as index-sources"
     )
+    blocks.add_argument(
+        "--prepare", action="store_true", help="return a page, prompt and source checksum"
+    )
+    blocks.add_argument("--offset", type=int, help="start at this zero-based block")
+    blocks.add_argument("--limit", type=int, help="blocks per prepared page (default 4)")
     context = commands.add_parser("context", help="pack cited original passages for an agent task")
     context_input = context.add_mutually_exclusive_group(required=True)
     context_input.add_argument("--term", action="append", help="search phrase, repeatable")
@@ -834,6 +852,8 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             raise ToolError(
                 "invalid_input", "recording metadata needs a directory and --transcripts"
             )
+        if args.annotations is not None and args.transcripts is None:
+            raise ToolError("invalid_input", "annotations directory requires --transcripts")
         if args.save is not None:
             if args.transcripts is None and (args.input is None or args.input == "-"):
                 raise ToolError("invalid_input", "--save needs a transcript directory or JSON file")
@@ -841,6 +861,8 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 selection = {"transcripts": str(args.transcripts.expanduser().absolute())}
                 if metadata is not None:
                     selection["recording_metadata"] = str(metadata.expanduser().absolute())
+                if args.annotations is not None:
+                    selection["annotations"] = str(args.annotations.expanduser().absolute())
             else:
                 selection = {"batch_file": str(Path(args.input).expanduser().absolute())}
             with Workspace.open(args.workspace) as workspace:
@@ -849,7 +871,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
         payload = _object(args.input) if args.input is not None else {"sources": []}
         legacy = {}
         if args.transcripts is not None:
-            payload, legacy = read_transcript_batch(args.transcripts, metadata)
+            payload, legacy = read_transcript_batch(args.transcripts, metadata, args.annotations)
         with Workspace.open(args.workspace) as workspace:
             context = Context(root, workspace, "")
             records, repairs = prepare_batch(
@@ -861,9 +883,24 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             return commit_batch(context, records, repairs), None
 
     if args.command == "annotation-blocks":
-        value = _object(args.input)
-        validate(object_schema({"source": SCHEMAS["source"]}), value, "annotation source")
-        _, conversation = prepare_source(root, value["source"])
+        if args.transcript is None:
+            if args.recording_metadata is not None:
+                raise ToolError("invalid_input", "recording metadata requires --transcript")
+            value = _object(args.input)
+            validate(object_schema({"source": SCHEMAS["source"]}), value, "annotation source")
+            source = value["source"]
+        else:
+            source, _ = read_selected_transcript(args.transcript, args.recording_metadata)
+        _, conversation = prepare_source(root, source)
+        if args.prepare or args.transcript is not None:
+            offset = args.offset if args.offset is not None else 0
+            limit = args.limit if args.limit is not None else 4
+            page = prepare_annotation_page(conversation, offset, limit)
+            if args.transcript is not None:
+                page["annotation_filename"] = f"{args.transcript.name}.json"
+            return page, None
+        if args.offset is not None or args.limit is not None:
+            raise ToolError("invalid_input", "paging source JSON requires --prepare")
         return {"blocks": annotation_blocks(conversation)}, None
 
     if args.command == "context":
