@@ -1,6 +1,6 @@
 ---
 name: kite
-description: Retrieve cited meeting decisions for tasks that depend on prior discussions or recorded agreements, inspect the graph, or manage KITE memories. Use an existing evidence pack when it covers the task.
+description: Retrieve cited meeting decisions for tasks that depend on prior discussions or agreements, inspect the graph, or manage KITE memories. If recall_conversation_evidence is available, call it directly for needed quotes. Use an existing evidence pack when it covers the task.
 ---
 
 Run `bash "$KITE" COMMAND` from the current project. Substitute the absolute

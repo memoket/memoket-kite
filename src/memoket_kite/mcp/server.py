@@ -219,10 +219,12 @@ def _model_name(value: str) -> str:
 
 def main(argv: Sequence[str] | None = None) -> None:
     """Check configuration or start the local stdio server."""
-    parser = argparse.ArgumentParser(description="Serve one local KITE XML memory over MCP stdio.")
-    parser.add_argument(
-        "--memory", type=Path, required=True, help="Existing XML memory file (writable by default)"
+    parser = argparse.ArgumentParser(description="Serve local KITE memory over MCP stdio.")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--memory", type=Path, help="Existing XML memory file (writable by default)"
     )
+    source.add_argument("--workspace", type=Path, help="Read original quotes from a KITE workspace")
     parser.add_argument(
         "--read-only",
         action="store_true",
@@ -234,6 +236,17 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     parser.add_argument("--check", action="store_true", help="Check local configuration and exit")
     args = parser.parse_args(argv)
+    if args.workspace is not None:
+        if args.model is not None or args.answer_model is not None or args.check:
+            parser.error("--model, --answer-model and --check require --memory")
+        from .workspace import create_workspace_server
+
+        try:
+            server = create_workspace_server(args.workspace)
+        except ConfigurationError as exc:
+            parser.error(str(exc))
+        server.run(transport="stdio")
+        return
     models = {
         key: value
         for key, value in vars(args).items()

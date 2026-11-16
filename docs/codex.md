@@ -95,6 +95,28 @@ kite-tool file-source meeting.txt --format text --source-id kickoff --split-line
 
 Include the returned source in the normal `index-sources` batch.
 
+### Optional direct retrieval tool
+
+Bind an existing KITE workspace to a trusted Codex project in its
+`.codex/config.toml`. Use the absolute paths to the KITE launcher and the
+workspace directory that contains `kite.sqlite3`.
+
+```toml
+[mcp_servers.kite_context]
+command = "bash"
+args = ["/absolute/path/to/scripts/kite.sh", "workspace-mcp", "/absolute/path/to/workspace"]
+startup_timeout_sec = 120
+```
+
+Start a new local chat after configuring the server. Codex can call
+`recall_conversation_evidence` with an inline symbolic plan and receive the
+original quotes and citations in one tool result. The server reads the
+configured workspace on each call, so later imports and updates are visible.
+It needs no separate model key. The first startup installs an optional runtime
+with the MCP SDK. Keep using the KITE skill to import sources, manage memory,
+and view the graph. See [Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp)
+for project and desktop setup.
+
 ## Load evidence before the task
 
 For a project that already uses KITE, you can configure an optional local

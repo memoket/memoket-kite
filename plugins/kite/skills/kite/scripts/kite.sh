@@ -4,7 +4,18 @@ umask 077
 
 # Use a fixed runtime so the packaged skill and CLI contracts stay in sync.
 runtime_revision=5e4a8c58cd680f51bcef8b59b896d24e0e21e09b
-runtime="memoket-kite[agent] @ https://github.com/memoket/memoket-kite/archive/${runtime_revision}.tar.gz"
+runtime_extras=agent
+runtime_command=kite-tool
+if [[ "${1:-}" == workspace-mcp ]]; then
+    shift
+    if [[ "$#" != 1 || -z "${1:-}" ]]; then
+        printf '%s\n' 'Usage: kite.sh workspace-mcp WORKSPACE_DIRECTORY' >&2
+        exit 2
+    fi
+    runtime_extras=agent,mcp
+    runtime_command=kite-mcp
+fi
+runtime="memoket-kite[$runtime_extras] @ https://github.com/memoket/memoket-kite/archive/${runtime_revision}.tar.gz"
 uv_version=0.11.16
 cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/kite/codex"
 
@@ -30,10 +41,13 @@ if [[ -f "${bundled[0]:-}" ]]; then
     fi
     fingerprint=$(sha256 < "${bundled[0]}")
     runtime_revision="${fingerprint%% *}"
-    runtime="${bundled[0]}[agent]"
+    runtime="${bundled[0]}[$runtime_extras]"
+fi
+if [[ "$runtime_command" == kite-mcp ]]; then
+    runtime_revision+="-$runtime_command"
 fi
 runtime_dir="$cache_dir/runtime-$runtime_revision"
-runtime_bin="$runtime_dir/bin/kite-tool"
+runtime_bin="$runtime_dir/bin/$runtime_command"
 
 find_uv() {
     local candidate
@@ -61,7 +75,7 @@ install_uv() (
     mv -f "$staging/bin/uv" "$directory/uv"
 )
 
-if [[ -z "${KITE_DATA_DIR:-}" ]]; then
+if [[ "$runtime_command" == kite-tool && -z "${KITE_DATA_DIR:-}" ]]; then
     project=$(pwd -P)
     if git_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
         project=$(cd "$git_dir" && pwd -P)
@@ -87,4 +101,7 @@ if [[ ! -x "$runtime_bin" ]]; then
 fi
 
 export PYTHONDONTWRITEBYTECODE=1
+if [[ "$runtime_command" == kite-mcp ]]; then
+    exec "$runtime_bin" --workspace "$1"
+fi
 exec "$runtime_bin" "$@"

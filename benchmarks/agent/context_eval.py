@@ -394,6 +394,7 @@ def codex_trial(
     prompt: str,
     *,
     record_tool_output: bool = False,
+    record_mcp_output: bool = False,
     sandbox: str = "read-only",
     codex_options: tuple[str, ...] = (),
     codex_env: dict[str, str] | None = None,
@@ -445,6 +446,7 @@ def codex_trial(
     usage = answer = error = session_id = None
     calls = stdout_bytes = 0
     commands = []
+    mcp_calls = []
     events = []
     for timestamp, line in raw_events:
         try:
@@ -464,6 +466,8 @@ def codex_trial(
                 item = event["item"]
                 if item["type"] == "agent_message":
                     answer = item["text"]
+                if record_mcp_output and item["type"] == "mcp_tool_call":
+                    mcp_calls.append(item)
                 if item["type"] == "command_execution":
                     calls += 1
                     output = item.get("aggregated_output") or ""
@@ -497,6 +501,7 @@ def codex_trial(
         **({"session_id": session_id} if keep_session else {}),
         **({"timing": timing} if timing is not None else {}),
         **({"commands": commands} if record_tool_output else {}),
+        **({"mcp_calls": mcp_calls} if record_mcp_output else {}),
     }
 
 

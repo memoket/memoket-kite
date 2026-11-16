@@ -1,4 +1,19 @@
-# Local MCP memory with Claude Code
+# KITE MCP adapters
+
+## Read original quotes from a workspace
+
+Install KITE with the `agent,mcp` extras to serve a single existing workspace.
+The read-only tool accepts a locally compiled KITE source-line plan and returns
+original quotes and citations. The configured workspace applies to every call.
+
+```bash
+kite-mcp --workspace /absolute/path/to/workspace
+```
+
+Use the [Codex project setup](codex.md#optional-direct-retrieval-tool) to use
+this server in local Codex chats.
+
+## XML memory with Claude Code
 
 `kite-mcp` serves one existing writable KITE XML artifact over stdio:
 
