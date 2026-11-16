@@ -563,6 +563,13 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                     trim_implicit_neighbors=neighbors is None,
                     delivered_line_ids=frozenset(prior.turns),
                     delivered_lead_ids=prior.leads,
+                    delivered_subjects=(
+                        {item.source_line: item.near for _, item in prior.focuses}
+                        if focus is None
+                        and question == prior.question
+                        and prior.snapshot == workspace.snapshot_identity()
+                        else None
+                    ),
                     allow_mentioned_project=True,
                 )
                 if focus is not None:

@@ -831,6 +831,19 @@ async def test_citation_followup_filters_unrelated_values_in_the_same_recording(
         near = json.loads(hint.split(" · ", 1)[1])
         assert near == {"obj": [label], "turns": 2, "include_anchor": True}
         assert "follow_up {citation, grep}" in text
+        broad = await client.call_tool(
+            tool,
+            {
+                **base,
+                "after_receipt": token,
+                "plan": {"queries": [{"select": "lines", "where": {"grep": f"{term}|30"}}]},
+            },
+        )
+        assert not broad.is_error, broad.content
+        text = broad.content[0].text
+        assert "within the subject window: [decision#line-1], [decision#line-2]." in text
+        assert "outside that window:" in text
+        assert "[prototype#line-1] The prototype weighs 30 grams." in text
         copied = await client.call_tool(
             tool,
             {

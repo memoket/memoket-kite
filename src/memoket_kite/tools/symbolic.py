@@ -950,6 +950,7 @@ def symbolic_context(
     trim_implicit_neighbors=False,
     delivered_line_ids=frozenset(),
     delivered_lead_ids=(),
+    delivered_subjects=None,
     allow_mentioned_project=False,
 ):
     options = _source_options(limit, neighbors, max_bytes)
@@ -983,6 +984,7 @@ def symbolic_context(
         trim_implicit_neighbors=trim_implicit_neighbors,
         delivered_line_ids=delivered_line_ids,
         delivered_lead_ids=delivered_lead_ids,
+        delivered_subjects=delivered_subjects,
         **options,
     )
     if history is not None:
@@ -1625,6 +1627,47 @@ def _branch_coverage(plan, traces, spans, *, delivery=False, guide_order=(), del
             }
         )
     return coverage
+
+
+def _followup_subject_checks(index, plan, traces, spans, prior_matches, subjects, anchors):
+    """Check a prior indexed subject against the current branch's delivered matches."""
+    if not subjects:
+        return []
+    cited = set(_display_references({"spans": spans}))
+    checks = []
+    staged = "stages" in plan
+    for number, entry in enumerate(plan["stages" if staged else "queries"]):
+        name = entry.get("name") if staged else f"Query {number + 1}"
+        if name in anchors or entry["where"].get("near"):
+            continue
+        matches = set().union(*(trace.line_matches.get(number, ()) for trace in traces))
+        leads = matches & prior_matches.keys() & subjects.keys()
+        current = cited & matches
+        if len(leads) != 1 or not current:
+            continue
+        lead = next(iter(leads))
+        near = subjects[lead]
+        comparison = current | {lead}
+        units = {index.store.lines[ref].unit for ref in comparison}
+        probe = {"queries": [{"select": "lines", "where": {"near": near}}]}
+        _, trace = execute_plan(index.store, index.vocab, probe, budget=1, allowed_line_units=units)
+        grounded = comparison & trace.line_matches.get(0, set())
+        if lead not in grounded or comparison == grounded:
+            continue
+        checks.append(
+            {
+                "stage": "followup_subject_check",
+                "branch": name,
+                "earlier_ref": lead,
+                "near": near,
+                "near_hits": sorted(grounded),
+                "other_hits": sorted(current - grounded),
+                "steps": trace.stages,
+            }
+        )
+        if len(checks) == 2:
+            break
+    return checks
 
 
 def _trim_adjacent_context(spans, quote_order, quote_bytes, traces, question):
@@ -2318,6 +2361,27 @@ def render_symbolic_context(
         lines.append(
             f"Saved plan {reused['run_id']} (compiled at v{reused['compiled_at_version']})"
         )
+    for check in pack["trace"]:
+        if check["stage"] != "followup_subject_check":
+            continue
+        refs = {**pack.get("previously_delivered_matches", {}), **_display_references(visible)}
+        earlier = refs.get(check["earlier_ref"])
+        others = [refs[ref] for ref in check["other_hits"] if ref in refs]
+        if not earlier or not others:
+            continue
+        axis, labels = next(
+            (axis, values)
+            for axis, values in check["near"].items()
+            if axis not in {"turns", "include_anchor"}
+        )
+        label = labels[0].replace("_", " ")
+        grounded = ", ".join(f"[{refs[ref]}]" for ref in check["near_hits"] if ref in refs)
+        examples = ", ".join(f"[{ref}]" for ref in others[:8])
+        lines.append(
+            f"{check['branch']} · Indexed subject {label} ({axis}) · "
+            f"within the subject window: {grounded}. "
+            f"Other wording matches outside that window: {examples}."
+        )
     if saved := pack.get("saved_run"):
         lines.append(f"Saved plan {saved}")
     if dates := pack["scope"].get("recording_dates"):
@@ -2719,6 +2783,7 @@ def execute_source_plan(
     trim_implicit_neighbors=False,
     delivered_line_ids=frozenset(),
     delivered_lead_ids=(),
+    delivered_subjects=None,
 ):
     active_units = {uid for uid, record in index.revisions.items() if record["active"]}
     if compiled["units"]:
@@ -3053,6 +3118,17 @@ def execute_source_plan(
             }
         complete_scope = _complete_recording_scope(
             index, active_units, spans, trace_steps, unit_projects, compiled, delivered_line_ids
+        )
+        trace_steps.extend(
+            _followup_subject_checks(
+                index,
+                plan,
+                traces,
+                spans,
+                continuation.get("previously_delivered_matches", {}),
+                delivered_subjects,
+                {step["name"] for step in trace_steps if "project_binding" in step},
+            )
         )
     changed_checksums = {index.revisions[uid]["checksum"] for uid in changed}
     if changed_recordings is not None:

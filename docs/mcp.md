@@ -44,7 +44,11 @@ transaction between requests so an import can commit while it is idle.
   and index label. The receipt binds this shortcut to the workspace snapshot.
   Recall again after an update. Check that the cited turn establishes the
   subject before reusing it. To look across recordings, pass an explicit plan
-  and copy the offered filter into `where.near`.
+  and copy the offered filter into `where.near`. A follow-up on the same
+  snapshot and question can also show which of a branch's quoted matches
+  share one previously indexed subject. The tool checks that subject's native
+  `near` condition and reports other matches outside the window. The original
+  plan and quotes stay available for review.
   When `neighbors`
   is omitted, the tool starts with one nearby turn and trims incidental
   adjacent turns above 8,192 original text bytes where possible. Native
