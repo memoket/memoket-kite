@@ -407,6 +407,63 @@ async def test_followup_receipt_omits_seen_turns_and_returns_revised_evidence(tm
         assert "[archive#decision]" in bulk and receipt_line.search(bulk)
 
 
+async def test_large_recall_guides_branches_and_trims_only_implicit_context(tmp_path, capsys):
+    workspace = tmp_path / "workspace"
+    payload = tmp_path / "input.json"
+    sources = [
+        {
+            "source": {
+                "format": "conversation",
+                "payload": {
+                    "conversation_id": name,
+                    "source": "text",
+                    "metadata": {"source_reference": name},
+                    "segments": [
+                        {"segment_id": "before", "text": "Planning discussion. " * 126},
+                        {"segment_id": "decision", "text": text},
+                        {
+                            "segment_id": "after",
+                            "text": "Administrative notes. " * 126 + tail,
+                        },
+                    ],
+                },
+            }
+        }
+        for name, text, tail in [
+            ("shift-log", "Approve the cutoff at eight.", "This starts tomorrow."),
+            ("allocation-notes", "Set the quota to seven units.", ""),
+        ]
+    ]
+    payload.write_text(json.dumps({"sources": sources}), encoding="utf-8")
+    assert main(["--workspace", str(workspace), "index-sources", "--input", str(payload)]) == 0
+    capsys.readouterr()
+    args = {
+        "question": "When do the cutoff and quota take effect?",
+        "plan": {
+            "queries": [{"select": "lines", "where": {"grep": cue}} for cue in ("cutoff", "quota")]
+        },
+        "max_bytes": 18000,
+    }
+    async with Client(create_workspace_server(workspace), raise_exceptions=False) as client:
+        result = await client.call_tool("recall_conversation_evidence", args)
+        assert not result.is_error
+        focused = result.content[0].text
+        assert "Omitted" in focused and "incidental adjacent" in focused
+        assert "- Query 1 · [shift-log#decision]" in focused
+        assert "- Query 2 · [allocation-notes#decision]" in focused
+        assert "[shift-log#decision] Approve the cutoff at eight." in focused
+        assert "[allocation-notes#decision] Set the quota to seven units." in focused
+        assert "[shift-log#after]" in focused and "This starts tomorrow." in focused
+        assert "[allocation-notes#after]" not in focused
+        explicit = await client.call_tool("recall_conversation_evidence", {**args, "neighbors": 1})
+        assert not explicit.is_error
+        context = explicit.content[0].text
+        assert "incidental adjacent" not in context
+        for name in ("shift-log", "allocation-notes"):
+            assert all(f"[{name}#{segment}]" in context for segment in ("before", "after"))
+        assert len(focused.encode()) < len(context.encode())
+
+
 async def test_symbolic_recall_cites_a_decision_and_its_nearby_indexed_subject(tmp_path, capsys):
     workspace = tmp_path / "workspace"
     payload = tmp_path / "input.json"

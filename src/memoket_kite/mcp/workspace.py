@@ -135,7 +135,16 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         ] = None,
         since_version: Annotated[int | None, Field(strict=True, ge=0)] = None,
         limit: Annotated[int, Field(strict=True, ge=1, le=100)] = 6,
-        neighbors: Annotated[int, Field(strict=True, ge=0, le=4)] = 1,
+        neighbors: Annotated[
+            int | None,
+            Field(
+                strict=True,
+                ge=0,
+                le=4,
+                description="Original turns around matches. "
+                "When omitted, use one and trim incidental context from large replies.",
+            ),
+        ] = None,
         max_bytes: Annotated[int, Field(strict=True, ge=128, le=32768)] = 3600,
         known_citations: Annotated[
             CitationList | None,
@@ -228,8 +237,10 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                     recording_dates=dates,
                     since_version=since_version,
                     limit=limit,
-                    neighbors=neighbors,
+                    neighbors=1 if neighbors is None else neighbors,
                     max_bytes=max_bytes,
+                    large_reply_guide=True,
+                    trim_implicit_neighbors=neighbors is None,
                 )
                 if known_citations is not None:
                     try:

@@ -90,6 +90,13 @@ _LITERAL_DATE_SUBJECT = re.compile(
     r"[a-zA-Z][a-zA-Z0-9-]{2,23}(?: [a-zA-Z]{2,16}){0,3}|[㐀-鿿]{2,10}"
 )
 _DATE_CONTROL_CUE = re.compile(r"生效|切换|\b(?:effective|switch\w*)\b", re.I)
+_SPOKEN_DATE_CUE = re.compile(
+    r"(?:今天|明天|后天|昨天|前天|下周|上周|本周|月底|月初|"
+    r"(?<![0-9])(?:3[01]|[12][0-9]|0?[1-9])\s*[日号])|"
+    r"\b(?:today|tomorrow|yesterday|(?:next|last|this)\s+(?:week|month)|"
+    r"the\s+\d{1,2}(?:st|nd|rd|th))\b",
+    re.I,
+)
 _REVISION_CLAUSE_BREAK = re.compile(r"[，,。！？!?；;]")
 _NEGATED_DATE_CHANGE = re.compile(
     r"尚未|没有|并未|不能|不会|不(?:再|会|是|用|应|要)?$|"
@@ -131,6 +138,7 @@ _ALIAS_UNCERTAINTY = re.compile(
     re.I,
 )
 _ALIAS_CLAUSE = re.compile(r"(?<=[.。!！;；])\s*")
+_LARGE_QUOTE_BYTES = 8192
 SYMBOLIC_RECORDING_DATES = object_schema({}, {"start_date": DATE, "end_date": DATE})
 
 
@@ -850,6 +858,8 @@ def symbolic_context(
     neighbors=0,
     max_bytes=6000,
     delivery=False,
+    large_reply_guide=False,
+    trim_implicit_neighbors=False,
 ):
     options = _source_options(limit, neighbors, max_bytes)
     if history_scope and since_version is not None:
@@ -871,6 +881,8 @@ def symbolic_context(
         changed_recordings=changed,
         since_version=since_version,
         delivery=delivery,
+        large_reply_guide=large_reply_guide,
+        trim_implicit_neighbors=trim_implicit_neighbors,
         **options,
     )
     if history is not None:
@@ -1465,7 +1477,7 @@ def _schedule_change_evidence(index, changed, question, prior_rows, branches):
     )
 
 
-def _branch_coverage(plan, traces, spans, *, delivery=False):
+def _branch_coverage(plan, traces, spans, *, delivery=False, guide_order=()):
     cited = {line["source_line_id"] for span in spans for line in span["evidence"]}
     coverage = []
     staged = "stages" in plan
@@ -1480,10 +1492,46 @@ def _branch_coverage(plan, traces, spans, *, delivery=False):
                 "matched_lines": len(matches),
                 "quoted_lines": len(quoted),
                 **({"_quoted_ids": quoted} if delivery else {}),
+                **(
+                    {"lead_source_line_ids": [ref for ref in guide_order if ref in quoted][:2]}
+                    if guide_order and quoted
+                    else {}
+                ),
                 **({"skipped": "unresolved_ref"} if staged and not evaluated else {}),
             }
         )
     return coverage
+
+
+def _trim_adjacent_context(spans, quote_order, quote_bytes, traces, question):
+    """Remove low-ranked incidental neighbors, keeping all native matches."""
+    matched = set().union(*(ids for trace in traces for ids in trace.line_matches.values()))
+    protected_wording = ()
+    if _DATE_DETAIL_QUESTION.search(question or ""):
+        protected_wording = (_DATE_DETAIL, _SPOKEN_DATE_CUE, _DATE_CONTROL_CUE, _PLAN_QUALIFIER)
+    if _DECISION_QUESTION.search(question or ""):
+        protected_wording += (_OUTCOME_PREFERENCE, _NONFINAL_COMPARISON)
+    optional_bytes = {
+        line["source_line_id"]: len(line["text"].encode())
+        for span in spans
+        for line in span["evidence"]
+        if line["role"] == "adjacent_turn"
+        and line["source_line_id"] not in matched
+        and not any(pattern.search(line["text"]) for pattern in protected_wording)
+    }
+    remove = set()
+    for ref in reversed(quote_order):
+        if quote_bytes <= _LARGE_QUOTE_BYTES:
+            break
+        if ref in optional_bytes:
+            remove.add(ref)
+            quote_bytes -= optional_bytes[ref]
+    return (
+        [span for span in spans if span["evidence"][0]["source_line_id"] not in remove],
+        quote_bytes,
+        tuple(ref for ref in quote_order if ref not in remove),
+        len(remove),
+    )
 
 
 def _revision_exchange(index, compiled, plan, trace, question):
@@ -2162,6 +2210,26 @@ def render_symbolic_context(
     if omitted := pack.get("delivery_trimmed"):
         noun = "turn" if omitted == 1 else "turns"
         lines.append(f"Quote delivery omitted {omitted} original {noun} to fit its byte budget.")
+    if omitted := pack.get("omitted_adjacent_turns"):
+        lines.append(
+            f"Omitted {omitted} incidental adjacent {'turn' if omitted == 1 else 'turns'}. "
+            "Set neighbors explicitly or read a citation to inspect more context."
+        )
+    if any(branch.get("lead_source_line_ids") for branch in pack.get("branch_coverage", ())):
+        refs = _display_references(visible)
+        roots = {step["name"] for step in pack["trace"] if "project_binding" in step}
+        branch_refs = []
+        for branch in pack["branch_coverage"]:
+            if branch.get("stage") in roots:
+                continue
+            citations = [
+                f"[{refs[ref]}]" for ref in branch.get("lead_source_line_ids", ()) if ref in refs
+            ]
+            if citations:
+                title = branch["stage"] if "stage" in branch else f"Query {branch['query'] + 1}"
+                branch_refs.append(f"- {title} · {', '.join(citations)}")
+        if len(branch_refs) > 1:
+            lines.extend(("Direct matches by query branch", *branch_refs, ""))
     evidence_guide = (_stage_evidence_guide(pack) or _query_evidence_guide(pack)) if guide else []
     if evidence_guide:
         lines.extend((*evidence_guide, ""))
@@ -2307,6 +2375,8 @@ def execute_source_plan(
     changed_recordings=None,
     since_version=None,
     delivery=False,
+    large_reply_guide=False,
+    trim_implicit_neighbors=False,
 ):
     active_units = {uid for uid, record in index.revisions.items() if record["active"]}
     if compiled["units"]:
@@ -2553,6 +2623,15 @@ def execute_source_plan(
             trace_steps.append(exchange_step)
             reserved.update(exchange_ids)
     trace_steps.extend(hints)
+    guide_large = large_reply_guide and quote_bytes > _LARGE_QUOTE_BYTES
+    complete_scope = _complete_recording_scope(
+        index, active_units, spans, trace_steps, unit_projects, compiled
+    )
+    omitted_neighbors = 0
+    if guide_large and trim_implicit_neighbors and not complete_scope:
+        spans, quote_bytes, quote_order, omitted_neighbors = _trim_adjacent_context(
+            spans, quote_order, quote_bytes, traces, question
+        )
     changed_checksums = {index.revisions[uid]["checksum"] for uid in changed}
     if changed_recordings is not None:
         cited = {line["revision_checksum"] for span in spans for line in span["evidence"]}
@@ -2569,14 +2648,6 @@ def execute_source_plan(
             for row in rows
             if (project := index.revisions[row["unit"]]["conversation"]["metadata"].get("project"))
         }
-    )
-    complete_scope = _complete_recording_scope(
-        index,
-        active_units,
-        spans,
-        trace_steps,
-        unit_projects,
-        compiled,
     )
     return {
         "engine": "memoket_kite.core.algebra.execute_plan",
@@ -2602,7 +2673,14 @@ def execute_source_plan(
         **({"compiled_plan": compiled["plan"]} if compiled["plan"] != plan else {}),
         "trace": trace_steps,
         **({"complete_recording_scope": complete_scope} if complete_scope else {}),
-        "branch_coverage": _branch_coverage(plan, traces, spans, delivery=delivery),
+        "branch_coverage": _branch_coverage(
+            plan,
+            traces,
+            spans,
+            delivery=delivery,
+            guide_order=quote_order if guide_large else (),
+        ),
+        **({"omitted_adjacent_turns": omitted_neighbors} if omitted_neighbors else {}),
         **({"schedule_comparison": comparison} if comparison is not None else {}),
         **(
             {

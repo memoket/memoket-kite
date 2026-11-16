@@ -16,6 +16,14 @@ The configured workspace applies to the read-only tools.
   the same workspace snapshot, with separate headings and no repeated turns.
   Project and date filters apply to the search plan. Explicit citations use
   their own recording and revision identifiers.
+  Large results include up to two cited direct matches per query branch so
+  the reader can locate evidence in the original turns. When `neighbors`
+  is omitted, the tool starts with one nearby turn and trims incidental
+  adjacent turns above 8,192 original text bytes where possible. Native
+  matches, supporting turns, and complete recording scopes keep their context.
+  For schedule or decision questions, nearby turns with spoken dates,
+  effective dates, or approval status also stay in the reply.
+  Set `neighbors` explicitly to request a specific original context window.
   Packs with at least 3,600 original text bytes include an evidence receipt.
   Request one on a smaller result with `include_receipt: true`. To fill a
   specific gap, pass that token as `after_receipt` with a focused plan. The
