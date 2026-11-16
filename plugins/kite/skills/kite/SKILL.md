@@ -37,8 +37,9 @@ Chinese text, use an ASCII boundary such as `(?a:\bQA\b)`. Check which
 original turns express a proposal or an approved change.
 
 If a KITE result says `Date comparison needs original turns`, use its two
-evidence IDs with `bash "$KITE" evidence FIRST_ID --also SECOND_ID --text`.
-Read both original turns before applying the revised date to the task.
+evidence IDs with `read_conversation_citations` if it is available, or run
+`bash "$KITE" evidence FIRST_ID --also SECOND_ID --text`. Read both original
+turns before applying the revised date to the task.
 
 For an implementation task, read the code and its tests, then check which
 behavior needs conversation evidence in this turn. Once the returned original
@@ -115,7 +116,8 @@ symbolic plan submission. Use `symbolic --reuse RUN_ID --text` for a later
 lookup, or give the user `KITE plan: RUN_ID` if the submit hook is configured.
 
 If original wording leaves one detail uncertain, name that gap and use the
-smallest follow-up that can resolve it. For a known citation, run
+smallest follow-up that can resolve it. For known citations, use
+`read_conversation_citations` if it is available, or run
 `evidence 'ID#SEGMENT' --context 2 --text` (repeat `--also 'ID#SEGMENT'` for
 other citations). To check a possible conflicting statement, make a focused
 symbolic query with the same recording window and the wording that would

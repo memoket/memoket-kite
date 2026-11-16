@@ -11,6 +11,7 @@ from .contracts import (
     CURSOR,
     DATE,
     HASH,
+    SOURCE_SCOPE,
     TEXT,
     ToolError,
     array,
@@ -318,6 +319,83 @@ def segment_context(
         if segment["segment_id"] == segment_id:
             return _context_window(workspace, record, offset, radius, byte_budget)
     raise ToolError("not_found", "segment ID was not found in the selected revision")
+
+
+def read_evidence(
+    workspace,
+    references,
+    *,
+    radius: int,
+    byte_budget: int | None = None,
+    source: str | None = None,
+    conversation: str | None = None,
+    segment: str | None = None,
+    checksum: str | None = None,
+) -> dict:
+    """Resolve up to eight original citations in a single workspace snapshot."""
+    if not 1 <= len(references) <= 8:
+        raise ToolError("invalid_input", "provide one to eight citations")
+
+    def resolve_reference(reference, budget):
+        namespace, conversation_id, segment_id = source, conversation, segment
+        if reference is not None:
+            if "#" not in reference:
+                if any(value is not None for value in (source, conversation, checksum)):
+                    raise ToolError(
+                        "invalid_input", "source and revision options require --segment-id"
+                    )
+                return evidence_context(workspace, reference, radius, byte_budget=budget)
+            if conversation is not None:
+                raise ToolError(
+                    "invalid_input", "the short citation already includes a conversation ID"
+                )
+            if reference.startswith("[") and reference.endswith("]"):
+                reference = reference[1:-1]
+            conversation_id, _, segment_id = reference.rpartition("#")
+            if "/" in conversation_id:
+                embedded, conversation_id = conversation_id.split("/", 1)
+                if source is not None and source != embedded:
+                    raise ToolError("invalid_input", "the citation and --source namespaces differ")
+                namespace = embedded
+        elif namespace is None or conversation_id is None:
+            raise ToolError("invalid_input", "--segment-id requires --source and --conversation-id")
+        validate(TEXT, conversation_id, "conversation ID")
+        validate(TEXT, segment_id, "segment ID")
+        if namespace is not None:
+            validate(
+                SOURCE_SCOPE,
+                {"source": namespace, "conversation_id": conversation_id},
+                "source scope",
+            )
+        if checksum is not None:
+            validate(HASH, checksum, "revision checksum")
+        return segment_context(
+            workspace,
+            source=namespace,
+            conversation_id=conversation_id,
+            segment_id=segment_id,
+            checksum=checksum,
+            radius=radius,
+            byte_budget=budget,
+        )
+
+    if len(references) == 1:
+        return resolve_reference(references[0], byte_budget)
+    windows, unavailable = [], []
+    for index, reference in enumerate(references, 1):
+        try:
+            windows.append(resolve_reference(reference, None))
+        except ToolError as error:
+            if error.code not in {"not_found", "ambiguous_source"}:
+                raise
+            unavailable.append({"index": index, "code": error.code, "message": str(error)})
+    if not windows:
+        first = unavailable[0]
+        raise ToolError(first["code"], first["message"])
+    batch = merge_evidence_windows(windows, byte_budget)
+    if unavailable:
+        batch["unavailable"] = unavailable
+    return batch
 
 
 def _validate_context_window(radius: int, byte_budget: int | None) -> None:

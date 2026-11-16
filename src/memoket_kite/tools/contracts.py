@@ -174,6 +174,9 @@ ID = {"type": "string", "pattern": r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"}
 HASH = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
 DATE = {"type": "string", "format": "date"}
 COUNT = {"type": "integer", "minimum": 0}
+SOURCE_SCOPE = object_schema(
+    {"source": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"}}, {"conversation_id": TEXT}
+)
 XML_UNSAFE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
 
 

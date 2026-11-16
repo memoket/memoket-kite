@@ -5034,3 +5034,24 @@ def render_context(pack: dict, *, compact_spacing: bool = False) -> str:
     if run_id := pack.get("saved_run"):
         lines.extend(("", f"Saved search: {run_id}"))
     return "\n".join(lines).strip()
+
+
+def render_evidence(window: dict) -> str:
+    """Render a single or batched citation lookup in original turn order."""
+    if "windows" in window:
+        lines = [render_context({"spans": window["windows"]})]
+        lines.extend(
+            f"Citation {entry['index']}: {entry['message']}"
+            for entry in window.get("unavailable", ())
+        )
+        return "\n".join(lines)
+    spans = [
+        {
+            "source_date": window["source_time"],
+            "evidence": [*window["before"], window["evidence"], *window["after"]],
+        }
+    ]
+    text = render_context({"spans": spans})
+    if not window["source_revision_active"]:
+        return f"Historical revision: {window['evidence']['revision_checksum']}\n{text}"
+    return text

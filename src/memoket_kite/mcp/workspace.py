@@ -23,7 +23,9 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             raise
         raise ConfigurationError(_MCP_INSTALL_HINT) from exc
 
+    from memoket_kite.tools.context import render_evidence
     from memoket_kite.tools.contracts import ToolError
+    from memoket_kite.tools.retrieve import read_evidence
     from memoket_kite.tools.symbolic import render_symbolic_context, symbolic_context
     from memoket_kite.tools.workspace import Workspace
 
@@ -111,5 +113,38 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         except ToolError as exc:
             raise MCPToolError(f"{exc.code}: {exc}") from exc
         return render_symbolic_context(result)
+
+    @server.tool(
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        structured_output=False,
+    )
+    def read_conversation_citations(
+        citations: Annotated[
+            list[Annotated[str, Field(min_length=1, max_length=1024)]],
+            Field(min_length=1, max_length=8),
+        ],
+        neighbors: Annotated[int, Field(strict=True, ge=0, le=20)] = 2,
+        byte_budget: Annotated[int, Field(strict=True, ge=128, le=32768)] = 4096,
+        workspace_version: Annotated[int | None, Field(strict=True, ge=0)] = None,
+    ) -> str:
+        """Read known citations and nearby original turns without making a search plan.
+
+        Use after recall to check a decision, reply, or revision. Send cited
+        recording#segment references or revision-bound evidence IDs. Use the
+        revision-bound ID for an earlier revision. Pass the recall result's
+        workspace_version to guard against changes between calls. Overlapping
+        windows are returned once. The budget limits nearby context and keeps
+        the requested turns whole.
+        """
+        try:
+            with Workspace.open(workspace_path, read_only=True) as workspace:
+                if workspace_version is not None and workspace_version != workspace.version():
+                    raise ToolError("stale_snapshot", "recall again against the current workspace")
+                window = read_evidence(
+                    workspace, citations, radius=neighbors, byte_budget=byte_budget
+                )
+        except ToolError as exc:
+            raise MCPToolError(f"{exc.code}: {exc}") from exc
+        return render_evidence(window)
 
     return server

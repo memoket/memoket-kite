@@ -7,7 +7,17 @@ from pathlib import Path
 from typing import Callable
 
 from .context import CONTEXT_PLAN, CONTEXT_REQUEST, compile_question, search_question
-from .contracts import COUNT, CURSOR, DATE, HASH, TEXT, ToolError, array, object_schema
+from .contracts import (
+    COUNT,
+    CURSOR,
+    DATE,
+    HASH,
+    SOURCE_SCOPE,
+    TEXT,
+    ToolError,
+    array,
+    object_schema,
+)
 from .extract import MODEL, propose
 from .index import ANNOTATIONS, RECLASSIFY, TOPIC_MOVE, annotate, move_topic, reclassify
 from .ingest import SOURCE, normalize
@@ -30,9 +40,6 @@ from .symbolic import (
 )
 from .workspace import Workspace
 
-SOURCE_SCOPE = object_schema(
-    {"source": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"}}, {"conversation_id": TEXT}
-)
 TARGET = {
     **SOURCE_SCOPE,
     "properties": {

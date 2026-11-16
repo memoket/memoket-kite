@@ -12,10 +12,9 @@ from .activity import FOLLOW_STAGES
 from .annotation_blocks import annotation_blocks
 from .audio import audio_source
 from .captions import CAPTION_FORMATS
-from .context import context_pack, question_pack, render_context
+from .context import context_pack, question_pack, render_context, render_evidence
 from .contracts import (
-    HASH,
-    TEXT,
+    SOURCE_SCOPE,
     ToolError,
     decode_object,
     digest,
@@ -27,14 +26,12 @@ from .contracts import (
 from .demo import render_decision_story, render_demo, run_demo
 from .ingest import file_source, prepare_source
 from .memoket_source import memoket_source
-from .operations import SCHEMAS, SOURCE_SCOPE, TOOLS, Context
+from .operations import SCHEMAS, TOOLS, Context
 from .resources import resource_root
 from .retrieve import (
     compare_revisions,
-    evidence_context,
-    merge_evidence_windows,
+    read_evidence,
     render_revision_comparison,
-    segment_context,
     topic_inventory,
 )
 from .source_batch import commit_batch, prepare_batch, read_transcript_batch
@@ -713,68 +710,21 @@ def _ingest(
     return {**output, "integrity": result["value"]}, None
 
 
-def _read_evidence_reference(
-    args: argparse.Namespace, workspace: Workspace, reference: str | None, byte_budget: int | None
-) -> dict:
-    if reference is not None and "#" not in reference:
-        if any(value is not None for value in (args.source, args.conversation_id, args.revision)):
-            raise ToolError("invalid_input", "source and revision options require --segment-id")
-        return evidence_context(workspace, reference, args.context, byte_budget=byte_budget)
-    source, conversation, segment = args.source, args.conversation_id, args.segment_id
-    if reference is not None:
-        if conversation is not None:
-            raise ToolError(
-                "invalid_input", "the short citation already includes a conversation ID"
-            )
-        if reference.startswith("[") and reference.endswith("]"):
-            reference = reference[1:-1]
-        conversation, _, segment = reference.rpartition("#")
-        if "/" in conversation:
-            namespace, conversation = conversation.split("/", 1)
-            if source is not None and source != namespace:
-                raise ToolError("invalid_input", "the citation and --source namespaces differ")
-            source = namespace
-    elif source is None or conversation is None:
-        raise ToolError("invalid_input", "--segment-id requires --source and --conversation-id")
-    validate(TEXT, conversation, "conversation ID")
-    validate(TEXT, segment, "segment ID")
-    if source is not None:
-        validate(SOURCE_SCOPE, {"source": source, "conversation_id": conversation}, "source scope")
-    if args.revision is not None:
-        validate(HASH, args.revision, "revision checksum")
-    return segment_context(
-        workspace,
-        source=source,
-        conversation_id=conversation,
-        segment_id=segment,
-        checksum=args.revision,
-        radius=args.context,
-        byte_budget=byte_budget,
-    )
-
-
 def _read_evidence(args: argparse.Namespace, workspace: Workspace) -> dict:
-    if not args.also:
-        return _read_evidence_reference(args, workspace, args.source_line_id, args.byte_budget)
-    if args.source_line_id is None or len(args.also) > 7:
+    if args.also and (args.source_line_id is None or len(args.also) > 7):
         raise ToolError(
             "invalid_input", "--also requires a positional citation and up to seven extras"
         )
-    windows, unavailable = [], []
-    for index, reference in enumerate((args.source_line_id, *args.also), 1):
-        try:
-            windows.append(_read_evidence_reference(args, workspace, reference, None))
-        except ToolError as error:
-            if error.code not in {"not_found", "ambiguous_source"}:
-                raise
-            unavailable.append({"index": index, "code": error.code, "message": str(error)})
-    if not windows:
-        first = unavailable[0]
-        raise ToolError(first["code"], first["message"])
-    batch = merge_evidence_windows(windows, args.byte_budget)
-    if unavailable:
-        batch["unavailable"] = unavailable
-    return batch
+    return read_evidence(
+        workspace,
+        (args.source_line_id, *args.also),
+        radius=args.context,
+        byte_budget=args.byte_budget,
+        source=args.source,
+        conversation=args.conversation_id,
+        segment=args.segment_id,
+        checksum=args.revision,
+    )
 
 
 def _check_source(args: argparse.Namespace, root: Path) -> dict:
@@ -1339,26 +1289,7 @@ def main(argv=None) -> int:
     elif args.command == "source-compare" and args.text:
         print(render_revision_comparison(result))
     elif args.command == "evidence" and args.text:
-        window = result["value"]
-        if "windows" in window:
-            print(render_context({"spans": window["windows"]}))
-            for unavailable in window.get("unavailable", ()):
-                print(f"Citation {unavailable['index']}: {unavailable['message']}")
-            return 0
-        if not window["source_revision_active"]:
-            print(f"Historical revision: {window['evidence']['revision_checksum']}")
-        print(
-            render_context(
-                {
-                    "spans": [
-                        {
-                            "source_date": window["source_time"],
-                            "evidence": [*window["before"], window["evidence"], *window["after"]],
-                        }
-                    ]
-                }
-            )
-        )
+        print(render_evidence(result["value"]))
     elif args.command == "status" and args.text_output:
         print(render_status(result))
     elif args.command in {"audio-source", "file-source", "memoket-source"}:
