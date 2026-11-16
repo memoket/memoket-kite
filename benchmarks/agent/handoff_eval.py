@@ -135,7 +135,14 @@ def _trial(args, case, arm, repetition):
     with TemporaryDirectory(prefix="kite-handoff-") as temporary:
         root = Path(temporary).resolve()
         project = root / "project"
-        shutil.copytree(case["seed"], project, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+        # Temporary directories are subject to age-based cleanup. Keep the
+        # seed contents and modes while giving the trial files fresh times.
+        shutil.copytree(
+            case["seed"],
+            project,
+            ignore=shutil.ignore_patterns(".git", "__pycache__"),
+            copy_function=shutil.copy,
+        )
         if (project / "sources").exists():
             raise ValueError("the seed project must not contain the meeting archive")
         subprocess.run(["git", "init", "-q", str(project)], check=True)

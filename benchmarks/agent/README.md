@@ -337,6 +337,8 @@ digests. Use disposable seed projects and trusted fixture files. The runner
 uses POSIX pipe observation to retain tool results and incomplete turns.
 
 The three arms start fresh with identical task text, code and project guidance.
+Trial copies retain the seed files' contents and file modes with fresh
+timestamps for the temporary directory.
 The runner disables Codex app connectors for every arm. It records this setting
 under `common_codex_options` in the v2 protocol. The summary also counts
 observed `app_connector_calls`. Inspect saved tool calls when evaluating v1

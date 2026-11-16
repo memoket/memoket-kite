@@ -1,4 +1,5 @@
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -96,7 +97,9 @@ def test_handoff_responds_only_to_the_agents_request_and_resumes_same_chat(
 ):
     seed = tmp_path / "seed"
     seed.mkdir()
-    (seed / "policy.py").write_text("value = None\n", encoding="utf-8")
+    policy = seed / "policy.py"
+    policy.write_text("value = None\n", encoding="utf-8")
+    os.utime(policy, (1_600_000_000, 1_600_000_000))
     case = {
         "id": "rollout",
         "seed": seed,
@@ -112,6 +115,8 @@ def test_handoff_responds_only_to_the_agents_request_and_resumes_same_chat(
 
     def codex(_binary, _model, project, prompt, **options):
         assert not (project / "sources").exists()
+        assert (project / "policy.py").stat().st_mtime > policy.stat().st_mtime
+        assert (project / "policy.py").read_bytes() == policy.read_bytes()
         assert options["persist_session"] is True
         assert options["codex_options"] == ("--disable", "apps")
         activity.append((prompt, options["resume_session"]))
