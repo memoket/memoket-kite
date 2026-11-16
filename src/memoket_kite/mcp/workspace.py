@@ -367,9 +367,9 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             Field(
                 strict=True,
                 ge=0,
-                le=4,
-                description="Original turns around matches. "
-                "When omitted, use one and trim incidental context from large replies.",
+                le=20,
+                description="Original turns on each side. Use 0–4 for symbolic plans, or 0–20 "
+                "for citation windows without a plan. Symbolic queries default to one.",
             ),
         ] = None,
         max_bytes: Annotated[

@@ -684,6 +684,10 @@ async def test_planless_receipt_expands_original_context_once(tmp_path, capsys):
             and "[review#4] Meeting adjourned." in from_direct.content[0].text
         )
         assert "[review#3]" not in from_direct.content[0].text
+        wide = await client.call_tool(tool, {"known_citations": ["review#1"], "neighbors": 8})
+        assert not wide.is_error and "[review#4] Meeting adjourned." in wide.content[0].text
+        wide_search = await client.call_tool(tool, {**query, "neighbors": 8})
+        assert wide_search.is_error and "0–4 neighbors" in wide_search.content[0].text
 
 
 async def test_followup_recovers_an_already_quoted_nonleading_citation(tmp_path, capsys):

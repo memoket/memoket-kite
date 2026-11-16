@@ -18,6 +18,8 @@ transaction between requests so an import can commit while it is idle.
   Send `known_citations` without a plan to read their original windows.
   Send `after_receipt` and `neighbors` without a plan to read unseen original
   turns around the last leading citations that are still current.
+  Direct citation windows accept 0–20 neighboring turns on each side.
+  Symbolic plans accept 0–4.
   Use a focused plan when looking for matches beyond those windows.
   When a task supplies known references
   and needs more evidence, pass them as `known_citations` and give the missing
