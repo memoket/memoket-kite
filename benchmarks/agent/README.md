@@ -318,6 +318,42 @@ For installed plugin comparisons, preserve the actual injected evidence and
 the corresponding execution trace. For a fresh-compilation versus saved-plan
 comparison, report setup and per-task costs separately.
 
+### Measure a user handoff for external meeting history
+
+Use the same execution case schema, with a `handoff_refs` array containing
+original citations in the order a user would share them. Include at least one
+accepted citation per check. The example generator above supplies that field.
+
+```sh
+python -m benchmarks.agent.handoff_eval "$CASES" "$OUTPUT" \
+  --model "$MODEL" --codex "$CODEX" --kite-python "$KITE_PYTHON"
+```
+
+`KITE_PYTHON` is the executable of an environment with the chosen KITE runtime
+and its `agent,mcp` extras installed. The runner uses the workspace MCP entry
+point and records the same execution's engine, plan, trace and delivered quotes.
+It fingerprints the installed modules and records the source and verifier
+digests. Use disposable seed projects and trusted fixture files. The runner
+uses POSIX pipe observation to retain tool results and incomplete turns.
+
+The three arms start fresh with identical task text, code and project guidance.
+`external` has no mounted meeting archive or KITE. `files` has the original
+files and recorded project and date metadata. `kite` uses the configured
+workspace MCP without a mounted transcript directory. All three may explicitly
+ask for meeting context. The runner resumes that chat once with the same
+frozen excerpts if Codex asks. The scorer runs after the conversation ends and
+sends no messages. A citation in `external` must come from its supplied excerpt.
+
+Report user messages, original and follow-up UTF-8 bytes, model token usage
+with and without cached input, and code plus citation acceptance. Treat the
+follow-up as a scripted user response. Its wall time excludes the time a person
+would spend locating or sending it, and setup and ingestion remain outside task
+cost. The external comparison measures the cost of supplying unavailable
+history. Use the mounted file comparison for access to equivalent recordings.
+Keep all attempts in completion counts and disclose turns with unavailable
+token usage. An observed symbolic receipt covers only the citations in that
+tool's actual result.
+
 ## Evaluate original conversation context
 
 The source-context benchmark uses a local directory of UTF-8 TXT transcripts.

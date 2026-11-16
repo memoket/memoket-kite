@@ -124,6 +124,7 @@ def prepare(root: Path) -> None:
                 "seed": "seed",
                 "verifier": f"{state}/verify.py",
                 "symbolic_run": _RUN,
+                "handoff_refs": [f"{recording}#text-line-2", f"{recording}#text-line-3"],
                 "evidence": {
                     "regions": [f"{recording}#text-line-2"],
                     "max_signups": [f"{recording}#text-line-3"],
