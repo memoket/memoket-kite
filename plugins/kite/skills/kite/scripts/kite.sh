@@ -3,7 +3,7 @@ set -euo pipefail
 umask 077
 
 # Use a fixed runtime so the packaged skill and CLI contracts stay in sync.
-runtime_revision=c555b77b2aa9ee129376d17d9db5621a27585f4f
+runtime_revision=159add39ff5912e74943e15a94c3c202e80402da
 runtime_extras=agent
 runtime_command=kite-tool
 if [[ "${1:-}" == workspace-mcp ]]; then
