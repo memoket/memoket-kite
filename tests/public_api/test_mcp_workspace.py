@@ -464,6 +464,90 @@ async def test_large_recall_guides_branches_and_trims_only_implicit_context(tmp_
         assert len(focused.encode()) < len(context.encode())
 
 
+async def test_symbolic_recall_labels_recording_dates_separately_from_spoken_dates(
+    tmp_path, capsys
+):
+    workspace = tmp_path / "workspace"
+    payload = tmp_path / "input.json"
+    records = [
+        ("report-before", "2026-01-12", "I cancelled our CedarCart subscription."),
+        ("report-after", "2026-01-20", "I ordered lunch from PaperRoute."),
+        ("similar-name", "2026-01-16", "I ordered a subscription to PaperRound on January 16."),
+        ("undated", None, "I ordered extra supplies from PaperRoute."),
+        ("excluded-by-scope", "2026-02-01", "I ordered more from PaperRoute."),
+    ]
+    batch = {
+        "sources": [
+            {
+                "source": {
+                    "format": "conversation",
+                    "payload": {
+                        "conversation_id": name,
+                        "source": "text",
+                        "metadata": {"source_reference": name},
+                        **({"source_date": day} if day else {}),
+                        "segments": [{"segment_id": "report", "text": quote}],
+                    },
+                },
+            }
+            for name, day, quote in records
+        ]
+    }
+    payload.write_text(json.dumps(batch), encoding="utf-8")
+    assert main(["--workspace", str(workspace), "index-sources", "--input", str(payload)]) == 0
+    capsys.readouterr()
+    plan = {
+        "queries": [
+            {
+                "select": "lines",
+                "where": {"grep": subject, "date_wording": "calendar"},
+                "prefer": [event],
+            }
+            for subject, event in [
+                ("CedarCart|Cedar Cart", "cancelled"),
+                ("PaperRoute|Paper Route", "ordered"),
+            ]
+        ]
+    }
+    args = {
+        "question": "What dates were the CedarCart cancellation and PaperRoute order reported?",
+        "plan": plan,
+        "end_date": "2026-01-31",
+        "neighbors": 0,
+    }
+    async with Client(create_workspace_server(workspace), raise_exceptions=False) as client:
+        result = await client.call_tool("recall_conversation_evidence", args)
+        assert not result.is_error
+        text = result.content[0].text
+        assert "Queries 1, 2 found subject turns with recording dates" in text
+        assert "Recording date: 2026-01-12\n[report-before#report]" in text
+        assert "Recording date: 2026-01-20\n[report-after#report]" in text
+        assert all(f"[{name}#report]" not in text for name, _, _ in records[2:])
+        strict = await client.call_tool(
+            "recall_conversation_evidence", {**args, "plan": {**plan, "retry_date_subject": False}}
+        )
+        assert not strict.is_error
+        assert "[report-before#report]" not in strict.content[0].text
+        assert "[report-after#report]" not in strict.content[0].text
+        unrelated = await client.call_tool(
+            "recall_conversation_evidence",
+            {
+                **args,
+                "plan": {
+                    "queries": [
+                        {
+                            "select": "lines",
+                            "where": {"grep": "Paper Rook", "date_wording": "calendar"},
+                        }
+                    ]
+                },
+            },
+        )
+        assert not unrelated.is_error
+        assert "Query 1 matched no original turns" in unrelated.content[0].text
+        assert "[similar-name#report]" not in unrelated.content[0].text
+
+
 async def test_symbolic_recall_cites_a_decision_and_its_nearby_indexed_subject(tmp_path, capsys):
     workspace = tmp_path / "workspace"
     payload = tmp_path / "input.json"

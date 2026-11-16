@@ -214,7 +214,8 @@ when the question needs both. where keys: topics, entities, obj, place, event, d
 who, time [start,end], grep, grep_all, near, date_wording, change_wording. Each supplied
 constraint is required.
 Use date_wording "calendar" for a spoken date, or "change" for date-change wording on the same
-turn. For a reported change to a value or decision, use change_wording "reported" with a
+turn. For the date a conversation reports an action, search its original wording and read the
+recording date separately. For a reported change to a value or decision, use change_wording "reported" with a
 subject constraint. Read the evidence to verify what was applied and by whom. Use a subject
 expression in near to connect surrounding turns. For relevant
 listed labels, use prefer_labels to boost original lines supported by the index without excluding
@@ -1614,7 +1615,40 @@ def _split_subject_cues(pattern, wording, question):
     return sorted(set(cues))[:3]
 
 
-def _date_subject_hints(index, plan, trace, question, active_units):
+def _literal_subject_expression(term):
+    escaped = re.escape(term)
+    return escaped if re.fullmatch(r"[㐀-鿿]+", term) else rf"(?<!\w){escaped}(?!\w)"
+
+
+def _recording_date_alternative(index, entry, active_units):
+    """Keep the named subject and find dated reports without inferring an event date."""
+    where = entry["where"]
+    terms = [term.strip() for term in where.get("grep", "").split("|")]
+    for term in terms:
+        if re.fullmatch(r"[㐀-鿿]{4,16}", term):
+            continue
+        if len(term.replace(" ", "")) < 4 or not re.fullmatch(
+            r"[a-z0-9][a-z0-9-]*(?: [a-z0-9][a-z0-9-]*){0,3}", term, re.I
+        ):
+            return None
+    if not entry.get("prefer"):
+        return None
+    alternative = {
+        **where,
+        "grep": "|".join(map(_literal_subject_expression, terms)),
+        "grep_all": [expr for expr in where["grep_all"] if expr != _DATE_WORDING["calendar"]],
+    }
+    if not any(alternative.get("time", ())):
+        dates = [
+            index.store.units[unit].date for unit in active_units if index.store.units[unit].date
+        ]
+        if not dates:
+            return None
+        alternative["time"] = [min(dates), max(dates)]
+    return alternative
+
+
+def _date_subject_hints(index, plan, trace, question, active_units, *, allow_recording_date=False):
     """Probe alternative subject cues without relaxing the submitted result."""
     acronyms = set(re.findall(_ACRONYMS.pattern, question, re.ASCII))
     for i, entry in enumerate(plan.get("queries", ())):
@@ -1632,13 +1666,35 @@ def _date_subject_hints(index, plan, trace, question, active_units):
             (name for name, pattern in _DATE_WORDING.items() if pattern in expressions),
             None,
         )
+        if (
+            allow_recording_date
+            and wording == "calendar"
+            and not near
+            and _DATE_DETAIL_QUESTION.search(question)
+            and not _ORIGINAL_SCHEDULE.search(question)
+            and (recorded := _recording_date_alternative(index, entry, active_units))
+        ):
+            probe = _validate_source_plan({"queries": [{**entry, "where": recorded}]})
+            _, checked = execute_plan(
+                index.store, index.vocab, probe, budget=1, allowed_line_units=active_units
+            )
+            matching = len(checked.line_matches.get(0, ()))
+            if 0 < matching <= 12:
+                yield {
+                    "stage": "date_subject_hint",
+                    "q": i,
+                    "matches": matching,
+                    "date_basis": "recording",
+                    "probe_plan": probe,
+                }
+                continue
         if not wording or not (
             cues := _split_subject_cues(subject.get("grep", ""), wording, question)
         ):
             continue
         hint = {
             **where,
-            "near": {**subject, "grep": "|".join(map(re.escape, cues))},
+            "near": {**subject, "grep": "|".join(map(_literal_subject_expression, cues))},
             "date_wording": wording,
         }
         if not near:
@@ -2170,8 +2226,23 @@ def render_symbolic_context(
                 sequence = ", ".join(refs[line_id] for line_id in ids)
                 lines.append(f"Review the revision discussion in order: {sequence}.")
         if step["stage"] == "date_subject_retry":
-            queries = ", ".join(str(hint["q"] + 1) for hint in step["hints"])
-            lines.append(f"Retried empty date queries {queries} with scoped subject alternatives.")
+            subjects = [str(hint["q"] + 1) for hint in step["hints"] if "date_basis" not in hint]
+            if subjects:
+                queries = ", ".join(subjects)
+                lines.append(
+                    f"Retried empty date queries {queries} with scoped subject alternatives."
+                )
+            recorded = [
+                str(hint["q"] + 1)
+                for hint in step["hints"]
+                if hint.get("date_basis") == "recording"
+            ]
+            if recorded:
+                queries = ", ".join(recorded)
+                lines.append(
+                    f"Queries {queries} found subject turns with recording dates after no spoken date matched. "
+                    "Recording dates show when the conversation was recorded, not necessarily the event date."
+                )
         if step["stage"] == "date_subject_hint":
             where = step["suggested_where"]
             # Render recording names from the submitted plan, not internal index IDs.
@@ -2482,7 +2553,16 @@ def execute_source_plan(
         else:
             rows, trace = run(active_units, branch_limit=branch_limit)
         hints = (
-            list(_date_subject_hints(index, plan, trace, question, active_units))
+            list(
+                _date_subject_hints(
+                    index,
+                    plan,
+                    trace,
+                    question,
+                    active_units,
+                    allow_recording_date=bool(compiled.get("retry_date_subject")),
+                )
+            )
             if question and changed_recordings is None
             else []
         )

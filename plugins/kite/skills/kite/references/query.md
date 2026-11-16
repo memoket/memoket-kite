@@ -25,6 +25,12 @@ for explicit date-change wording in the same turn. Combine with a subject
 expression or `near` for nearby subject turns. KITE compiles the field to a
 native `grep_all` expression and keeps the other filters. Read the original
 words to verify approval and the applicable subject.
+For the date that a conversation reports an action, search the action and
+subject wording and read the recording date separately. An enabled date
+retry can return narrowly matched subject turns from dated recordings if a
+spoken calendar expression found nothing. These branches are labeled as
+recording dates in the output and execution trace. Use original wording to
+establish when an event happened or a decision took effect.
 Use `where.change_wording: "reported"` with a subject constraint when the
 task asks what was already changed or applied. The shared compiler expands
 this to a required original-turn regex in `grep_all`, alongside any existing

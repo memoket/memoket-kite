@@ -111,7 +111,9 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                     "and near with grep or source annotation axes, turns (1–4), and optional include_anchor. "
                     "When the decision uses shorthand, search its value wording in grep and use "
                     'near: {"topics":["known_code"],"turns":2} for the subject cited in adjacent turns. '
-                    "Use date_wording calendar for a date and change for a revised date. Date retry is automatic. "
+                    "Use date_wording calendar for a spoken date and change for date-change wording. "
+                    "For the date of a reported action, search for the report and read the recording date separately. "
+                    "Empty date branches can retry with clearly labeled recording dates. "
                     "Use change_wording reported for a value already put into effect. "
                     "Put the subject in grep or near and separate old and revised values. "
                     "Use up to four regexes in prefer. Omit plan to inspect the current index "

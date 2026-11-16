@@ -60,6 +60,10 @@ The result keeps the submitted branch's original matches. Review the
 suggested subject wording and retry using the same scope if it fits.
 The submitted question and plan can explicitly enable `retry_date_subject`.
 KITE then applies scoped alternatives to empty branches in one native retry.
+A narrow literal subject with event ranking cues can return original reports
+with their recording dates when a spoken calendar expression has no matches.
+The `date_basis: recording` trace identifies that branch. These dates describe
+the recordings and require separate wording to establish event timing.
 A literal subject in `grep` can become a nearby subject cue within three
 turns. Other branch constraints stay in effect.
 Inspect `compiled_plan`, `plan`, and the `date_subject_retry` trace. A saved

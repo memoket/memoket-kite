@@ -28,7 +28,7 @@
       query: 'Query', subquestion: 'Search subquestion', queryLink: 'Search path',
       retrievalPath: 'How this line was found', retrievalReplay: 'Replay search',
       symbolicSearch: 'Symbolic search', symbolicHit: 'Symbolic match', symbolicChange: 'Date change',
-      symbolicSubjectRetry: 'Retried date subject', symbolicNearbyHits: 'Supported by nearby turns', symbolicFilter: 'Filter', symbolicNearbyFilter: 'Nearby turn filter', symbolicRanking: 'Ranking', symbolicExecuted: 'Executed plan', symbolicCompiled: 'Compiled plan',
+      symbolicSubjectRetry: 'Retried empty date query', symbolicRecordingDateRetry: 'Used recording date', symbolicNearbyHits: 'Supported by nearby turns', symbolicFilter: 'Filter', symbolicNearbyFilter: 'Nearby turn filter', symbolicRanking: 'Ranking', symbolicExecuted: 'Executed plan', symbolicCompiled: 'Compiled plan',
       symbolicIndexedComparison: 'Compared earlier and later decisions using the subject index',
       symbolicAliasEvidence: 'Original wording linking the subject descriptions',
       symbolicAliasUnresolved: 'Original wording questioning or distinguishing the subject descriptions',
@@ -133,7 +133,7 @@
       query: '检索请求', subquestion: '检索子问题', queryLink: '检索路径',
       retrievalPath: '原文如何命中', retrievalReplay: '重播检索',
       symbolicSearch: '符号检索', symbolicHit: '符号命中', symbolicChange: '日期变更',
-      symbolicSubjectRetry: '用邻近主题词重试', symbolicNearbyHits: '由邻近原文支撑', symbolicFilter: '筛选', symbolicNearbyFilter: '邻近发言筛选', symbolicRanking: '加权', symbolicExecuted: '实际执行计划', symbolicCompiled: '编译计划',
+      symbolicSubjectRetry: '重试无命中的日期查询', symbolicRecordingDateRetry: '使用录制日期', symbolicNearbyHits: '由邻近原文支撑', symbolicFilter: '筛选', symbolicNearbyFilter: '邻近发言筛选', symbolicRanking: '加权', symbolicExecuted: '实际执行计划', symbolicCompiled: '编译计划',
       symbolicIndexedComparison: '按主体索引比较前后决定',
       symbolicAliasEvidence: '证明两种叫法指向同一主体的原文',
       symbolicAliasUnresolved: '质疑或区分两种叫法的原文',
@@ -1609,7 +1609,8 @@
             .filter(value => value != null && value !== '').join(' · '));
           if (code === 'date_subject_retry') {
             for (const hint of step.hints) {
-              const cue = hint.suggested_where.near.grep;
+              const cue = hint.date_basis === 'recording'
+                ? t('symbolicRecordingDateRetry') : hint.suggested_where.near.grep;
               item.append(element('p', `${hint.q + 1} · ${cue} · 0 → ${number.format(hint.matches)}`));
             }
           }
