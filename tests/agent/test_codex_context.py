@@ -69,6 +69,7 @@ def test_explicit_symbolic_submit_calls_the_installed_symbolic_command(tmp_path,
         "#!/bin/sh\n"
         'test "$1:$2:$3:$4" = "symbolic:--question=Rollout?:--model:planner" || exit 1\n'
         'test "${11}" = "--delivery-bytes" || exit 1\n'
+        'test "${13}" = "--delivery-guide" || exit 1\n'
         "printf '%s\\n' '\"[release#L2] The date is Wednesday.\"'\n"
     )
     launcher.chmod(0o700)
@@ -81,6 +82,7 @@ def test_explicit_symbolic_submit_calls_the_installed_symbolic_command(tmp_path,
     assert prepare(event, launcher) is None
     monkeypatch.setenv("KITE_SYMBOLIC_MODEL", "planner")
     monkeypatch.setenv("OPENAI_API_KEY", "test-provider")
+    monkeypatch.setenv("KITE_SYMBOLIC_GUIDE", "1")
     result = prepare(event, launcher)
     assert "symbolic query engine" in result
     assert json.loads(result.split("\n", 1)[1]) == "[release#L2] The date is Wednesday."
@@ -92,6 +94,7 @@ def test_saved_symbolic_submit_searches_without_provider_credentials(tmp_path, m
     launcher.write_text(
         "#!/bin/sh\n"
         'test "$1:$2:$3:$4" = "symbolic:--reuse:release-schedule:--delivery-bytes" || exit 1\n'
+        'if [ "$6" = "--delivery-guide" ]; then shift; printf "guide\n" >> calls; fi\n'
         "evidence='\"Saved plan release-schedule (compiled at v1)\\n[release#L2] Friday.\"'\n"
         'if [ "$6" = "--delivery-receipt" ]; then\n'
         '  printf \'{"evidence":%s,"receipt":{"plan":{}}}\\n\' "$evidence"\n'
@@ -104,6 +107,7 @@ def test_saved_symbolic_submit_searches_without_provider_credentials(tmp_path, m
     launcher.chmod(0o700)
     monkeypatch.delenv("KITE_SYMBOLIC_MODEL", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("KITE_SYMBOLIC_GUIDE", raising=False)
     event = {"hook_event_name": "UserPromptSubmit", "cwd": str(tmp_path)}
     assert prepare({**event, "prompt": "KITE plan: release-schedule extra"}, launcher) is None
     result = prepare({**event, "prompt": "KITE plan: release-schedule\nUpdate it."}, launcher)
@@ -111,6 +115,7 @@ def test_saved_symbolic_submit_searches_without_provider_credentials(tmp_path, m
     assert "[release#L2] Friday." in json.loads(result.split("\n", 1)[1])
     assert len(result.encode()) <= 6000
     assert (tmp_path / "calls").read_text() == "call\n"
+    monkeypatch.setenv("KITE_SYMBOLIC_GUIDE", "1")
     receipts = []
     captured = prepare(
         {**event, "prompt": "KITE plan: release-schedule\nUpdate it."},
@@ -119,4 +124,4 @@ def test_saved_symbolic_submit_searches_without_provider_credentials(tmp_path, m
     )
     assert captured == result
     assert receipts == [{"evidence": json.loads(result.split("\n", 1)[1]), "receipt": {"plan": {}}}]
-    assert (tmp_path / "calls").read_text() == "call\ncall\n"
+    assert (tmp_path / "calls").read_text() == "call\nguide\ncall\n"

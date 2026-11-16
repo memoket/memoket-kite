@@ -582,6 +582,7 @@ class Trace:
     line_matches: dict[int, set[str]] = field(default_factory=dict)
     line_branch_candidates: dict[int, list[str]] = field(default_factory=dict)
     line_alternatives: dict[int, tuple[str, float]] = field(default_factory=dict)
+    selected_line_branches: dict[str, int] = field(default_factory=dict)
 
     def log(self, stage: str, **kw):
         self.stages.append({"stage": stage, **kw})
@@ -1552,16 +1553,16 @@ def _stage_binding(rows: list[dict]) -> dict:
 
 def _interleave_distinct_line_rows(lanes):
     seen = set()
-    lanes = [iter(rows) for rows in lanes]
+    lanes = [(branch, iter(rows)) for branch, rows in lanes]
     while lanes:
         remaining = []
-        for lane in lanes:
+        for branch, lane in lanes:
             for row in lane:
                 key = (row["type"], row["id"])
                 if key not in seen:
                     seen.add(key)
-                    remaining.append(lane)
-                    yield row
+                    remaining.append((branch, lane))
+                    yield branch, row
                     break
         lanes = remaining
 
@@ -1618,7 +1619,7 @@ def execute_plan(
     bindings: dict[str, dict] = {}
     bound_rows: list[dict] = []  # stages that consumed a $ref: the refined output
     free_rows: list[dict] = []  # unbound stages (anchors / wide nets): context
-    line_stages: list[tuple[bool, list[dict]]] = []
+    line_stages: list[tuple[bool, int, list[dict]]] = []
     for i, raw in enumerate(stages[:4]):
         if not isinstance(raw, dict):
             continue  # malformed compile output must degrade, not crash
@@ -1686,7 +1687,7 @@ def execute_plan(
         for line, support in st_trace.nearby_line_matches.items():
             trace.nearby_line_matches.setdefault(line, set()).update(support)
         if allowed_line_units is not None:
-            line_stages.append((uses_ref, rows))
+            line_stages.append((uses_ref, i, rows))
         bindings[name] = binding
         if uses_ref:
             for r in rows:
@@ -1698,13 +1699,16 @@ def execute_plan(
     # Per-stage headroom (max(budget, 12)) lets a bound stage out-rank the
     # context stages; the caller's budget still bounds what comes back.
     out, seen, kept = [], set(), 0
-    ordered = bound_rows + free_rows
+    ordered = ((None, row) for row in bound_rows + free_rows)
     if line_stages:
         # Keep evidence establishing the anchor as well as evidence from each
         # dependent stage. A large dependent result must not hide its premise.
-        lanes = [rows for _, rows in sorted(line_stages, key=lambda stage: not stage[0])]
+        lanes = [
+            (branch, rows)
+            for _, branch, rows in sorted(line_stages, key=lambda stage: not stage[0])
+        ]
         ordered = _interleave_distinct_line_rows(lanes)
-    for r in ordered:
+    for branch, r in ordered:
         key = (r.get("type"), r.get("id"))
         if key in seen:
             continue
@@ -1714,6 +1718,8 @@ def execute_plan(
             kept += 1
         seen.add(key)
         out.append(r)
+        if branch is not None and r["type"] == "line":
+            trace.selected_line_branches[r["id"]] = branch
     return out, trace
 
 

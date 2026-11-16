@@ -329,6 +329,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="return capped evidence with the same execution's receipt (requires --delivery-bytes)",
     )
+    symbolic.add_argument(
+        "--delivery-guide",
+        action="store_true",
+        help="show which stages selected the delivered lines (requires --delivery-bytes)",
+    )
     query = commands.add_parser("query", help="run a read-only trace without saving a checkpoint")
     query.add_argument("--pipeline", choices=TRACE_PIPELINES, default="topic-tracing")
     query.add_argument(
@@ -1021,6 +1026,8 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
         }
         if args.delivery_receipt and args.delivery_bytes is None:
             raise ToolError("invalid_input", "--delivery-receipt requires --delivery-bytes")
+        if args.delivery_guide and args.delivery_bytes is None:
+            raise ToolError("invalid_input", "--delivery-guide requires --delivery-bytes")
         if args.delivery_bytes is not None:
             if args.save is not None or args.prepare is not None:
                 raise ToolError("invalid_input", "--delivery-bytes requires an executed search")
@@ -1313,7 +1320,10 @@ def main(argv=None) -> int:
     elif args.command == "symbolic" and args.delivery_bytes is not None:
         print(
             fit_symbolic_delivery(
-                result, args.delivery_bytes, include_receipt=args.delivery_receipt
+                result,
+                args.delivery_bytes,
+                include_receipt=args.delivery_receipt,
+                guide=args.delivery_guide,
             )
         )
     elif args.command == "symbolic" and args.prepare is None and args.text:

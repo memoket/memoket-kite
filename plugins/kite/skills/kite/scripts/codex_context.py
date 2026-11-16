@@ -74,6 +74,8 @@ def prepare_context(event, launcher, *, on_symbolic_receipt=None):
     else:
         command = [str(launcher), "context", "--text", f"--question={question}", "--compact"]
         budgets = ((), ("--limit", "4", "--max-bytes", "900"))
+    if symbolic_delivery and os.environ.get("KITE_SYMBOLIC_GUIDE") == "1":
+        command.append("--delivery-guide")
     capture = symbolic_delivery and on_symbolic_receipt is not None
     if capture:
         command.append(SYMBOLIC_RECEIPT_OPTION)

@@ -4896,7 +4896,7 @@ def _render_copy(source, namespaces, history):
     return identity
 
 
-def render_context(pack: dict) -> str:
+def render_context(pack: dict, *, compact_spacing: bool = False) -> str:
     namespaces = defaultdict(set)
     parts = pack.get("parts", [pack])
     for part in parts:
@@ -5013,7 +5013,8 @@ def render_context(pack: dict) -> str:
                         if len(reference.encode()) < len(quote.encode()):
                             quote = reference
                 lines.append(f"[{ref}]{quote}")
-            lines.append("")
+            if not compact_spacing:
+                lines.append("")
         if not part["spans"]:
             lines.append(
                 "No new evidence matched." if pack.get("after") else "No evidence matched."

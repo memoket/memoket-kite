@@ -51,6 +51,11 @@ Overlapping stages advance past lines already included by another stage.
 For a final-decision stage with four preferences, the trace can show an
 `alternate_wording_line` selected from the same matching set. Read that
 line and surrounding turns for the decision's status.
+Set `KITE_SYMBOLIC_GUIDE=1` in the Codex submit hook's environment to include
+a stage guide when it fits alongside the original turns. The guide lists
+which stage selected each referenced turn and shows lookup cues. Run
+`symbolic --delivery-bytes 6000 --delivery-guide` with the same query to
+inspect this format locally.
 
 For a follow-up after a workspace update, pass the earlier result's
 `memory_version` as `--since-version VERSION`. KITE reserves evidence for

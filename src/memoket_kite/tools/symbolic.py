@@ -996,7 +996,50 @@ def _schedule_follow_up(pack):
     return ""
 
 
-def render_symbolic_context(pack):
+def _stage_evidence_guide(pack):
+    selected = pack.get("_selected_line_branches")
+    if not selected:
+        return []
+    evidence = {line["source_line_id"]: line for span in pack["spans"] for line in span["evidence"]}
+    namespaces = {}
+    for line in evidence.values():
+        namespaces.setdefault(line["conversation_id"], set()).add(line["source"])
+    by_stage = {}
+    for line_id in pack["_quote_order"]:
+        if line_id not in selected or line_id not in evidence:
+            continue
+        line = evidence[line_id]
+        ref = f"{line['conversation_id']}#{line['segment_id']}"
+        if len(namespaces[line["conversation_id"]]) > 1:
+            ref = f"{line['source']}/{ref}"
+        refs = by_stage.setdefault(selected[line_id], [])
+        if len(refs) < 2:
+            refs.append(ref)
+    if len(by_stage) < 2:
+        return []
+    anchors = {step["name"] for step in pack["trace"] if "project_binding" in step}
+    lines = []
+    for index, refs in sorted(by_stage.items()):
+        stage = pack["plan"]["stages"][index]
+        name = stage.get("name", f"s{index + 1}")
+        if name in anchors:
+            continue
+        where = stage["where"]
+        preferences = stage.get("prefer", ())[:2]
+        cues = " / ".join(preferences) or where.get("grep") or " / ".join(where.get("grep_all", ()))
+        cues = " ".join(cues.split())
+        if len(cues) > 36:
+            cues = cues[:35] + "…"
+        label = f" ({cues})" if cues else ""
+        lines.append(f"- {name}{label}: " + ", ".join(refs))
+    return (
+        ["Selected by stage. Check the original turns for decision status.", *lines]
+        if len(lines) > 1
+        else []
+    )
+
+
+def render_symbolic_context(pack, *, guide=False):
     lines = []
     if "history" not in pack:
         lines.append(f"Workspace v{pack['memory_version']}")
@@ -1040,11 +1083,14 @@ def render_symbolic_context(pack):
     if omitted := pack.get("delivery_trimmed"):
         noun = "turn" if omitted == 1 else "turns"
         lines.append(f"Quote delivery omitted {omitted} original {noun} to fit its byte budget.")
-    lines.append(render_context(pack))
+    stage_guide = _stage_evidence_guide(pack) if guide else []
+    if stage_guide:
+        lines.extend((*stage_guide, ""))
+    lines.append(render_context(pack, compact_spacing=bool(stage_guide)))
     return "\n".join(lines)
 
 
-def fit_symbolic_delivery(pack, max_bytes, *, include_receipt=False):
+def fit_symbolic_delivery(pack, max_bytes, *, include_receipt=False, guide=False):
     """Return bounded evidence, optionally with the original search receipt."""
 
     def encode_evidence(value):
@@ -1062,19 +1108,27 @@ def fit_symbolic_delivery(pack, max_bytes, *, include_receipt=False):
             {"evidence": json.loads(evidence), "receipt": receipt}, ensure_ascii=False
         )
 
+    def add_guide(selected_pack, encoded):
+        if guide:
+            guided = encode_evidence(render_symbolic_context(selected_pack, guide=True).strip())
+            if len(guided.encode()) <= max_bytes:
+                return guided
+        return encoded
+
     follow_up = encode_evidence(_schedule_follow_up({**pack, "spans": []}))
     empty = follow_up if len(follow_up.encode()) <= max_bytes else '""'
     if not pack["spans"]:
         return output(empty)
     full = encode_evidence(render_symbolic_context(pack).strip())
     if len(full.encode()) <= max_bytes:
-        return output(full)
+        return output(add_guide(pack, full))
 
     by_id = {span["evidence"][0]["source_line_id"]: span for span in pack["spans"]}
     linked = pack["_linked_change"] & by_id.keys()
     retained = set()
     attempted = set()
     delivered = empty
+    delivered_pack = None
     for line_id in pack["_quote_order"]:
         group = linked if line_id in linked else {line_id}
         if group & attempted:
@@ -1101,6 +1155,9 @@ def fit_symbolic_delivery(pack, max_bytes, *, include_receipt=False):
         if len(encoded.encode()) <= max_bytes:
             retained = selected
             delivered = encoded
+            delivered_pack = candidate
+    if delivered_pack is not None:
+        delivered = add_guide(delivered_pack, delivered)
     return output(delivered)
 
 
@@ -1171,6 +1228,7 @@ def execute_source_plan(
         return rows, trace
 
     branches = {}
+    selected_branches = {}
     # Resolve a project anchor against the whole requested scope, including
     # older recordings that could make the anchor ambiguous.
     if changed and changed != active_units and not project_join:
@@ -1186,9 +1244,13 @@ def execute_source_plan(
         # evidence in the changed subset without quoting a turn twice.
         unique_rows = {}
         for pair in zip_longest(new, overall):
-            for row in pair:
-                if row is not None:
-                    unique_rows.setdefault(row["id"], row)
+            for row, lane in zip(pair, (new_trace, trace)):
+                if row is None or row["id"] in unique_rows:
+                    continue
+                line_id = row["id"]
+                unique_rows[line_id] = row
+                if delivery and line_id in lane.selected_line_branches:
+                    selected_branches[line_id] = lane.selected_line_branches[line_id]
         rows = list(unique_rows.values())[:limit]
         for line, matches in new_trace.nearby_line_matches.items():
             support.setdefault(line, set()).update(matches)
@@ -1196,6 +1258,7 @@ def execute_source_plan(
         rows, trace = run(active_units)
         traces = (trace,)
         support = trace.nearby_line_matches
+        selected_branches = trace.selected_line_branches
     reserved = set()
     comparison = None
     if compare_schedule:
@@ -1265,6 +1328,7 @@ def execute_source_plan(
         **(
             {
                 "_quote_order": quote_order,
+                "_selected_line_branches": selected_branches,
                 "_changed_checksums": changed_checksums,
                 "_linked_change": reserved,
             }

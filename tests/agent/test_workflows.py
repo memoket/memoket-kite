@@ -8246,6 +8246,54 @@ def test_symbolic_delivery_fits_escaped_quotes_and_reports_missing_branches(work
     )
 
 
+def test_symbolic_delivery_guide_keeps_quotes_and_uses_the_selecting_stage(work):
+    _, call = work
+    sources = []
+    for name, text in (
+        ("note-01", "A card with a copper tab identifies the project."),
+        ("note-03", "The early allowance is 30."),
+        ("note-29", "The final revised allowance is 21."),
+    ):
+        source = text_input(name, text)["source"]
+        source["payload"]["metadata"]["project"] = "Cedar"
+        sources.append({"source": source})
+    call("index-sources", payload={"sources": sources})
+    request = {
+        "question": "Find both allowance values in the project with the copper tab.",
+        "anchor_quote": "copper tab",
+        "plan": {
+            "queries": [
+                {"select": "lines", "where": {"grep": "allowance"}, "prefer": ["early"]},
+                {"select": "lines", "where": {"grep": "allowance"}, "prefer": ["revised"]},
+            ],
+        },
+    }
+    plain = call("symbolic", "--delivery-bytes", "8192", payload=request).strip()
+    guided = json.loads(
+        call(
+            "symbolic",
+            "--delivery-bytes",
+            "8192",
+            "--delivery-guide",
+            "--delivery-receipt",
+            payload=request,
+        )
+    )
+    assert "- evidence_1 (early): note-03#text-1" in guided["evidence"]
+    assert "- evidence_2 (revised): note-29#text-1" in guided["evidence"]
+    assert "- anchor" not in guided["evidence"]
+    assert {line for line in guided["evidence"].splitlines() if line.startswith("[")} == {
+        line for line in json.loads(plain).splitlines() if line.startswith("[")
+    }
+    assert guided["receipt"]["engine"] == "memoket_kite.core.algebra.execute_plan"
+    tight = str(max(256, len(plain.encode())))
+    assert (
+        call("symbolic", "--delivery-bytes", tight, "--delivery-guide", payload=request).strip()
+        == plain
+    )
+    call("symbolic", "--delivery-guide", payload=request, error="invalid_input")
+
+
 def test_context_uses_index_labels_only_for_their_linked_original_lines(work):
     directory, call = work
     labels = {
