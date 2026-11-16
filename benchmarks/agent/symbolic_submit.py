@@ -14,6 +14,25 @@ from unittest.mock import patch
 
 _ENGINE = "memoket_kite.core.algebra.execute_plan"
 _QUOTE = re.compile(r"^\[([^\]\n]+#[^\]\n]+)\]", re.M)
+_TYPED_INDEXES = frozenset(
+    {"topics", "entities", "obj", "place", "event", "duration", "obj_bridge"}
+)
+
+
+def typed_index_activity(trace: list[dict]) -> dict[str, set[str]]:
+    """Separate hard filters, ranking lookups, and resulting score changes."""
+    activity = {name: set() for name in ("filters", "ranking", "hits", "score_changes")}
+    for entry in trace:
+        axis = entry.get("atom")
+        stage = entry["stage"].rsplit(":", 1)[-1]
+        if axis not in _TYPED_INDEXES or stage not in ("expand", "prefer_labels"):
+            continue
+        activity["filters" if stage == "expand" else "ranking"].add(axis)
+        if entry.get("hits", 0) > 0:
+            activity["hits"].add(axis)
+            if stage == "prefer_labels" and entry.get("bonus", 0) > 0:
+                activity["score_changes"].add(axis)
+    return activity
 
 
 def hook_options(command: list[str]) -> tuple[str, ...]:
@@ -101,6 +120,10 @@ def verify_delivery(launcher, run_id, hook, cwd, env, memory_version):
             or not isinstance(receipt["plan"], dict)
             or not isinstance(receipt["trace"], list)
             or not receipt["trace"]
+            or any(
+                not isinstance(entry, dict) or not isinstance(entry.get("stage"), str)
+                for entry in receipt["trace"]
+            )
         ):
             raise ValueError("receipt lacks a matching symbolic engine, plan, trace or snapshot")
         candidates = {

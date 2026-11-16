@@ -52,6 +52,10 @@ history, decisions, commitments, and other conversation evidence.
   evidence as unverified for symbolic attribution. Record project or date
   hints supplied by the caller and separate fresh compilation, host planning,
   and reuse of an existing plan when comparing cost or user input.
+- When reporting use of Topic, Entity, or Facet indexes, identify the
+  lookups in the execution trace. Keep the number of runs with postings
+  separate from the citations delivered to Codex. A native plan can use
+  original-text predicates without looking up any typed index.
 - For installed-hook measurements, capture the receipt from the subprocess
   that produced the injected context. Identify older replay-verified runs
   as such. Keep historical full-text measurements attributed to their

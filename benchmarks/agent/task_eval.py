@@ -26,7 +26,7 @@ from memoket_kite.tools.workspace import Workspace
 
 from . import codex_timing
 from .context_eval import codex_trial, corpus_hash, read_corpus, summarize_host, write_launcher
-from .symbolic_submit import hook_options, symbolic_hook, verify_delivery
+from .symbolic_submit import hook_options, symbolic_hook, typed_index_activity, verify_delivery
 
 _REFERENCE = re.compile(r"([\w-]+)(?:\.txt|\.md)?#(L[0-9]+|text-line-[0-9]+)\b")
 _CONTEXT_HOOK = (
@@ -454,9 +454,21 @@ def _verified_symbolic_summary(trials, arms):
     delivery = {}
     for arm in _SYMBOLIC_ARMS.intersection(arms):
         rows = [row for row in retained if row["arm"] == arm]
+        index_activity = [
+            typed_index_activity(row["symbolic_delivery"]["receipt"]["trace"]) for row in rows
+        ]
         delivery[arm] = {
             "verified_trials": len(rows),
             "verification": dict(Counter(row["symbolic_delivery"]["verification"] for row in rows)),
+            "without_typed_index_lookup": sum(
+                not (trial["filters"] or trial["ranking"]) for trial in index_activity
+            ),
+            "typed_indexes": {
+                mode: dict(
+                    Counter(axis for trial in index_activity for axis in sorted(trial[mode]))
+                )
+                for mode in ("filters", "ranking", "hits", "score_changes")
+            },
             "covered_claims": sum(row["symbolic_delivery"]["covered_claims"] for row in rows),
             "total_claims": sum(row["score"]["total_claims"] for row in rows),
             "retrieval_calls": sum(

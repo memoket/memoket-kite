@@ -255,6 +255,12 @@ Older installations can be checked by replaying their captured command. The
 report counts those separately under `legacy_replay`.
 
 Each installed trial preserves the observed command, delivery, and receipt.
+Within those trials, `typed_indexes` counts trials per index from the effective
+execution trace. It distinguishes hard filters, ranking lookups, candidate hits
+and positive ranking bonuses. A hit can still be dropped by another filter or
+the evidence budget. `without_typed_index_lookup` counts native executions whose
+effective trace has no Topic, Entity or Facet lookup. Index counts can overlap
+across a trial. Steps discarded during a retry are omitted from these counts.
 Unverified runs remain in the trial log and are excluded as a pair from the
 verified summary. The manifest records plugin installation time separately
 from task time, and reports the bytes a user would enter when typing the

@@ -102,6 +102,9 @@ def test_symbolic_delivery_checks_the_original_receipt_without_replaying(tmp_pat
     assert verified["verification"] == "observed_receipt"
     assert verified["reference_ids"] == ["meeting#L3"]
     assert not verify_delivery(launcher, "rollout", hook, tmp_path, {}, 3)["verified"]
+    receipt["engine"] = "sqlite_fts"
+    assert not verify_delivery(launcher, "rollout", hook, tmp_path, {}, 2)["verified"]
+    receipt["engine"] = "memoket_kite.core.algebra.execute_plan"
 
     receipt["schedule_comparison"] = {
         "previous_source_line_id": "earlier-id",
@@ -119,12 +122,14 @@ def test_symbolic_delivery_checks_the_original_receipt_without_replaying(tmp_pat
     assert not verify_delivery(launcher, "rollout", hook, tmp_path, {}, 2)["verified"]
     receipt["trace"] = []
     assert not verify_delivery(launcher, "rollout", hook, tmp_path, {}, 2)["verified"]
+    receipt["trace"] = [{"atom": "topics", "hits": 5}]
+    assert not verify_delivery(launcher, "rollout", hook, tmp_path, {}, 2)["verified"]
     hook["receipts"].clear()
     assert not verify_delivery(launcher, "rollout", hook, tmp_path, {}, 2)["verified"]
 
 
 def test_symbolic_summary_excludes_all_arms_from_an_unverified_pair():
-    def row(case, arm, verified=True):
+    def row(case, arm, verified=True, trace=()):
         score = {"full_pass": True, "total_claims": 1, "passed_claims": 1, "claims": {}}
         return dict(
             case=case,
@@ -146,22 +151,42 @@ def test_symbolic_summary_excludes_all_arms_from_an_unverified_pair():
                 "verification": "observed_receipt",
                 "covered_claims": 1,
                 "observed": {"calls": [{}], "seconds": 0.01},
+                "receipt": {"trace": trace},
             },
             turns=[{"score": score}],
             extra_user_turns=0,
         )
 
+    typed_trace = [
+        {"stage": "search:expand", "atom": "topics", "hits": 8},
+        {"stage": "expand", "atom": "topics", "hits": 1},
+        {"stage": "expand", "atom": "entities", "hits": 0},
+        {"stage": "expand", "atom": "duration", "hits": 2},
+        {"stage": "search:prefer_labels", "atom": "place", "hits": 3, "bonus": 0.5},
+        {"stage": "search:prefer_labels", "atom": "obj", "hits": 3, "bonus": 0},
+        {"stage": "lines", "atom": "place", "hits": 3},
+    ]
     report = _verified_symbolic_summary(
         [
-            row("passed", "files"),
-            row("passed", "symbolic-submit"),
+            row("typed", "files"),
+            row("typed", "symbolic-submit", trace=typed_trace),
+            row("text", "files"),
+            row("text", "symbolic-submit", trace=[{"stage": "lines", "hits": 1}]),
             row("missing", "files"),
-            row("missing", "symbolic-submit", False),
+            row("missing", "symbolic-submit", False, trace=typed_trace),
         ],
         ("files", "symbolic-submit"),
     )
-    assert report["completed_pairs"] == 1
+    assert report["completed_pairs"] == 2
     assert report["unverified_pairs"] == 1
-    assert report["arms"]["files"]["total_tokens"] == 150
-    assert report["delivery"]["symbolic-submit"]["covered_claims"] == 1
-    assert report["delivery"]["symbolic-submit"]["verification"] == {"observed_receipt": 1}
+    assert report["arms"]["files"]["total_tokens"] == 300
+    delivery = report["delivery"]["symbolic-submit"]
+    assert delivery["covered_claims"] == 2
+    assert delivery["verification"] == {"observed_receipt": 2}
+    assert delivery["without_typed_index_lookup"] == 1
+    assert delivery["typed_indexes"] == {
+        "filters": {"topics": 1, "entities": 1, "duration": 1},
+        "ranking": {"place": 1, "obj": 1},
+        "hits": {"topics": 1, "duration": 1, "place": 1, "obj": 1},
+        "score_changes": {"place": 1},
+    }
