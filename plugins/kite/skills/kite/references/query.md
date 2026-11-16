@@ -20,6 +20,11 @@ the index hints and snapshot. Omit `--brief` to inspect the full compiler
 prompt. Submit the resulting plan with the same `question` and `snapshot`.
 Run without `--text` to get the executed plan and trace. Use the same original
 question to retain the recording scope for a focused follow-up.
+When the question quotes original wording, preparation shows how many
+recordings match each literal within the selected date and project scope.
+A project recording count is present when every match belongs to the same
+recorded project. Use the supplied expression as an anchor when the quoted
+wording identifies the project.
 
 Use `prefer_labels` for relevant listed Topic, Entity and Facet codes that can
 rank matching original lines. Use `where` for required constraints. KITE can

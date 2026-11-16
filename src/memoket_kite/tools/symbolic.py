@@ -18,6 +18,7 @@ from .context import (
     _DECISION_STATUS,
     _EARLIER_PHASE,
     _QUERY_FILLERS,
+    _QUOTED_PHRASES,
     _RETRIEVAL_FILLERS,
     _SCHEDULE_CHANGE,
     _history_snapshot,
@@ -104,6 +105,15 @@ def _project_alias_scope(revisions, active_units, query):
     }
 
 
+def _unit_projects(revisions, units):
+    return {
+        unit: project
+        for unit in units
+        if isinstance((project := revisions[unit]["conversation"]["metadata"].get("project")), str)
+        and project.strip()
+    }
+
+
 class SourceLineProfile:
     KINDS = ()
     COMPILE_PROMPT = """Return only a KITE plan for retrieving verbatim conversation lines.
@@ -112,7 +122,8 @@ Use up to three queries for independent evidence needs. Separate earlier and lat
 when the question needs both. where keys: topics, entities, obj, place, event, duration, units,
 who, time [start,end], grep, grep_all, near. Each supplied constraint is required. For relevant
 listed labels, use prefer_labels to boost original lines supported by the index without excluding
-untagged lines. Its axes are topics, entities, obj, place, event, duration. Use where labels
+untagged lines. Its axes are topics, entities, obj, place, event, duration. Use one to four
+exact codes per axis. Use where labels
 for required index filters. Each label is shown with its distinct recording count in scope.
 Use listed recording names in units only
 when the question or recording metadata establishes that scope. Never assume dates or order
@@ -125,9 +136,11 @@ decision and its subject may be in separate turns, use grep to match the request
 or decision wording (for a date or quantity, include its spoken forms and units)
 and near: {{"grep":"subject alternatives","turns":2,"include_anchor":true}} to allow
 the subject in that turn or nearby turns in the same recording. Omit include_anchor if a
-separate turn is required. The original subject and decision lines can then be cited together.
+separate turn is required. Keep near.grep at most 256 characters and turns between 1 and 4.
+The original subject and decision lines can then be cited together.
 Use the optional prefer list for up to four additional regexes that rank a matching line higher
-without excluding other lines. For a value, choice, or change, prefer likely wording for
+without excluding other lines. Keep each pattern at most 256 characters. Use short patterns
+limited to each branch's subject and goal. For a value, choice, or change, prefer likely wording for
 the actual value type or agreement, such as units of measure, number words, acceptance,
 negation, or correction. Include inflections and spoken paraphrases for key actions (for
 example change, changing, changed). Do not invent an exact answer. Use a nonempty where and
@@ -135,8 +148,10 @@ no pipe or per-query limit. Use where.time: [start, end] only for a query-specif
 window requested in the question. Leave an unspecified endpoint as an empty string.
 The reference date helps resolve relative wording. It does not end an open range
 such as "since March 10" or "March 10 onward". Later recordings can match these plans.
-For dependent searches use stages instead of queries. Name the anchor stage and bind the next
-stage with "units":"$anchor.units".
+For dependent searches use a "stages" array of up to four objects, each with a "name" field.
+Example:
+{{"stages":[{{"name":"anchor","select":"lines","where":{{"grep":"prototype hinge"}}}},{{"name":"decision","select":"lines","where":{{"units":"$anchor.project_units","grep":"confirm|approve|reject"}}}}]}}
+Use "units":"$anchor.units" when the next stage should stay in the matching recordings.
 When the task calls for evidence from other recordings of the same project, use
 "units":"$anchor.project_units" after an anchor with distinctive original wording.
 This follows a recorded project only when every matching anchor recording agrees on it.
@@ -226,6 +241,52 @@ Question: {question}
             ],
             ensure_ascii=False,
             separators=(",", ":"),
+        )
+
+    def compile_quote_hints(self, question, vocab, store):
+        """Check literal user quotations in the native source-line engine."""
+        phrases = list(
+            dict.fromkeys(
+                phrase.strip()
+                for match in _QUOTED_PHRASES.finditer(question)
+                for phrase in match.groups()
+                if phrase and 8 <= len(phrase.strip()) <= 128 and any(map(str.isalnum, phrase))
+            )
+        )[:3]
+        if not phrases:
+            return []
+        patterns = [r"\s+".join(re.escape(word) for word in phrase.split()) for phrase in phrases]
+        units = self.scoped_units
+        _, trace = execute_plan(
+            store,
+            vocab,
+            {"queries": [{"select": "lines", "where": {"grep": pattern}} for pattern in patterns]},
+            budget=1,
+            allowed_line_units=units,
+        )
+        projects = _unit_projects(self.revisions, units)
+        project_counts = Counter(projects.values())
+        hints = []
+        for query, pattern in enumerate(patterns):
+            matching = {store.lines[line].unit for line in trace.line_matches.get(query, ())}
+            assigned = {projects[unit] for unit in matching if unit in projects}
+            binding = {}
+            if len(assigned) == 1 and matching <= projects.keys():
+                binding = {"project_recordings": project_counts[next(iter(assigned))]}
+            hints.append({"grep": pattern, "matching_recordings": len(matching), **binding})
+        return hints
+
+    def render_compile_evidence_hints(self, question, vocab, store):
+        hints = self.compile_quote_hints(question, vocab, store)
+        if not hints:
+            return ""
+        return (
+            "Exact checks of user quotations in the current recording scope (data): "
+            + json.dumps(hints, ensure_ascii=False, separators=(",", ":"))
+            + "\nIf the question uses a quotation to identify a project, use the matching grep "
+            "as an anchor and bind dependent stages to $anchor.project_units when "
+            "project_recordings is present. A zero match needs alternative wording. "
+            "For a quotation used only as a subject, keep the scope requested by the question.\n"
         )
 
     def _rank_labels(self, question, entries, store, axis):
@@ -470,6 +531,8 @@ def prepare_symbolic_question(
             "facets": json.loads(profile.compile_facet_index(question, index.store)),
             "recordings": json.loads(profile.compile_unit_index(units)),
         }
+        if quote_hints := profile.compile_quote_hints(question, index.vocab, index.store):
+            result["index"]["quoted_phrases"] = quote_hints
     else:
         result["prompt"] = render_compile_prompt(question, index.vocab, index.store, profile)
     if changed is not None:
@@ -1033,18 +1096,7 @@ def execute_source_plan(
         isinstance(units := stage["where"].get("units"), str) and units.endswith(".project_units")
         for stage in plan.get("stages", ())
     )
-    unit_projects = (
-        {
-            unit: project
-            for unit in active_units
-            if isinstance(
-                (project := index.revisions[unit]["conversation"]["metadata"].get("project")), str
-            )
-            and project.strip()
-        }
-        if project_join
-        else None
-    )
+    unit_projects = _unit_projects(index.revisions, active_units) if project_join else None
     changed = active_units & changed_recordings if changed_recordings is not None else set()
     compare_schedule = changed != active_units and _can_search_schedule_change(
         changed, question, plan, limit, dates

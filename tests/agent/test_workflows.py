@@ -7152,6 +7152,55 @@ def test_symbolic_stage_binding_keeps_recordings_beyond_quote_limit(work):
     assert anchor["matched_recordings"] == 14 and anchor["hits"] == 12
 
 
+def test_symbolic_preparation_checks_quoted_anchors_in_scope(work, monkeypatch):
+    _, call = work
+    sources = []
+    for name, text, day, project in (
+        ("anchor", "We saw the Amber + access card.", "2026-02-01", "Ridge"),
+        ("decision", "The final working window is Tuesday.", "2026-02-04", "Ridge"),
+        ("other", "We printed an Amber + access card.", "2026-01-05", "Bridge"),
+        ("approximate", "An Amber access card was here.", "2026-02-06", None),
+        ("undated", "An Amber + access card appears.", None, None),
+    ):
+        source = text_input(name, text, date=day)["source"]
+        if project is not None:
+            source["payload"]["metadata"]["project"] = project
+        sources.append({"source": source})
+    call("index-sources", payload={"sources": sources})
+
+    question = 'What did the project that says “Amber + access card” decide about "opening hours"?'
+    pattern = r"Amber\s+\+\s+access\s+card"
+    missing = {"grep": r"opening\s+hours", "matching_recordings": 0}
+    whole = call("symbolic", "--prepare", question, "--brief")
+    assert whole["index"]["quoted_phrases"] == [
+        {"grep": pattern, "matching_recordings": 3},
+        missing,
+    ]
+    bounds = ("--start-date", "2026-02-01")
+    scoped = call("symbolic", "--prepare", question, "--brief", *bounds)
+    assert scoped["index"]["quoted_phrases"] == [
+        {"grep": pattern, "matching_recordings": 1, "project_recordings": 2},
+        missing,
+    ]
+    assert scoped["active_recordings"] == 3
+
+    prompts = []
+
+    def compile_with_hints(prompt, **kwargs):
+        prompts.append(prompt)
+        return {"queries": [{"select": "lines", "where": {"grep": "working window"}}]}
+
+    monkeypatch.setattr("memoket_kite.pipeline.compile_plan.llm_json", compile_with_hints)
+    result = call("symbolic", "--question", question, "--model", "test-model", *bounds)
+    prepared = call("symbolic", "--prepare", question, *bounds)
+    assert prompts == [prepared["prompt"]]
+    assert '"project_recordings":2' in prepared["prompt"]
+    assert "We saw the Amber" not in prepared["prompt"]
+    assert "The final working window is Tuesday" not in prepared["prompt"]
+    assert result["scope"]["active_recordings"] == 3
+    assert result["spans"][0]["evidence"][0]["conversation_id"] == "decision"
+
+
 def test_symbolic_project_binding_resolves_only_a_unique_anchor_project(work):
     _, call = work
 

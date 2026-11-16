@@ -27,6 +27,10 @@ multiple projects, check whether the task spans those projects or needs a
 specific one. Do not choose a single project based on an ambiguous alias.
 For a recording window shared by all branches, add `recording_dates` to the
 request with `start_date`, `end_date`, or both as inclusive ISO dates.
+Preparation can check literal user quotations against original turns in this
+scope. It exposes the pattern and recording counts to the compiler. Use the
+pattern to anchor a dependent project lookup when the question identifies
+a project by that quotation and all matching recordings share the project.
 For a query after an earlier search, set `since_version` to the version from
 that result. The search reserves evidence for matching changed sources and
 keeps the ordinary current search. Recording dates and snapshot versions

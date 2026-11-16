@@ -295,6 +295,9 @@ def render_compile_prompt(question: str, vocab, store, profile, *, today: str = 
             + "\nWhen aliases refer to multiple projects, keep the search open unless the "
             "question independently establishes a narrower scope.\n"
         )
+    render_evidence_hints = getattr(profile, "render_compile_evidence_hints", None)
+    if render_evidence_hints:
+        prompt += render_evidence_hints(question, vocab, store)
     return prompt
 
 
