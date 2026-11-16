@@ -20,7 +20,13 @@ from memoket_kite.tools.workspace import Workspace
 
 from .context_eval import codex_trial
 from .symbolic_submit import _ENGINE
-from .task_eval import _isolated_codex_home, _score, _source_bundle, _verify
+from .task_eval import (
+    _RECORDING_METADATA_REFS,
+    _isolated_codex_home,
+    _score,
+    _source_bundle,
+    _verify,
+)
 
 _ARMS = ("external", "files", "kite")
 _MCP_SERVER = "kite_context"
@@ -221,6 +227,8 @@ def _trial(args, case, arm, repetition):
         available = (
             bundle["refs"] if arm != "external" else set(case["handoff_refs"] if request else ())
         )
+        if arm == "files":
+            available = available | _RECORDING_METADATA_REFS
         final = turns[-1]
         score = _score(checks, final["answer"], case["evidence"], available, citation_ranges=True)
         ran_tests = any(
@@ -404,7 +412,7 @@ def main():
             case["workspace"], references, case["bundle"]["manifest"]["memory_version"]
         )
     results = {
-        "protocol": "request-triggered-original-excerpt-v3",
+        "protocol": "request-triggered-original-excerpt-v4",
         "common_codex_options": _CODEX_ISOLATION,
         "case_sha256": hashlib.sha256(raw).hexdigest(),
         "model": args.model,

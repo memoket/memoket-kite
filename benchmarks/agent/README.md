@@ -339,10 +339,14 @@ uses POSIX pipe observation to retain tool results and incomplete turns.
 The three arms start fresh with identical task text, code and project guidance.
 Trial copies retain the seed files' contents and file modes with fresh
 timestamps for the temporary directory.
-The v3 runner completes all cases for one arm before starting another arm
+The v3 and later runners complete all cases for one arm before starting another arm
 within that run. This keeps a file arm's temporary transcript mount out of
 other arms' sessions. Cases can run concurrently inside the same arm. Review
 shell activity for reads outside the assigned task directory.
+The v4 scorer accepts the mounted `RECORDINGS.json` line as an additional
+citation in the file arm. Each scored field still requires a reference to
+an accepted original turn. Reports from older scoring protocols retain their
+original scores and can be re-scored from saved answers.
 The runner disables Codex app connectors for every arm. It records this setting
 under `common_codex_options` in the protocol. The summary also counts
 observed `app_connector_calls`. Inspect saved tool calls when evaluating v1
@@ -391,7 +395,8 @@ of the same initial workspace and verifies the resulting active sources
 against the frozen after state. The runner resumes the original Codex session
 in the same project with the second task. Both phases verify code behavior,
 original citations and tests independently. Scoring never supplies task hints.
-The v3 runner uses the same separate arm batches as the handoff benchmark.
+The revision runner shares the handoff benchmark's arm batching from v3 and
+recording-metadata citation scoring from v4.
 The log preserves the native MCP outputs, the index commit, both code diffs and
 update time separately from the two Codex turns. Read `symbolic_verification`
 for the number of complete pairs, missing citation deliveries in each phase,

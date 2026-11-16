@@ -26,7 +26,13 @@ from .handoff_eval import (
     _observed_receipts,
     _trials_by_arm,
 )
-from .task_eval import _isolated_codex_home, _score, _source_bundle, _verify
+from .task_eval import (
+    _RECORDING_METADATA_REFS,
+    _isolated_codex_home,
+    _score,
+    _source_bundle,
+    _verify,
+)
 
 _ARMS = ("files", "kite")
 _GUIDE = """
@@ -210,8 +216,11 @@ def _trial(args, case, arm, repetition):
                 raise RuntimeError("the revision task resumed a different Codex session")
             checks, error = _verify(phase["verifier"], project, set(phase["evidence"]))
             index = phase["bundle"]
+            available = (
+                index["refs"] | _RECORDING_METADATA_REFS if arm == "files" else index["refs"]
+            )
             score = _score(
-                checks, turn["answer"], phase["evidence"], index["refs"], citation_ranges=True
+                checks, turn["answer"], phase["evidence"], available, citation_ranges=True
             )
             ran_tests = any(
                 command["exit_code"] == 0 and _TEST.search(command["output"])
@@ -303,7 +312,7 @@ def main():
     for case in cases:
         _prepare_case(case, args.cases.resolve().parent)
     results = {
-        "protocol": "same-session-source-revision-v3",
+        "protocol": "same-session-source-revision-v4",
         "case_sha256": hashlib.sha256(raw).hexdigest(),
         "codex": subprocess.check_output([args.codex, "--version"], text=True).strip(),
         "model": args.model,

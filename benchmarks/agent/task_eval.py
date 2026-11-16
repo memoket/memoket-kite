@@ -28,8 +28,11 @@ from . import codex_timing
 from .context_eval import codex_trial, corpus_hash, read_corpus, summarize_host, write_launcher
 from .symbolic_submit import hook_options, symbolic_hook, typed_index_activity, verify_delivery
 
-_REFERENCE = re.compile(r"([\w-]+)(?:\.txt|\.md)?#(L[0-9]+|text-line-[0-9]+)\b")
+_REFERENCE = re.compile(
+    r"([\w-]+)(?:\.txt|\.md|(?<=RECORDINGS)\.json)?#(L[0-9]+|text-line-[0-9]+)\b"
+)
 _REFERENCE_RANGE = re.compile(rf"{_REFERENCE.pattern}`?\s+(?:through|to)\s+`?{_REFERENCE.pattern}")
+_RECORDING_METADATA_REFS = frozenset({"RECORDINGS#text-line-1", "RECORDINGS#L1"})
 _CONTEXT_HOOK = (
     Path(__file__).resolve().parents[2] / "plugins/kite/skills/kite/scripts/codex_context.py"
 )

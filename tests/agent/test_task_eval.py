@@ -1,7 +1,7 @@
 import json
 
 from benchmarks.agent.symbolic_submit import verify_delivery
-from benchmarks.agent.task_eval import _score, _verified_symbolic_summary
+from benchmarks.agent.task_eval import _RECORDING_METADATA_REFS, _score, _verified_symbolic_summary
 
 
 def test_score_resolves_file_links_to_original_citations():
@@ -36,6 +36,19 @@ def test_score_expands_verified_citation_ranges_only_under_the_new_protocol():
         "meeting#text-line-628 through meeting#text-line-626",
     ):
         assert not _score(checks, answer, evidence, valid, citation_ranges=True)["full_pass"]
+
+
+def test_mounted_metadata_can_supplement_an_original_citation():
+    checks = {"date": True}
+    evidence = {"date": ["meeting#text-line-6"]}
+    original = {"meeting#text-line-6"}
+    valid = original | _RECORDING_METADATA_REFS
+    metadata = "[Recording date](sources/RECORDINGS.json#text-line-1)"
+    answer = f"{metadata} meeting#text-line-6"
+    assert _score(checks, answer, evidence, valid)["full_pass"]
+    assert not _score(checks, answer, evidence, original)["full_pass"]
+    assert not _score(checks, metadata, evidence, valid)["full_pass"]
+    assert not _score(checks, answer.replace("line-1", "line-2"), evidence, valid)["full_pass"]
 
 
 def test_symbolic_delivery_replays_the_observed_budget_and_exact_quotation(tmp_path, monkeypatch):
