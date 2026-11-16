@@ -17,8 +17,10 @@ session titles supplied as metadata, and speaker identifiers out of the topic vo
 Use entities for specific named people, organizations, places, and named products mentioned
 in the original. Include one or more entity_mentions with entity, segment_id and verbatim text
 for each entity. Use facets for objects discussed, places involved, events and explicit durations.
-The facet keys are object, place, event and duration. The first three contain arrays of labels.
-Use an ISO duration such as PT30M for a stated duration. Leave unsupported fields out.
+The facet keys object, place and event contain arrays of labels. The duration key contains
+one ISO duration string such as "PT30M". When a passage discusses multiple durations, use
+separate spans with their own supporting turns and at most one duration string in each span.
+Leave unsupported fields out.
 Return one JSON object with facts set to an empty array and index_spans containing segment_ids
 and the supported topics, entities, entity_mentions and facets. You may also supply taxonomy
 entries with name and parents. Do not write summaries, infer decisions, or extract facts.
