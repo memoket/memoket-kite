@@ -6,6 +6,7 @@ import pytest
 
 from memoket_kite.mcp.workspace import _render_preparation, create_workspace_server
 from memoket_kite.tools.cli import main
+from memoket_kite.tools.symbolic import render_symbolic_context
 
 pytest.importorskip("mcp")
 from mcp import Client  # noqa: E402
@@ -122,6 +123,21 @@ async def test_workspace_tool_delivers_cli_evidence_and_reads_the_latest_snapsho
         second = await client.call_tool(recall, args)
         assert not second.is_error and second.structured_content is None
         assert "revised#decision" in second.content[0].text
+        submitted = {
+            "queries": [
+                plan["queries"][0],
+                {
+                    "select": "lines",
+                    "where": {"grep": "threshold"},
+                    "change_wording": "reported",
+                },
+            ]
+        }
+        normalized = await client.call_tool(recall, {**args, "plan": submitted})
+        assert not normalized.is_error and normalized.content[0].text == second.content[0].text
+        submitted["queries"][1]["where"]["change_wording"] = "reported"
+        duplicate = await client.call_tool(recall, {**args, "plan": submitted})
+        assert duplicate.is_error and "invalid_plan:" in duplicate.content[0].text
         saved_second = await client.call_tool(reuse, {"run_id": "threshold"})
         text = saved_second.content[0].text
         assert not saved_second.is_error
@@ -517,6 +533,15 @@ async def test_recall_automatically_uses_one_exact_index_for_a_confirmed_compari
     assert receipt["compiled_plan"] == request["plan"]
     assert receipt["trace"][0]["stage"] == "indexed_subject_comparison"
     assert receipt["trace"][0]["label"] == "inlet_regulator"
+    citations = {
+        line["source_line_id"]: line["segment_id"]
+        for span in receipt["spans"]
+        for line in span["evidence"]
+    }
+    assert [citations[line] for line in receipt["trace"][0]["subject_line_ids"]] == [
+        "subject",
+        "subject",
+    ]
     assert [step["hits"] for step in receipt["trace"] if step.get("via") == "near"] == [1, 1]
     refs = {
         f"[{source['source']['payload']['conversation_id']}#{segment}]"
@@ -525,6 +550,15 @@ async def test_recall_automatically_uses_one_exact_index_for_a_confirmed_compari
     }
     saved = cli("symbolic", "--reuse", "indexed-comparison")
     assert saved["plan"] == receipt["plan"]
+    bare = render_symbolic_context(receipt, show_indexed_subject=False)
+    limit = len(json.dumps(bare.strip(), ensure_ascii=False).encode())
+    trimmed = cli(
+        "symbolic",
+        "--delivery-bytes",
+        str(limit),
+        value={**request, "retry_index_subject": True},
+    )
+    assert all(ref in trimmed for ref in refs) and "Indexed subject" not in trimmed
 
     async with Client(create_workspace_server(workspace), raise_exceptions=False) as client:
         tool = "recall_conversation_evidence"
@@ -535,7 +569,11 @@ async def test_recall_automatically_uses_one_exact_index_for_a_confirmed_compari
             return answer.content[0].text
 
         text = await call()
-        assert "Indexed subject inlet regulator" in text
+        assert (
+            "Indexed subject inlet regulator (entity) links [initial#subject] "
+            "to the earlier decision [initial#decision] and [review#subject] "
+            "to the later decision [review#decision]." in text
+        )
         assert all(ref in text for ref in refs)
         assert "#rejected]" not in text
         assert "Indexed subject" not in await call(max_bytes=128)
@@ -561,6 +599,26 @@ async def test_recall_automatically_uses_one_exact_index_for_a_confirmed_compari
         assert "Indexed subject" not in await call()
         text = await call(project="Foundry")
         assert all(ref in text for ref in refs) and "[other#decision]" not in text
+        old_revision = next(
+            line["revision_checksum"]
+            for span in receipt["spans"]
+            for line in span["evidence"]
+            if line["conversation_id"] == "review"
+        )
+        corrected = note(
+            "review",
+            "Foundry",
+            "2026-04-09",
+            "The control valve coming from the reservoir into the press is up next.",
+            "The revised approved cooldown for that fixture is 9 minutes.",
+        )
+        corrected["source"]["expected_checksum"] = old_revision
+        corrected["annotations"]["index_spans"][0]["segment_ids"] = ["decision"]
+        cli("index-sources", value={"sources": [corrected]})
+        text = await call(project="Foundry")
+        assert "[review#decision]" in text and "[review#subject]" not in text
+        assert "9 minutes." in text and "12 minutes." not in text
+        assert "and [review#decision] to the later decision [review#decision]" in text
 
 
 async def test_workspace_preparation_binds_index_hints_to_the_submitted_plan(tmp_path, capsys):

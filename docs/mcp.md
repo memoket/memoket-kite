@@ -26,7 +26,9 @@ The configured workspace applies to the read-only tools.
   For a plain-text plan comparing earlier and current decisions, the tool may
   use a uniquely named index subject to find two explicitly confirmed turns
   in separate recordings. Both turns and their subject evidence must fit in
-  the quote budget. The original submitted plan runs when the comparison is
+  the quote budget. The tool names the exact annotated turn that supports
+  each decision, so the reader can verify references to the same subject.
+  The original submitted plan runs when the comparison is
   unresolved. Set `plan.retry_index_subject` to false to use the submitted
   plan alone.
 - `read_conversation_citations` accepts one to eight known citations and

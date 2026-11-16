@@ -1609,6 +1609,21 @@
               item.append(element('p', `${hint.q + 1} · ${cue} · 0 → ${number.format(hint.matches)}`));
             }
           }
+          if (code === 'indexed_subject_comparison' && step.subject_line_ids) {
+            const subjectIndex = symbolicIndexNode(step, step.label);
+            if (subjectIndex) item.append(' ', button(step.label, () => choose(subjectIndex), 'citation-link'));
+            step.source_line_ids.forEach((id, i) => {
+              const decision = lines.get(id);
+              const subject = lines.get(step.subject_line_ids[i]);
+              if (!decision || !subject) return;
+              const link = line => button(line.conversation_id + '#' + line.segment_id,
+                () => choose(line), 'citation-link');
+              const row = element('p');
+              row.append(link(subject));
+              if (subject !== decision) row.append(' → ', link(decision));
+              item.append(row);
+            });
+          }
           if (code === 'schedule_pair_probe') {
             if (step.reserved) item.append(element('p', t('symbolicSchedulePair')));
             const details = element('details', undefined, 'search-plan');

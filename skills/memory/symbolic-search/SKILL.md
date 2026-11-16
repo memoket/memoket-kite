@@ -110,8 +110,9 @@ For a text-only plan comparing an earlier and current decision about one
 named subject, pass `retry_index_subject: true` with the submitted question
 and plan. If a unique index subject links two explicitly confirmed turns in
 separate recordings, the execution trace shows `indexed_subject_comparison`
-and the plan it used to retrieve both originals. Otherwise the original
-plan executes.
+and the original subject turn paired with each original decision. The pack
+describes each pair using the exact citation IDs. Otherwise the original plan
+executes.
 Use `prefer_labels` for optional Topic, Entity and Facet ranking. Its values
 are exact label codes from the compiler vocabulary, grouped by axis. The
 trace reports which candidate lines were supported on each axis. A matched
@@ -125,3 +126,5 @@ the requested recording date range.
 In a submitted source-line plan, a single `unit` or `units` beside `where`
 is moved into `where` before validation. Plans with competing recording
 filters require an explicit choice.
+Prefer putting `date_wording` and `change_wording` in `where` as well. The
+compiler accepts either position when each condition occurs only once.

@@ -573,28 +573,37 @@ def _validate_source_plan(plan):
     return plan
 
 
-def _normalize_submitted_recording_filters(plan):
-    """Move host-supplied recording filters to the canonical source-line clause."""
+def _normalize_submitted_line_filters(plan):
+    """Canonicalize unambiguous line filters supplied beside where."""
     field = "queries" if "queries" in plan else "stages"
     entries = plan.get(field)
     if not isinstance(entries, list):
         return plan
     normalized = []
+    recording_fields = {"unit", "units"}
     for entry in entries:
-        filters = {"unit", "units"} & entry.keys() if isinstance(entry, dict) else set()
+        filters = (
+            (recording_fields | _SOURCE_WORDING.keys()) & entry.keys()
+            if isinstance(entry, dict)
+            else set()
+        )
         if not filters or entry.get("select") != "lines":
             normalized.append(entry)
             continue
         where = entry.get("where", {})
-        if not isinstance(where, dict) or len(filters) != 1 or {"unit", "units"} & where.keys():
+        if not isinstance(where, dict):
+            raise InvalidQueryError("plan where must be a mapping")
+        moved_recordings = filters & recording_fields
+        if moved_recordings and (len(moved_recordings) > 1 or recording_fields & where.keys()):
             raise InvalidQueryError(
                 "put a single recording filter in plan where.unit or where.units"
             )
-        key = next(iter(filters))
+        if filters & where.keys():
+            raise InvalidQueryError("put each source-line filter in one place in plan where")
         normalized.append(
             {
-                **{name: value for name, value in entry.items() if name != key},
-                "where": {**where, key: entry[key]},
+                **{name: value for name, value in entry.items() if name not in filters},
+                "where": {**where, **{key: entry[key] for key in entry if key in filters}},
             }
         )
     return {**plan, field: normalized}
@@ -788,7 +797,7 @@ def compile_submitted_source_plan(
         value = value["plan"]
     try:
         profile = _prepare_question(index, question, project, dates)
-        plan = _validate_source_plan(_normalize_submitted_recording_filters(value))
+        plan = _validate_source_plan(_normalize_submitted_line_filters(value))
         if anchor_quote is not None:
             plan = _validate_source_plan(_bind_queries_to_project_quote(plan, anchor_quote))
         return {
@@ -1213,12 +1222,20 @@ def _indexed_comparison(index, plan, question, active_units, limit, max_bytes):
     )
     if not {first_id, last_id} <= set(quoted):
         return None
+    subject_ids = [
+        next(
+            (line for line in quoted if line in trace.required_line_support.get(decision, ())),
+            decision,
+        )
+        for decision in (first_id, last_id)
+    ]
     detail = {
         "stage": "indexed_subject_comparison",
         "atom": axis,
         "label": label,
         "recordings": len(recordings),
         "source_line_ids": [first_id, last_id],
+        "subject_line_ids": subject_ids,
     }
     return plan, rows, trace, detail
 
@@ -1939,7 +1956,9 @@ def _with_revision_dialogue(pack, step):
     return {**pack, "spans": spans}
 
 
-def render_symbolic_context(pack, *, guide=False, show_complete_scope=True):
+def render_symbolic_context(
+    pack, *, guide=False, show_complete_scope=True, show_indexed_subject=True
+):
     lines = []
     visible = pack
     window = pack.get("supplied_evidence")
@@ -1979,10 +1998,21 @@ def render_symbolic_context(pack, *, guide=False, show_complete_scope=True):
     if any(step.get("ambiguous") for step in pack["trace"] if step["stage"] == "schedule_change"):
         lines.append("Multiple date-change turns need review in the original recordings.")
     for step in pack["trace"]:
-        if step["stage"] == "indexed_subject_comparison":
+        if show_indexed_subject and step["stage"] == "indexed_subject_comparison":
             refs = _display_references(visible)
             prior, current = step["source_line_ids"]
-            if prior in refs and current in refs:
+            subjects = step.get("subject_line_ids")
+            if subjects and all(line_id in refs for line_id in [prior, current, *subjects]):
+                earlier_subject, later_subject = (refs[line_id] for line_id in subjects)
+                label = step["label"].replace("_", " ")
+                axis = {"topics": "topic", "entities": "entity", "obj": "object"}.get(
+                    step["atom"], step["atom"]
+                )
+                lines.append(
+                    f"Indexed subject {label} ({axis}) links [{earlier_subject}] to the earlier "
+                    f"decision [{refs[prior]}] and [{later_subject}] to the later decision [{refs[current]}]."
+                )
+            elif not subjects and prior in refs and current in refs:
                 label = step["label"].replace("_", " ")
                 lines.append(
                     f"Indexed subject {label}: compare earlier {refs[prior]} "
@@ -2095,27 +2125,32 @@ def fit_symbolic_delivery(pack, max_bytes, *, include_receipt=False, guide=False
         )
 
     def add_headers(selected_pack, encoded):
-        guided = False
-        if guide:
-            result = encode_evidence(
-                render_symbolic_context(
-                    selected_pack, guide=True, show_complete_scope=False
-                ).strip()
-            )
-            if len(result.encode()) <= max_bytes:
-                encoded = result
-                guided = True
-        if selected_pack.get("complete_recording_scope"):
-            result = encode_evidence(render_symbolic_context(selected_pack, guide=guided).strip())
-            if len(result.encode()) <= max_bytes:
-                return result
+        options = minimalist.copy()
+        for key, present in (
+            ("guide", guide),
+            (
+                "show_indexed_subject",
+                any(
+                    step["stage"] == "indexed_subject_comparison" for step in selected_pack["trace"]
+                ),
+            ),
+            ("show_complete_scope", selected_pack.get("complete_recording_scope")),
+        ):
+            if present:
+                result = encode_evidence(
+                    render_symbolic_context(selected_pack, **{**options, key: True}).strip()
+                )
+                if len(result.encode()) <= max_bytes:
+                    options[key] = True
+                    encoded = result
         return encoded
 
+    minimalist = {"show_complete_scope": False, "show_indexed_subject": False}
     follow_up = encode_evidence(_schedule_follow_up({**pack, "spans": []}))
     empty = follow_up if len(follow_up.encode()) <= max_bytes else '""'
     if not pack["spans"]:
         return output(empty)
-    full = encode_evidence(render_symbolic_context(pack, show_complete_scope=False).strip())
+    full = encode_evidence(render_symbolic_context(pack, **minimalist).strip())
     if len(full.encode()) <= max_bytes:
         return output(add_headers(pack, full))
 
@@ -2154,9 +2189,7 @@ def fit_symbolic_delivery(pack, max_bytes, *, include_receipt=False, guide=False
                 **change,
                 "cited_changed_recordings": len(revisions & pack["_changed_checksums"]),
             }
-        encoded = encode_evidence(
-            render_symbolic_context(candidate, show_complete_scope=False).strip()
-        )
+        encoded = encode_evidence(render_symbolic_context(candidate, **minimalist).strip())
         if len(encoded.encode()) <= max_bytes:
             retained = selected
             delivered = encoded
@@ -2303,7 +2336,7 @@ def execute_source_plan(
         traces = (trace,)
         support = trace.nearby_line_matches
         selected_branches = trace.selected_line_branches
-    reserved = set(indexed[3]["source_line_ids"]) if indexed else set()
+    reserved = set() if not indexed else set(detail["source_line_ids"] + detail["subject_line_ids"])
     comparison = None
     exchange, exchange_step = [], None
     if compare_schedule:
@@ -2421,7 +2454,7 @@ def execute_source_plan(
         exchange_ids = {row["id"] for row in exchange}
         if exchange_ids <= set(quote_order):
             trace_steps.append(exchange_step)
-            reserved = exchange_ids
+            reserved.update(exchange_ids)
     trace_steps.extend(hints)
     changed_checksums = {index.revisions[uid]["checksum"] for uid in changed}
     if changed_recordings is not None:
