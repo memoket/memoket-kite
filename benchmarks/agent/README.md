@@ -370,6 +370,28 @@ delivery and can exclude harder tasks. Use the `files` arm for same-source
 comparisons, and disclose when the tested entry is workspace MCP rather than
 the installed desktop plugin.
 
+## Apply a revised decision in the same Codex conversation
+
+Use `python -m benchmarks.agent.revision_eval CASES.json OUTPUT --model MODEL
+--kite-python PYTHON` with a disposable, index-only fixture and an installed KITE
+runtime. Each case supplies `id`, `source_format`, `seed`, `batch` and exactly two
+`states`. Each state supplies `task`, `workspace`, `sources`, `verifier` and an
+`evidence` map from verifier fields to accepted original citations. The after
+workspace must represent one committed source update. The batch is the
+`index-sources` input for that update. Paths are relative to the case file.
+
+The file and KITE arms both start from the before-state originals and run the
+same initial implementation task. The file arm then receives updated
+transcripts and recording metadata. The KITE arm commits the batch to a copy
+of the same initial workspace and verifies the resulting active sources
+against the frozen after state. The runner resumes the original Codex session
+in the same project with the second task. Both phases verify code behavior,
+original citations and tests independently. Scoring never supplies task hints.
+The log preserves the native MCP outputs, the index commit, both code diffs and
+update time separately from the two Codex turns. Only compare completed pairs
+from the same corpus and record phase-level accuracy as well as full-run pass
+rates. Use `--repeat` for repeated comparisons.
+
 ## Evaluate original conversation context
 
 The source-context benchmark uses a local directory of UTF-8 TXT transcripts.
