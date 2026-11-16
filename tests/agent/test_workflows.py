@@ -7482,6 +7482,59 @@ def test_symbolic_schedule_recovers_prior_date_below_merged_quote_cutoff(work):
     assert result["trace"][-1]["candidates"] == 1 and not result["trace"][-1]["reserved"]
 
 
+def test_saved_schedule_plan_finds_grounded_change_in_a_batch(work):
+    _, call = work
+
+    def source(name, text, day):
+        return {"source": text_input(name, text, date=day)["source"]}
+
+    original = source("dispatch-review", "Original dispatch date was September 2.", "2026-09-01")
+    baseline = call("index-sources", payload={"sources": [original]})["memory_version"]
+    call(
+        "symbolic",
+        "--save",
+        "dispatch",
+        "--limit",
+        "2",
+        payload={
+            "question": "What is the updated dispatch date?",
+            "plan": {"queries": [{"select": "lines", "where": {"grep": "Original dispatch"}}]},
+        },
+    )
+    unrelated = source("audit", "For the audit, move to September 16.", "2026-09-03")
+    backfill = source("backfill", "For dispatch, move to August 29.", "2026-08-28")
+    update = source("dispatch-change", "For dispatch, move to September 12.", "2026-09-04")
+    call("index-sources", payload={"sources": [unrelated, backfill, update]})
+    result = call("symbolic", "--reuse", "dispatch")
+    assert result["reused_plan"]["compiled_at_version"] == baseline
+    assert result["source_change"]["changed_recordings"] == 3
+    assert result["source_change"]["cited_changed_recordings"] == 1
+    assert {
+        (line["conversation_id"], line["segment_id"], line["role"])
+        for span in result["spans"]
+        for line in span["evidence"]
+    } == {
+        ("dispatch-review", "text-1", "symbolic_match"),
+        ("dispatch-change", "text-1", "schedule_change_match"),
+    }
+    step = result["trace"][-1]
+    assert step["candidates"] == 3 and step["grounded_candidates"] == 1 and step["reserved"]
+
+    competing = source("competing-change", "For dispatch, move to September 14.", "2026-09-05")
+    call("index-sources", payload={"sources": [competing]})
+    ambiguous = call("symbolic", "--reuse", "dispatch")
+    step = ambiguous["trace"][-1]
+    assert step["grounded_candidates"] == 2 and step["ambiguous"] and not step["reserved"]
+    assert all(
+        line["role"] != "schedule_change_match"
+        for span in ambiguous["spans"]
+        for line in span["evidence"]
+    )
+    assert "Multiple date-change turns need review" in call(
+        "symbolic", "--reuse", "dispatch", "--text"
+    )
+
+
 def test_symbolic_near_option_matches_subject_in_the_cited_turn(work):
     _, call = work
     sources = [

@@ -32,8 +32,11 @@ that result. The search reserves evidence for matching changed sources and
 keeps the ordinary current search. Recording dates and snapshot versions
 describe different things.
 For dates, the trace can show a unique change candidate linked to an earlier
-dated turn by shared wording and source annotations. Check whether the
-quoted speakers approved the change before using it.
+dated turn in a retained recording by shared wording and source annotations.
+The search checks the changed recordings in the same scope. When recording
+dates are known, the retained turn must come from the same or an earlier day.
+If the trace marks the changes as ambiguous, look up the relevant recordings
+and their original wording. Check whether the speakers approved the change.
 
 For source-line plans, use `where` for required constraints. A query can
 also include a `prefer` array of up to four case-insensitive regexes to

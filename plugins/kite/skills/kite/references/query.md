@@ -36,12 +36,13 @@ pattern and `turns` from 1 to 4 to require a second original turn in the
 same recording. KITE includes that turn in the evidence when budget permits.
 Add `"include_anchor":true` inside `near` to also accept the subject in the
 cited turn. The trace reports how many candidates met it in that turn.
-For a date question with one changed recording and an unconstrained text
-plan, the trace can include a separate symbolic date-and-change query. It
-reserves a citation when a unique match shares subject cues with a dated
-original already found by the plan. The trace includes the shared wording
-and source-backed Topic, Entity or Object labels when available. Check the
-decision status and date in the original before applying it to a task.
+For a date question and an unconstrained text plan, the trace can include a
+symbolic date-and-change query across the changed recordings. KITE can
+reserve a unique candidate and a dated original from a retained recording.
+When both recording dates are known, the original must come from the same
+or an earlier day. The trace includes shared wording and any source-backed
+Topic, Entity or Object labels. If it marks an ambiguous change, check the
+relevant recordings and decision status before applying a date to a task.
 If the merged pack has no matching prior date, KITE checks the first 16
 candidates from each original query branch within the same scope and applies
 the same subject check. When that recovers a prior date, the trace gives its

@@ -2,6 +2,7 @@
 
 import json
 import re
+from collections import Counter
 from itertools import zip_longest
 
 from memoket_kite.core.algebra import _tokens, execute_plan
@@ -726,15 +727,18 @@ def _schedule_subject_support(index, rows, candidate, question):
         return None, {}
 
     window = _calendar_window(store, candidate)
-    retained = {
-        row["id"]: _calendar_window(store, row)
-        for row in rows
-        if row["unit"] != candidate["unit"] and _DATE_DETAIL.search(store.lines[row["id"]].text)
-    }
+    change_day = source_day(index.revisions[candidate["unit"]]["conversation"])
     nearby_terms = terms.intersection(
         token for line in window for token in _tokens(store.lines[line].text)
     )
-    for anchor, original in retained.items():
+    for row in rows:
+        anchor = row["id"]
+        if not _DATE_DETAIL.search(store.lines[anchor].text):
+            continue
+        anchor_day = source_day(index.revisions[row["unit"]]["conversation"])
+        if change_day and anchor_day and change_day < anchor_day:
+            continue
+        original = _calendar_window(store, row)
         shared = nearby_terms.intersection(
             token for line in original for token in _tokens(store.lines[line].text)
         )
@@ -757,7 +761,7 @@ def _can_search_schedule_change(changed, question, plan, limit, recording_dates)
     # retain their exact contract, as do dependent stages.
     return (
         limit >= 2
-        and len(changed) == 1
+        and changed
         and question
         and _DATE_DETAIL_QUESTION.search(question)
         and "queries" in plan
@@ -773,7 +777,7 @@ def _can_search_schedule_change(changed, question, plan, limit, recording_dates)
 
 
 def _schedule_change_evidence(index, changed, question, prior_rows, branches):
-    """Look for a unique date-and-change turn in the single changed recording."""
+    """Reserve a unique change with a shared subject in a retained recording."""
     plan = {
         "queries": [
             {
@@ -784,44 +788,47 @@ def _schedule_change_evidence(index, changed, question, prior_rows, branches):
             }
         ]
     }
-    rows, trace = execute_plan(
-        index.store, index.vocab, plan, budget=2, pack_v2=True, allowed_line_units=changed
+    _, trace = execute_plan(
+        index.store, index.vocab, plan, budget=1, pack_v2=True, allowed_line_units=changed
     )
-    # Multiple candidates require a task-specific query to disambiguate.
-    evidence = []
-    prior = None
-    grounding = {}
-    if len(rows) == 1:
-        anchor, grounding = _schedule_subject_support(index, prior_rows, rows[0], question)
-        if anchor is None and branches:
-            packed = {row["id"] for row in prior_rows}
-            ranked = {}
-            for rank, branch, line_id in sorted(
-                (rank, branch, line_id)
-                for branch, ids in branches.items()
-                for rank, line_id in enumerate(ids, 1)
-                if line_id not in packed and index.store.lines[line_id].unit not in changed
-            ):
-                ranked.setdefault(line_id, (branch, rank))
-            extra = [{"id": line_id, "unit": index.store.lines[line_id].unit} for line_id in ranked]
-            anchor, grounding = _schedule_subject_support(index, extra, rows[0], question)
-            if anchor is not None:
-                branch, rank = ranked[anchor]
-                grounding["prior_branch"] = {"query": branch, "rank": rank}
-                prior = {"id": anchor, "unit": index.store.lines[anchor].unit}
+    store = index.store
+    matches = trace.line_matches.get(0, ())
+    candidates = [{"id": line, "unit": store.lines[line].unit} for line in sorted(matches)]
+    per_recording = Counter(row["unit"] for row in candidates)
+    retained = {row["id"]: row for row in prior_rows if row["unit"] not in changed}
+    ranked = {}
+    if candidates:
+        for rank, branch, line in sorted(
+            (rank, branch, line)
+            for branch, ids in branches.items()
+            for rank, line in enumerate(ids, 1)
+            if line not in retained and store.lines[line].unit not in changed
+        ):
+            ranked.setdefault(line, {"query": branch, "rank": rank})
+            retained.setdefault(line, {"id": line, "unit": store.lines[line].unit})
+
+    grounded = []
+    for candidate in candidates:
+        anchor, support = _schedule_subject_support(index, retained.values(), candidate, question)
         if anchor is not None:
-            evidence = [{**rows[0], "role": "schedule_change_match"}]
-            if prior is None:
-                prior = next(row for row in prior_rows if row["id"] == anchor)
+            if anchor in ranked:
+                support["prior_branch"] = ranked[anchor]
+            grounded.append((candidate, retained[anchor], support))
+
+    # Other date changes in the same conversation may rely on an implicit subject.
+    unique = len(grounded) == 1 and per_recording[grounded[0][0]["unit"]] == 1
+    candidate, prior, grounding = grounded[0] if unique else (None, None, None)
     return (
-        evidence,
+        [{**candidate, "role": "schedule_change_match"}] if candidate else [],
         prior,
         {
             "stage": "schedule_change",
             "plan": plan,
             "steps": trace.stages,
-            "candidates": trace.stages[0]["hits"],
-            "reserved": bool(evidence),
+            "candidates": len(candidates),
+            "grounded_candidates": len(grounded),
+            "reserved": unique,
+            **({"ambiguous": True} if grounded and not unique else {}),
             **({"subject_support": grounding} if grounding else {}),
         },
     )
@@ -874,6 +881,8 @@ def render_symbolic_context(pack):
         if line["role"] == "schedule_change_match"
     ]:
         lines.append("Date-change wording in a changed recording: " + ", ".join(schedule_refs))
+    if any(step.get("ambiguous") for step in pack["trace"] if step["stage"] == "schedule_change"):
+        lines.append("Multiple date-change turns need review in the original recordings.")
     if omitted := pack.get("delivery_trimmed"):
         noun = "turn" if omitted == 1 else "turns"
         lines.append(f"Quote delivery omitted {omitted} original {noun} to fit its byte budget.")
@@ -965,7 +974,9 @@ def execute_source_plan(
     plan = _add_query_label_preferences(plan, index, active_units, compiled.get("question"))
     changed = active_units & changed_recordings if changed_recordings is not None else set()
     question = compiled.get("question")
-    compare_schedule = _can_search_schedule_change(changed, question, plan, limit, dates)
+    compare_schedule = changed != active_units and _can_search_schedule_change(
+        changed, question, plan, limit, dates
+    )
     trace_steps = []
     source_change = {}
 
