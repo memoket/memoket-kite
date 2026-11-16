@@ -3,7 +3,7 @@
 ## Read original quotes from a workspace
 
 Install KITE with the `agent,mcp` extras to serve a single existing workspace.
-The configured workspace applies to both read-only tools.
+The configured workspace applies to the read-only tools.
 
 - `recall_conversation_evidence` executes a locally compiled KITE plan and
   returns original turns with citations. When a task supplies known references
@@ -18,6 +18,10 @@ The configured workspace applies to both read-only tools.
   revision-bound source line ID for a retained revision, or include the
   `workspace_version` from recall to check that the workspace has stayed on
   the same snapshot.
+- `reuse_conversation_query` accepts a trusted saved `symbolic-search` run
+  ID. It executes the saved plan against the current workspace with its
+  original scope and considers changes since the plan was compiled. It also
+  accepts `since_version` for a later comparison baseline.
 
 ```bash
 kite-mcp --workspace /absolute/path/to/workspace

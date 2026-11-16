@@ -26,7 +26,12 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
     from memoket_kite.tools.context import render_evidence
     from memoket_kite.tools.contracts import ToolError
     from memoket_kite.tools.retrieve import read_evidence
-    from memoket_kite.tools.symbolic import render_symbolic_context, symbolic_context
+    from memoket_kite.tools.symbolic import (
+        render_symbolic_context,
+        reuse_symbolic_context,
+        symbolic_context,
+    )
+    from memoket_kite.tools.workflow import saved_symbolic_plan
     from memoket_kite.tools.workspace import Workspace
 
     CitationList = Annotated[
@@ -169,5 +174,38 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         except ToolError as exc:
             raise MCPToolError(f"{exc.code}: {exc}") from exc
         return render_evidence(window)
+
+    @server.tool(
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        structured_output=False,
+    )
+    def reuse_conversation_query(
+        run_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")],
+        since_version: Annotated[int | None, Field(strict=True, ge=0)] = None,
+        limit: Annotated[int | None, Field(strict=True, ge=1, le=100)] = None,
+        max_bytes: Annotated[int | None, Field(strict=True, ge=128, le=32768)] = None,
+    ) -> str:
+        """Run a named saved KITE symbolic query against the current workspace.
+
+        Use when a trusted project instruction or the user provides a saved
+        query ID for a repeated task. The plan retains its project and date
+        scope. Reuse checks for changes since the plan was saved, or since
+        the supplied workspace version. Use the cited turns to check which
+        decisions are still in effect.
+        """
+        options = {
+            name: value
+            for name, value in (("limit", limit), ("max_bytes", max_bytes))
+            if value is not None
+        }
+        try:
+            with Workspace.open(workspace_path, read_only=True) as workspace:
+                saved = saved_symbolic_plan(workspace, run_id)
+                result = reuse_symbolic_context(
+                    workspace, run_id, saved, since_version=since_version, **options
+                )
+        except ToolError as exc:
+            raise MCPToolError(f"{exc.code}: {exc}") from exc
+        return render_symbolic_context(result)
 
     return server

@@ -61,10 +61,24 @@ async def test_workspace_tool_delivers_cli_evidence_and_reads_the_latest_snapsho
         "plan": plan,
         "project": "Probe",
     }
+    call(
+        "symbolic",
+        {"question": args["question"], "plan": plan},
+        "--project",
+        "Probe",
+        "--save",
+        "threshold",
+        "--neighbors",
+        "1",
+    )
     server = create_workspace_server(workspace)
     async with Client(server, raise_exceptions=False) as client:
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
-        assert set(tools) == {"recall_conversation_evidence", "read_conversation_citations"}
+        assert set(tools) == {
+            "recall_conversation_evidence",
+            "read_conversation_citations",
+            "reuse_conversation_query",
+        }
         for tool in tools.values():
             assert tool.annotations.read_only_hint is True
             assert tool.annotations.open_world_hint is False
@@ -75,6 +89,11 @@ async def test_workspace_tool_delivers_cli_evidence_and_reads_the_latest_snapsho
         assert "prior#decision" in first.content[0].text
         assert "other#decision" not in first.content[0].text
         assert "Query 2 matched no original turns." in first.content[0].text
+        reuse = "reuse_conversation_query"
+        saved_first = await client.call_tool(reuse, {"run_id": "threshold"})
+        assert not saved_first.is_error and "Workspace v1" in saved_first.content[0].text
+        assert "Saved plan threshold (compiled at v1)" in saved_first.content[0].text
+        assert "[revised#decision]" not in saved_first.content[0].text
         combined = await client.call_tool(
             recall,
             {
@@ -103,6 +122,16 @@ async def test_workspace_tool_delivers_cli_evidence_and_reads_the_latest_snapsho
         second = await client.call_tool(recall, args)
         assert not second.is_error and second.structured_content is None
         assert "revised#decision" in second.content[0].text
+        saved_second = await client.call_tool(reuse, {"run_id": "threshold"})
+        text = saved_second.content[0].text
+        assert not saved_second.is_error
+        assert "Since v1: 1 changed recordings, 1 cited" in text
+        assert "[prior#decision]" in text and "[revised#decision]" in text
+        assert "[other#decision]" not in text
+        assert (
+            main(["--workspace", str(workspace), "symbolic", "--reuse", "threshold", "--text"]) == 0
+        )
+        assert text.strip() == capsys.readouterr().out.strip()
         stale = await client.call_tool(recall, {**args, "workspace_version": 1})
         assert stale.is_error and "stale_snapshot:" in stale.content[0].text
         combined = await client.call_tool(
@@ -163,6 +192,12 @@ async def test_citations_preserve_revision_and_deduplicate_context(tmp_path, cap
         },
     }
     cli("index-sources", payload={"sources": [{"source": source}]})
+    cli(
+        "symbolic",
+        "--save",
+        "review-query",
+        payload={"queries": [{"select": "lines", "where": {"grep": "shipping threshold"}}]},
+    )
     original = json.loads(cli("evidence", "review#decision"))["value"]
     old_id = original["evidence"]["source_line_id"]
     version = original["memory_version"]
@@ -230,6 +265,8 @@ async def test_citations_preserve_revision_and_deduplicate_context(tmp_path, cap
         assert not combined.is_error
         assert "Supplied citations unavailable:" in combined.content[0].text
         assert "threshold of five." not in combined.content[0].text
+        discarded = await client.call_tool("reuse_conversation_query", {"run_id": "review-query"})
+        assert discarded.is_error and "invalidated_run:" in discarded.content[0].text
 
 
 async def test_workspace_lookup_does_not_create_a_missing_store(tmp_path):

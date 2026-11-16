@@ -119,6 +119,14 @@ When a task also needs new evidence, pass the existing references as
 `known_citations` to `recall_conversation_evidence` and use the plan for the
 remaining details. Both read the same snapshot.
 
+For recurring work, save a symbolic query once with
+`kite-tool symbolic --input PLAN.json --save RUN_ID`. In the project's
+guidance, record the query ID and which tasks should reuse it. Codex can
+call `reuse_conversation_query` with that ID in a fresh chat. KITE searches
+the latest workspace within the saved scope and reports changes since the
+stored plan's version. The result includes the compilation version and
+current evidence.
+
 The server needs no separate model key. The first startup installs an optional runtime
 with the MCP SDK. If the download exceeds the configured startup timeout,
 prepare the runtime once in a terminal, then start a new chat.
