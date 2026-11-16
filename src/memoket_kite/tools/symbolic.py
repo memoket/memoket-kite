@@ -1087,12 +1087,22 @@ def _revision_exchange(index, compiled, plan, trace, question):
     }
 
 
+def _dated_revision_pair(pack):
+    for step in pack["trace"]:
+        if step["stage"] == "dated_revision":
+            return step["subject_support"]["prior_line_id"], step["source_line_id"]
+    return ()
+
+
 def _schedule_follow_up(pack):
     if comparison := pack.get("schedule_comparison"):
-        previous = comparison["previous_source_line_id"]
-        changed = comparison["changed_source_line_id"]
+        pair = (comparison["previous_source_line_id"], comparison["changed_source_line_id"])
+    else:
+        pair = _dated_revision_pair(pack)
+    if pair:
         quoted = {line["source_line_id"] for span in pack["spans"] for line in span["evidence"]}
-        if not {previous, changed} <= quoted:
+        if not set(pair) <= quoted:
+            previous, changed = pair
             return f"Date comparison needs original turns. KITE evidence IDs: {previous} --also {changed}"
     return ""
 
@@ -1180,25 +1190,32 @@ def _dated_revision_candidate(index, rows, trace, question, quote_order):
     return alternative
 
 
+def _display_references(pack):
+    evidence = [line for span in pack["spans"] for line in span["evidence"]]
+    namespaces = {}
+    for line in evidence:
+        namespaces.setdefault(line["conversation_id"], set()).add(line["source"])
+    references = {}
+    for line in evidence:
+        ref = f"{line['conversation_id']}#{line['segment_id']}"
+        if len(namespaces[line["conversation_id"]]) > 1:
+            ref = f"{line['source']}/{ref}"
+        references[line["source_line_id"]] = ref
+    return references
+
+
 def _stage_evidence_guide(pack):
     selected = pack.get("_selected_line_branches")
     if not selected:
         return []
-    evidence = {line["source_line_id"]: line for span in pack["spans"] for line in span["evidence"]}
-    namespaces = {}
-    for line in evidence.values():
-        namespaces.setdefault(line["conversation_id"], set()).add(line["source"])
+    references = _display_references(pack)
     by_stage = {}
     for line_id in pack["_quote_order"]:
-        if line_id not in selected or line_id not in evidence:
+        if line_id not in selected or line_id not in references:
             continue
-        line = evidence[line_id]
-        ref = f"{line['conversation_id']}#{line['segment_id']}"
-        if len(namespaces[line["conversation_id"]]) > 1:
-            ref = f"{line['source']}/{ref}"
         refs = by_stage.setdefault(selected[line_id], [])
         if len(refs) < 2:
-            refs.append(ref)
+            refs.append(references[line_id])
     if len(by_stage) < 2:
         return []
     anchors = {step["name"] for step in pack["trace"] if "project_binding" in step}
@@ -1287,6 +1304,15 @@ def render_symbolic_context(pack, *, guide=False):
             )
         elif binding.get("unassigned_recordings"):
             lines.append(f"Stage {step['name']} matched recordings without a recorded project.")
+    if pair := _dated_revision_pair(pack):
+        refs = _display_references(pack)
+        if all(line_id in refs for line_id in pair):
+            earlier, change = (refs[line_id] for line_id in pair)
+            lines.append(
+                f"Linked schedule evidence pairs earlier wording {earlier} "
+                f"with later date-change wording {change}."
+            )
+            lines.append("Check the subject and decision status before using other dated turns.")
     if follow_up := _schedule_follow_up(pack):
         lines.append(follow_up)
     if omitted := pack.get("delivery_trimmed"):
@@ -1338,7 +1364,10 @@ def fit_symbolic_delivery(pack, max_bytes, *, include_receipt=False, guide=False
     attempted = set()
     delivered = empty
     delivered_pack = None
-    for line_id in pack["_quote_order"]:
+    quote_order = pack["_quote_order"]
+    if (pair := _dated_revision_pair(pack)) and set(pair) <= linked:
+        quote_order = (*pair, *quote_order)
+    for line_id in quote_order:
         group = linked if line_id in linked else {line_id}
         if group & attempted:
             continue

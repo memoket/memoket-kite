@@ -79,6 +79,8 @@ For a previous-and-current date question, the result can promote an
 already matched later turn with explicit date-change wording paired
 with a related earlier turn. Read both originals before using the dates.
 The `dated_revision` trace links both and records their shared subject.
+Text output identifies the paired citations. If the hook budget cannot fit
+both turns, use the two returned evidence IDs to read the original lines.
 Set `KITE_SYMBOLIC_GUIDE=1` in the Codex submit hook's environment to include
 a stage guide when it fits alongside the original turns. The guide lists
 which stage selected each referenced turn and shows lookup cues. Run

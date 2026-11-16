@@ -7940,6 +7940,28 @@ def test_symbolic_packs_a_related_dated_revision_from_the_current_snapshot(
     ]
     assert revised not in {span["evidence"][0]["text"] for span in before["spans"]}
 
+    linked = (
+        "Linked schedule evidence pairs earlier wording original-plan#text-1 "
+        "with later date-change wording revision#text-1."
+    )
+    full_text = call(*args, "--text", payload=request)
+    assert linked in full_text
+    assert f"[original-plan#text-1] {original}" in full_text
+    assert f"[revision#text-1] {revised}" in full_text
+    assert owner in full_text
+    delivered = json.loads(call(*args, "--delivery-bytes", "720", payload=request))
+    assert linked in delivered
+    assert f"[original-plan#text-1] {original}" in delivered
+    assert f"[revision#text-1] {revised}" in delivered
+    too_small = json.loads(call(*args, "--delivery-bytes", "256", payload=request))
+    earlier_id = step["subject_support"]["prior_line_id"]
+    change_id = step["source_line_id"]
+    assert too_small == (
+        f"Date comparison needs original turns. KITE evidence IDs: {earlier_id} --also {change_id}"
+    )
+    assert len(json.dumps(delivered, ensure_ascii=False).encode()) <= 720
+    assert "Quote delivery omitted" in delivered
+
     no_free_slot = call(*args[:-1], "3", payload=request)
     assert all(step["stage"] != "dated_revision" for step in no_free_slot["trace"])
     insufficient_bytes = call(*args, "--max-bytes", "128", payload=request)

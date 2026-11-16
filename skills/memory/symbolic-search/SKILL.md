@@ -69,7 +69,9 @@ date the speakers approved, proposed, or reported.
 For a question asking for both a previous and current date, KITE can
 retain an already matched change turn alongside a related, quoted turn
 from an earlier recording. Look for `dated_revision` and its topic
-wording or annotations in the trace. Read both turns for decision status.
+wording or annotations in the trace. The text names the two related
+references. Verify the decision status of both and check that additional
+dated turns concern the same subject before using them.
 Staged line searches advance past shared hits to give each stage a distinct
 candidate within the quote limit. A project-bound final-decision stage can
 include an alternate decision wording when the stage already uses all four
