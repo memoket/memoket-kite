@@ -672,12 +672,17 @@ def compile_submitted_source_plan(
     dates = _validated_recording_dates(recording_dates)
     question = None
     anchor_quote = None
+    retry_date_subject = False
     compiler = "supplied_plan"
     if "plan" in value:
         validate(
             object_schema(
                 {"plan": {"type": "object"}, "question": TEXT},
-                {"snapshot": HASH, "anchor_quote": {**TEXT, "maxLength": 128}},
+                {
+                    "snapshot": HASH,
+                    "anchor_quote": {**TEXT, "maxLength": 128},
+                    "retry_date_subject": {"type": "boolean"},
+                },
             ),
             value,
             "prepared symbolic plan",
@@ -692,6 +697,7 @@ def compile_submitted_source_plan(
             )
         compiler = "host_generated_plan" if snapshot is not None else "host_inline_plan"
         anchor_quote = value.get("anchor_quote")
+        retry_date_subject = value.get("retry_date_subject", False)
         value = value["plan"]
     try:
         profile = _prepare_question(index, question, project, dates)
@@ -703,6 +709,7 @@ def compile_submitted_source_plan(
             "units": sorted(profile.scope),
             "compiler": compiler,
             **({"question": question} if question is not None else {}),
+            **({"retry_date_subject": True} if retry_date_subject else {}),
             **({"recording_dates": dates} if dates else {}),
             **(
                 {"selected_project": profile.selected_project}
@@ -798,7 +805,11 @@ def reuse_symbolic_context(
         else:
             dates[key] = date
     plan = (
-        {"question": saved["question"], "plan": saved["plan"]}
+        {
+            "question": saved["question"],
+            "plan": saved["plan"],
+            **({"retry_date_subject": True} if saved.get("retry_date_subject") else {}),
+        }
         if "question" in saved
         else saved["plan"]
     )
@@ -1147,10 +1158,14 @@ def _schedule_follow_up(pack):
     return ""
 
 
-def _split_subject_cues(pattern, wording):
+def _split_subject_cues(pattern, wording, question):
     """Find short literal cues in a compound subject supplied by the planner."""
     cues = []
     for variant in pattern.split("|"):
+        if re.fullmatch(r"[㐀-鿿]{3}", variant):
+            completions = set(re.findall(re.escape(variant) + r"[㐀-鿿]", question))
+            if len(completions) == 1:
+                variant = next(iter(completions))
         if re.fullmatch(r"[㐀-鿿]{4,10}", variant):
             cues.append(variant[:-2] if wording == "calendar" else variant[-2:])
         elif re.fullmatch(r"[a-zA-Z]+(?:[ -][a-zA-Z]+){1,4}", variant):
@@ -1159,32 +1174,39 @@ def _split_subject_cues(pattern, wording):
     return sorted(set(cues))[:3]
 
 
-def _date_subject_hints(index, plan, traces, question, active_units):
+def _date_subject_hints(index, plan, trace, question, active_units):
     """Probe alternative subject cues without relaxing the submitted result."""
     acronyms = set(re.findall(_ACRONYMS.pattern, question, re.ASCII))
     for i, entry in enumerate(plan.get("queries", ())):
         where = entry["where"]
-        near = where.get("near")
-        if not near or any(trace.line_matches.get(i) for trace in traces):
+        if trace.line_matches.get(i):
             continue
+        near = where.get("near")
+        subject = near or {
+            "grep": where.get("grep", ""),
+            "turns": 3,
+            "include_anchor": True,
+        }
         expressions = where.get("grep_all", ())
         wording = next(
             (name for name, pattern in _DATE_WORDING.items() if pattern in expressions),
             None,
         )
-        if not wording or not (cues := _split_subject_cues(near["grep"], wording)):
+        if not wording or not (cues := _split_subject_cues(subject["grep"], wording, question)):
             continue
         hint = {
             **where,
-            "near": {**near, "grep": "|".join(map(re.escape, cues))},
+            "near": {**subject, "grep": "|".join(map(re.escape, cues))},
             "date_wording": wording,
         }
+        if not near:
+            hint.pop("grep", None)
         rest = [value for value in expressions if value != _DATE_WORDING[wording]]
         if rest:
             hint["grep_all"] = rest
         else:
             hint.pop("grep_all")
-        if wording == "calendar" and not rest and not where.get("grep") and len(acronyms) == 1:
+        if wording == "calendar" and not rest and not hint.get("grep") and len(acronyms) == 1:
             acronym = re.escape(next(iter(acronyms)))
             hint["grep"] = rf"(?a:\b{acronym}\b)"
         probe = _validate_source_plan({"queries": [{"select": "lines", "where": hint}]})
@@ -1389,6 +1411,9 @@ def render_symbolic_context(pack, *, guide=False):
                     f"{recording}#{selected[line_id]['segment_id']}" for line_id in reply_ids
                 )
                 lines.append(f"Review the revision discussion in order: {refs}.")
+        if step["stage"] == "date_subject_retry":
+            queries = ", ".join(str(hint["q"] + 1) for hint in step["hints"])
+            lines.append(f"Retried empty date queries {queries} with scoped subject alternatives.")
         if step["stage"] == "date_subject_hint":
             where = step["suggested_where"]
             # Render recording names from the submitted plan, not internal index IDs.
@@ -1582,6 +1607,7 @@ def execute_source_plan(
         return rows, trace
 
     branches = {}
+    hints = []
     selected_branches = {}
     # Resolve a project anchor against the whole requested scope, including
     # older recordings that could make the anchor ambiguous.
@@ -1609,9 +1635,27 @@ def execute_source_plan(
         for line, matches in new_trace.nearby_line_matches.items():
             support.setdefault(line, set()).update(matches)
     else:
-        rows, trace = run(
-            active_units, branch_limit=_PRIOR_CANDIDATES_PER_BRANCH if look_for_dates else 0
+        branch_limit = _PRIOR_CANDIDATES_PER_BRANCH if look_for_dates else 0
+        rows, trace = run(active_units, branch_limit=branch_limit)
+        hints = (
+            list(_date_subject_hints(index, plan, trace, question, active_units))
+            if question and changed_recordings is None
+            else []
         )
+        if hints and compiled.get("retry_date_subject"):
+            alternatives = {hint["q"]: hint["probe_plan"]["queries"][0]["where"] for hint in hints}
+            plan = {
+                **plan,
+                "queries": [
+                    {**entry, "where": alternatives.get(i, entry["where"])}
+                    for i, entry in enumerate(plan["queries"])
+                ],
+            }
+            trace_steps[:] = [
+                {"stage": "date_subject_retry", "hints": hints, "steps": trace.stages}
+            ]
+            rows, trace = run(active_units, branch_limit=branch_limit)
+            hints = []
         traces = (trace,)
         support = trace.nearby_line_matches
         selected_branches = trace.selected_line_branches
@@ -1690,8 +1734,7 @@ def execute_source_plan(
         if exchange_ids <= set(quote_order):
             trace_steps.append(exchange_step)
             reserved = exchange_ids
-    if question and changed_recordings is None:
-        trace_steps.extend(_date_subject_hints(index, plan, traces, question, active_units))
+    trace_steps.extend(hints)
     changed_checksums = {index.revisions[uid]["checksum"] for uid in changed}
     if changed_recordings is not None:
         cited = {line["revision_checksum"] for span in spans for line in span["evidence"]}

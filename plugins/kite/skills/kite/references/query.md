@@ -22,6 +22,14 @@ words to verify approval and the applicable subject.
 An empty date branch can show a scoped alternative where clause from a
 local probe. Use that clause in one focused follow-up when appropriate.
 Keep the recording scope, original question, and the other task requirements.
+Set `"retry_date_subject":true` alongside the submitted question and plan
+to run those alternatives in the same call. KITE retries only empty date
+branches and retains the original recording scope and quote budget.
+`date_subject_retry` records the original matches and the actual changes.
+A literal subject in `grep` can become a nearby subject cue within three
+turns. Other branch constraints stay in effect.
+A three-character Chinese subject can use a unique completion found in the
+question before its parts are probed. Saved plans remember the option.
 
 Use `grep_all` for cues that must all occur in one turn. Include inflections
 and spoken alternatives, then rank more specific wording in `prefer`.

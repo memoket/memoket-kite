@@ -17,7 +17,9 @@ details. Use `where.grep` for plausible spoken alternatives and `prefer` to
 rank cues such as units or wording for approval and correction. KITE resolves
 the project and validates and runs the plan locally.
 
-For separate earlier and revised dates, start with two branches. Use
+For separate earlier and revised dates, include `"retry_date_subject":true`
+alongside `"question"` and `"plan"`. If a date branch has no matches, KITE
+can retry it with a checked subject cue in the same recording scope. Use
 `where.date_wording: "calendar"` with a narrow subject for the earlier date.
 Use `where.date_wording: "change"` with nearby subject or action words for
 the revised date. For example, date wording can be on a turn with, or

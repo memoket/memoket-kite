@@ -28,7 +28,7 @@
       query: 'Query', subquestion: 'Search subquestion', queryLink: 'Search path',
       retrievalPath: 'How this line was found', retrievalReplay: 'Replay search',
       symbolicSearch: 'Symbolic search', symbolicHit: 'Symbolic match', symbolicChange: 'Date change',
-      symbolicNearbyHits: 'Supported by nearby turns', symbolicFilter: 'Filter', symbolicRanking: 'Ranking', symbolicExecuted: 'Executed plan', symbolicCompiled: 'Compiled plan',
+      symbolicSubjectRetry: 'Retried date subject', symbolicNearbyHits: 'Supported by nearby turns', symbolicFilter: 'Filter', symbolicRanking: 'Ranking', symbolicExecuted: 'Executed plan', symbolicCompiled: 'Compiled plan',
       symbolicRecordings: 'recordings in scope', symbolicDateFrom: 'From', symbolicDateThrough: 'Through',
       symbolicProjectBound: 'Project matched', symbolicProjectAmbiguous: 'Multiple matching projects',
       symbolicProjectUnassigned: 'Anchor recordings have no project assignment',
@@ -129,7 +129,7 @@
       query: '检索请求', subquestion: '检索子问题', queryLink: '检索路径',
       retrievalPath: '原文如何命中', retrievalReplay: '重播检索',
       symbolicSearch: '符号检索', symbolicHit: '符号命中', symbolicChange: '日期变更',
-      symbolicNearbyHits: '由邻近原文支撑', symbolicFilter: '筛选', symbolicRanking: '加权', symbolicExecuted: '实际执行计划', symbolicCompiled: '编译计划',
+      symbolicSubjectRetry: '用邻近主题词重试', symbolicNearbyHits: '由邻近原文支撑', symbolicFilter: '筛选', symbolicRanking: '加权', symbolicExecuted: '实际执行计划', symbolicCompiled: '编译计划',
       symbolicRecordings: '份录制参与检索', symbolicDateFrom: '起始日期', symbolicDateThrough: '截止日期',
       symbolicProjectBound: '命中项目', symbolicProjectAmbiguous: '命中多个项目',
       symbolicProjectUnassigned: '线索录制缺少项目归属',
@@ -1591,11 +1591,18 @@
           const code = operation || name;
           const prefix = operation ? name : step.q == null ? '' : String(step.q + 1);
           const action = code === 'expand' ? t('symbolicFilter')
-            : code === 'prefer_labels' ? t('symbolicRanking') : code;
+            : code === 'prefer_labels' ? t('symbolicRanking')
+              : code === 'date_subject_retry' ? t('symbolicSubjectRetry') : code;
           const axis = step.atom && ({ topics: 'topic', entities: 'entity', obj: 'object' }[step.atom] || step.atom);
           const hits = step.hits ?? step.candidates ?? step.n;
           const item = element('li', [prefix, action, axis && t(axis), hits == null ? null : number.format(hits)]
             .filter(value => value != null && value !== '').join(' · '));
+          if (code === 'date_subject_retry') {
+            for (const hint of step.hints) {
+              const cue = hint.suggested_where.near.grep;
+              item.append(element('p', `${hint.q + 1} · ${cue} · 0 → ${number.format(hint.matches)}`));
+            }
+          }
           const project = step.project_binding;
           if (project?.status === 'resolved') {
             item.append(element('p', `${step.name} · ${t('symbolicProjectBound')} ${project.project} · ${number.format(project.recordings)} ${t('symbolicRecordings')}`));

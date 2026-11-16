@@ -7969,7 +7969,7 @@ def test_symbolic_packs_a_related_dated_revision_from_the_current_snapshot(
 
 
 def test_source_date_wording_compiles_to_native_regex_with_the_same_scope(work, monkeypatch):
-    _, call = work
+    directory, call = work
     old = "这次QA对外办理登记，原定10月12日。"
     change = "那就改到10月20日。"
     fixtures = []
@@ -8077,6 +8077,73 @@ def test_source_date_wording_compiles_to_native_regex_with_the_same_scope(work, 
     retry = {"queries": [{"select": "lines", "where": where} for where in suggestions]}
     rerun = call(*args, payload={**request, "plan": retry})
     assert rerun["spans"] == host["spans"]
+    for branch in missed_plan["queries"]:
+        branch["where"]["near"]["grep"] = "对外登"
+    abbreviated = {"question": "QA对外登记原来和最新的日期是什么？", "plan": missed_plan}
+    hint_only = call(*args, payload=abbreviated)
+    assert hint_only["spans"] == []
+    assert [
+        step["suggested_where"]["near"]["grep"]
+        for step in hint_only["trace"]
+        if step["stage"] == "date_subject_hint"
+    ] == ["对外", "登记"]
+    accepted = {**abbreviated, "retry_date_subject": True}
+    retried = call(*args, "--save", "qa-short-date", payload=accepted)
+    assert retried["spans"] == rerun["spans"]
+    assert retried["scope"] == {**hint_only["scope"], "matched_projects": ["Intake"]}
+    assert retried["compiled_plan"] == hint_only["compiled_plan"]
+    assert [step["stage"] for step in retried["trace"]].count("date_subject_retry") == 1
+    retry_step = next(step for step in retried["trace"] if step["stage"] == "date_subject_retry")
+    assert [step["hits"] for step in retry_step["steps"] if step["stage"] == "lines"] == [0, 0]
+    assert [step["q"] for step in retry_step["hints"]] == [0, 1]
+    assert [b["matched_lines"] for b in retried["branch_coverage"]] == [1, 1]
+    assert call("symbolic", "--reuse", "qa-short-date")["spans"] == retried["spans"]
+    graph = viewer._snapshot(directory, [], run_id="qa-short-date")
+    trace = graph["search_trace"]["symbolic"]
+    assert trace["plan"] == retried["compiled_plan"]
+    assert trace["executed_plan"] == retried["plan"]
+    assert trace["steps"][0]["hints"] == retry_step["hints"]
+
+    assert "Retried empty date queries 1, 2" in call(*args, "--text", payload=accepted)
+    ambiguous = call(
+        *args,
+        payload={
+            **accepted,
+            "question": "QA对外登处理和对外登记，原日期和最新日期是什么？",
+        },
+    )
+    assert ambiguous["spans"] == []
+    assert all(step["stage"] != "date_subject_retry" for step in ambiguous["trace"])
+    direct = {
+        **missed_plan,
+        "queries": [
+            {
+                "select": "lines",
+                "where": {
+                    "grep": "对外登",
+                    "date_wording": "calendar",
+                    "units": ["first"],
+                },
+            },
+            missed_plan["queries"][1],
+        ],
+    }
+    literal = call(*args, payload={**abbreviated, "plan": direct})
+    assert literal["spans"] == []
+    repaired = call(*args, payload={**accepted, "plan": direct})
+    assert repaired["spans"] == retried["spans"]
+    prior_where = repaired["compiled_plan"]["queries"][0]["where"]
+    final_where = repaired["plan"]["queries"][0]["where"]
+    assert prior_where["grep"] == "对外登"
+    assert final_where["near"] == {"grep": "对外", "turns": 3, "include_anchor": True}
+    assert final_where["grep"] == r"(?a:\bQA\b)"
+    assert repaired["scope"] == retried["scope"]
+    exact_opt_in = call(*args, payload={**request, "retry_date_subject": True})
+    assert exact_opt_in["spans"] == host["spans"]
+    assert all(step["stage"] != "date_subject_retry" for step in exact_opt_in["trace"])
+    call(*args, payload={**request, "retry_date_subject": "true"}, error="invalid_input")
+    for branch in missed_plan["queries"]:
+        branch["where"]["near"]["grep"] = "对外登记"
     missed_plan["queries"][0]["where"]["near"]["grep"] = "^对外登记$"
     exact = call(*args, payload={**request, "plan": missed_plan})
     assert [s["q"] for s in exact["trace"] if s["stage"] == "date_subject_hint"] == [1]

@@ -58,6 +58,13 @@ An empty date branch with a literal compound subject can yield a
 `date_subject_hint` from a small probe using the existing recording scope.
 The result keeps the submitted branch's original matches. Review the
 suggested subject wording and retry using the same scope if it fits.
+The submitted question and plan can explicitly enable `retry_date_subject`.
+KITE then applies scoped alternatives to empty branches in one native retry.
+A literal subject in `grep` can become a nearby subject cue within three
+turns. Other branch constraints stay in effect.
+Inspect `compiled_plan`, `plan`, and the `date_subject_retry` trace. A saved
+plan retains the option. A query against a previous workspace version with
+changed recordings follows the existing version comparison path.
 
 
 For source-line plans, use `where` for required constraints. A query can
