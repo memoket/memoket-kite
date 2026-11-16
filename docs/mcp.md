@@ -41,6 +41,10 @@ transaction between requests so an import can commit while it is idle.
   A complete recording scope notice means every indexed turn in the selected
   recording scope is present. Read the original wording to establish approval
   or change status.
+  For a project-bound implementation question, a branch ranking inclusion
+  or exclusion wording can reserve one matching turn that reports what was
+  included or left out. The reply names that original citation when it fits
+  the quote budget. The submitted branch's required constraints still apply.
   When the value and its subject are in separate turns, put the value wording
   in `where.grep` and a known Topic, Entity or Facet code in `where.near`
   with a distance of 1–4 turns. The tool finds the annotation in the same

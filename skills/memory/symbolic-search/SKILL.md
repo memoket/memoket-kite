@@ -100,6 +100,10 @@ Staged line searches advance past shared hits to give each stage a distinct
 candidate within the quote limit. A project-bound final-decision stage can
 include an alternate decision wording when the stage already uses all four
 ranking patterns. Inspect `alternate_wording_line` in the stage trace.
+For a project-bound implementation question, branches ranking inclusion
+or exclusion can also keep a matching turn with wording that reports the
+outcome. `alternate_wording_basis: reported_inclusion` identifies the rule.
+Review the cited turn and the surrounding context for approval and scope.
 Use `near` inside `where` to require a matching turn nearby in the same
 recording. Supply `turns` (1–4) and `grep` or source annotation axes
 (`topics`, `entities`, `obj`, `place`, `event`, `duration`) in `near`.

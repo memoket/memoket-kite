@@ -617,6 +617,70 @@ async def test_symbolic_recall_labels_recording_dates_separately_from_spoken_dat
         assert "[similar-name#report]" not in unrelated.content[0].text
 
 
+async def test_project_bound_implementation_cites_reported_outcome_within_quote_limit(
+    tmp_path, capsys
+):
+    workspace = tmp_path / "workspace"
+    payload = tmp_path / "input.json"
+    source_rows = [
+        ("anchor", "Boiler", "The workshop uses an amber yard tag."),
+        ("debate", "Boiler", "The standard build might include relay blocking."),
+        ("proposal", "Boiler", "If we kept the relay blocking, do we need another test?"),
+        ("delivery", "Boiler", "We left the relay blocking out."),
+        ("other", "Vent", "We left the relay blocking out."),
+    ]
+    payload.write_text(
+        json.dumps(
+            {
+                "sources": [
+                    {
+                        "source": {
+                            "format": "conversation",
+                            "payload": {
+                                "conversation_id": name,
+                                "source": "text",
+                                "metadata": {"source_reference": name, "project": project},
+                                "segments": [{"segment_id": "one", "text": text}],
+                            },
+                        }
+                    }
+                    for name, project, text in source_rows
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert main(["--workspace", str(workspace), "index-sources", "--input", str(payload)]) == 0
+    capsys.readouterr()
+    args = {
+        "question": "Implement the policy for the project with the amber yard tag.",
+        "anchor_quote": "amber yard tag",
+        "plan": {
+            "queries": [
+                {
+                    "select": "lines",
+                    "where": {"grep": "relay blocking"},
+                    "prefer": ["standard|include"],
+                }
+            ]
+        },
+        "limit": 3,
+        "neighbors": 0,
+    }
+    tool = "recall_conversation_evidence"
+    async with Client(create_workspace_server(workspace), raise_exceptions=False) as client:
+        result = await client.call_tool(tool, args)
+        assert not result.is_error
+        text = result.content[0].text
+        assert "Original wording reporting what was included or left out: [delivery#one]" in text
+        assert "[delivery#one] We left the relay blocking out." in text
+        assert "[debate#one] The standard build might include relay blocking." in text
+        assert "[proposal#one]" not in text and "[other#one]" not in text
+        short = await client.call_tool(tool, {**args, "limit": 2})
+        assert not short.is_error
+        assert "Original wording reporting" not in short.content[0].text
+
+
 async def test_symbolic_recall_cites_a_decision_and_its_nearby_indexed_subject(tmp_path, capsys):
     workspace = tmp_path / "workspace"
     payload = tmp_path / "input.json"

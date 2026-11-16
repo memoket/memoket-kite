@@ -63,6 +63,24 @@ _OUTCOME_PREFERENCE = re.compile(
     r"\b(?:final|standard|decid\w*|confirm\w*|approv\w*|agre\w*)\b|最终|确认|批准|通过|敲定",
     re.I,
 )
+_IMPLEMENTATION_QUESTION = re.compile(
+    r"\b(?:implement|ship|roll\s*out|configure|apply)\b|实现|写进|写到|落地|按.+(?:更新|配置|执行)",
+    re.I,
+)
+_INCLUSION_PREFERENCE = re.compile(
+    r"\b(?:standard|includ\w*|exclud\w*|remov\w*|omit\w*)\b|标准版|纳入|保留|排除|移除",
+    re.I,
+)
+_REPORTED_INCLUSION = re.compile(
+    r"(?:^|(?<=[.!?;。！？；]))"
+    r"(?:(?!\b(?:if|would|could|might|maybe)\b|如果|假如|可能)[^.!?;。！？；]){0,240}?"
+    r"(?:\b(?:didn['’]t|did not)\s+(?:actually\s+|quite\s+)?"
+    r"(?:include|ship|use|add|make\b[^.!?;。！？；]{1,60}\b(?:in|into))\b|"
+    r"\b(?:we|they|it)\s+(?:(?:have|has)\s+)?(?:left\b[^.!?;。！？；]{1,60}\bout|"
+    r"excluded|removed|omitted|kept|included)\b|"
+    r"(?:最终|已经|确实)(?:没有(?:加入|纳入|保留)|(?:加入|纳入|移除|删掉|保留)了))",
+    re.I,
+)
 _ORIGINAL_SCHEDULE = re.compile(rf"{_EARLIER_PHASE.pattern}|原(?:排期|日期|时间|安排|方案)", re.I)
 _CURRENT_SCHEDULE = re.compile(
     rf"{_LATER_PHASE.pattern}|{_OUTCOME_PREFERENCE.pattern}|最新|最近|改期|"
@@ -2173,6 +2191,15 @@ def render_symbolic_context(
             f"Since v{change['from_version']}: {change['changed_recordings']} changed recordings, "
             f"{change['cited_changed_recordings']} cited"
         )
+    if outcomes := [
+        step["alternate_wording_line"]
+        for step in pack["trace"]
+        if step.get("alternate_wording_basis") == "reported_inclusion"
+    ]:
+        refs = _display_references(visible)
+        citations = ", ".join(f"[{refs[ref]}]" for ref in dict.fromkeys(outcomes) if ref in refs)
+        if citations:
+            lines.append(f"Original wording reporting what was included or left out: {citations}")
     if schedule_refs := [
         f"{line['conversation_id']}#{line['segment_id']}"
         for span in pack["spans"]
@@ -2481,6 +2508,16 @@ def execute_source_plan(
             and _DECISION_WORDING not in preferences
             and any(_OUTCOME_PREFERENCE.search(pattern) for pattern in preferences)
         }
+    if project_join and question and _IMPLEMENTATION_QUESTION.search(question):
+        for stage in plan["stages"]:
+            if (
+                stage.get("name")
+                and isinstance(units := stage["where"].get("units"), str)
+                and units.endswith(".project_units")
+                and stage["where"].get("grep")
+                and any(_INCLUSION_PREFERENCE.search(p) for p in stage.get("prefer", ()))
+            ):
+                stage_alternatives.setdefault(stage["name"], _REPORTED_INCLUSION)
     changed = active_units & changed_recordings if changed_recordings is not None else set()
     compare_schedule = changed != active_units and _can_search_schedule_change(
         changed, question, plan, limit, dates
@@ -2514,6 +2551,11 @@ def execute_source_plan(
             line_unit_projects=unit_projects,
             line_stage_alternatives=stage_alternatives,
         )
+        for step in trace.stages:
+            if step.get("alternate_wording_line") and (
+                stage_alternatives.get(step.get("name")) is _REPORTED_INCLUSION
+            ):
+                step["alternate_wording_basis"] = "reported_inclusion"
         trace_steps.extend({**step, "lane": lane} if lane else step for step in trace.stages)
         return rows, trace
 
