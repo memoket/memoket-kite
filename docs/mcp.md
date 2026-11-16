@@ -16,6 +16,9 @@ The configured workspace applies to the read-only tools.
   the same workspace snapshot, with separate headings and no repeated turns.
   Project and date filters apply to the search plan. Explicit citations use
   their own recording and revision identifiers.
+  A complete recording scope notice means every indexed turn in the selected
+  recording scope is present. Read the original wording to establish approval
+  or change status.
 - `read_conversation_citations` accepts one to eight known citations and
   returns the original turns with optional surrounding context. A short
   `recording#segment` citation resolves against the active revision. Use a

@@ -1561,6 +1561,56 @@ def _display_references(pack):
     return references
 
 
+def _complete_recording_scope(index, units, spans, trace, unit_projects, compiled):
+    """Report completeness only when the quotes contain every indexed turn in scope."""
+    project = compiled.get("selected_project")
+    bindings = [step["project_binding"] for step in trace if "project_binding" in step]
+    if bindings and all(binding["status"] == "resolved" for binding in bindings):
+        projects = {binding["project"] for binding in bindings}
+        if len(projects) == 1:
+            project = next(iter(projects))
+            units = {unit for unit in units if unit_projects.get(unit) == project}
+    if not units or not (project or compiled["units"]):
+        return None
+    shown = {line["source_line_id"] for span in spans for line in span["evidence"]}
+    if len(units) > len(shown):
+        return None
+    lines = index.store.lines_by_unit
+    count = sum(len(lines[unit]) for unit in units)
+    if count > len(shown) or not all(shown.issuperset(lines[unit]) for unit in units):
+        return None
+    return {
+        "recordings": len(units),
+        "turns": count,
+        "revisions": sorted({index.revisions[unit]["checksum"] for unit in units}),
+        **({"project": project} if project else {}),
+    }
+
+
+def _complete_scope_message(pack):
+    coverage = pack.get("complete_recording_scope")
+    if not coverage:
+        return None
+    revisions = set(coverage["revisions"])
+    quoted = {
+        line["source_line_id"]
+        for span in pack["spans"]
+        for line in span["evidence"]
+        if line["revision_checksum"] in revisions
+    }
+    if len(quoted) != coverage["turns"]:
+        return None
+    project = coverage.get("project")
+    scope = f" for {' '.join(project.split())}" if project else ""
+    turns = coverage["turns"]
+    recordings = coverage["recordings"]
+    return (
+        f"Complete indexed recording scope{scope}: all {turns} original "
+        f"{'turn' if turns == 1 else 'turns'} from {recordings} "
+        f"{'recording is' if recordings == 1 else 'recordings are'} quoted below."
+    )
+
+
 def _stage_evidence_guide(pack):
     selected = pack.get("_selected_line_branches")
     if not selected:
@@ -1700,7 +1750,7 @@ def _with_revision_dialogue(pack, step):
     return {**pack, "spans": spans}
 
 
-def render_symbolic_context(pack, *, guide=False):
+def render_symbolic_context(pack, *, guide=False, show_complete_scope=True):
     lines = []
     visible = pack
     window = pack.get("supplied_evidence")
@@ -1722,6 +1772,9 @@ def render_symbolic_context(pack, *, guide=False):
         lines.append(
             f"Recording dates: {dates.get('start_date', 'any')} to {dates.get('end_date', 'any')}"
         )
+    if show_complete_scope:
+        if coverage := _complete_scope_message(visible):
+            lines.append(coverage)
     if change := pack.get("source_change"):
         lines.append(
             f"Since v{change['from_version']}: {change['changed_recordings']} changed recordings, "
@@ -1843,20 +1896,30 @@ def fit_symbolic_delivery(pack, max_bytes, *, include_receipt=False, guide=False
             {"evidence": json.loads(evidence), "receipt": receipt}, ensure_ascii=False
         )
 
-    def add_guide(selected_pack, encoded):
+    def add_headers(selected_pack, encoded):
+        guided = False
         if guide:
-            guided = encode_evidence(render_symbolic_context(selected_pack, guide=True).strip())
-            if len(guided.encode()) <= max_bytes:
-                return guided
+            result = encode_evidence(
+                render_symbolic_context(
+                    selected_pack, guide=True, show_complete_scope=False
+                ).strip()
+            )
+            if len(result.encode()) <= max_bytes:
+                encoded = result
+                guided = True
+        if selected_pack.get("complete_recording_scope"):
+            result = encode_evidence(render_symbolic_context(selected_pack, guide=guided).strip())
+            if len(result.encode()) <= max_bytes:
+                return result
         return encoded
 
     follow_up = encode_evidence(_schedule_follow_up({**pack, "spans": []}))
     empty = follow_up if len(follow_up.encode()) <= max_bytes else '""'
     if not pack["spans"]:
         return output(empty)
-    full = encode_evidence(render_symbolic_context(pack).strip())
+    full = encode_evidence(render_symbolic_context(pack, show_complete_scope=False).strip())
     if len(full.encode()) <= max_bytes:
-        return output(add_guide(pack, full))
+        return output(add_headers(pack, full))
 
     by_id = {span["evidence"][0]["source_line_id"]: span for span in pack["spans"]}
     linked = pack["_linked_change"] & by_id.keys()
@@ -1889,13 +1952,15 @@ def fit_symbolic_delivery(pack, max_bytes, *, include_receipt=False, guide=False
                 **change,
                 "cited_changed_recordings": len(revisions & pack["_changed_checksums"]),
             }
-        encoded = encode_evidence(render_symbolic_context(candidate).strip())
+        encoded = encode_evidence(
+            render_symbolic_context(candidate, show_complete_scope=False).strip()
+        )
         if len(encoded.encode()) <= max_bytes:
             retained = selected
             delivered = encoded
             delivered_pack = candidate
     if delivered_pack is not None:
-        delivered = add_guide(delivered_pack, delivered)
+        delivered = add_headers(delivered_pack, delivered)
     return output(delivered)
 
 
@@ -2146,6 +2211,14 @@ def execute_source_plan(
             if (project := index.revisions[row["unit"]]["conversation"]["metadata"].get("project"))
         }
     )
+    complete_scope = _complete_recording_scope(
+        index,
+        active_units,
+        spans,
+        trace_steps,
+        unit_projects,
+        compiled,
+    )
     return {
         "engine": "memoket_kite.core.algebra.execute_plan",
         "compiler": compiled["compiler"],
@@ -2169,6 +2242,7 @@ def execute_source_plan(
         "plan": plan,
         **({"compiled_plan": compiled["plan"]} if compiled["plan"] != plan else {}),
         "trace": trace_steps,
+        **({"complete_recording_scope": complete_scope} if complete_scope else {}),
         "branch_coverage": _branch_coverage(plan, traces, spans, delivery=delivery),
         **({"schedule_comparison": comparison} if comparison is not None else {}),
         **(

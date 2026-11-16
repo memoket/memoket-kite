@@ -8084,6 +8084,52 @@ def test_symbolic_probes_related_dates_when_the_original_plan_matches_only_nonda
     assert all(step["stage"] != "schedule_pair_probe" for step in exact["trace"])
 
 
+def test_symbolic_describes_complete_indexed_scope_only_when_all_turns_are_quoted(work):
+    _, call = work
+    notes = [
+        ("clue", "Helix", "We labeled the key with a copper seal."),
+        (
+            "previous",
+            "Helix",
+            "The initial approved maximum is nine bins. Keep all nine bins in the receiving area near the marked loading bay.",
+        ),
+        ("today", "Helix", "We approved the collection window. The bin limit stays as recorded."),
+        ("other", "Orbit", "We approved a different maximum of sixteen bins."),
+    ]
+    entries = []
+    for name, project, text in notes:
+        source = text_input(name, text)["source"]
+        source["payload"]["metadata"]["project"] = project
+        entries.append({"source": source})
+    call("index-sources", payload={"sources": entries})
+    query = {"select": "lines", "where": {"grep": "seal|maximum|approved"}}
+    request = {
+        "question": 'What was agreed for the project that mentioned "copper seal"?',
+        "anchor_quote": "copper seal",
+        "plan": {"queries": [query]},
+    }
+    raw = call("symbolic", payload=request)
+    complete = raw["complete_recording_scope"]
+    assert (complete["project"], complete["recordings"], complete["turns"]) == ("Helix", 3, 3)
+    text = call("symbolic", "--text", payload=request)
+    header = "Complete indexed recording scope for Helix: all 3 original turns from 3 recordings are quoted below."
+    assert header in text
+    assert "sixteen bins" not in text
+
+    headless = text.replace(header + "\n", "").strip()
+    byte_limit = len(json.dumps(headless, ensure_ascii=False).encode())
+    encoded = call("symbolic", "--delivery-bytes", str(byte_limit), payload=request)
+    assert json.loads(encoded) == headless
+    assert "complete_recording_scope" not in call("symbolic", "--limit", "2", payload=request)
+    partial = {**request, "plan": {"queries": [{**query, "where": {"grep": "initial"}}]}}
+    assert "Complete indexed" not in call("symbolic", "--text", payload=partial)
+
+    update = text_input("new-note", "The meeting is postponed.")["source"]
+    update["payload"]["metadata"]["project"] = "Helix"
+    call("index-sources", payload={"sources": [{"source": update}]})
+    assert "complete_recording_scope" not in call("symbolic", payload=request)
+
+
 def test_source_date_wording_compiles_to_native_regex_with_the_same_scope(work, monkeypatch):
     directory, call = work
     old = "这次QA对外办理登记，原定10月12日。"

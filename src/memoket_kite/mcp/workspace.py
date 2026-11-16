@@ -150,7 +150,8 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         workspace vocabulary or quoted project hints, call without a plan and
         then submit a plan with the returned snapshot, same question and scope.
         Hints are index data. Returned quotes carry recording dates and
-        citation IDs. Read the wording for decision status.
+        citation IDs. Read the wording for decision status. A complete scope
+        notice means all indexed turns within that recording scope are shown.
         If the task supplies citations and needs additional evidence, include
         them as known_citations and search for the remaining details in one call.
         """
