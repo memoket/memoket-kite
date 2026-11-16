@@ -10,10 +10,15 @@ invalidates the index before the next reuse, and the server releases its read
 transaction between requests so an import can commit while it is idle.
 
 - `recall_conversation_evidence` executes a locally compiled KITE plan and
-  returns original turns with citations. Omit `plan` to prepare bounded
-  index hints. An explicit `anchor_quote` narrows those hints when all its
+  returns original turns with citations. A question without a plan, receipt
+  or citations prepares bounded index hints. An explicit `anchor_quote`
+  narrows those hints when all its
   original matches belong to one project. Submit the plan with the returned
   `snapshot` and the same question, project, dates and comparison baseline.
+  Send `known_citations` without a plan to read their original windows.
+  Send `after_receipt` and `neighbors` without a plan to read unseen original
+  turns around the last leading citations that are still current.
+  Use a focused plan when looking for matches beyond those windows.
   When a task supplies known references
   and needs more evidence, pass them as `known_citations` and give the missing
   details to the plan. The tool checks those references and runs the plan in

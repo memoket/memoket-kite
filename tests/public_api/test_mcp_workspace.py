@@ -629,6 +629,63 @@ async def test_followup_keeps_a_direct_citation_handle_and_omits_incidental_ones
         assert "[design#approved]" not in outside.content[0].text
 
 
+async def test_planless_receipt_expands_original_context_once(tmp_path, capsys):
+    workspace = tmp_path / "workspace"
+    input_path = tmp_path / "input.json"
+    texts = [
+        "Agenda.",
+        "The rollout decision is approved.",
+        "Mina will send the notice.",
+        "The notice covers two regions.",
+        "Meeting adjourned.",
+    ]
+    source = {
+        "format": "conversation",
+        "payload": {
+            "source": "text",
+            "conversation_id": "review",
+            "metadata": {"source_reference": "review"},
+            "segments": [{"segment_id": str(i), "text": text} for i, text in enumerate(texts)],
+        },
+    }
+    input_path.write_text(json.dumps({"sources": [{"source": source}]}), encoding="utf-8")
+    assert main(["--workspace", str(workspace), "index-sources", "--input", str(input_path)]) == 0
+    capsys.readouterr()
+    receipt = re.compile(r"Evidence receipt ([a-f0-9]{24})\.")
+    async with Client(create_workspace_server(workspace), raise_exceptions=False) as client:
+        tool = "recall_conversation_evidence"
+        query = {
+            "question": "What was approved?",
+            "plan": {"queries": [{"select": "lines", "where": {"grep": "approved"}}]},
+        }
+        first = await client.call_tool(tool, query)
+        text = first.content[0].text
+        assert not first.is_error and "[review#1]" in text and "[review#3]" not in text
+        token = receipt.search(text)[1]
+        payload = {"after_receipt": token, "neighbors": 2}
+        expanded = await client.call_tool(tool, payload)
+        text = expanded.content[0].text
+        assert not expanded.is_error and "Original citation windows" in text
+        assert "[review#3] The notice covers two regions." in text
+        assert "[review#1]" not in text and "[review#4]" not in text
+        payload["after_receipt"] = receipt.search(text)[1]
+        repeat = await client.call_tool(tool, payload)
+        assert not repeat.is_error and "No new original turns" in repeat.content[0].text
+        direct = await client.call_tool(
+            tool, {"known_citations": ["review#3"], "neighbors": 0, "project": "Any"}
+        )
+        text = direct.content[0].text
+        assert not direct.is_error and "[review#3] The notice covers two regions." in text
+        from_direct = await client.call_tool(
+            tool, {"after_receipt": receipt.search(text)[1], "neighbors": 1}
+        )
+        assert (
+            not from_direct.is_error
+            and "[review#4] Meeting adjourned." in from_direct.content[0].text
+        )
+        assert "[review#3]" not in from_direct.content[0].text
+
+
 async def test_followup_recovers_an_already_quoted_nonleading_citation(tmp_path, capsys):
     workspace = tmp_path / "workspace"
     originals = {

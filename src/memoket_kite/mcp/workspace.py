@@ -41,6 +41,7 @@ class _EvidenceReceipt:
     focuses: tuple[tuple[str, _CitationFocus], ...] = ()
     scope: _RecallScope = _RecallScope()
     question: str | None = None
+    context_anchors: tuple[str, ...] = ()
 
     def followup_plan(self, snapshot, citation, grep):
         from memoket_kite.tools.contracts import ToolError
@@ -181,6 +182,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                     focuses[citation] = context
             anchors = {step["name"] for step in result["trace"] if "project_binding" in step}
             leads = list(prior.leads)
+            context_anchors = []
             wording = dict(prior.wording)
             for branch in result["branch_coverage"]:
                 if branch.get("stage") in anchors:
@@ -188,8 +190,15 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                 for line_id in branch.get("lead_source_line_ids", ()):
                     if line_id in delivered:
                         leads.append(line_id)
+                        context_anchors.append(line_id)
                         if phrases := branch.get("lead_matched_wording", {}).get(line_id):
                             wording.setdefault(line_id, tuple(phrases))
+            if window and not context_anchors:
+                context_anchors = (
+                    [ref for group in window["windows"] for ref in group["anchors"]]
+                    if "windows" in window
+                    else [window["evidence"]["source_line_id"]]
+                )
             receipt = token_hex(12)
             with receipt_lock:
                 turns = tuple(dict.fromkeys((*prior.turns, *delivered)))[-4096:]
@@ -204,12 +213,54 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                     )[-8:],
                     scope=scope,
                     question=question,
+                    context_anchors=tuple(dict.fromkeys(context_anchors))[:8]
+                    or prior.context_anchors,
                 )
                 if len(receipts) > 48:
                     receipts.popitem(last=False)
             result["delivery_receipt"] = receipt
         elif parent is not None and scope == prior.scope:
             result["delivery_receipt"] = parent
+
+    def citation_window(workspace, citations, prior, parent, *, neighbors, max_bytes):
+        if citations is None:
+            index = workspace.index()
+            citations = [
+                ref
+                for ref in prior.context_anchors
+                if ref in index.store.lines
+                and index.revisions[index.store.lines[ref].unit]["active"]
+            ]
+            if not citations:
+                raise ToolError("not_found", "no current citation anchors; send a focused plan")
+        window = read_evidence(
+            workspace,
+            citations,
+            radius=neighbors,
+            byte_budget=max_bytes,
+            delivered_line_ids=frozenset(prior.turns),
+        )
+        result = {"spans": [], "trace": [], "branch_coverage": [], "supplied_evidence": window}
+        attach_receipt(
+            result,
+            workspace,
+            prior=prior,
+            parent=parent,
+            scope=prior.scope,
+            question=prior.question,
+        )
+        spans = evidence_spans(window)
+        lines = [f"Workspace v{workspace.version()} · Original citation windows"]
+        if any(span["evidence"] for span in spans):
+            lines.append(render_evidence(window))
+        else:
+            lines.append("No new original turns in those citation windows.")
+            lines.extend(
+                f"Citation {e['index']}: {e['message']}" for e in window.get("unavailable", ())
+            )
+        if receipt := result.get("delivery_receipt"):
+            lines.append(f"Evidence receipt {receipt}. Pass it as after_receipt to continue.")
+        return "\n".join(lines)
 
     @asynccontextmanager
     async def lifespan(_server):
@@ -231,6 +282,8 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             "its status remains unclear, search for that specific gap and pass the latest Evidence "
             "receipt as after_receipt, keeping the original recording scope by default. "
             "Previously quoted direct matches can still support the task. "
+            "To widen the previously quoted dialogue without a new search, use after_receipt "
+            "and neighbors, or pass known_citations alone for their original windows. "
             "Cite the turn that states the requested decision and its subject. "
             "When a reply offers 'Follow-up near' for the subject and you need its date, amount, "
             "or value in that recording, call with after_receipt and follow_up: {citation, grep}."
@@ -369,12 +422,15 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         For an earlier-versus-current comparison, a uniquely indexed subject
         can supply dated evidence from separate recordings in the same call.
         Set plan.retry_index_subject to false to execute the submitted plan alone.
+        With known_citations alone, read their original context windows.
         If the task supplies citations and needs additional evidence, include
         them as known_citations and search for the remaining details in one call.
         Replies with quotes include an Evidence receipt.
         Search around that cited subject by passing follow_up and after_receipt.
         For gaps across recordings, use the receipt with a focused plan. Omit
         the question and recording scope to continue the same task.
+        An evidence receipt without a plan reads nearby original turns around
+        the previous search's leading citations.
         """
         dates = {
             key: value
@@ -420,6 +476,26 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                         workspace.snapshot_identity(), follow_up.citation, follow_up.grep
                     )
                 elif plan is None:
+                    continuing_window = (
+                        after_receipt is not None
+                        and project is None
+                        and anchor_quote is None
+                        and since_version is None
+                        and not dates
+                    )
+                    if snapshot is None and (known_citations is not None or continuing_window):
+                        return citation_window(
+                            workspace,
+                            known_citations,
+                            prior,
+                            after_receipt,
+                            neighbors=4
+                            if neighbors is None and after_receipt
+                            else 2
+                            if neighbors is None
+                            else neighbors,
+                            max_bytes=max_bytes,
+                        )
                     if (
                         question is None
                         or snapshot is not None

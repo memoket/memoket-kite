@@ -331,6 +331,7 @@ def read_evidence(
     conversation: str | None = None,
     segment: str | None = None,
     checksum: str | None = None,
+    delivered_line_ids: frozenset[str] = frozenset(),
 ) -> dict:
     """Resolve up to eight original citations in a single workspace snapshot."""
     if not 1 <= len(references) <= 8:
@@ -379,7 +380,7 @@ def read_evidence(
             byte_budget=budget,
         )
 
-    if len(references) == 1:
+    if len(references) == 1 and not delivered_line_ids:
         return resolve_reference(references[0], byte_budget)
     windows, unavailable = [], []
     for index, reference in enumerate(references, 1):
@@ -392,7 +393,7 @@ def read_evidence(
     if not windows:
         first = unavailable[0]
         raise ToolError(first["code"], first["message"])
-    batch = merge_evidence_windows(windows, byte_budget)
+    batch = merge_evidence_windows(windows, byte_budget, delivered_line_ids=delivered_line_ids)
     if unavailable:
         batch["unavailable"] = unavailable
     return batch
@@ -405,7 +406,12 @@ def _validate_context_window(radius: int, byte_budget: int | None) -> None:
         raise ToolError("invalid_input", "context byte budget must be 128–1048576")
 
 
-def merge_evidence_windows(windows: list[dict], byte_budget: int | None) -> dict:
+def merge_evidence_windows(
+    windows: list[dict],
+    byte_budget: int | None,
+    *,
+    delivered_line_ids: frozenset[str] = frozenset(),
+) -> dict:
     """Keep every requested citation and pack unique nearby lines across windows."""
     _validate_context_window(0, byte_budget)
     groups = {}
@@ -433,11 +439,11 @@ def merge_evidence_windows(windows: list[dict], byte_budget: int | None) -> dict
                 if line_id not in nearby or distance < nearby[line_id][0]:
                     nearby[line_id] = (distance, line)
 
-    selected = list(anchors.values())
+    selected = [line for ref, line in anchors.items() if ref not in delivered_line_ids]
     size = len(encode(selected)) if byte_budget is not None else 0
     omitted = 0
     for line_id, (_, line) in sorted(nearby.items(), key=lambda item: item[1][0]):
-        if line_id in anchors:
+        if line_id in anchors or line_id in delivered_line_ids:
             continue
         if byte_budget is not None:
             next_size = size + 1 + len(encode(line))
