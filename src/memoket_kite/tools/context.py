@@ -4920,7 +4920,7 @@ def render_context(pack: dict, *, compact_spacing: bool = False) -> str:
         if not group["source_line_ids"]:
             lines.append("Evidence missing for: " + " / ".join(group["terms"]))
     for branch in pack.get("branch_coverage", ()):
-        if branch["quoted_lines"]:
+        if branch["quoted_lines"] or branch.get("earlier_quoted_lines"):
             continue
         name = f"Stage {branch['stage']}" if "stage" in branch else f"Query {branch['query'] + 1}"
         if branch.get("skipped"):

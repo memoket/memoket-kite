@@ -517,7 +517,10 @@ async def test_followup_keeps_a_direct_citation_handle_and_omits_incidental_ones
     def request(pattern, **options):
         return {
             "question": "Find the rollout limit.",
-            "plan": {"queries": [{"select": "lines", "where": {"grep": pattern}}]},
+            "plan": {
+                "queries": [{"select": "lines", "where": {"grep": pattern}, "prefer": ["rollout"]}]
+            },
+            "limit": 1,
             **options,
         }
 
@@ -538,6 +541,64 @@ async def test_followup_keeps_a_direct_citation_handle_and_omits_incidental_ones
         outside = await client.call_tool(recall, request("grams", after_receipt=token, neighbors=1))
         assert not outside.is_error
         assert "[design#approved]" not in outside.content[0].text
+
+
+async def test_followup_preserves_original_stage_binding_when_head_already_delivered(
+    tmp_path, capsys
+):
+    workspace = tmp_path / "workspace"
+    source_path = tmp_path / "input.json"
+    sources = []
+    for name, anchor, detail in (
+        ("first", "Formal approval for the launch.", "Execution detail is signed."),
+        ("second", "Provisional approval for the test.", "Execution detail is pending."),
+    ):
+        sources.append(
+            {
+                "source": {
+                    "format": "conversation",
+                    "payload": {
+                        "conversation_id": name,
+                        "source": "test",
+                        "metadata": {"source_reference": name},
+                        "segments": [
+                            {"segment_id": "approval", "text": anchor},
+                            {"segment_id": "execution", "text": detail},
+                        ],
+                    },
+                }
+            }
+        )
+    source_path.write_text(json.dumps({"sources": sources}), encoding="utf-8")
+    assert main(["--workspace", str(workspace), "index-sources", "--input", str(source_path)]) == 0
+    capsys.readouterr()
+    first = {"select": "lines", "where": {"grep": "approval"}, "prefer": ["formal"]}
+    async with Client(create_workspace_server(workspace), raise_exceptions=False) as client:
+        tool = "recall_conversation_evidence"
+        options = {"question": "Find the launch evidence.", "neighbors": 0, "limit": 1}
+        initial = await client.call_tool(
+            tool, {**options, "plan": {"queries": [first]}, "include_receipt": True}
+        )
+        assert not initial.is_error
+        text = initial.content[0].text
+        assert "[first#approval] Formal approval" in text and "[second#approval]" not in text
+        token = re.search(r"Evidence receipt ([a-f0-9]{24})\.", text)[1]
+        stages = [
+            {"name": "approval", **first},
+            {
+                "name": "execution",
+                "select": "lines",
+                "where": {"units": "$approval.unit", "grep": "execution"},
+            },
+        ]
+        follow = await client.call_tool(
+            tool, {**options, "plan": {"stages": stages}, "after_receipt": token}
+        )
+        assert not follow.is_error
+        text = follow.content[0].text
+        assert "[first#execution] Execution detail is signed." in text
+        assert "[second#execution]" not in text and "Formal approval" not in text
+        assert "Stage approval matched 2 original turns without a quote." not in text
 
 
 async def test_large_recall_guides_branches_and_trims_only_implicit_context(tmp_path, capsys):

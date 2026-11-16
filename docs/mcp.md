@@ -31,17 +31,16 @@ transaction between requests so an import can commit while it is idle.
   Set `neighbors` explicitly to request a specific original context window.
   Packs with at least 3,600 original text bytes include an evidence receipt.
   Request one on a smaller result with `include_receipt: true`. To fill a
-  specific gap, pass that token as `after_receipt` with a focused plan. The
-  tool omits originals already delivered in that receipt chain from the
-  selected result. It shows up to four references to earlier lead turns
-  that remain direct matches in the current selected result. Read the cited
-  wording to decide which turn supports each claim. A revised turn has a new
-  evidence ID, so it can appear
+  specific gap, pass that token as `after_receipt` with a focused plan.
+  Previously delivered direct matches leave room for new evidence within
+  the same quote limit. The plan still uses all matches to bind its stages.
+  A reply can cite an earlier matching turn by reference and quote previous
+  nearby subject wording when a new turn depends on it. A revised turn has
+  a new evidence ID, so it can appear
   after a workspace update. Use `known_citations` to reread particular
   references, or omit `after_receipt` to replay all matching quotes.
   Receipts retain up to 4,096 recent turns and expire when the local server
-  restarts or evicts an older receipt. A result with no additional quotes
-  describes the selected result, so a different plan can still find evidence.
+  restarts or evicts an older receipt.
   A complete recording scope notice means every indexed turn in the selected
   recording scope is present. Read the original wording to establish approval
   or change status.

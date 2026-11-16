@@ -78,7 +78,6 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
     from memoket_kite.tools.retrieve import read_evidence
     from memoket_kite.tools.symbolic import (
         RECEIPT_QUOTE_BYTES,
-        _display_references,
         prepare_symbolic_question,
         render_symbolic_context,
         reuse_symbolic_context,
@@ -130,34 +129,6 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             result["delivery_receipt"] = receipt
         elif parent is not None:
             result["delivery_receipt"] = parent
-
-    def omit_delivered(result, prior):
-        selected = result["spans"]
-        seen = set(prior.turns)
-        direct = {
-            line["source_line_id"]
-            for span in selected
-            for line in span["evidence"]
-            if line["role"] == "symbolic_match" and line["source_line_id"] in seen
-        }
-        if window := result.get("supplied_evidence"):
-            direct.difference_update(
-                line["source_line_id"]
-                for span in evidence_spans(window)
-                for line in span["evidence"]
-            )
-        if lead_matches := direct.intersection(prior.leads):
-            refs = _display_references(result)
-            result["previously_delivered_matches"] = [
-                refs[line_id] for line_id in prior.leads if line_id in lead_matches
-            ][:4]
-        result["spans"] = [
-            span for span in selected if span["evidence"][0]["source_line_id"] not in seen
-        ]
-        result["previously_delivered_turns"] = len(selected) - len(result["spans"])
-        result["quote_bytes"] = sum(
-            len(line["text"].encode()) for span in result["spans"] for line in span["evidence"]
-        )
 
     @asynccontextmanager
     async def lifespan(_server):
@@ -223,7 +194,16 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             str | None, Field(description="Latest recording day, YYYY-MM-DD.")
         ] = None,
         since_version: Annotated[int | None, Field(strict=True, ge=0)] = None,
-        limit: Annotated[int, Field(strict=True, ge=1, le=100)] = 6,
+        limit: Annotated[
+            int,
+            Field(
+                strict=True,
+                ge=1,
+                le=100,
+                description="Maximum direct turns. Start with the default of six for implementation. "
+                "Use a larger limit for tasks that need to enumerate original mentions.",
+            ),
+        ] = 6,
         neighbors: Annotated[
             int | None,
             Field(
@@ -234,7 +214,17 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                 "When omitted, use one and trim incidental context from large replies.",
             ),
         ] = None,
-        max_bytes: Annotated[int, Field(strict=True, ge=128, le=32768)] = 3600,
+        max_bytes: Annotated[
+            int,
+            Field(
+                strict=True,
+                ge=128,
+                le=32768,
+                description="Maximum bytes of original quotes. Leave at the default for a first pass. "
+                "For a missing decision, refine its branch and use after_receipt. "
+                "Read known citations for their nearby dialogue.",
+            ),
+        ] = 3600,
         known_citations: Annotated[
             CitationList | None,
             Field(
@@ -252,7 +242,8 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             Field(
                 pattern=r"^[0-9a-f]{24}$",
                 description="Use the previous Evidence receipt when looking for new details. "
-                "Only the new original turns in this result are quoted. Omit to read all matches.",
+                "Previously delivered matches do not occupy the direct quote budget. "
+                "A nearby turn can still be quoted to explain a new match.",
             ),
         ] = None,
         include_receipt: Annotated[
@@ -330,6 +321,8 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                     max_bytes=max_bytes,
                     large_reply_guide=True,
                     trim_implicit_neighbors=neighbors is None,
+                    delivered_line_ids=frozenset(prior.turns),
+                    delivered_lead_ids=prior.leads,
                 )
                 if known_citations is not None:
                     try:
@@ -342,8 +335,6 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                         result["supplied_citation_error"] = str(exc)
         except ToolError as exc:
             raise MCPToolError(f"{exc.code}: {exc}") from exc
-        if after_receipt is not None:
-            omit_delivered(result, prior)
         if (
             after_receipt is not None
             or include_receipt

@@ -17,6 +17,7 @@ import time as _time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field, replace
 from datetime import date as _date
+from itertools import islice
 from threading import Lock
 
 from memoket_kite.core.vocab import Vocab, norm_code
@@ -641,6 +642,7 @@ class Trace:
     line_branch_candidates: dict[int, list[str]] = field(default_factory=dict)
     line_alternatives: dict[int, tuple[str, float]] = field(default_factory=dict)
     selected_line_branches: dict[str, int] = field(default_factory=dict)
+    line_binding_head: str | None = None
 
     def log(self, stage: str, **kw):
         self.stages.append({"stage": stage, **kw})
@@ -1022,6 +1024,7 @@ def execute(
     allowed_line_units: set[str] | None = None,
     line_branch_limit: int = 0,
     line_alternative_pattern: re.Pattern | None = None,
+    delivered_line_ids: frozenset[str] = frozenset(),
 ) -> tuple[list[dict], Trace]:
     """Run subqueries, pool, rank globally, refine, pack with diversity caps."""
     trace = Trace()
@@ -1206,17 +1209,20 @@ def execute(
                     **({"nearby_hits": nearby_hits} if nearby_hits else {}),
                 )
             if pack_v2 and allowed_line_units is not None and scores:
-                top = sorted(scores, key=lambda i: (-scores[i], i))[: max(2, line_branch_limit)]
-                subquery_top.append([f"L::{i}" for i in top[:2]])
+                ranked = sorted(scores, key=lambda i: (-scores[i], i))
+                if delivered_line_ids:
+                    trace.line_binding_head = ranked[0]
+                new_heads = islice((i for i in ranked if i not in delivered_line_ids), 2)
+                subquery_top.append([f"L::{i}" for i in new_heads])
                 if line_branch_limit:
-                    trace.line_branch_candidates[qi] = top[:line_branch_limit]
+                    trace.line_branch_candidates[qi] = ranked[:line_branch_limit]
                 if line_alternative_pattern:
                     # The usual ranking already covers the caller's wording.
                     # Look for an additional phrasing among the same matches.
                     alternative = min(
                         (
                             line
-                            for line in ids - preferred_ids
+                            for line in ids - preferred_ids - delivered_line_ids
                             if line_alternative_pattern.search(store.lines[line].text)
                         ),
                         key=lambda line: (-scores[line], line),
@@ -1353,7 +1359,12 @@ def execute(
             pooled[key] = max(pooled.get(key, 0), sc)
 
     # global pack with per-unit diversity caps
-    order = sorted(pooled, key=lambda k: (-pooled[k], k))
+    eligible = (
+        pooled.keys() - {f"L::{line}" for line in delivered_line_ids}
+        if delivered_line_ids
+        else pooled
+    )
+    order = sorted(eligible, key=lambda k: (-pooled[k], k))
     pack, per_unit = [], {}
     if pack_v2:
         packed: set[str] = set()
@@ -1686,6 +1697,7 @@ def execute_plan(
     line_branch_limit: int = 0,
     line_unit_projects: dict[str, str] | None = None,
     line_stage_alternatives: dict[str, re.Pattern] | None = None,
+    delivered_line_ids: frozenset[str] = frozenset(),
 ) -> tuple[list[dict], Trace]:
     """Entry point for compile output. Two shapes:
     - {"queries": [...]} : parallel subqueries, pooled and ranked in one pass
@@ -1708,6 +1720,7 @@ def execute_plan(
             coverage=coverage,
             allowed_line_units=allowed_line_units,
             line_branch_limit=line_branch_limit,
+            delivered_line_ids=delivered_line_ids,
         )
     trace = Trace()
     project_anchors = {
@@ -1747,8 +1760,14 @@ def execute_plan(
             coverage=coverage,
             allowed_line_units=allowed_line_units,
             line_alternative_pattern=(line_stage_alternatives or {}).get(name),
+            delivered_line_ids=delivered_line_ids,
         )
-        binding = _stage_binding(rows)
+        if head := st_trace.line_binding_head:
+            # A receipt changes delivery only. The original ranked head and
+            # full matched units remain available to dependent stages.
+            binding = _stage_binding([_row(store, "L", head, 0)])
+        else:
+            binding = _stage_binding(rows)
         stage_details = {}
         if allowed_line_units is not None:
             rows.sort(key=lambda row: (-row.get("score", 0), row.get("id", "")))

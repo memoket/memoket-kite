@@ -481,7 +481,15 @@ Question: {question}
 
 
 def _pack_source_lines(
-    index, rows, neighbors, max_bytes, nearby_matches, exchange=(), *, required_support=None
+    index,
+    rows,
+    neighbors,
+    max_bytes,
+    nearby_matches,
+    exchange=(),
+    *,
+    required_support=None,
+    delivered_line_ids=frozenset(),
 ):
     """Keep symbolic hits first, then include adjacent original turns as context."""
     selected = {}
@@ -539,7 +547,7 @@ def _pack_source_lines(
         for unit, position in anchors:
             source = index.store.lines_by_unit[unit]
             for nearby in (position - distance, position + distance):
-                if 0 <= nearby < len(source):
+                if 0 <= nearby < len(source) and source[nearby] not in delivered_line_ids:
                     include(unit, source[nearby], "adjacent_turn")
 
     # Workspace Codebook IDs carry the one-based original position.
@@ -880,6 +888,8 @@ def symbolic_context(
     delivery=False,
     large_reply_guide=False,
     trim_implicit_neighbors=False,
+    delivered_line_ids=frozenset(),
+    delivered_lead_ids=(),
 ):
     options = _source_options(limit, neighbors, max_bytes)
     if history_scope and since_version is not None:
@@ -903,6 +913,8 @@ def symbolic_context(
         delivery=delivery,
         large_reply_guide=large_reply_guide,
         trim_implicit_neighbors=trim_implicit_neighbors,
+        delivered_line_ids=delivered_line_ids,
+        delivered_lead_ids=delivered_lead_ids,
         **options,
     )
     if history is not None:
@@ -1497,7 +1509,7 @@ def _schedule_change_evidence(index, changed, question, prior_rows, branches):
     )
 
 
-def _branch_coverage(plan, traces, spans, *, delivery=False, guide_order=()):
+def _branch_coverage(plan, traces, spans, *, delivery=False, guide_order=(), delivered=frozenset()):
     cited = {line["source_line_id"] for span in spans for line in span["evidence"]}
     coverage = []
     staged = "stages" in plan
@@ -1505,12 +1517,14 @@ def _branch_coverage(plan, traces, spans, *, delivery=False, guide_order=()):
         evaluated = [trace.line_matches[number] for trace in traces if number in trace.line_matches]
         matches = evaluated[0] if len(evaluated) == 1 else set().union(*evaluated)
         quoted = matches & cited
+        earlier = (matches & delivered) - quoted
         branch = {"stage": entry.get("name") or f"s{number + 1}"} if staged else {"query": number}
         coverage.append(
             {
                 **branch,
                 "matched_lines": len(matches),
                 "quoted_lines": len(quoted),
+                **({"earlier_quoted_lines": len(earlier)} if earlier else {}),
                 **({"_quoted_ids": quoted} if delivery else {}),
                 **(
                     {"lead_source_line_ids": [ref for ref in guide_order if ref in quoted][:2]}
@@ -2175,8 +2189,12 @@ def render_symbolic_context(
             f"{'turn' if prior_turns == 1 else 'turns'} already delivered with the receipt."
         )
         if matches := pack.get("previously_delivered_matches"):
-            references = ", ".join(f"[{ref}]" for ref in matches)
-            lines.append(f"Earlier direct matches still in this search: {references}.")
+            quoted = _display_references(visible)
+            references = ", ".join(
+                f"[{ref}]" for line, ref in matches.items() if line not in quoted
+            )
+            if references:
+                lines.append(f"Earlier direct matches still in this search: {references}.")
     if reused := pack.get("reused_plan"):
         lines.append(
             f"Saved plan {reused['run_id']} (compiled at v{reused['compiled_at_version']})"
@@ -2481,6 +2499,8 @@ def execute_source_plan(
     delivery=False,
     large_reply_guide=False,
     trim_implicit_neighbors=False,
+    delivered_line_ids=frozenset(),
+    delivered_lead_ids=(),
 ):
     active_units = {uid for uid, record in index.revisions.items() if record["active"]}
     if compiled["units"]:
@@ -2556,6 +2576,7 @@ def execute_source_plan(
             line_branch_limit=branch_limit,
             line_unit_projects=unit_projects,
             line_stage_alternatives=stage_alternatives,
+            delivered_line_ids=delivered_line_ids,
         )
         for step in trace.stages:
             if step.get("alternate_wording_line") and (
@@ -2661,9 +2682,20 @@ def execute_source_plan(
     for current_trace in traces:
         for line, anchors in current_trace.required_line_support.items():
             required_support[line].update(anchors)
-    spans, quote_bytes, quote_order = _pack_source_lines(
-        index, rows, neighbors, max_bytes, support, exchange, required_support=required_support
-    )
+
+    def pack_rows(items, exchange=()):
+        return _pack_source_lines(
+            index,
+            items,
+            neighbors,
+            max_bytes,
+            support,
+            exchange,
+            required_support=required_support,
+            delivered_line_ids=delivered_line_ids,
+        )
+
+    spans, quote_bytes, quote_order = pack_rows(rows, exchange)
     if (
         look_for_dates
         and not exchange_step
@@ -2677,14 +2709,7 @@ def execute_source_plan(
                 *(row for row in rows if row["id"] not in displaced),
                 *({"id": line, "unit": index.store.lines[line].unit} for line in dated),
             ]
-            calendar_pack = _pack_source_lines(
-                index,
-                candidate_rows,
-                neighbors,
-                max_bytes,
-                support,
-                required_support=required_support,
-            )
+            calendar_pack = pack_rows(candidate_rows)
             if set(dated) <= set(calendar_pack[2]):
                 rows = candidate_rows
                 spans, quote_bytes, quote_order = calendar_pack
@@ -2722,14 +2747,7 @@ def execute_source_plan(
         if linked:
             candidate, grounding, revision_rows = linked
             pair = {candidate["id"], grounding["prior_line_id"]}
-            revision_pack = _pack_source_lines(
-                index,
-                revision_rows,
-                neighbors,
-                max_bytes,
-                support,
-                required_support=required_support,
-            )
+            revision_pack = pack_rows(revision_rows)
             if pair <= set(revision_pack[2]):
                 rows = revision_rows
                 spans, quote_bytes, quote_order = revision_pack
@@ -2760,6 +2778,38 @@ def execute_source_plan(
         spans, quote_bytes, quote_order, omitted_neighbors = _trim_adjacent_context(
             spans, quote_order, quote_bytes, traces, question
         )
+    continuation = {}
+    if delivered_line_ids:
+        matched = set().union(*(ids for trace in traces for ids in trace.line_matches.values()))
+        old_matches = matched & delivered_line_ids
+        # Keep original subject turns needed to interpret a newly selected hit.
+        repeats = {
+            line["source_line_id"]: len(line["text"].encode())
+            for span in spans
+            for line in span["evidence"]
+            if line["source_line_id"] in delivered_line_ids and line["role"] != "nearby_match"
+        }
+        if repeats:
+            spans = [span for span in spans if span["evidence"][0]["source_line_id"] not in repeats]
+            quote_order = tuple(ref for ref in quote_order if ref not in repeats)
+            quote_bytes -= sum(repeats.values())
+        omitted = old_matches | repeats.keys()
+        if omitted:
+            leads = []
+            for ref in (line for line in delivered_lead_ids if line in old_matches):
+                record = index.revisions[index.store.lines[ref].unit]
+                leads.append({"evidence": [_citation(record, ref, index.segments[ref])]})
+                if len(leads) == 4:
+                    break
+            refs = _display_references({"spans": [*spans, *leads]})
+            continuation = {
+                "previously_delivered_turns": len(omitted - set(quote_order)),
+                "previously_delivered_matches": {
+                    line["source_line_id"]: refs[line["source_line_id"]]
+                    for span in leads
+                    for line in span["evidence"]
+                },
+            }
     changed_checksums = {index.revisions[uid]["checksum"] for uid in changed}
     if changed_recordings is not None:
         cited = {line["revision_checksum"] for span in spans for line in span["evidence"]}
@@ -2807,6 +2857,7 @@ def execute_source_plan(
             spans,
             delivery=delivery,
             guide_order=quote_order if large_reply_guide else (),
+            delivered=delivered_line_ids,
         ),
         **({"omitted_adjacent_turns": omitted_neighbors} if omitted_neighbors else {}),
         **({"schedule_comparison": comparison} if comparison is not None else {}),
@@ -2827,6 +2878,7 @@ def execute_source_plan(
             else {}
         ),
         **source_change,
+        **continuation,
         "quote_bytes": quote_bytes,
         "quote_budget_bytes": max_bytes,
         "show_recording_dates": True,
