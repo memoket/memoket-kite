@@ -29,6 +29,7 @@ from .context_eval import codex_trial, corpus_hash, read_corpus, summarize_host,
 from .symbolic_submit import hook_options, symbolic_hook, typed_index_activity, verify_delivery
 
 _REFERENCE = re.compile(r"([\w-]+)(?:\.txt|\.md)?#(L[0-9]+|text-line-[0-9]+)\b")
+_REFERENCE_RANGE = re.compile(rf"{_REFERENCE.pattern}`?\s+(?:through|to)\s+`?{_REFERENCE.pattern}")
 _CONTEXT_HOOK = (
     Path(__file__).resolve().parents[2] / "plugins/kite/skills/kite/scripts/codex_context.py"
 )
@@ -116,8 +117,34 @@ def _verify(verifier: Path, task: Path, expected: set[str]) -> tuple[dict, str |
         return dict.fromkeys(expected, False), str(exc)
 
 
-def _score(checks: dict, answer: str | None, evidence: dict, valid_refs: set[str]) -> dict:
-    cited = {f"{source}#{segment}" for source, segment in _REFERENCE.findall(answer or "")}
+def _score(
+    checks: dict,
+    answer: str | None,
+    evidence: dict,
+    valid_refs: set[str],
+    *,
+    citation_ranges: bool = False,
+) -> dict:
+    text = answer or ""
+    cited = {f"{source}#{segment}" for source, segment in _REFERENCE.findall(text)}
+    if citation_ranges:
+        for source, start, end_source, end in _REFERENCE_RANGE.findall(text):
+            if (
+                source != end_source
+                or start.startswith("L") != end.startswith("L")
+                or not {f"{source}#{start}", f"{source}#{end}"} <= valid_refs
+            ):
+                continue
+            prefix = "L" if start.startswith("L") else "text-line-"
+            lo, hi = int(start[len(prefix) :]), int(end[len(prefix) :])
+            base = f"{source}#{prefix}"
+            cited.update(
+                ref
+                for ref in valid_refs
+                if ref.startswith(base)
+                and ref[len(base) :].isdecimal()
+                and lo < int(ref[len(base) :]) < hi
+            )
     invalid = sorted(cited - valid_refs)
     claims = {
         key: {
@@ -236,7 +263,13 @@ def _task_turn(args, case, bundle, cwd, prompt, **options):
     return {
         **turn,
         "verifier_error": error,
-        "score": _score(checks, turn["answer"], case["evidence"], bundle["refs"]),
+        "score": _score(
+            checks,
+            turn["answer"],
+            case["evidence"],
+            bundle["refs"],
+            citation_ranges=args.citation_ranges,
+        ),
     }
 
 
@@ -508,6 +541,11 @@ def main():
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument(
+        "--citation-ranges",
+        action="store_true",
+        help="credit source lines inside explicitly cited ranges with two valid endpoints",
+    )
+    parser.add_argument(
         "--trace-timing", action="store_true", help="timestamp local Codex JSON and hook events"
     )
     submit = parser.add_mutually_exclusive_group()
@@ -621,6 +659,7 @@ def main():
     args.output.mkdir(mode=0o700, parents=True)
     results = {
         "case_sha256": hashlib.sha256(raw).hexdigest(),
+        "citation_scoring": "line-ranges-v1" if args.citation_ranges else "explicit-lines-v1",
         **(
             {
                 "benchmark_sha256": {

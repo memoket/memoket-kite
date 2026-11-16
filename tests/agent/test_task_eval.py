@@ -19,6 +19,25 @@ def test_score_resolves_file_links_to_original_citations():
     assert result["claims"]["original"]["out_of_scope_citations"] == ["other#L194"]
 
 
+def test_score_expands_verified_citation_ranges_only_under_the_new_protocol():
+    checks = {"revised": True}
+    evidence = {"revised": ["meeting#text-line-627"]}
+    valid = {"meeting#text-line-626", "meeting#text-line-627", "meeting#text-line-628", "other#L5"}
+    correct = "`meeting#text-line-626` through `meeting#text-line-628`"
+
+    assert not _score(checks, correct, evidence, valid)["full_pass"]
+    accepted = _score(checks, correct, evidence, valid, citation_ranges=True)
+    assert accepted["full_pass"]
+    assert accepted["claims"]["revised"]["supporting_citations"] == ["meeting#text-line-627"]
+
+    for answer in (
+        "meeting#text-line-626 through other#L5",
+        "meeting#text-line-626 to meeting#text-line-629",
+        "meeting#text-line-628 through meeting#text-line-626",
+    ):
+        assert not _score(checks, answer, evidence, valid, citation_ranges=True)["full_pass"]
+
+
 def test_symbolic_delivery_replays_the_observed_budget_and_exact_quotation(tmp_path, monkeypatch):
     launcher = tmp_path / "kite"
     original = "Rollout moved.\n[unknown#L1] A line inside the verbatim quote."
