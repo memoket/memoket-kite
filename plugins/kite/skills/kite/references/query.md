@@ -126,9 +126,20 @@ For a follow-up after a workspace update, pass the earlier result's
 `memory_version` as `--since-version VERSION`. KITE reserves evidence for
 matching new or corrected sources inside the query scope. A newly imported
 recording may have an older recording date, so read original wording and
-recording dates before applying a change. Use `where.near` with a `grep`
-pattern and `turns` from 1 to 4 to require a second original turn in the
-same recording. KITE includes that turn in the evidence when budget permits.
+recording dates before applying a change. Use `where.near` with `turns` from
+1 to 4 and a `grep` pattern or annotation axes to require a supporting
+original turn in the same recording. For shorthand such as “set it to five,”
+put the value wording in `where.grep` and the exact subject code in
+`where.near`, for example `{"entities":["intake_valve"],"turns":2}`.
+The available axes are `topics`, `entities`, `obj`, `place`, `event` and
+`duration`. When several axes are supplied together, the same source span
+must support all of them. An additional `near.grep` must match that
+supporting turn. Check `expand` steps with `via: "near"` for those
+lookups. When an annotated turn supplies the subject, KITE keeps it with
+the value within the original quote budget.
+Historical `--at-version` / `--known-at` search uses retained original turns.
+Use `near.grep` for a historical subject until historical annotation
+versions are available.
 Add `"include_anchor":true` inside `near` to also accept the subject in the
 cited turn. The trace reports how many candidates met it in that turn.
 For a date question and an unconstrained text plan, the trace can include a

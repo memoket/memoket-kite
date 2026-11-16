@@ -297,6 +297,157 @@ async def test_workspace_lookup_does_not_create_a_missing_store(tmp_path):
     assert not missing.exists()
 
 
+async def test_symbolic_recall_cites_a_decision_and_its_nearby_indexed_subject(tmp_path, capsys):
+    workspace = tmp_path / "workspace"
+    payload = tmp_path / "input.json"
+
+    def cli(*args, value):
+        payload.write_text(json.dumps(value), encoding="utf-8")
+        assert main(["--workspace", str(workspace), *args, "--input", str(payload)]) == 0
+        return json.loads(capsys.readouterr().out)
+
+    subject = (
+        "Now, the part between the reservoir and the relief leg on the press is next on the agenda."
+        " Please leave the other control component presentations until after lunch."
+    )
+    decision = (
+        "We approved four minutes for it. Keep the other outstanding changes in the review list."
+    )
+    tags = {
+        "topics": ["Safeguard checks"],
+        "entities": ["Inlet regulator"],
+        "facets": {"object": ["Control component"]},
+    }
+
+    def recording(name, turns, labels):
+        return {
+            "source": {
+                "format": "conversation",
+                "payload": {
+                    "conversation_id": name,
+                    "source": "text",
+                    "metadata": {"source_reference": name},
+                    "segments": [{"segment_id": k, "text": v} for k, v in turns.items()],
+                },
+            },
+            "annotations": {"index_spans": labels, "facts": []},
+        }
+
+    cli(
+        "index-sources",
+        value={
+            "sources": [
+                recording(
+                    "review",
+                    {"subject": subject, "decision": decision},
+                    [{"segment_ids": ["subject"], **tags}],
+                ),
+                recording(
+                    "outside",
+                    {"decision": "We approved seven minutes for it."},
+                    [],
+                ),
+                recording(
+                    "different-spans",
+                    {"subject": subject, "decision": "We approved nine minutes for it."},
+                    [
+                        {"segment_ids": ["subject"], "topics": tags["topics"]},
+                        {
+                            "segment_ids": ["subject"],
+                            "entities": tags["entities"],
+                            "facets": tags["facets"],
+                        },
+                    ],
+                ),
+                recording(
+                    "too-far",
+                    {
+                        "subject": subject,
+                        "pause": "Let's take a break.",
+                        "decision": "We approved ten minutes for it.",
+                    },
+                    [{"segment_ids": ["subject"], **tags}],
+                ),
+            ]
+        },
+    )
+    where = {
+        "grep": "approved.+minutes",
+        "near": {
+            "turns": 1,
+            "topics": ["safeguard_checks"],
+            "entities": ["inlet_regulator"],
+            "obj": ["control_component"],
+        },
+    }
+    question = "What was the approved time for the inlet regulator safeguard?"
+    request = {"question": question, "plan": {"queries": [{"select": "lines", "where": where}]}}
+    receipt = cli("symbolic", value=request)
+    assert [span["evidence"][0]["segment_id"] for span in receipt["spans"]] == [
+        "subject",
+        "decision",
+    ]
+    assert {
+        step["atom"]: step["matched_labels"]
+        for step in receipt["trace"]
+        if step.get("via") == "near"
+    } == {
+        "topics": ["safeguard_checks"],
+        "entities": ["inlet_regulator"],
+        "obj": ["control_component"],
+    }
+    assert next(step for step in receipt["trace"] if step["stage"] == "near")["hits"] == 1
+    trimmed = cli("symbolic", "--delivery-bytes", "256", value=request)
+    assert "[review#decision]" not in trimmed
+
+    async with Client(create_workspace_server(workspace), raise_exceptions=False) as client:
+        tool = "recall_conversation_evidence"
+        result = await client.call_tool(tool, request)
+        assert not result.is_error
+        text = result.content[0].text
+        assert f"[review#subject] {subject}" in text
+        assert f"[review#decision] {decision}" in text
+        assert (
+            "[different-spans#" not in text and "[outside#" not in text and "[too-far#" not in text
+        )
+        limited = await client.call_tool(tool, {**request, "max_bytes": 128, "neighbors": 0})
+        assert not limited.is_error and "[review#decision]" not in limited.content[0].text
+        where["near"]["grep"] = "unmentioned wording"
+        unsupported = await client.call_tool(tool, request)
+        assert not unsupported.is_error and "[review#decision]" not in unsupported.content[0].text
+        del where["near"]["grep"]
+        revised = recording(
+            "review",
+            {"subject": "Next item on the schedule.", "decision": decision},
+            [],
+        )
+        revised["source"]["expected_checksum"] = receipt["spans"][0]["evidence"][0][
+            "revision_checksum"
+        ]
+        cli(
+            "index-sources",
+            value={"sources": [revised]},
+        )
+        after = await client.call_tool(tool, request)
+        assert not after.is_error and "[review#decision]" not in after.content[0].text
+        old_version = ("symbolic", "--at-version", str(receipt["memory_version"]))
+        assert not cli(*old_version, value=request)["spans"]
+        original_only = {
+            "queries": [
+                {
+                    "select": "lines",
+                    "where": {
+                        "units": ["review"],
+                        "grep": where["grep"],
+                        "near": {"grep": "reservoir and the relief leg", "turns": 1},
+                    },
+                }
+            ]
+        }
+        retained = cli(*old_version, value=original_only)
+        assert [span["evidence"][0]["text"] for span in retained["spans"]] == [subject, decision]
+
+
 async def test_workspace_preparation_binds_index_hints_to_the_submitted_plan(tmp_path, capsys):
     workspace = tmp_path / "workspace"
     script = tmp_path / "input.json"

@@ -103,7 +103,9 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                     'Supply {"queries":[{"select":"lines","where":{"grep":"subject|spoken alternative"},'
                     '"prefer":["decision or value cues"]}]}. Use 1–3 independent queries. '
                     "where supports grep_all, time [start,end], topics, entities, obj, place, event, "
-                    "and near with grep, turns (1–4), and optional include_anchor. "
+                    "and near with grep or source annotation axes, turns (1–4), and optional include_anchor. "
+                    "When the decision uses shorthand, search its value wording in grep and use "
+                    'near: {"topics":["known_code"],"turns":2} for the subject cited in adjacent turns. '
                     "Use date_wording calendar for a date and change for a revised date. Date retry is automatic. "
                     "Use change_wording reported for a value already put into effect. "
                     "Put the subject in grep or near and separate old and revised values. "

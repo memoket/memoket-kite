@@ -49,6 +49,7 @@ _WHERE_SEQUENCE_FIELDS = {
     "grep_all",
     "duration",
 }
+_ANNOTATION_FIELDS = {"topics", "entities", "obj", "place", "event", "duration"}
 _WHERE_FIELDS = {
     "topics",
     *_WHERE_SEQUENCE_FIELDS,
@@ -270,44 +271,40 @@ def _validate_plan_entry(entry: dict[str, Any], *, allow_refs: bool = False) -> 
         near = where["near"]
         if (
             not isinstance(near, dict)
-            or not {"grep", "turns"} <= near.keys()
-            or near.keys() - {"grep", "turns", "include_anchor"}
+            or "turns" not in near
+            or not (near.keys() & ({"grep"} | _ANNOTATION_FIELDS))
+            or near.keys() - ({"grep", "turns", "include_anchor"} | _ANNOTATION_FIELDS)
         ):
             raise InvalidQueryError(
-                "plan where near requires grep and turns, with optional include_anchor"
+                "plan where near requires turns and grep or source annotation axes"
             )
-        pattern, turns = near["grep"], near["turns"]
-        if not isinstance(pattern, str) or not pattern.strip() or len(pattern) > 256:
-            raise InvalidQueryError("plan where near grep must contain 1–256 characters")
+        turns = near["turns"]
         if type(turns) is not int or not 1 <= turns <= 4:
             raise InvalidQueryError("plan where near turns must be between 1 and 4")
         if type(near.get("include_anchor", False)) is not bool:
             raise InvalidQueryError("plan where near include_anchor must be boolean")
         if not where.get("grep") and not where.get("grep_all"):
             raise InvalidQueryError("plan where near requires an original-line text constraint")
-        try:
-            re.compile(pattern, re.I)
-        except re.error as exc:
-            raise InvalidQueryError(f"invalid plan near grep pattern: {exc}") from exc
-    topics = where.get("topics", [])
-    if not isinstance(topics, list):
-        raise InvalidQueryError("plan where topics must be a list")
-    for topic in topics:
-        if isinstance(topic, str):
-            if not topic.strip():
-                raise InvalidQueryError("plan topic code must be a non-empty string")
-            continue
-        if not isinstance(topic, dict):
-            raise InvalidQueryError("plan topics must contain strings or mappings")
-        if set(topic) - {"code", "closure"}:
-            raise InvalidQueryError("plan topic mappings accept only code and closure")
-        code = topic.get("code")
-        if not isinstance(code, str) or not code.strip():
-            raise InvalidQueryError("plan topic code must be a non-empty string")
-        if "closure" in topic and not isinstance(topic["closure"], bool):
-            # The executor calls bool(value), so the seemingly false string
-            # "false" expands to the full descendant closure.
-            raise InvalidQueryError("plan topic closure must be a boolean")
+        if "grep" in near:
+            pattern = near["grep"]
+            if not isinstance(pattern, str) or not pattern.strip() or len(pattern) > 256:
+                raise InvalidQueryError("plan where near grep must contain 1–256 characters")
+            try:
+                re.compile(pattern, re.I)
+            except re.error as exc:
+                raise InvalidQueryError(f"invalid plan near grep pattern: {exc}") from exc
+        for axis in _ANNOTATION_FIELDS & near.keys():
+            values = near[axis]
+            cap = 3 if axis in {"obj", "place", "event"} else 4
+            if not isinstance(values, list) or not 1 <= len(values) <= cap:
+                raise InvalidQueryError(f"plan where near {axis} requires one to {cap} labels")
+            if axis == "topics":
+                _validate_topics(values)
+            else:
+                _validate_string_sequence(f"near {axis}", values, allow_refs=False)
+                if any(not item.strip() for item in values):
+                    raise InvalidQueryError(f"plan where near {axis} requires nonempty labels")
+    _validate_topics(where.get("topics", []))
 
     pipe = entry["pipe"] if "pipe" in entry else []
     if not isinstance(pipe, list):
@@ -353,6 +350,27 @@ def _validate_plan_entry(entry: dict[str, Any], *, allow_refs: bool = False) -> 
                 raise InvalidQueryError(f"plan pipe {op} n must be a positive integer")
         elif set(step) != {"op"}:
             raise InvalidQueryError("plan pipe count does not accept additional fields")
+
+
+def _validate_topics(topics: object) -> None:
+    if not isinstance(topics, list):
+        raise InvalidQueryError("plan where topics must be a list")
+    for topic in topics:
+        if isinstance(topic, str):
+            if not topic.strip():
+                raise InvalidQueryError("plan topic code must be a non-empty string")
+            continue
+        if not isinstance(topic, dict):
+            raise InvalidQueryError("plan topics must contain strings or mappings")
+        if set(topic) - {"code", "closure"}:
+            raise InvalidQueryError("plan topic mappings accept only code and closure")
+        code = topic.get("code")
+        if not isinstance(code, str) or not code.strip():
+            raise InvalidQueryError("plan topic code must be a non-empty string")
+        if "closure" in topic and not isinstance(topic["closure"], bool):
+            # The executor calls bool(value), so the seemingly false string
+            # "false" expands to the full descendant closure.
+            raise InvalidQueryError("plan topic closure must be a boolean")
 
 
 def _stage_reference_names(entry: dict[str, Any]) -> set[str]:

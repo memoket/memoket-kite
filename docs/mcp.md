@@ -19,6 +19,10 @@ The configured workspace applies to the read-only tools.
   A complete recording scope notice means every indexed turn in the selected
   recording scope is present. Read the original wording to establish approval
   or change status.
+  When the value and its subject are in separate turns, put the value wording
+  in `where.grep` and a known Topic, Entity or Facet code in `where.near`
+  with a distance of 1–4 turns. The tool finds the annotation in the same
+  recording and returns the supporting original turn with the value.
 - `read_conversation_citations` accepts one to eight known citations and
   returns the original turns with optional surrounding context. A short
   `recording#segment` citation resolves against the active revision. Use a

@@ -485,6 +485,7 @@ class Where:
     duration: tuple = ()  # ISO duration labels on source annotations
     near: tuple = ()  # (pattern, radius) over original turns in the same recording
     near_include_anchor: bool = False
+    near_annotations: Where | None = None
 
 
 @dataclass
@@ -494,6 +495,28 @@ class SubQuery:
     pipe: tuple = ()  # (("sort","t",desc), ("head",n), ("count",))
     prefer: tuple = ()  # Optional regex ranking signals for matching lines.
     prefer_labels: dict = field(default_factory=dict)
+
+
+def _parse_topics(values, vocab, source_lines):
+    topics = []
+    for value in values[:4]:
+        topic = {"code": value, "closure": True} if isinstance(value, str) else value
+        code = vocab.resolve_topic(topic.get("code", ""))
+        if code or source_lines:
+            topics.append(
+                (code or norm_code(topic.get("code", "")), bool(topic.get("closure", True)))
+            )
+    return tuple(topics)
+
+
+def _parse_annotation_facets(where):
+    return {
+        **{
+            axis: tuple(norm_code(x) for x in (where.get(axis) or [])[:3] if norm_code(x))
+            for axis in ("obj", "place", "event")
+        },
+        "duration": tuple(value.upper() for value in where.get("duration", ())),
+    }
 
 
 def parse_plan(obj: dict, vocab: Vocab, speakers: set | None = None) -> list[SubQuery]:
@@ -510,14 +533,7 @@ def parse_plan(obj: dict, vocab: Vocab, speakers: set | None = None) -> list[Sub
             w = {}
         source_lines = q.get("select") == "lines"
         who_extra = []
-        topics = []
-        for t in (w.get("topics") or [])[:4]:
-            if isinstance(t, str):
-                t = {"code": t, "closure": True}
-            code = vocab.resolve_topic(t.get("code", ""))
-            if code or q.get("select") == "lines":
-                code = code or norm_code(t.get("code", ""))
-                topics.append((code, bool(t.get("closure", True))))
+        topics = _parse_topics(w.get("topics") or [], vocab, source_lines)
         entities = []
         for e in (w.get("entities") or [])[:4]:
             if q.get("select") == "lines":
@@ -552,16 +568,24 @@ def parse_plan(obj: dict, vocab: Vocab, speakers: set | None = None) -> list[Sub
                 pipe.append((op, int(st.get("n", 5))))
             elif op == "count":
                 pipe.append(("count",))
+        near = w.get("near") or {}
+        near_annotations = None
+        if near.keys() - {"grep", "turns", "include_anchor"}:
+            near_annotations = Where(
+                topics=_parse_topics(near.get("topics") or [], vocab, True),
+                entities=tuple(
+                    vocab.resolve_entity(value) or norm_code(value)
+                    for value in near.get("entities", ())
+                ),
+                **_parse_annotation_facets(near),
+            )
         subs.append(
             SubQuery(
                 select=q.get("select", "facts"),
                 where=Where(
                     time=(str(tm[0] or ""), str(tm[1] or "")),
-                    topics=tuple(topics),
+                    topics=topics,
                     entities=tuple(entities),
-                    obj=tuple(norm_code(x) for x in (w.get("obj") or [])[:3] if norm_code(x)),
-                    place=tuple(norm_code(x) for x in (w.get("place") or [])[:3] if norm_code(x)),
-                    event=tuple(norm_code(x) for x in (w.get("event") or [])[:3] if norm_code(x)),
                     kind=tuple(norm_code(k) for k in (w.get("kind") or [])[:4]),
                     who=tuple(
                         dict.fromkeys(
@@ -575,9 +599,10 @@ def parse_plan(obj: dict, vocab: Vocab, speakers: set | None = None) -> list[Sub
                     ),
                     entity_kind=str(w.get("entity_kind") or ""),
                     conf_min=w.get("conf_min", "low"),
-                    duration=tuple(value.upper() for value in w.get("duration", ())),
-                    near=(w["near"]["grep"], w["near"]["turns"]) if w.get("near") else (),
-                    near_include_anchor=bool((w.get("near") or {}).get("include_anchor")),
+                    near=(near.get("grep", ""), near["turns"]) if near else (),
+                    near_include_anchor=bool(near.get("include_anchor")),
+                    near_annotations=near_annotations,
+                    **_parse_annotation_facets(w),
                 ),
                 pipe=tuple(pipe),
                 prefer=tuple(q.get("prefer") or ()),
@@ -611,6 +636,7 @@ class Trace:
     stages: list = field(default_factory=list)
     matched_line_units: set[str] = field(default_factory=set)
     nearby_line_matches: dict[str, set[str]] = field(default_factory=dict)
+    required_line_support: dict[str, set[str]] = field(default_factory=dict)
     line_matches: dict[int, set[str]] = field(default_factory=dict)
     line_branch_candidates: dict[int, list[str]] = field(default_factory=dict)
     line_alternatives: dict[int, tuple[str, float]] = field(default_factory=dict)
@@ -639,7 +665,14 @@ def _has_content_constraints(w: Where) -> bool:
 
 
 def _line_annotation_matches(
-    store: Store, vocab: Vocab, where: Where, trace: Trace, *, query: int, allowed: set | None
+    store: Store,
+    vocab: Vocab,
+    where: Where,
+    trace: Trace,
+    *,
+    query: int,
+    allowed: set | None,
+    via: str | None = None,
 ) -> set | None:
     axes = {
         "topics": {
@@ -685,6 +718,7 @@ def _line_annotation_matches(
             labels=sorted(values),
             matched_labels=sorted(label for label, postings in postings.items() if postings),
             target="line_annotations",
+            **({"via": via} if via else {}),
         )
         matches.append(spans)
     if not matches:
@@ -1061,11 +1095,32 @@ def execute(
             nearby_support = {}
             if w.near:
                 pattern, radius = w.near
-                rx = re.compile(pattern, re.I)
+                rx = re.compile(pattern, re.I) if pattern else None
                 before = len(ids)
                 matched = set()
                 same_turn = 0
-                for unit in {store.lines[line].unit for line in ids}:
+                nearby_units = {store.lines[line].unit for line in ids}
+                anchors = None
+                if w.near_annotations is not None:
+                    anchors = (
+                        _line_annotation_matches(
+                            store,
+                            vocab,
+                            w.near_annotations,
+                            trace,
+                            query=qi,
+                            allowed=nearby_units,
+                            via="near",
+                        )
+                        or set()
+                    )
+
+                def supports(line):
+                    return (anchors is None or line in anchors) and (
+                        rx is None or rx.search(store.lines[line].text) is not None
+                    )
+
+                for unit in nearby_units:
                     lines = store.lines_by_unit[unit]
                     for position, line in enumerate(lines):
                         if line not in ids:
@@ -1073,15 +1128,17 @@ def execute(
                         supporting = {
                             other
                             for other in lines[max(0, position - radius) : position + radius + 1]
-                            if other != line and rx.search(store.lines[other].text)
+                            if other != line and supports(other)
                         }
                         if supporting:
                             matched.add(line)
                             nearby_support[line] = supporting
                             trace.nearby_line_matches.setdefault(line, set()).update(supporting)
-                        if w.near_include_anchor and rx.search(store.lines[line].text):
+                        if w.near_include_anchor and supports(line):
                             matched.add(line)
                             same_turn += 1
+                        elif anchors is not None and supporting:
+                            trace.required_line_support[line] = supporting
                 ids = matched
                 trace.log(
                     "near",
@@ -1090,6 +1147,7 @@ def execute(
                     candidates=before,
                     turns=radius,
                     **({"same_turn_hits": same_turn} if w.near_include_anchor else {}),
+                    **({"annotation_candidates": len(anchors)} if anchors is not None else {}),
                 )
             trace.log("lines", q=qi, hits=len(ids))
             if allowed_line_units is not None:
@@ -1732,6 +1790,8 @@ def execute_plan(
         ]
         for line, support in st_trace.nearby_line_matches.items():
             trace.nearby_line_matches.setdefault(line, set()).update(support)
+        for line, support in st_trace.required_line_support.items():
+            trace.required_line_support.setdefault(line, set()).update(support)
         if allowed_line_units is not None:
             line_stages.append((uses_ref, i, rows))
         bindings[name] = binding

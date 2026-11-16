@@ -28,7 +28,7 @@
       query: 'Query', subquestion: 'Search subquestion', queryLink: 'Search path',
       retrievalPath: 'How this line was found', retrievalReplay: 'Replay search',
       symbolicSearch: 'Symbolic search', symbolicHit: 'Symbolic match', symbolicChange: 'Date change',
-      symbolicSubjectRetry: 'Retried date subject', symbolicNearbyHits: 'Supported by nearby turns', symbolicFilter: 'Filter', symbolicRanking: 'Ranking', symbolicExecuted: 'Executed plan', symbolicCompiled: 'Compiled plan',
+      symbolicSubjectRetry: 'Retried date subject', symbolicNearbyHits: 'Supported by nearby turns', symbolicFilter: 'Filter', symbolicNearbyFilter: 'Nearby turn filter', symbolicRanking: 'Ranking', symbolicExecuted: 'Executed plan', symbolicCompiled: 'Compiled plan',
       symbolicScheduleProbe: 'Supplemental date comparison', symbolicSchedulePair: 'Linked date citations returned',
       symbolicRecordings: 'recordings in scope', symbolicDateFrom: 'From', symbolicDateThrough: 'Through',
       symbolicProjectBound: 'Project matched', symbolicProjectAmbiguous: 'Multiple matching projects',
@@ -130,7 +130,7 @@
       query: '检索请求', subquestion: '检索子问题', queryLink: '检索路径',
       retrievalPath: '原文如何命中', retrievalReplay: '重播检索',
       symbolicSearch: '符号检索', symbolicHit: '符号命中', symbolicChange: '日期变更',
-      symbolicSubjectRetry: '用邻近主题词重试', symbolicNearbyHits: '由邻近原文支撑', symbolicFilter: '筛选', symbolicRanking: '加权', symbolicExecuted: '实际执行计划', symbolicCompiled: '编译计划',
+      symbolicSubjectRetry: '用邻近主题词重试', symbolicNearbyHits: '由邻近原文支撑', symbolicFilter: '筛选', symbolicNearbyFilter: '邻近发言筛选', symbolicRanking: '加权', symbolicExecuted: '实际执行计划', symbolicCompiled: '编译计划',
       symbolicScheduleProbe: '补查原排期和改期', symbolicSchedulePair: '返回了关联的日期引用',
       symbolicRecordings: '份录制参与检索', symbolicDateFrom: '起始日期', symbolicDateThrough: '截止日期',
       symbolicProjectBound: '命中项目', symbolicProjectAmbiguous: '命中多个项目',
@@ -1592,7 +1592,7 @@
           const [name, operation] = step.stage.split(':');
           const code = operation || name;
           const prefix = operation ? name : step.q == null ? '' : String(step.q + 1);
-          const action = code === 'expand' ? t('symbolicFilter')
+          const action = code === 'expand' ? t(step.via === 'near' ? 'symbolicNearbyFilter' : 'symbolicFilter')
             : code === 'prefer_labels' ? t('symbolicRanking')
               : code === 'date_subject_retry' ? t('symbolicSubjectRetry')
                 : code === 'schedule_pair_probe' ? t('symbolicScheduleProbe') : code;

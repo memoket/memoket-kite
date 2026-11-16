@@ -190,6 +190,12 @@ or decision wording (for a date or quantity, include its spoken forms and units)
 and near: {{"grep":"subject alternatives","turns":2,"include_anchor":true}} to allow
 the subject in that turn or nearby turns in the same recording. Omit include_anchor if a
 separate turn is required. Keep near.grep at most 256 characters and turns between 1 and 4.
+When the subject is indexed and the decision uses a pronoun, shorthand or translated wording,
+put its known annotation codes in near, for example
+near: {{"entities":["intake_valve"],"obj":["valve"],"turns":2,"include_anchor":true}}.
+This requires those axes on the same annotation near the decision. If near also includes grep,
+that expression must match the annotated turn. Use an original-line text constraint on the
+decision or value itself. The cited annotated turn supplies the subject.
 The original subject and decision lines can then be cited together.
 Use the optional prefer list for up to four additional regexes that rank a matching line higher
 without excluding other lines. Keep each pattern at most 256 characters. Use short patterns
@@ -411,7 +417,9 @@ Question: {question}
         )
 
 
-def _pack_source_lines(index, rows, neighbors, max_bytes, nearby_matches, exchange=()):
+def _pack_source_lines(
+    index, rows, neighbors, max_bytes, nearby_matches, exchange=(), *, required_support=None
+):
     """Keep symbolic hits first, then include adjacent original turns as context."""
     selected = {}
     used = 0
@@ -426,7 +434,25 @@ def _pack_source_lines(index, rows, neighbors, max_bytes, nearby_matches, exchan
             used += size
 
     for row in rows:
-        include(row["unit"], row["id"], row.get("role", "symbolic_match"))
+        line_id = row["id"]
+        role = row.get("role", "symbolic_match")
+        required = required_support.get(line_id) if required_support else None
+        if not required:
+            include(row["unit"], line_id, role)
+            continue
+        position = int(line_id.rpartition("L")[2])
+        for anchor in sorted(
+            required, key=lambda ref: (abs(int(ref.rpartition("L")[2]) - position), ref)
+        ):
+            size = sum(
+                len(index.segments[ref]["text"].encode())
+                for ref in (line_id, anchor)
+                if ref not in selected
+            )
+            if used + size <= max_bytes:
+                include(row["unit"], line_id, role)
+                include(row["unit"], anchor, "nearby_match")
+                break
     exchange_bytes = sum(
         len(index.segments[row["id"]]["text"].encode())
         for row in exchange
@@ -1304,7 +1330,9 @@ def _date_subject_hints(index, plan, trace, question, active_units):
             (name for name, pattern in _DATE_WORDING.items() if pattern in expressions),
             None,
         )
-        if not wording or not (cues := _split_subject_cues(subject["grep"], wording, question)):
+        if not wording or not (
+            cues := _split_subject_cues(subject.get("grep", ""), wording, question)
+        ):
             continue
         hint = {
             **where,
@@ -1931,10 +1959,14 @@ def fit_symbolic_delivery(pack, max_bytes, *, include_receipt=False, guide=False
     if (pair := _dated_revision_pair(pack)) and set(pair) <= linked:
         quote_order = (*pair, *quote_order)
     for line_id in quote_order:
-        group = linked if line_id in linked else {line_id}
-        if group & attempted:
+        group = set(linked) if line_id in linked else {line_id}
+        if line_id in attempted:
             continue
-        attempted.update(group)
+        attempted.update(linked if line_id in linked else {line_id})
+        for ref in sorted(group):
+            support = pack.get("_required_line_support", {}).get(ref, ())
+            if support and not set(support) & (retained | group):
+                group.add(support[0])
         selected = retained | group
         spans = [span for key, span in by_id.items() if key in selected]
         candidate = {
@@ -2118,8 +2150,12 @@ def execute_source_plan(
                 schedule_trace.update(reserved=False, withheld="quote_budget")
     else:
         exchange, exchange_step = _revision_exchange(index, compiled, plan, trace, question)
+    required_support = defaultdict(set)
+    for current_trace in traces:
+        for line, anchors in current_trace.required_line_support.items():
+            required_support[line].update(anchors)
     spans, quote_bytes, quote_order = _pack_source_lines(
-        index, rows, neighbors, max_bytes, support, exchange
+        index, rows, neighbors, max_bytes, support, exchange, required_support=required_support
     )
     if (
         look_for_dates
@@ -2134,7 +2170,14 @@ def execute_source_plan(
                 *(row for row in rows if row["id"] not in displaced),
                 *({"id": line, "unit": index.store.lines[line].unit} for line in dated),
             ]
-            calendar_pack = _pack_source_lines(index, candidate_rows, neighbors, max_bytes, support)
+            calendar_pack = _pack_source_lines(
+                index,
+                candidate_rows,
+                neighbors,
+                max_bytes,
+                support,
+                required_support=required_support,
+            )
             if set(dated) <= set(calendar_pack[2]):
                 rows = candidate_rows
                 spans, quote_bytes, quote_order = calendar_pack
@@ -2172,7 +2215,14 @@ def execute_source_plan(
         if linked:
             candidate, grounding, revision_rows = linked
             pair = {candidate["id"], grounding["prior_line_id"]}
-            revision_pack = _pack_source_lines(index, revision_rows, neighbors, max_bytes, support)
+            revision_pack = _pack_source_lines(
+                index,
+                revision_rows,
+                neighbors,
+                max_bytes,
+                support,
+                required_support=required_support,
+            )
             if pair <= set(revision_pack[2]):
                 rows = revision_rows
                 spans, quote_bytes, quote_order = revision_pack
@@ -2252,6 +2302,11 @@ def execute_source_plan(
                 "_query_heads": trace.line_branch_candidates if "queries" in plan else {},
                 "_changed_checksums": changed_checksums,
                 "_linked_change": reserved,
+                "_required_line_support": {
+                    ref: tuple(anchor for anchor in quote_order if anchor in anchors)
+                    for ref, anchors in required_support.items()
+                    if ref in quote_order
+                },
             }
             if delivery
             else {}

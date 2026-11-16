@@ -97,9 +97,15 @@ candidate within the quote limit. A project-bound final-decision stage can
 include an alternate decision wording when the stage already uses all four
 ranking patterns. Inspect `alternate_wording_line` in the stage trace.
 Use `near` inside `where` to require a matching turn nearby in the same
-recording. Supply `grep` and `turns` (1–4) in `near` and a separate text
-constraint on the cited turn itself.
-Set `include_anchor` to true if that same cited turn can satisfy both patterns.
+recording. Supply `turns` (1–4) and `grep` or source annotation axes
+(`topics`, `entities`, `obj`, `place`, `event`, `duration`) in `near`.
+Keep a separate text constraint on the decision or value being retrieved.
+For example, `"near":{"entities":["intake_valve"],"obj":["valve"],"turns":2}`
+requires both indexes on the same annotated span. If you also include
+`near.grep`, it must match that supporting turn. With `include_anchor`
+true, the cited decision turn can itself meet the nearby constraints.
+Inspect `expand` steps with `via: "near"` for those index lookups and cite
+both original turns when the decision relies on a separate annotated turn.
 Use `prefer_labels` for optional Topic, Entity and Facet ranking. Its values
 are exact label codes from the compiler vocabulary, grouped by axis. The
 trace reports which candidate lines were supported on each axis. A matched
