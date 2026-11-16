@@ -337,6 +337,10 @@ digests. Use disposable seed projects and trusted fixture files. The runner
 uses POSIX pipe observation to retain tool results and incomplete turns.
 
 The three arms start fresh with identical task text, code and project guidance.
+The runner disables Codex app connectors for every arm. It records this setting
+under `common_codex_options` in the v2 protocol. The summary also counts
+observed `app_connector_calls`. Inspect saved tool calls when evaluating v1
+runs because Codex could still contact app connectors from an isolated home.
 `external` has no mounted meeting archive or KITE. `files` has the original
 files and recorded project and date metadata. `kite` uses the configured
 workspace MCP without a mounted transcript directory. All three may explicitly

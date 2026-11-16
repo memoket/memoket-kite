@@ -113,6 +113,7 @@ def test_handoff_responds_only_to_the_agents_request_and_resumes_same_chat(
     def codex(_binary, _model, project, prompt, **options):
         assert not (project / "sources").exists()
         assert options["persist_session"] is True
+        assert options["codex_options"] == ("--disable", "apps")
         activity.append((prompt, options["resume_session"]))
         if len(activity) == 1 and request_history:
             return {

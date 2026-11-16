@@ -66,8 +66,10 @@ history, decisions, commitments, and other conversation evidence.
   symbolic retrieval.
 - For user-handoff comparisons, record which sources each arm can already
   access. Count scripted responses to actual assistant questions separately
-  from evaluator feedback. Include a same-source control for claims about
-  the retrieval engine. Use the `verified_symbolic` summary for comparisons
+  from evaluator feedback. Disable app connectors across arms and inspect
+  observed calls before attributing differences to access to history. Include
+  a same-source control for claims about the retrieval engine. Use the
+  `verified_symbolic` summary for comparisons
   of matched trials with original symbolic citations actually delivered to
   Codex. Keep all attempts in the overall summary and disclose how many
   matched groups had no verified citations. For historical results, correct

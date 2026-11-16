@@ -24,6 +24,7 @@ from .task_eval import _isolated_codex_home, _score, _source_bundle, _verify
 
 _ARMS = ("external", "files", "kite")
 _MCP_SERVER = "kite_context"
+_CODEX_ISOLATION = ("--disable", "apps")
 _SYMBOLIC_TOOLS = frozenset({"recall_conversation_evidence", "reuse_conversation_query"})
 _REQUEST = re.compile(r"^Meeting context request:[ \t]+(\S[^\r\n]*)$", re.M)
 _TEST = re.compile(r"Ran [1-9]\d* tests? in .+\n\s*OK\b|[1-9]\d* passed")
@@ -139,7 +140,7 @@ def _trial(args, case, arm, repetition):
             raise ValueError("the seed project must not contain the meeting archive")
         subprocess.run(["git", "init", "-q", str(project)], check=True)
         profile = _isolated_codex_home(root)
-        options = ()
+        options = _CODEX_ISOLATION
         log = root / "symbolic.jsonl"
         if arm == "files":
             for name, data in bundle["files"]:
@@ -159,7 +160,7 @@ def _trial(args, case, arm, repetition):
                 "--workspace",
                 str(case["workspace"]),
             ]
-            options = (
+            options += (
                 "-c",
                 f"mcp_servers.{_MCP_SERVER}.command={json.dumps(args.kite_python)}",
                 "-c",
@@ -282,6 +283,11 @@ def _summary(trials):
             initial_user_bytes=len(turns[0]["prompt"].encode()),
             handoff_messages=len(turns) - 1,
             handoff_bytes=sum(len(turn["prompt"].encode()) for turn in turns[1:]),
+            app_connector_calls=sum(
+                call.get("server") == "codex_apps"
+                for turn in turns
+                for call in turn.get("mcp_calls", ())
+            ),
             seconds=sum(turn["seconds"] for turn in turns),
         )
         for turn in turns:
@@ -374,7 +380,8 @@ def main():
             case["workspace"], references, case["bundle"]["manifest"]["memory_version"]
         )
     results = {
-        "protocol": "request-triggered-original-excerpt-v1",
+        "protocol": "request-triggered-original-excerpt-v2",
+        "common_codex_options": _CODEX_ISOLATION,
         "case_sha256": hashlib.sha256(raw).hexdigest(),
         "model": args.model,
         "codex": subprocess.check_output([args.codex, "--version"], text=True).strip(),
