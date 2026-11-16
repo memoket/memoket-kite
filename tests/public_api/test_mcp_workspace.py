@@ -383,6 +383,79 @@ async def test_workspace_lookup_does_not_create_a_missing_store(tmp_path):
     assert not missing.exists()
 
 
+async def test_named_project_in_content_only_workspace_uses_grounded_entity_mentions(
+    tmp_path, capsys
+):
+    workspace = tmp_path / "workspace"
+    input_file = tmp_path / "input.json"
+
+    def add(*records):
+        input_file.write_text(json.dumps({"sources": records}), encoding="utf-8")
+        assert (
+            main(["--workspace", str(workspace), "index-sources", "--input", str(input_file)]) == 0
+        )
+        capsys.readouterr()
+
+    def record(name, text, day, *, project=None, grounded=False):
+        source = {
+            "source": {
+                "format": "conversation",
+                "payload": {
+                    "conversation_id": name,
+                    "source": "transcript",
+                    "metadata": {
+                        "source_reference": name,
+                        **({"project": project} if project else {}),
+                    },
+                    "source_date": day,
+                    "segments": [{"segment_id": "turn", "text": text}],
+                },
+            }
+        }
+        if not project:
+            span = {"segment_ids": ["turn"], "entities": ["atlas"]}
+            if grounded:
+                span["entity_mentions"] = [
+                    {"entity": "Atlas", "segment_id": "turn", "text": "Atlas"}
+                ]
+            source["annotations"] = {"facts": [], "index_spans": [span]}
+        return source
+
+    add(
+        record("first", "Atlas approved nine units.", "2025-03-01", grounded=True),
+        record("second", "Atlas approved five units.", "2025-03-02", grounded=True),
+        record("uncited", "A different team approved twelve units.", "2025-03-02"),
+    )
+    async with Client(create_workspace_server(workspace), raise_exceptions=False) as client:
+        tool = "recall_conversation_evidence"
+        args = {"question": "What was approved for Atlas?", "project": "Atlas"}
+        plan = {"queries": [{"select": "lines", "where": {"grep": "approved"}}]}
+        prepared = await client.call_tool(tool, args)
+        assert not prepared.is_error
+        info = json.loads(prepared.content[0].text)
+        assert info["active_recordings"] == 2 and info["mentioned_project_entity"] == "atlas"
+        result = await client.call_tool(tool, {**args, "plan": plan, "snapshot": info["snapshot"]})
+        assert not result.is_error
+        text = result.content[0].text
+        assert "Indexed mentions of atlas scope this search to 2 recordings." in text
+        assert "[first#turn] Atlas approved nine units." in text
+        assert "[second#turn] Atlas approved five units." in text
+        assert "[uncited#turn]" not in text
+        dated = await client.call_tool(tool, {**args, "plan": plan, "start_date": "2025-03-02"})
+        assert not dated.is_error and "[first#turn]" not in dated.content[0].text
+        empty = await client.call_tool(tool, {**args, "plan": plan, "start_date": "2025-03-03"})
+        assert not empty.is_error and "0 recordings" in empty.content[0].text
+
+        add(record("official", "The rulebook was approved.", "2025-03-03", project="Other"))
+        rejected = await client.call_tool(tool, {**args, "plan": plan})
+        assert (
+            rejected.is_error
+            and "no active recordings in the selected project" in rejected.content[0].text
+        )
+        recorded = await client.call_tool(tool, {**args, "project": "Other", "plan": plan})
+        assert not recorded.is_error and "[official#turn]" in recorded.content[0].text
+
+
 async def test_followup_receipt_omits_seen_turns_and_returns_revised_evidence(tmp_path, capsys):
     workspace = tmp_path / "workspace"
     payload = tmp_path / "input.json"

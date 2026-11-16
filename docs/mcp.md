@@ -20,6 +20,11 @@ transaction between requests so an import can commit while it is idle.
   the same workspace snapshot, with separate headings and no repeated turns.
   Project and date filters apply to the search plan. Explicit citations use
   their own recording and revision identifiers.
+  In a workspace without recorded project assignments, an exact entity name
+  supplied as `project` can scope the plan to recordings with a cited
+  original mention of that entity. The reply names that basis and gives the
+  number of scoped recordings. In a workspace with project assignments, use
+  the recorded project name.
   Results with at least 3,600 original text bytes can include up to two cited
   direct matches per query branch so the reader can locate evidence in the
   original turns. When `neighbors`

@@ -33,6 +33,11 @@ def _render_preparation(prepared: dict) -> str:
         "snapshot": prepared["snapshot"],
         "workspace_version": prepared["memory_version"],
         "active_recordings": prepared["active_recordings"],
+        **(
+            {"mentioned_project_entity": prepared["mentioned_project_entity"]}
+            if "mentioned_project_entity" in prepared
+            else {}
+        ),
         "index": index,
         "omitted_hints": len(hints["recordings"]) > 24,
     }
@@ -186,7 +191,13 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                 "A unique match scopes preparation hints to that project. Omit unit filters in the plan."
             ),
         ] = None,
-        project: str | None = None,
+        project: Annotated[
+            str | None,
+            Field(
+                description="Recorded project name. In a workspace without project assignments, "
+                "an exact indexed entity name can scope the search to its cited recordings."
+            ),
+        ] = None,
         start_date: Annotated[
             str | None, Field(description="Earliest recording day, YYYY-MM-DD.")
         ] = None,
@@ -297,6 +308,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                             since_version=since_version,
                             brief=True,
                             anchor_quote=anchor_quote,
+                            allow_mentioned_project=True,
                         )
                     )
                 plan = plan.copy()
@@ -323,6 +335,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                     trim_implicit_neighbors=neighbors is None,
                     delivered_line_ids=frozenset(prior.turns),
                     delivered_lead_ids=prior.leads,
+                    allow_mentioned_project=True,
                 )
                 if known_citations is not None:
                     try:

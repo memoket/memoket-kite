@@ -220,6 +220,32 @@ def _unit_projects(revisions, units):
     }
 
 
+def _mentioned_project_scope(index, project):
+    """Use grounded entity mentions to scope a workspace without project assignments."""
+    active = {uid for uid, record in index.revisions.items() if record["active"]}
+    if _unit_projects(index.revisions, active):
+        return None
+    code = norm_code(project)
+    if not code or code.isdecimal():
+        return None
+    entity = index.vocab.resolve_entity(code)
+    store = index.store
+    candidates = {
+        store.lines[store.line_annotation_sources[span][0]].unit
+        for span in store.line_annotation_postings.get(("entities", entity), ())
+    }
+    units = {
+        uid
+        for uid in active & candidates
+        if any(
+            index.vocab.resolve_entity(mention["entity"]) == entity
+            for span in index.revisions[uid].get("index_spans", ())
+            for mention in span.get("entity_mentions", ())
+        )
+    }
+    return (entity, units) if units else None
+
+
 def _literal_quote_pattern(quote):
     return r"\s+".join(re.escape(word) for word in quote.split())
 
@@ -286,7 +312,9 @@ Reference date: {today}
 Question: {question}
 """
 
-    def __init__(self, revisions, question, project=None, recording_dates=None):
+    def __init__(
+        self, revisions, question, project=None, recording_dates=None, mentioned_scope=None
+    ):
         self.revisions = revisions
         self.active_units = {
             uid
@@ -294,6 +322,9 @@ Question: {question}
             if record["active"]
             and (project is None or record["conversation"]["metadata"].get("project") == project)
         }
+        self.mentioned_entity = None
+        if mentioned_scope is not None:
+            self.mentioned_entity, self.active_units = mentioned_scope
         if project is not None and not self.active_units:
             raise ToolError("not_found", "no active recordings in the selected project")
         query = f"_{norm_code(question)}_"
@@ -331,7 +362,9 @@ Question: {question}
                 )
             self.scope = self.scope or self.active_units
         self.alias_scope = aliases if project is None and not self.scope else {}
-        self.selected_project = project or self.alias_scope.get("project")
+        self.selected_project = (
+            (project or self.alias_scope.get("project")) if not self.mentioned_entity else None
+        )
         if alias_project := self.alias_scope.get("project"):
             self.scope = {
                 uid
@@ -692,12 +725,17 @@ def _source_options(limit, neighbors, max_bytes):
     return {"limit": limit, "neighbors": neighbors, "max_bytes": max_bytes}
 
 
-def _prepare_question(index, question, project=None, recording_dates=None):
+def _prepare_question(
+    index, question, project=None, recording_dates=None, *, allow_mentioned_project=False
+):
     if question is not None:
         validate({**TEXT, "maxLength": 4000}, question, "symbolic question")
     if project is not None:
         validate(TEXT, project, "symbolic project")
-    return SourceLineProfile(index.revisions, question or "", project, recording_dates)
+    mentioned = (
+        _mentioned_project_scope(index, project) if project and allow_mentioned_project else None
+    )
+    return SourceLineProfile(index.revisions, question or "", project, recording_dates, mentioned)
 
 
 def _symbolic_snapshot(workspace, question, project, history, since_version, recording_dates):
@@ -766,12 +804,15 @@ def prepare_symbolic_question(
     since_version=None,
     recording_dates=None,
     anchor_quote=None,
+    allow_mentioned_project=False,
 ):
     if history_scope and since_version is not None:
         raise ToolError("invalid_input", "choose a historical cutoff or a baseline version")
     index, history = _symbolic_index(workspace, history_scope)
     dates = _validated_recording_dates(recording_dates)
-    profile = _prepare_question(index, question, project, dates)
+    profile = _prepare_question(
+        index, question, project, dates, allow_mentioned_project=allow_mentioned_project
+    )
     changed = _changed_recordings(workspace, index, since_version)
     result = {
         "snapshot": _symbolic_snapshot(workspace, question, project, history, since_version, dates),
@@ -780,6 +821,11 @@ def prepare_symbolic_question(
         **({"recording_dates": dates} if dates else {}),
         **({"project": project} if project is not None else {}),
         **({"project_alias_scope": profile.alias_scope} if profile.alias_scope else {}),
+        **(
+            {"mentioned_project_entity": profile.mentioned_entity}
+            if profile.mentioned_entity
+            else {}
+        ),
         **({"history": history} if history is not None else {}),
     }
     if brief:
@@ -813,7 +859,15 @@ def prepare_symbolic_question(
 
 
 def compile_submitted_source_plan(
-    workspace, index, value, project, history, since_version, recording_dates
+    workspace,
+    index,
+    value,
+    project,
+    history,
+    since_version,
+    recording_dates,
+    *,
+    allow_mentioned_project=False,
 ):
     dates = _validated_recording_dates(recording_dates)
     question = None
@@ -849,7 +903,9 @@ def compile_submitted_source_plan(
         retry_index_subject = value.get("retry_index_subject", False)
         value = value["plan"]
     try:
-        profile = _prepare_question(index, question, project, dates)
+        profile = _prepare_question(
+            index, question, project, dates, allow_mentioned_project=allow_mentioned_project
+        )
         plan = _validate_source_plan(_normalize_submitted_line_filters(value))
         if anchor_quote is not None:
             plan = _validate_source_plan(_bind_queries_to_project_quote(plan, anchor_quote))
@@ -867,6 +923,11 @@ def compile_submitted_source_plan(
                 else {}
             ),
             **({"project_alias_scope": profile.alias_scope} if profile.alias_scope else {}),
+            **(
+                {"mentioned_project_entity": profile.mentioned_entity}
+                if profile.mentioned_entity
+                else {}
+            ),
         }
     except InvalidQueryError as exc:
         raise ToolError("invalid_plan", str(exc)) from exc
@@ -890,6 +951,7 @@ def symbolic_context(
     trim_implicit_neighbors=False,
     delivered_line_ids=frozenset(),
     delivered_lead_ids=(),
+    allow_mentioned_project=False,
 ):
     options = _source_options(limit, neighbors, max_bytes)
     if history_scope and since_version is not None:
@@ -901,7 +963,14 @@ def symbolic_context(
         compiled = compile_source_question(index, question, model, project, recording_dates=dates)
     else:
         compiled = compile_submitted_source_plan(
-            workspace, index, plan, project, history, since_version, dates
+            workspace,
+            index,
+            plan,
+            project,
+            history,
+            since_version,
+            dates,
+            allow_mentioned_project=allow_mentioned_project,
         )
     version = history["version"] if history is not None else workspace.version()
     result = execute_source_plan(
@@ -2183,6 +2252,12 @@ def render_symbolic_context(
         lines.append(f"Supplied citations unavailable: {error}")
     if "history" not in pack:
         lines.append(f"Workspace v{pack['memory_version']}")
+    if entity := pack["scope"].get("mentioned_project_entity"):
+        count = pack["scope"]["active_recordings"]
+        lines.append(
+            f"Indexed mentions of {entity.replace('_', ' ')} scope this search to {count} "
+            f"{'recording' if count == 1 else 'recordings'}."
+        )
     if prior_turns := pack.get("previously_delivered_turns"):
         lines.append(
             f"Follow-up omitted {prior_turns} original "
@@ -2841,6 +2916,11 @@ def execute_source_plan(
                 else {}
             ),
             **({"recording_dates": dates} if dates else {}),
+            **(
+                {"mentioned_project_entity": compiled["mentioned_project_entity"]}
+                if "mentioned_project_entity" in compiled
+                else {}
+            ),
             **(
                 {"selected_project": compiled["selected_project"]}
                 if "selected_project" in compiled
