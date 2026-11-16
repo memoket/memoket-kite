@@ -14,6 +14,14 @@ When the question supplies the subject and useful search terms, submit
 KITE resolves the scope and executes against one snapshot. The trace reports
 `host_inline_plan`. Inspect the compiler's candidate vocabulary first when
 choosing unfamiliar topic, entity, facet or recording names.
+Use `grep_all` for cues that must all occur in one turn. Include inflections
+and spoken alternatives, then rank more specific wording in `prefer`.
+For a value or decision that might omit the subject, search for its spoken
+forms in `where.grep` and look for the subject in `where.near`.
+When a branch matches no turns, check its expressions or filters.
+When it matches turns but none fit in the evidence pack, search that branch
+again with the same recording scope. Apply revised values and citations
+together in the code.
 
 For in-session compilation, `symbolic --prepare "$QUESTION" --brief` returns
 the index hints and snapshot. Omit `--brief` to inspect the full compiler
@@ -54,6 +62,8 @@ line and surrounding turns for the decision's status.
 For a scoped final-decision lookup, KITE can preserve a nearby quantity
 revision exchange when the later turns omit the subject. The `revision_exchange`
 trace identifies the original words, reply, and reported change in order.
+When it can quote all four turns, KITE lists those citations in order above
+the quotes. Read the reply and the report before using the revised value.
 Set `KITE_SYMBOLIC_GUIDE=1` in the Codex submit hook's environment to include
 a stage guide when it fits alongside the original turns. The guide lists
 which stage selected each referenced turn and shows lookup cues. Run

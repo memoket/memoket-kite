@@ -2,11 +2,6 @@
 
 import re
 
-_DECISION_PREFERENCE = re.compile(
-    r"\b(?:reject\w*|drop\w*|decis\w*|decid\w*|keep|final|confirm\w*|approv\w*|agr\w*)\b"
-    r"|最终|确认|批准|通过|敲定",
-    re.I,
-)
 _CHANGE = re.compile(
     r"\b(?:chang\w*|reduc\w*|adjust\w*|increas\w*|switch\w*|replac\w*)\b"
     r"|调整|改成|改为|换成|增至|减至",
@@ -41,13 +36,10 @@ def _utterance(line):
     return "", line.text
 
 
-def find_revision_exchanges(store, queries, line_matches):
+def find_revision_exchanges(store, line_matches):
     """Find same-recording revisions, replies, and reported changes."""
     exchanges = {}
-    for index, query in enumerate(queries):
-        if not any(_DECISION_PREFERENCE.search(cue) for cue in query.get("prefer", ())):
-            continue
-        matches = line_matches.get(index, set())
+    for index, matches in line_matches.items():
         for subject in sorted(matches):
             recording = store.lines_by_unit[store.lines[subject].unit]
             # Line IDs hold the 1-based original position in this store.

@@ -7474,7 +7474,7 @@ def test_symbolic_prefers_decision_wording_inside_the_original_project_scope(
                 "We already changed it.",
             ],
             "What did the final review say about the sampler trays?",
-            "decided|keep",
+            "each|total",
             True,
         ),
         (
@@ -7544,7 +7544,7 @@ def test_symbolic_includes_a_scoped_revision_exchange_as_original_turns(
             ]
         },
     }
-    options = ("symbolic", "--project", "Alder", "--limit", "8")
+    options = ("symbolic", "--project", "Alder", "--limit", "4")
     result = call(*options, payload=request)
     related = [
         line
@@ -7561,8 +7561,10 @@ def test_symbolic_includes_a_scoped_revision_exchange_as_original_turns(
 
     delivered = json.loads(call(*options, "--delivery-bytes", "1200", payload=request))
     assert all(f"alder-notes-x7#line-{i}" in delivered for i in (1, 2, 3, 5))
+    assert "Review the revision discussion in order:" in delivered
     tight = json.loads(call(*options, "--delivery-bytes", "256", payload=request))
     assert all(f"alder-notes-x7#line-{i}" not in tight for i in (1, 2, 3, 5))
+    assert "Review the revision discussion in order:" not in tight
     assert "kickoff#text-1" in tight
 
     # Two supported exchanges in the same scope require the caller to disambiguate.

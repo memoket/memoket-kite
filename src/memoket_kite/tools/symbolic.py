@@ -995,17 +995,12 @@ def _branch_coverage(plan, traces, spans, *, delivery=False):
     return coverage
 
 
-def _revision_exchange(index, compiled, plan, trace, question, limit):
-    queries = plan.get("queries")
-    if (
-        not queries
-        or not compiled["units"]
-        or not question
-        or not _DECISION_QUESTION.search(question)
-        or limit < len(queries) + 4
-    ):
+def _revision_exchange(index, compiled, plan, trace, question):
+    if "queries" not in plan or not compiled["units"] or not question:
         return [], None
-    matches = find_revision_exchanges(index.store, queries, trace.line_matches)
+    if not _DECISION_QUESTION.search(question):
+        return [], None
+    matches = find_revision_exchanges(index.store, trace.line_matches)
     if len(matches) != 1:
         return [], None
     line_ids, branches = next(iter(matches.items()))
@@ -1109,6 +1104,31 @@ def render_symbolic_context(pack, *, guide=False):
     if any(step.get("ambiguous") for step in pack["trace"] if step["stage"] == "schedule_change"):
         lines.append("Multiple date-change turns need review in the original recordings.")
     for step in pack["trace"]:
+        if step["stage"] == "revision_exchange":
+            selected = {
+                line["source_line_id"]: line for span in pack["spans"] for line in span["evidence"]
+            }
+            reply_ids = [
+                step[key]
+                for key in (
+                    "subject_line_id",
+                    "revision_line_id",
+                    "reply_line_id",
+                    "reported_change_line_id",
+                )
+            ]
+            if all(line_id in selected for line_id in reply_ids):
+                subject = selected[reply_ids[0]]
+                recording = subject["conversation_id"]
+                if any(
+                    line["conversation_id"] == recording and line["source"] != subject["source"]
+                    for line in selected.values()
+                ):
+                    recording = f"{subject['source']}/{recording}"
+                refs = ", ".join(
+                    f"{recording}#{selected[line_id]['segment_id']}" for line_id in reply_ids
+                )
+                lines.append(f"Review the revision discussion in order: {refs}.")
         binding = step.get("project_binding", {})
         if binding.get("status") == "multiple":
             names = [" ".join(name.split()) for name in binding["projects"][:6]]
@@ -1325,7 +1345,7 @@ def execute_source_plan(
             else:
                 schedule_trace.update(reserved=False, withheld="quote_budget")
     else:
-        exchange, exchange_step = _revision_exchange(index, compiled, plan, trace, question, limit)
+        exchange, exchange_step = _revision_exchange(index, compiled, plan, trace, question)
     spans, quote_bytes, quote_order = _pack_source_lines(
         index, rows, neighbors, max_bytes, support, exchange
     )

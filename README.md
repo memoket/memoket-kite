@@ -45,7 +45,7 @@ codex plugin marketplace add memoket/memoket-kite --ref codex/agent-native-memor
 
 See the [Codex installation guide](docs/codex.md) for first-run setup, import,
 and citation examples. Codex can compile a symbolic query in the current chat,
-then save the plan for later tasks. The [optional submit hook](docs/codex.md#load-evidence-before-codex-starts)
+then save the plan for later tasks. The [optional submit hook](docs/codex.md#load-evidence-before-the-task)
 can run that saved plan against updated original recordings before Codex starts
 the task. The [paired execution benchmark](benchmarks/agent/README.md#compare-an-installed-symbolic-hook-with-raw-files)
 compares this workflow with Codex reading the same files directly.

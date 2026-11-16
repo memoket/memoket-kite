@@ -58,12 +58,16 @@ Removing the plugin leaves the memory files on disk. Codex receives the source
 text it reads for annotation. The KITE CLI itself stores and queries the
 workspace locally.
 
-## Load evidence before Codex starts
+## Use memory in a task
 
 For tasks that reference prior conversations, the installed skill can prepare
 KITE's symbolic plan in the current Codex chat and execute it on the local
 workspace. No separate provider API key is needed for this path. Codex sees
 the selected index vocabulary and the evidence returned by KITE.
+In an installed project with meeting memory, a task like “Update the release
+checklist to reflect the last approved rollout plan” can use that skill
+directly in chat. To select it explicitly, ask “Use KITE to update the
+release checklist from the last approved rollout plan.”
 When the task gives a subject and search clues, the skill submits the question
 and plan together in one command, against one workspace snapshot. If it needs
 to inspect the scope or vocabulary, `symbolic --prepare QUESTION --brief`
@@ -90,6 +94,8 @@ kite-tool file-source meeting.txt --format text --source-id kickoff --split-line
 ```
 
 Include the returned source in the normal `index-sources` batch.
+
+## Load evidence before the task
 
 For a project that already uses KITE, you can configure an optional local
 Codex [UserPromptSubmit hook](https://learn.chatgpt.com/docs/hooks#userpromptsubmit).
