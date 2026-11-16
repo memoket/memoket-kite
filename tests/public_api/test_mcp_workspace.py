@@ -1645,6 +1645,30 @@ async def test_workspace_preparation_binds_index_hints_to_the_submitted_plan(tmp
         assert not unscoped.is_error
         mixed = json.loads(unscoped.content[0].text)["index"]
         assert "depot (1)" in mixed["topics"] and "anchor_project" not in mixed["quoted_phrases"][0]
+        missed = {
+            **exact,
+            "plan": {"queries": [{"select": "lines", "where": {"grep": "turnkey shipment"}}]},
+        }
+        empty = await client.call_tool(tool, missed)
+        text = empty.content[0].text
+        assert not empty.is_error and "The anchor identifies Heron (2 recordings)." in text
+        assert '"topics":["rollout (1)"]' in text and '"event":["approval (1)"]' in text
+        assert '"entities":["mina (1)"]' in text and "depot" not in text
+        assert "[decision#line]" not in text
+        recovered = await client.call_tool(
+            tool,
+            {
+                "plan": plan,
+                "after_receipt": re.search(r"Evidence receipt ([a-f0-9]{24})\.", text)[1],
+            },
+        )
+        assert not recovered.is_error and "[decision#line] Mina agreed" in recovered.content[0].text
+        assert "Index codes in this scope" not in recovered.content[0].text
+        ambiguous = await client.call_tool(
+            tool, {k: v for k, v in missed.items() if k != "start_date"}
+        )
+        assert not ambiguous.is_error and "matches multiple projects" in ambiguous.content[0].text
+        assert "Index codes in this scope" not in ambiguous.content[0].text
         request = {
             **args,
             "snapshot": hints["snapshot"],

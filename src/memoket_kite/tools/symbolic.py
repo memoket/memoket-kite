@@ -1629,6 +1629,41 @@ def _branch_coverage(plan, traces, spans, *, delivery=False, guide_order=(), del
     return coverage
 
 
+def _empty_project_search_hints(index, plan, coverage, trace, active_units, question):
+    """Offer scoped annotation codes after a resolved project search with no hits."""
+    resolved = [
+        step for step in trace if step.get("project_binding", {}).get("status") == "resolved"
+    ]
+    if len(resolved) != 1:
+        return None
+    anchor = resolved[0]
+    target = f"${anchor['name']}.project_units"
+    branches = [branch for branch in coverage if branch["stage"] != anchor["name"]]
+    if not branches or any(branch["matched_lines"] for branch in branches):
+        return None
+    if any(
+        stage["where"].get("units") != target
+        for stage in plan["stages"]
+        if stage.get("name") != anchor["name"]
+    ):
+        return None
+
+    binding = anchor["project_binding"]
+    profile = SourceLineProfile(index.revisions, "", binding["project"])
+    profile.active_units.intersection_update(active_units)
+    topics, entities = profile.compile_label_index(question, index.vocab, index.store)
+    facets = json.loads(profile.compile_facet_index(question, index.store))
+    axes = {"topics": topics.split(", "), "entities": entities.split(", "), **facets}
+    hints = {}
+    size = 0
+    for labels in zip_longest(*(labels[:4] for labels in axes.values())):
+        for axis, label in zip(axes, labels, strict=True):
+            if label and not label.endswith(" (0)") and size + len(label.encode()) <= 700:
+                hints.setdefault(axis, []).append(label)
+                size += len(label.encode())
+    return {"stage": "empty_project_search_hints", **binding, "index": hints} if hints else None
+
+
 def _followup_subject_checks(index, plan, traces, spans, prior_matches, subjects, anchors):
     """Check a prior indexed subject against the current branch's delivered matches."""
     if not subjects:
@@ -2501,6 +2536,15 @@ def render_symbolic_context(
             )
         elif binding.get("unassigned_recordings"):
             lines.append(f"Stage {step['name']} matched recordings without a recorded project.")
+        if step["stage"] == "empty_project_search_hints":
+            name = " ".join(step["project"].split())
+            hints = json.dumps(step["index"], ensure_ascii=False, separators=(",", ":"))
+            lines.append(
+                f"The anchor identifies {name} ({step['recordings']} recordings). "
+                "The evidence queries matched no original turns. "
+                f"Index codes in this scope (recording counts): {hints}. "
+                "Continue with the receipt. Use a relevant code or original wording to refine the query."
+            )
     if pair := _dated_revision_pair(pack):
         refs = _display_references(visible)
         if all(line_id in refs for line_id in pair):
@@ -3147,6 +3191,19 @@ def execute_source_plan(
             if (project := index.revisions[row["unit"]]["conversation"]["metadata"].get("project"))
         }
     )
+    coverage = _branch_coverage(
+        plan,
+        traces,
+        spans,
+        delivery=delivery,
+        guide_order=quote_order if large_reply_guide else (),
+        delivered=delivered_line_ids,
+    )
+    if large_reply_guide and project_join and question:
+        if hint := _empty_project_search_hints(
+            index, plan, coverage, trace_steps, active_units, question
+        ):
+            trace_steps.append(hint)
     return {
         "engine": "memoket_kite.core.algebra.execute_plan",
         "compiler": compiled["compiler"],
@@ -3176,14 +3233,7 @@ def execute_source_plan(
         **({"compiled_plan": compiled["plan"]} if compiled["plan"] != plan else {}),
         "trace": trace_steps,
         **({"complete_recording_scope": complete_scope} if complete_scope else {}),
-        "branch_coverage": _branch_coverage(
-            plan,
-            traces,
-            spans,
-            delivery=delivery,
-            guide_order=quote_order if large_reply_guide else (),
-            delivered=delivered_line_ids,
-        ),
+        "branch_coverage": coverage,
         **({"omitted_adjacent_turns": omitted_neighbors} if omitted_neighbors else {}),
         **({"schedule_comparison": comparison} if comparison is not None else {}),
         **(

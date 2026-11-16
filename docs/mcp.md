@@ -15,6 +15,11 @@ transaction between requests so an import can commit while it is idle.
   narrows those hints when all its
   original matches belong to one project. Submit the plan with the returned
   `snapshot` and the same question, project, dates and comparison baseline.
+  If the quotation resolves to one project and no dependent query finds
+  original turns, the reply offers a small list of its indexed labels.
+  Use a relevant label or original wording in a focused follow-up with the
+  same receipt. Include the same `since_version` if you are comparing changes.
+  Labels describe the scope and require a quoted turn to support a decision.
   Send `known_citations` without a plan to read their original windows.
   Send `after_receipt` and `neighbors` without a plan to read unseen original
   turns around the last leading citations that are still current.
