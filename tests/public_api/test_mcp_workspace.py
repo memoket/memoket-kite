@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from memoket_kite.mcp.workspace import create_workspace_server
+from memoket_kite.mcp.workspace import _render_preparation, create_workspace_server
 from memoket_kite.tools.cli import main
 
 pytest.importorskip("mcp")
@@ -295,6 +295,112 @@ async def test_workspace_lookup_does_not_create_a_missing_store(tmp_path):
     assert result.is_error
     assert "not_found:" in result.content[0].text
     assert not missing.exists()
+
+
+async def test_workspace_preparation_binds_index_hints_to_the_submitted_plan(tmp_path, capsys):
+    workspace = tmp_path / "workspace"
+    script = tmp_path / "input.json"
+    question = 'Use the release agreement from the project that discussed the "folding hinge".'
+
+    def cli(*args, value=None):
+        if value is not None:
+            script.write_text(json.dumps(value), encoding="utf-8")
+            args = (*args, "--input", str(script))
+        assert main(["--workspace", str(workspace), *args]) == 0
+        return json.loads(capsys.readouterr().out)
+
+    def note(identity, project, day, wording, span=None):
+        return {
+            "source": {
+                "format": "conversation",
+                "payload": {
+                    "conversation_id": identity,
+                    "source": "text",
+                    "source_date": day,
+                    "metadata": {"source_reference": identity, "project": project},
+                    "segments": [{"segment_id": "line", "text": wording}],
+                },
+            },
+            **(
+                {"annotations": {"facts": [], "index_spans": [{"segment_ids": ["line"], **span}]}}
+                if span
+                else {}
+            ),
+        }
+
+    launch = {"topics": ["rollout"], "entities": ["Mina"], "facets": {"event": ["Approval"]}}
+    cli(
+        "index-sources",
+        value={
+            "sources": [
+                note("anchor", "Heron", "2026-04-06", "Let's try the folding hinge."),
+                note(
+                    "decision", "Heron", "2026-04-07", "Mina agreed we can ship next week.", launch
+                ),
+                note("old", "Falcon", "2026-04-05", "Do not ship the folding hinge design."),
+            ]
+        },
+    )
+    args = {"question": question, "start_date": "2026-04-06"}
+    plan = {
+        "queries": [{"select": "lines", "where": {"topics": ["rollout"], "event": ["approval"]}}]
+    }
+    tool = "recall_conversation_evidence"
+    async with Client(create_workspace_server(workspace), raise_exceptions=False) as client:
+        prepared = await client.call_tool(tool, args)
+        assert not prepared.is_error
+        hints = json.loads(prepared.content[0].text)
+        assert hints["kind"] == "symbolic_preparation" and hints["active_recordings"] == 2
+        assert hints["index"] == {
+            "quoted_phrases": [
+                {"grep": r"folding\s+hinge", "matching_recordings": 1, "project_recordings": 2}
+            ],
+            "topics": ["rollout (1)"],
+            "entities": ["mina (1)"],
+            "event": ["approval (1)"],
+        }
+        raw = cli("symbolic", "--prepare", question, "--brief", "--start-date", args["start_date"])
+        assert hints["snapshot"] == raw["snapshot"]
+        request = {
+            **args,
+            "snapshot": hints["snapshot"],
+            "plan": plan,
+            "anchor_quote": "folding hinge",
+        }
+        before = await client.call_tool(tool, request)
+        assert not before.is_error and "[decision#line] Mina agreed" in before.content[0].text
+        wrong_scope = await client.call_tool(tool, {**request, "start_date": "2026-04-05"})
+        assert wrong_scope.is_error and "stale_snapshot:" in wrong_scope.content[0].text
+        cli(
+            "index-sources",
+            value={"sources": [note("change", "Falcon", "2026-04-08", "The latch was confirmed.")]},
+        )
+        stale = await client.call_tool(tool, request)
+        assert stale.is_error and "stale_snapshot:" in stale.content[0].text
+
+
+def test_workspace_preparation_keeps_whole_hints_within_the_reply_limit():
+    long_label = "中文标签" * 220
+    prepared = {
+        "snapshot": "0" * 64,
+        "memory_version": 5,
+        "active_recordings": 30,
+        "index": {
+            "topics": f"{long_label} (1), short (2)",
+            "entities": f"{long_label} (1)",
+            "facets": {"event": ["handoff (3)"]},
+            "recordings": [
+                {"recording": f"recording-{i}", "date": "2026-04-06"} for i in range(30)
+            ],
+        },
+    }
+    response = _render_preparation(prepared)
+    value = json.loads(response)
+    assert len(response.encode()) <= 3600 and value["omitted_hints"]
+    assert value["snapshot"] == prepared["snapshot"]
+    assert value["index"]["topics"] == [f"{long_label} (1)", "short (2)"]
+    assert value["index"]["event"] == ["handoff (3)"]
+    assert "entities" not in value["index"]
 
 
 async def test_previous_turns_share_the_budget_and_keep_revision_specific_positions(

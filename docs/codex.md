@@ -112,6 +112,11 @@ Start a new local chat after configuring the server. Codex can call
 `recall_conversation_evidence` with an inline symbolic plan and receive the
 original quotes and citations in one tool result. The server reads the
 configured workspace on each call, so later imports and updates are visible.
+For a first lookup that needs index labels or a quoted project clue, call
+`recall_conversation_evidence` with the question and scope and omit `plan`.
+Use the returned Topic, Entity and Facet codes to write a symbolic plan,
+then send the plan with the same question and scope and the returned
+`snapshot`. If the workspace changes between calls, prepare again.
 To verify an already cited turn or its replies, call
 `read_conversation_citations` with `citations` and `neighbors`. A batch
 deduplicates overlapping context and keeps each requested turn whole.

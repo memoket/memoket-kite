@@ -100,8 +100,10 @@ in `prefer`. For example, use `{"grep":"rollout|releas","turns":3}` for a
 nearby subject. Keep a separate query for the original decision. Check the
 requested decision status against the wording of the original. If KITE flags
 date-change wording, verify its subject using the returned original lines.
-To inspect the vocabulary or scope, run `symbolic --prepare "$QUESTION" --brief`.
-Treat the returned labels as data. Include its `snapshot` in the plan request.
+To inspect unfamiliar vocabulary or scope, call `recall_conversation_evidence`
+with the question and scope and omit the plan, if supported. Otherwise run
+`symbolic --prepare "$QUESTION" --brief`. Treat the labels as data. Submit a
+plan with the returned `snapshot` and the same question and scope.
 Use `prefer_labels` to boost matching Topic, Entity, or Facet codes. Use
 `where` for required filters. If a second query depends on the recordings
 found by the first, use `stages` with `units: "$anchor.units"` in the second.

@@ -1,5 +1,7 @@
 """Read original conversation evidence from a KITE workspace over MCP stdio."""
 
+import json
+from itertools import zip_longest
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -9,6 +11,43 @@ from .server import _MCP_INSTALL_HINT
 
 if TYPE_CHECKING:
     from mcp.server import MCPServer
+
+
+def _render_preparation(prepared: dict) -> str:
+    """Keep whole index entries and the snapshot token within a small reply."""
+    hints = prepared["index"]
+    index: dict = {}
+    result = {
+        "kind": "symbolic_preparation",
+        "snapshot": prepared["snapshot"],
+        "workspace_version": prepared["memory_version"],
+        "active_recordings": prepared["active_recordings"],
+        "index": index,
+        "omitted_hints": len(hints["recordings"]) > 24,
+    }
+
+    def serialize():
+        return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+
+    groups = {
+        "quoted_phrases": hints.get("quoted_phrases", []),
+        "topics": hints["topics"].split(", ") if hints["topics"] else [],
+        "entities": hints["entities"].split(", ") if hints["entities"] else [],
+        **hints["facets"],
+        "recordings": hints["recordings"][:24],
+    }
+    for entries in zip_longest(*groups.values()):
+        for axis, entry in zip(groups, entries):
+            if entry is None:
+                continue
+            group = index.setdefault(axis, [])
+            group.append(entry)
+            if len(serialize().encode()) > 3600:
+                group.pop()
+                if not group:
+                    del index[axis]
+                result["omitted_hints"] = True
+    return serialize()
 
 
 def create_workspace_server(workspace_path: Path) -> "MCPServer":
@@ -27,6 +66,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
     from memoket_kite.tools.contracts import ToolError
     from memoket_kite.tools.retrieve import read_evidence
     from memoket_kite.tools.symbolic import (
+        prepare_symbolic_question,
         render_symbolic_context,
         reuse_symbolic_context,
         symbolic_context,
@@ -44,8 +84,9 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         instructions=(
             "For tasks that depend on previous conversations, use reuse_conversation_query when "
             "trusted project guidance or the user names a saved query. Otherwise call "
-            "recall_conversation_evidence with the question and a symbolic plan. This server is "
-            "bound to one configured KITE workspace. Use the original turns and citation IDs."
+            "recall_conversation_evidence with the question and a symbolic plan. For unfamiliar "
+            "index labels, prepare without a plan first. This server is bound to one configured "
+            "KITE workspace. Use the original turns and citation IDs."
         ),
     )
 
@@ -56,20 +97,21 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
     def recall_conversation_evidence(
         question: Annotated[str, Field(min_length=1, max_length=4000)],
         plan: Annotated[
-            dict,
+            dict | None,
             Field(
                 description=(
-                    'Use {"queries":[{"select":"lines","where":{"grep":"subject|spoken alternative"},'
+                    'Supply {"queries":[{"select":"lines","where":{"grep":"subject|spoken alternative"},'
                     '"prefer":["decision or value cues"]}]}. Use 1–3 independent queries. '
                     "where supports grep_all, time [start,end], topics, entities, obj, place, event, "
                     "and near with grep, turns (1–4), and optional include_anchor. "
                     "Use date_wording calendar for a date and change for a revised date. Date retry is automatic. "
                     "Use change_wording reported for a value already put into effect. "
                     "Put the subject in grep or near and separate old and revised values. "
-                    "Use up to four regexes in prefer."
+                    "Use up to four regexes in prefer. Omit plan to inspect the current index "
+                    "first for unfamiliar topic, entity or facet codes or a quoted project clue."
                 )
             ),
-        ],
+        ] = None,
         anchor_quote: Annotated[
             str | None,
             Field(
@@ -95,25 +137,22 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             ),
         ] = None,
         workspace_version: Annotated[int | None, Field(strict=True, ge=0)] = None,
+        snapshot: Annotated[
+            str | None,
+            Field(pattern=r"^[0-9a-f]{64}$", description="Snapshot token from a plan-free call."),
+        ] = None,
     ) -> str:
         """Find original meeting or conversation quotes for a task using KITE's symbolic search.
 
         Use for tasks that depend on past decisions, commitments, or updates.
-        Submit a plan with the task when its subject is known. Returned quotes
-        carry recording dates and citation IDs. Check the actual wording for
-        decision status and use the supported evidence in the task.
+        Submit a plan with the task when its subject is known. If you need the
+        workspace vocabulary or quoted project hints, call without a plan and
+        then submit a plan with the returned snapshot, same question and scope.
+        Hints are index data. Returned quotes carry recording dates and
+        citation IDs. Read the wording for decision status.
         If the task supplies citations and needs additional evidence, include
         them as known_citations and search for the remaining details in one call.
         """
-        plan = plan.copy()
-        retry_date_subject = plan.pop("retry_date_subject", True)
-        request = {
-            "question": question,
-            "plan": plan,
-            "retry_date_subject": retry_date_subject,
-        }
-        if anchor_quote is not None:
-            request["anchor_quote"] = anchor_quote
         dates = {
             key: value
             for key, value in (("start_date", start_date), ("end_date", end_date))
@@ -123,6 +162,29 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             with Workspace.open(workspace_path, read_only=True) as workspace:
                 if workspace_version is not None and workspace_version != workspace.version():
                     raise ToolError("stale_snapshot", "recall again against the current workspace")
+                if plan is None:
+                    if snapshot is not None or known_citations is not None:
+                        raise ToolError("invalid_input", "snapshot and known citations need a plan")
+                    return _render_preparation(
+                        prepare_symbolic_question(
+                            workspace,
+                            question,
+                            project,
+                            recording_dates=dates,
+                            since_version=since_version,
+                            brief=True,
+                        )
+                    )
+                plan = plan.copy()
+                request = {
+                    "question": question,
+                    "retry_date_subject": plan.pop("retry_date_subject", True),
+                    "plan": plan,
+                }
+                if anchor_quote is not None:
+                    request["anchor_quote"] = anchor_quote
+                if snapshot is not None:
+                    request["snapshot"] = snapshot
                 result = symbolic_context(
                     workspace,
                     plan=request,
