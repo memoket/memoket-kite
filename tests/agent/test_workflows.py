@@ -7535,6 +7535,59 @@ def test_saved_schedule_plan_finds_grounded_change_in_a_batch(work):
     )
 
 
+def test_budgeted_schedule_follow_up_resolves_both_original_revisions(work):
+    _, call = work
+    prior = "Original dispatch date was September 2. " + "Keep the approved checklist. " * 5
+    changed = "For dispatch, move to September 12. " + "Check the loading dock. " * 6
+    call("index-sources", payload={"sources": [{"source": text_input("before", prior)["source"]}]})
+    call(
+        "symbolic",
+        "--save",
+        "schedule",
+        payload={
+            "question": "What is the new dispatch date?",
+            "plan": {"queries": [{"select": "lines", "where": {"grep": "Original dispatch"}}]},
+        },
+    )
+    call("index-sources", payload={"sources": [{"source": text_input("after", changed)["source"]}]})
+    full = call("symbolic", "--reuse", "schedule")
+    comparison = full["schedule_comparison"]
+    earlier, later = comparison["previous_source_line_id"], comparison["changed_source_line_id"]
+    assert full["trace"][-1]["reserved"]
+
+    follow_up = f"Date comparison needs original turns. KITE evidence IDs: {earlier} --also {later}"
+    for options in ((), ("--max-bytes", "128"), ("--max-bytes", "256")):
+        response = call(
+            "symbolic",
+            "--reuse",
+            "schedule",
+            *options,
+            "--delivery-bytes",
+            "256",
+            "--delivery-receipt",
+        )
+        pack = json.loads(response)
+        assert pack["receipt"]["schedule_comparison"] == comparison
+        assert pack["evidence"] == follow_up
+        if options:
+            assert pack["receipt"]["trace"][-1]["withheld"] == "quote_budget"
+            assert not pack["receipt"]["trace"][-1]["reserved"]
+
+    revision = text_input("after", "Moved to September 20.")["source"]
+    revision["expected_checksum"] = next(
+        line["revision_checksum"]
+        for span in full["spans"]
+        for line in span["evidence"]
+        if line["source_line_id"] == later
+    )
+    call("index-sources", payload={"sources": [{"source": revision}]})
+    quotes = call("evidence", earlier, "--also", later)["value"]["windows"]
+    assert {line["text"] for item in quotes for line in item["evidence"]} == {
+        prior,
+        changed,
+    }
+
+
 def test_symbolic_near_option_matches_subject_in_the_cited_turn(work):
     _, call = work
     sources = [

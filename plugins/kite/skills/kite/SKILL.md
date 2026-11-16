@@ -17,6 +17,10 @@ details. Use `where.grep` for plausible spoken alternatives and `prefer` to
 rank cues such as units or wording for approval and correction. KITE resolves
 the project and validates and runs the plan locally.
 
+If a KITE result says `Date comparison needs original turns`, use its two
+evidence IDs with `bash "$KITE" evidence FIRST_ID --also SECOND_ID --text`.
+Read both original turns before applying the revised date to the task.
+
 For an implementation task, read the code and its tests, then check which
 behavior needs conversation evidence in this turn. Once the returned original
 lines support that behavior and its requested status, implement it and run the

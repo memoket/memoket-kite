@@ -102,6 +102,21 @@ def test_symbolic_delivery_checks_the_original_receipt_without_replaying(tmp_pat
     assert verified["verification"] == "observed_receipt"
     assert verified["reference_ids"] == ["meeting#L3"]
     assert not verify_delivery(launcher, "rollout", hook, tmp_path, {}, 3)["verified"]
+
+    receipt["schedule_comparison"] = {
+        "previous_source_line_id": "earlier-id",
+        "changed_source_line_id": "changed-id",
+    }
+    follow_up = (
+        "Date comparison needs original turns. KITE evidence IDs: earlier-id --also changed-id"
+    )
+    hook["additional_context"] = "Evidence\n" + json.dumps(follow_up)
+    hook["receipts"][0]["evidence"] = follow_up
+    verified = verify_delivery(launcher, "rollout", hook, tmp_path, {}, 2)
+    assert verified["verified"] and verified["follow_up_only"]
+    assert verified["reference_ids"] == []
+    receipt["schedule_comparison"]["changed_source_line_id"] = "other-id"
+    assert not verify_delivery(launcher, "rollout", hook, tmp_path, {}, 2)["verified"]
     receipt["trace"] = []
     assert not verify_delivery(launcher, "rollout", hook, tmp_path, {}, 2)["verified"]
     hook["receipts"].clear()

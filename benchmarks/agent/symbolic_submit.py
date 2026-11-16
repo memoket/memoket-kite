@@ -124,7 +124,11 @@ def verify_delivery(launcher, run_id, hook, cwd, env, memory_version):
                 raise ValueError(f"injected quotation differs from original at {ref}")
             refs.add(ref)
         if not refs:
-            raise ValueError("no original citations in the hook delivery")
+            from memoket_kite.tools.symbolic import _schedule_follow_up
+
+            follow_up = _schedule_follow_up({**receipt, "spans": []})
+            if not follow_up or output != follow_up:
+                raise ValueError("no original citations or linked follow-up in the hook delivery")
     except (
         OSError,
         subprocess.SubprocessError,
@@ -139,6 +143,7 @@ def verify_delivery(launcher, run_id, hook, cwd, env, memory_version):
         "verification": method,
         "reference_ids": sorted(refs),
         "receipt": receipt,
+        **({"follow_up_only": True} if not refs else {}),
     }
 
 

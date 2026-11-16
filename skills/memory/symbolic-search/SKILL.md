@@ -37,6 +37,9 @@ The search checks the changed recordings in the same scope. When recording
 dates are known, the retained turn must come from the same or an earlier day.
 If the trace marks the changes as ambiguous, look up the relevant recordings
 and their original wording. Check whether the speakers approved the change.
+If the result supplies two date-comparison evidence IDs, pass the first ID
+to `evidence` and the second with `--also` to read both original turns in
+one call. The IDs refer to the revisions used by the search.
 
 For source-line plans, use `where` for required constraints. A query can
 also include a `prefer` array of up to four case-insensitive regexes to

@@ -43,6 +43,9 @@ When both recording dates are known, the original must come from the same
 or an earlier day. The trace includes shared wording and any source-backed
 Topic, Entity or Object labels. If it marks an ambiguous change, check the
 relevant recordings and decision status before applying a date to a task.
+If either quote is missing from the budgeted result, use the two displayed
+evidence IDs with `evidence FIRST_ID --also SECOND_ID --text` to read both
+original turns in one call. The IDs refer to the revisions used by the search.
 If the merged pack has no matching prior date, KITE checks the first 16
 candidates from each original query branch within the same scope and applies
 the same subject check. When that recovers a prior date, the trace gives its

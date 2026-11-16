@@ -855,6 +855,16 @@ def _branch_coverage(plan, traces, spans, *, delivery=False):
     return coverage
 
 
+def _schedule_follow_up(pack):
+    if comparison := pack.get("schedule_comparison"):
+        previous = comparison["previous_source_line_id"]
+        changed = comparison["changed_source_line_id"]
+        quoted = {line["source_line_id"] for span in pack["spans"] for line in span["evidence"]}
+        if not {previous, changed} <= quoted:
+            return f"Date comparison needs original turns. KITE evidence IDs: {previous} --also {changed}"
+    return ""
+
+
 def render_symbolic_context(pack):
     lines = []
     if "history" not in pack:
@@ -883,6 +893,8 @@ def render_symbolic_context(pack):
         lines.append("Date-change wording in a changed recording: " + ", ".join(schedule_refs))
     if any(step.get("ambiguous") for step in pack["trace"] if step["stage"] == "schedule_change"):
         lines.append("Multiple date-change turns need review in the original recordings.")
+    if follow_up := _schedule_follow_up(pack):
+        lines.append(follow_up)
     if omitted := pack.get("delivery_trimmed"):
         noun = "turn" if omitted == 1 else "turns"
         lines.append(f"Quote delivery omitted {omitted} original {noun} to fit its byte budget.")
@@ -908,8 +920,10 @@ def fit_symbolic_delivery(pack, max_bytes, *, include_receipt=False):
             {"evidence": json.loads(evidence), "receipt": receipt}, ensure_ascii=False
         )
 
+    follow_up = encode_evidence(_schedule_follow_up({**pack, "spans": []}))
+    empty = follow_up if len(follow_up.encode()) <= max_bytes else '""'
     if not pack["spans"]:
-        return output(encode_evidence(""))
+        return output(empty)
     full = encode_evidence(render_symbolic_context(pack).strip())
     if len(full.encode()) <= max_bytes:
         return output(full)
@@ -918,7 +932,7 @@ def fit_symbolic_delivery(pack, max_bytes, *, include_receipt=False):
     linked = pack["_linked_change"] & by_id.keys()
     retained = set()
     attempted = set()
-    delivered = encode_evidence("")
+    delivered = empty
     for line_id in pack["_quote_order"]:
         group = linked if line_id in linked else {line_id}
         if group & attempted:
@@ -1018,14 +1032,28 @@ def execute_source_plan(
         traces = (trace,)
         support = trace.nearby_line_matches
     reserved = set()
+    comparison = None
     if compare_schedule:
         schedule, prior, schedule_trace = _schedule_change_evidence(
             index, changed, question, rows, branches
         )
         trace_steps.append(schedule_trace)
         if schedule:
-            reserved = {schedule[0]["id"], prior["id"]}
-            rows = [*schedule, prior, *(row for row in rows if row["id"] not in reserved)][:limit]
+            previous_id, changed_id = prior["id"], schedule[0]["id"]
+            comparison = {
+                "previous_source_line_id": previous_id,
+                "changed_source_line_id": changed_id,
+            }
+            pair_size = sum(
+                len(index.segments[line]["text"].encode()) for line in comparison.values()
+            )
+            if pair_size <= max_bytes:
+                reserved = {previous_id, changed_id}
+                rows = [*schedule, prior, *(row for row in rows if row["id"] not in reserved)][
+                    :limit
+                ]
+            else:
+                schedule_trace.update(reserved=False, withheld="quote_budget")
     spans, quote_bytes, quote_order = _pack_source_lines(index, rows, neighbors, max_bytes, support)
     changed_checksums = {index.revisions[uid]["checksum"] for uid in changed}
     if changed_recordings is not None:
@@ -1068,6 +1096,7 @@ def execute_source_plan(
         **({"compiled_plan": compiled["plan"]} if compiled["plan"] != plan else {}),
         "trace": trace_steps,
         "branch_coverage": _branch_coverage(plan, traces, spans, delivery=delivery),
+        **({"schedule_comparison": comparison} if comparison is not None else {}),
         **(
             {
                 "_quote_order": quote_order,
