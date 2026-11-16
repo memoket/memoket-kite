@@ -17,6 +17,8 @@ from .context import (
     _DATE_DETAIL_QUESTION,
     _DECISION_STATUS,
     _EARLIER_PHASE,
+    _HYPOTHETICAL_DATE,
+    _LATER_PHASE,
     _QUERY_FILLERS,
     _QUOTED_PHRASES,
     _RETRIEVAL_FILLERS,
@@ -55,6 +57,21 @@ _DECISION_WORDING = (
 )
 _OUTCOME_PREFERENCE = re.compile(
     r"\b(?:final|standard|decid\w*|confirm\w*|approv\w*|agre\w*)\b|最终|确认|批准|通过|敲定",
+    re.I,
+)
+_ORIGINAL_SCHEDULE = re.compile(rf"{_EARLIER_PHASE.pattern}|原(?:排期|日期|时间|安排|方案)", re.I)
+_CURRENT_SCHEDULE = re.compile(
+    rf"{_LATER_PHASE.pattern}|{_OUTCOME_PREFERENCE.pattern}|最新|最近|改期|"
+    r"\b(?:current|latest|rescheduled)\b",
+    re.I,
+)
+_DATE_AFTER_CHANGE = re.compile(
+    rf"(?:{_SCHEDULE_CHANGE.pattern})[^。！？!?；;]{{0,24}}?(?:{_DATE_DETAIL.pattern})", re.I
+)
+_REVISION_CLAUSE_BREAK = re.compile(r"[，,。！？!?；;]")
+_NEGATED_DATE_CHANGE = re.compile(
+    r"尚未|没有|并未|不能|不会|不(?:再|会|是|用|应|要)?$|"
+    r"\b(?:not|never|\w+n['’]t)\b",
     re.I,
 )
 SYMBOLIC_RECORDING_DATES = object_schema({}, {"start_date": DATE, "end_date": DATE})
@@ -1080,12 +1097,19 @@ def _schedule_follow_up(pack):
     return ""
 
 
-def _calendar_alternatives(store, rows, trace):
-    # Retain the first already selected match for each query.
-    heads = {
-        next((row["id"] for row in rows if row["id"] in matches), None)
-        for matches in trace.line_matches.values()
+def _plan_heads(rows, trace):
+    selected = {row["id"] for row in rows}
+    return {
+        next(
+            (line for line in trace.line_branch_candidates.get(query, ()) if line in selected),
+            next((row["id"] for row in rows if row["id"] in matches), None),
+        )
+        for query, matches in trace.line_matches.items()
     }
+
+
+def _calendar_alternatives(store, rows, trace):
+    heads = _plan_heads(rows, trace)
     slots = [row["id"] for row in reversed(rows) if row["id"] not in heads]
     if not slots:
         return [], set()
@@ -1099,6 +1123,61 @@ def _calendar_alternatives(store, rows, trace):
                 if len(dated) == min(2, len(slots)):
                     return dated, set(slots[: len(dated)])
     return dated, set(slots[: len(dated)])
+
+
+def _has_dated_revision(text):
+    for match in _DATE_AFTER_CHANGE.finditer(text):
+        prefix = _REVISION_CLAUSE_BREAK.split(text[max(0, match.start() - 48) : match.start()])[-1]
+        if not _NEGATED_DATE_CHANGE.search(prefix.strip()) and not _HYPOTHETICAL_DATE.search(
+            prefix
+        ):
+            return True
+    return False
+
+
+def _dated_revision_candidate(index, rows, trace, question, quote_order):
+    """Pair a quoted older turn with a directly worded date change already in scope."""
+    store = index.store
+    cited = set(quote_order)
+    anchors = [
+        row
+        for row in rows
+        if row["id"] in cited
+        and store.lines[row["id"]].unit_date
+        and _DATE_DETAIL.search(store.lines[row["id"]].text)
+        and not _has_dated_revision(store.lines[row["id"]].text)
+    ]
+    if not anchors:
+        return None
+    heads = _plan_heads(rows, trace)
+    seen = set()
+    alternative = None
+    for lane in zip_longest(*trace.line_branch_candidates.values()):
+        for line_id in lane:
+            if not line_id or line_id in seen:
+                continue
+            seen.add(line_id)
+            line = store.lines[line_id]
+            if not line.unit_date or not _has_dated_revision(line.text):
+                continue
+            eligible = [row for row in anchors if store.lines[row["id"]].unit_date < line.unit_date]
+            if not eligible:
+                continue
+            candidate = {"id": line_id, "unit": line.unit}
+            anchor, support = _schedule_subject_support(index, eligible, candidate, question)
+            if anchor is None:
+                continue
+            if line_id in cited:
+                return None
+            if alternative is not None:
+                continue
+            protected = heads | {anchor}
+            displaced = next(
+                (row["id"] for row in reversed(rows) if row["id"] not in protected), None
+            )
+            if displaced is not None:
+                alternative = (candidate, displaced, support)
+    return alternative
 
 
 def _stage_evidence_guide(pack):
@@ -1445,6 +1524,29 @@ def execute_source_plan(
                 rows = candidate_rows
                 spans, quote_bytes, quote_order = calendar_pack
                 trace_steps.append({"stage": "calendar_alternatives", "source_line_ids": dated})
+    if (
+        look_for_dates
+        and changed_recordings is None
+        and not exchange_step
+        and _ORIGINAL_SCHEDULE.search(question)
+        and _CURRENT_SCHEDULE.search(question)
+        and (revision := _dated_revision_candidate(index, rows, trace, question, quote_order))
+    ):
+        candidate, displaced, grounding = revision
+        revision_rows = [row if row["id"] != displaced else candidate for row in rows]
+        revision_pack = _pack_source_lines(index, revision_rows, neighbors, max_bytes, support)
+        pair = {candidate["id"], grounding["prior_line_id"]}
+        if pair <= set(revision_pack[2]):
+            rows = revision_rows
+            spans, quote_bytes, quote_order = revision_pack
+            reserved = pair
+            trace_steps.append(
+                {
+                    "stage": "dated_revision",
+                    "source_line_id": candidate["id"],
+                    "subject_support": grounding,
+                }
+            )
     if exchange_step:
         exchange_ids = {row["id"] for row in exchange}
         if exchange_ids <= set(quote_order):

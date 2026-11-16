@@ -75,6 +75,10 @@ For a date question whose parallel queries assemble no dated quotation,
 KITE can use up to two other matching turns that contain calendar wording.
 It retains the first match of each contributing query within the same
 result and byte limits. Inspect `calendar_alternatives` in the trace.
+For a previous-and-current date question, the result can promote an
+already matched later turn with explicit date-change wording paired
+with a related earlier turn. Read both originals before using the dates.
+The `dated_revision` trace links both and records their shared subject.
 Set `KITE_SYMBOLIC_GUIDE=1` in the Codex submit hook's environment to include
 a stage guide when it fits alongside the original turns. The guide lists
 which stage selected each referenced turn and shows lookup cues. Run

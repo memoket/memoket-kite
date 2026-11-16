@@ -66,6 +66,10 @@ For date questions, a parallel plan with no calendar wording in its first
 set of quotes can give space to up to two already matched turns with dates.
 The `calendar_alternatives` trace lists those original turns. Check which
 date the speakers approved, proposed, or reported.
+For a question asking for both a previous and current date, KITE can
+retain an already matched change turn alongside a related, quoted turn
+from an earlier recording. Look for `dated_revision` and its topic
+wording or annotations in the trace. Read both turns for decision status.
 Staged line searches advance past shared hits to give each stage a distinct
 candidate within the quote limit. A project-bound final-decision stage can
 include an alternate decision wording when the stage already uses all four

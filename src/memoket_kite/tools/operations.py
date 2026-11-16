@@ -413,7 +413,7 @@ TOOLS = {
         prepare_provider=_prepare_symbolic,
     ),
     "search_symbolic": Tool(
-        _search_symbolic, {"compiled": "symbolic_plan"}, "symbolic_evidence", version=21
+        _search_symbolic, {"compiled": "symbolic_plan"}, "symbolic_evidence", version=22
     ),
     "compare_revisions": Tool(
         _compare_revisions, {"request": "revision_comparison"}, "revision_difference", version=2

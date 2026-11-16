@@ -7857,6 +7857,95 @@ def test_symbolic_quotes_matched_calendar_turns_when_first_pack_has_no_date(
     assert {span["evidence"][0]["text"] for span in result["spans"]} == {dated[0], owner}
 
 
+@pytest.mark.parametrize(
+    "question, original, revised, distractor, negated, hypothetical, earlier",
+    [
+        (
+            "What were the original and latest dispatch dates and who owns the handoff?",
+            "Dispatch was originally scheduled for April 12.",
+            "For dispatch, move to April 22.",
+            "For the audit, move to April 24.",
+            "Dispatch did not move to April 26.",
+            "For example we could move to April 28 for dispatch.",
+            "originally",
+        ),
+        (
+            "调度的原排期和最新日期分别是什么？谁负责交接？",
+            "调度原定4月12日。",
+            "调度按这个改到4月22日。",
+            "审计这边改到4月24日。",
+            "调度尚未改到4月26日。",
+            "比如调度改到4月28日。",
+            "原定",
+        ),
+    ],
+)
+def test_symbolic_packs_a_related_dated_revision_from_the_current_snapshot(
+    work, question, original, revised, distractor, negated, hypothetical, earlier
+):
+    _, call = work
+    owner = "Handoff owner is Sasha."
+    revised = (revised + " " + "Read this with the other meeting notes. " * 4).strip()
+    records = [
+        ("original-plan", "2026-03-01", original, "Main"),
+        ("revision", "2026-03-15", revised, "Main"),
+        ("irrelevant", "2026-03-16", distractor, "Main"),
+        ("negation", "2026-03-17", negated, "Main"),
+        ("example", "2026-03-18", hypothetical, "Main"),
+        ("responsibility-notes", "2026-03-16", owner, "Main"),
+        ("outside-project", "2026-03-16", revised, "Other"),
+        ("outside-window", "2026-05-01", revised, "Main"),
+    ]
+    records.extend(
+        (
+            f"minutes-{i}",
+            "2026-03-05",
+            f"Dispatch review confirmed access. 调度复核确认了。 Ref {i}, April 18.",
+            "Main",
+        )
+        for i in range(6)
+    )
+    sources = []
+    for name, day, text, project in records:
+        source = text_input(name, text, date=day)["source"]
+        source["payload"]["metadata"]["project"] = project
+        sources.append({"source": source})
+    call("index-sources", payload={"sources": sources})
+    plan = {
+        "queries": [
+            {"select": "lines", "where": {"grep": earlier}},
+            {
+                "select": "lines",
+                "where": {"grep": "dispatch|audit|调度|审计"},
+                "prefer": ["review|复核", "confirmed|确认"],
+            },
+            {"select": "lines", "where": {"grep": "handoff owner"}},
+        ],
+    }
+    request = {"question": question, "plan": plan}
+    args = ("symbolic", "--project", "Main", "--end-date", "2026-04-30", "--limit", "4")
+    before = call(*args, payload={"question": "Show dated dispatch evidence.", "plan": plan})
+    after = call(*args, payload=request)
+    by_text = {line["text"]: line for span in after["spans"] for line in span["evidence"]}
+    step = next(step for step in after["trace"] if step["stage"] == "dated_revision")
+    assert step["source_line_id"] == by_text[revised]["source_line_id"]
+    assert step["subject_support"]["prior_line_id"] == by_text[original]["source_line_id"]
+    assert by_text[revised]["conversation_id"] == "revision"
+    assert owner in by_text and all(
+        text not in by_text for text in (distractor, negated, hypothetical)
+    )
+    assert len(by_text) == len(before["spans"]) == 4
+    assert [branch["matched_lines"] for branch in before["branch_coverage"]] == [
+        branch["matched_lines"] for branch in after["branch_coverage"]
+    ]
+    assert revised not in {span["evidence"][0]["text"] for span in before["spans"]}
+
+    no_free_slot = call(*args[:-1], "3", payload=request)
+    assert all(step["stage"] != "dated_revision" for step in no_free_slot["trace"])
+    insufficient_bytes = call(*args, "--max-bytes", "128", payload=request)
+    assert all(step["stage"] != "dated_revision" for step in insufficient_bytes["trace"])
+
+
 def test_symbolic_schedule_uses_shared_annotation_for_a_split_subject(work, monkeypatch):
     _, call = work
 
