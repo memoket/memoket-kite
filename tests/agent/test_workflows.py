@@ -7974,7 +7974,7 @@ def test_source_date_wording_compiles_to_native_regex_with_the_same_scope(work, 
     change = "那就改到10月20日。"
     fixtures = []
     for name, project, date, turns in (
-        ("first", "Intake", "2026-09-14", [old]),
+        ("first", "Intake", "2026-09-14", [old, "这次QA办理登记，原定安排还在讨论。"]),
         ("second", "Intake", "2026-09-20", ["现在谈QA登记。", change]),
         ("spare", "Intake", "2026-09-23", ["QA登记", "考虑2026-10-22。"]),
         ("other", "Warehouse", "2026-09-20", ["QA登记", "改到10月26日。"]),
@@ -8003,7 +8003,7 @@ def test_source_date_wording_compiles_to_native_regex_with_the_same_scope(work, 
             {
                 "select": "lines",
                 "where": {
-                    "grep_all": [r"(?a:\bQA\b)", "原定"],
+                    "grep_all": [r"(?a:\bQA\b)", "原定", "办理登记"],
                     "date_wording": "calendar",
                 },
             },
@@ -8026,7 +8026,8 @@ def test_source_date_wording_compiles_to_native_regex_with_the_same_scope(work, 
     } == {(old, "symbolic_match"), (change, "symbolic_match"), ("现在谈QA登记。", "nearby_match")}
     filters = [query["where"] for query in host["plan"]["queries"]]
     assert all("date_wording" not in where for where in filters)
-    assert filters[0]["grep_all"][:2] == raw["queries"][0]["where"]["grep_all"]
+    assert filters[0]["grep_all"][:3] == raw["queries"][0]["where"]["grep_all"]
+    assert len(filters[0]["grep_all"]) == 4
     assert filters[1]["near"] == raw["queries"][1]["where"]["near"]
     assert call(*args, payload={**request, "plan": host["plan"]})["spans"] == host["spans"]
     assert call("symbolic", "--reuse", "qa-dates")["spans"] == host["spans"]
@@ -8446,6 +8447,82 @@ def test_budgeted_schedule_follow_up_resolves_both_original_revisions(work):
         prior,
         changed,
     }
+
+
+def test_reported_change_wording_filters_original_turns_in_the_saved_scope(work, monkeypatch):
+    _, call = work
+    english = "User: Speaking of the intake quota, I've increased the limit to four."
+    chinese = "配额已经从四项增加到五项。"
+    turns = [
+        english,
+        chinese,
+        "We are thinking of increasing the intake quota.",
+        "If we changed the intake quota, it could be six.",
+        "We have not increased the intake quota.",
+        "配额尚未增加，可能改成六项。",
+        "配额考虑增加到六项。",
+        "We've increased the light level.",
+    ]
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {
+                    "source": {
+                        "format": "conversation",
+                        "payload": {
+                            "conversation_id": name,
+                            "source": "text",
+                            "source_date": date,
+                            "metadata": {"source_reference": name},
+                            "segments": [
+                                {"segment_id": f"L{i + 1}", "text": turn}
+                                for i, turn in enumerate(content)
+                            ],
+                        },
+                    }
+                }
+                for name, date, content in (
+                    ("intake", "2026-09-10", turns),
+                    ("later", "2026-09-11", ["We have raised the intake quota to seven."]),
+                )
+            ]
+        },
+    )
+    plan = {
+        "queries": [
+            {
+                "select": "lines",
+                "where": {
+                    "grep": "quota|配额",
+                    "change_wording": "reported",
+                },
+            },
+        ]
+    }
+    question = "What reported changes were made to the intake quota?"
+    args = ("symbolic", "--end-date", "2026-09-10")
+    result = call(*args, "--save", "intake-quota", payload={"question": question, "plan": plan})
+    assert result["engine"] == "memoket_kite.core.algebra.execute_plan"
+    assert result["branch_coverage"] == [{"query": 0, "matched_lines": 2, "quoted_lines": 2}]
+    assert [line["text"] for span in result["spans"] for line in span["evidence"]] == [
+        english,
+        chinese,
+    ]
+    assert "change_wording" not in result["plan"]["queries"][0]["where"]
+    assert call("symbolic", "--reuse", "intake-quota")["spans"] == result["spans"]
+
+    def provider(prompt, **kwargs):
+        assert 'change_wording "reported"' in prompt
+        return plan
+
+    monkeypatch.setattr("memoket_kite.pipeline.compile_plan.llm_json", provider)
+    compiled = call(*args, "--question", question, "--model", "fixture-model")
+    assert compiled["compiler"] == "memoket_kite.pipeline.compile_plan"
+    assert compiled["plan"] == result["plan"]
+    assert compiled["spans"] == result["spans"]
+    plan["queries"][0]["where"]["change_wording"] = True
+    call(*args, payload=plan, error="invalid_plan")
 
 
 def test_symbolic_near_option_matches_subject_in_the_cited_turn(work):

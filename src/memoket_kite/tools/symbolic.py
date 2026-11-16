@@ -70,6 +70,19 @@ _DATE_AFTER_CHANGE = re.compile(
     rf"(?:{_SCHEDULE_CHANGE.pattern})[^。！？!?；;]{{0,24}}?(?:{_DATE_DETAIL.pattern})", re.I
 )
 _DATE_WORDING = {"calendar": _DATE_DETAIL.pattern, "change": _DATE_AFTER_CHANGE.pattern}
+_REPORTED_CHANGE_WORDING = (
+    r"(?:^|(?<=[.?!,:;]))\s*(?:(?:and|but)\s+)?"
+    r"\b(?:i|we|they|he|she|it)\b(?:\s+(?:(?:have|has|had)\s+)?|['’](?:ve|s|d)\s+)"
+    r"(?:already\s+)?(?:adjusted|changed|cut\s+back|decreased|increased|lowered|moved|"
+    r"raised|reduced|replaced|revised|switched|updated)\b|"
+    r"(?<!尚)(?<!未)(?:已经|已)(?:(?:把|将|从)[^，。！？；不未]{1,18}?)?"
+    r"(?:改为|改成|调整(?:为|到|至)?|变更(?:为|到|至)?|更换|改用|换成|增加|减少|"
+    r"降至|增至|减至|下调|上调|推迟|提前)"
+)
+_SOURCE_WORDING = {
+    "date_wording": _DATE_WORDING,
+    "change_wording": {"reported": _REPORTED_CHANGE_WORDING},
+}
 _REVISION_CLAUSE_BREAK = re.compile(r"[，,。！？!?；;]")
 _NEGATED_DATE_CHANGE = re.compile(
     r"尚未|没有|并未|不能|不会|不(?:再|会|是|用|应|要)?$|"
@@ -148,10 +161,12 @@ class SourceLineProfile:
 {{"queries":[{{"select":"lines","where":{{"grep":"ship|deliver|pickup"}},"prefer_labels":{{"topics":["delivery"]}},"prefer":["can ship|ready to deliver"]}}]}}
 Use up to three queries for independent evidence needs. Separate earlier and later decisions
 when the question needs both. where keys: topics, entities, obj, place, event, duration, units,
-who, time [start,end], grep, grep_all, near, date_wording. Each supplied constraint is required.
+who, time [start,end], grep, grep_all, near, date_wording, change_wording. Each supplied
+constraint is required.
 Use date_wording "calendar" for a spoken date, or "change" for date-change wording on the same
-turn. Use a subject expression in near to connect surrounding turns. This matches wording,
-so check the original lines for approval. For relevant
+turn. For a reported change to a value or decision, use change_wording "reported" with a
+subject constraint. Read the evidence to verify what was applied and by whom. Use a subject
+expression in near to connect surrounding turns. For relevant
 listed labels, use prefer_labels to boost original lines supported by the index without excluding
 untagged lines. Its axes are topics, entities, obj, place, event, duration. Use one to four
 exact codes per axis. Use where labels
@@ -275,7 +290,7 @@ Question: {question}
         )
 
     def normalize_plan(self, value):
-        return _expand_date_wording(value)
+        return _expand_source_wording(value)
 
     def compile_quote_hints(self, question, vocab, store):
         """Check literal user quotations in the native source-line engine."""
@@ -457,8 +472,8 @@ def _pack_source_lines(index, rows, neighbors, max_bytes, nearby_matches, exchan
     return spans, used, tuple(selected)
 
 
-def _expand_date_wording(plan):
-    """Compile source-only calendar predicates to the ordinary symbolic plan."""
+def _expand_source_wording(plan):
+    """Compile source wording predicates to required native regex clauses."""
     if not isinstance(plan, dict):
         return plan
     field = "queries" if "queries" in plan else "stages"
@@ -468,29 +483,33 @@ def _expand_date_wording(plan):
     expanded = []
     for entry in entries:
         where = entry.get("where") if isinstance(entry, dict) else None
-        if not isinstance(where, dict) or "date_wording" not in where:
+        if not isinstance(where, dict) or not _SOURCE_WORDING.keys() & where.keys():
             expanded.append(entry)
             continue
-        wording = where["date_wording"]
-        if (
-            entry.get("select") != "lines"
-            or not isinstance(wording, str)
-            or wording not in _DATE_WORDING
-        ):
-            raise InvalidQueryError(
-                'date_wording requires a source-line query and "calendar" or "change"'
-            )
         texts = where.get("grep_all", [])
         if not isinstance(texts, list):
             raise InvalidQueryError("plan where grep_all must be a list of strings")
-        filters = {name: value for name, value in where.items() if name != "date_wording"}
-        filters["grep_all"] = [*texts, _DATE_WORDING[wording]]
+        filters = dict(where)
+        patterns = list(texts)
+        for name, modes in _SOURCE_WORDING.items():
+            if name not in filters:
+                continue
+            wording = filters.pop(name)
+            if (
+                entry.get("select") != "lines"
+                or not isinstance(wording, str)
+                or wording not in modes
+            ):
+                choices = " or ".join(f'"{mode}"' for mode in modes)
+                raise InvalidQueryError(f"{name} requires a source-line query and {choices}")
+            patterns.append(modes[wording])
+        filters["grep_all"] = patterns
         expanded.append({**entry, "where": filters})
     return {**plan, field: expanded}
 
 
 def _validate_source_plan(plan):
-    plan = QueryPlan.from_dict(_expand_date_wording(plan)).to_dict()
+    plan = QueryPlan.from_dict(_expand_source_wording(plan)).to_dict()
     for entry in plan.get("queries", plan.get("stages", [])):
         if entry.get("select") != "lines" or not any(entry.get("where", {}).values()):
             raise ToolError(

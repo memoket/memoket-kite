@@ -479,6 +479,7 @@ def parse_plan(obj: dict, vocab: Vocab, speakers: set | None = None) -> list[Sub
         w = q.get("where") or {}
         if not isinstance(w, dict):
             w = {}
+        source_lines = q.get("select") == "lines"
         who_extra = []
         topics = []
         for t in (w.get("topics") or [])[:4]:
@@ -540,7 +541,9 @@ def parse_plan(obj: dict, vocab: Vocab, speakers: set | None = None) -> list[Sub
                     ),
                     units=units,
                     grep=str(w.get("grep") or ""),
-                    grep_all=tuple(str(g) for g in (w.get("grep_all") or [])[:3]),
+                    grep_all=tuple(
+                        str(g) for g in (w.get("grep_all") or [])[: None if source_lines else 3]
+                    ),
                     entity_kind=str(w.get("entity_kind") or ""),
                     conf_min=w.get("conf_min", "low"),
                     duration=tuple(value.upper() for value in w.get("duration", ())),

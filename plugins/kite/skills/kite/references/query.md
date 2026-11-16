@@ -19,6 +19,11 @@ for explicit date-change wording in the same turn. Combine with a subject
 expression or `near` for nearby subject turns. KITE compiles the field to a
 native `grep_all` expression and keeps the other filters. Read the original
 words to verify approval and the applicable subject.
+Use `where.change_wording: "reported"` with a subject constraint when the
+task asks what was already changed or applied. The shared compiler expands
+this to a required original-turn regex in `grep_all`, alongside any existing
+conditions. This matches common English and Chinese reporting cues. Verify
+the speaker, status, and value from the original quote.
 An empty date branch can show a scoped alternative where clause from a
 local probe. Use that clause in one focused follow-up when appropriate.
 Keep the recording scope, original question, and the other task requirements.

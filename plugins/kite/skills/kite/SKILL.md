@@ -17,6 +17,13 @@ details. Use `where.grep` for plausible spoken alternatives and `prefer` to
 rank cues such as units or wording for approval and correction. KITE resolves
 the project and validates and runs the plan locally.
 
+For a previous and latest confirmed amount or limit, use separate queries.
+Set `where.change_wording: "reported"` on the current branch when the task
+calls for a value already put into effect. For example,
+`{"grep":"inspection threshold","change_wording":"reported"}`. Keep the
+subject constraint and verify the value and status in the quote. If this
+branch misses, check the same scope for other wording that establishes it.
+
 For separate earlier and revised dates, include `"retry_date_subject":true`
 alongside `"question"` and `"plan"`. If a date branch has no matches, KITE
 can retry it with a checked subject cue in the same recording scope. Use
