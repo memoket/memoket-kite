@@ -293,6 +293,12 @@ direct annotation filtering and other fallback paths separately from execution
 by `memoket_kite.core.algebra.execute_plan`.
 Verify the path in each measured trial before aggregating results. Record the
 workspace version and the caller-supplied project, date, or annotation hints.
+For ordinary chat tasks with an installed plugin, report how many trials
+received verified symbolic evidence, how many also searched the original
+files, and how many completed through other paths. An aggregate across those
+trials measures the installed plugin experience, including the agent's
+choice of retrieval path. Report first-pack evidence coverage alongside
+task acceptance so later file reads cannot hide missing initial evidence.
 For installed plugin comparisons, preserve the actual injected evidence and
 the corresponding execution trace. For a fresh-compilation versus saved-plan
 comparison, report setup and per-task costs separately.

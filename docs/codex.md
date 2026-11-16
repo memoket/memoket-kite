@@ -207,8 +207,12 @@ revisions occupy separate levels. Select a passage to see its original quotes,
 or follow a co-occurrence connection to see the passage shared by two entities
 or facet values. **Sources** includes transcripts with no annotations. When the
 workspace has an original-text index, enter a question in the search field
-to see the compiled terms and cited passages, or start the viewer with
-`kite-tool view --term PHRASE` for a phrase search. Open **Workflows** to see
+to see the compiled terms and cited passages from `context-search`, or start
+the viewer with `kite-tool view --term PHRASE` for a phrase search.
+To see the native symbolic execution trace, open a saved `symbolic-search`
+run with `kite-tool view --run RUN_ID`. Both views can display the Topic,
+Entity, and Facet annotations linked to a citation. The trace identifies
+which indexes the search actually used. Open **Workflows** to see
 committed imports, updates, merges, and deletions alongside recent pipeline
 stages. An existing workspace starts recording new changes on upgrade.
 Add `--save` when indexing a transcript directory or a batch JSON file to see
