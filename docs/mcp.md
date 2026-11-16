@@ -25,9 +25,11 @@ transaction between requests so an import can commit while it is idle.
   original mention of that entity. The reply names that basis and gives the
   number of scoped recordings. In a workspace with project assignments, use
   the recorded project name.
-  Results with at least 3,600 original text bytes can include up to two cited
-  direct matches per query branch so the reader can locate evidence in the
-  original turns. When `neighbors`
+  Multi-branch results can include up to two direct references per branch.
+  The guide shows original wording matched by required text conditions for
+  the leading reference when available. Follow-ups can show that earlier
+  wording alongside still-relevant references.
+  When `neighbors`
   is omitted, the tool starts with one nearby turn and trims incidental
   adjacent turns above 8,192 original text bytes where possible. Native
   matches, supporting turns, and complete recording scopes keep their context.

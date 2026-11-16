@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 class _EvidenceReceipt:
     turns: tuple[str, ...] = ()
     leads: tuple[str, ...] = ()
+    wording: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 def _render_preparation(prepared: dict) -> str:
@@ -117,18 +118,25 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             )
         if delivered:
             anchors = {step["name"] for step in result["trace"] if "project_binding" in step}
-            leads = (
-                line_id
-                for branch in result["branch_coverage"]
-                if branch.get("stage") not in anchors
-                for line_id in branch.get("lead_source_line_ids", ())
-                if line_id in delivered
-            )
+            leads = list(prior.leads)
+            wording = dict(prior.wording)
+            for branch in result["branch_coverage"]:
+                if branch.get("stage") in anchors:
+                    continue
+                for line_id in branch.get("lead_source_line_ids", ()):
+                    if line_id in delivered:
+                        leads.append(line_id)
+                        if phrases := branch.get("lead_matched_wording", {}).get(line_id):
+                            wording.setdefault(line_id, tuple(phrases))
             receipt = token_hex(12)
             with receipt_lock:
                 turns = tuple(dict.fromkeys((*prior.turns, *delivered)))[-4096:]
-                lead_ids = tuple(dict.fromkeys((*prior.leads, *leads)))[-32:]
-                receipts[receipt] = _EvidenceReceipt(turns, lead_ids)
+                lead_ids = tuple(dict.fromkeys(leads))[-32:]
+                receipts[receipt] = _EvidenceReceipt(
+                    turns,
+                    lead_ids,
+                    tuple((line, wording[line]) for line in lead_ids if line in wording),
+                )
                 if len(receipts) > 48:
                     receipts.popitem(last=False)
             result["delivery_receipt"] = receipt
@@ -154,7 +162,8 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             "the requested decisions, continue the task using those citations. If a decision or "
             "its status remains unclear, search for that specific gap and pass the latest Evidence "
             "receipt as after_receipt. Previously quoted direct matches can still support the task. "
-            "Cite the turn that states the requested decision and its subject."
+            "Cite the turn that states the requested decision and its subject. "
+            "For value follow-ups keep the subject in required where or near conditions."
         ),
     )
 
@@ -348,6 +357,10 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                         result["supplied_citation_error"] = str(exc)
         except ToolError as exc:
             raise MCPToolError(f"{exc.code}: {exc}") from exc
+        if matches := result.get("previously_delivered_matches"):
+            result["previously_delivered_wording"] = {
+                line: phrases for line, phrases in prior.wording if line in matches
+            }
         if (
             after_receipt is not None
             or include_receipt

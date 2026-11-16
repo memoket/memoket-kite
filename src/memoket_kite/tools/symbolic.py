@@ -1578,16 +1578,41 @@ def _schedule_change_evidence(index, changed, question, prior_rows, branches):
     )
 
 
+def _matched_wording(where, text):
+    wording = []
+    for pattern in (where.get("grep"), *where.get("grep_all", ())):
+        if not pattern:
+            continue
+        for match in re.finditer(pattern, text, re.I):
+            phrase = " ".join(match.group().split())
+            if (
+                not phrase
+                or len(phrase) > 36
+                or phrase.casefold() in {p.casefold() for p in wording}
+            ):
+                continue
+            wording.append(phrase)
+            if len(wording) == 2:
+                return wording
+    return wording
+
+
 def _branch_coverage(plan, traces, spans, *, delivery=False, guide_order=(), delivered=frozenset()):
-    cited = {line["source_line_id"] for span in spans for line in span["evidence"]}
+    cited = {line["source_line_id"]: line["text"] for span in spans for line in span["evidence"]}
     coverage = []
     staged = "stages" in plan
     for number, entry in enumerate(plan["stages" if staged else "queries"]):
         evaluated = [trace.line_matches[number] for trace in traces if number in trace.line_matches]
         matches = evaluated[0] if len(evaluated) == 1 else set().union(*evaluated)
-        quoted = matches & cited
+        quoted = matches & cited.keys()
         earlier = (matches & delivered) - quoted
         branch = {"stage": entry.get("name") or f"s{number + 1}"} if staged else {"query": number}
+        leads = [ref for ref in guide_order if ref in quoted][:2]
+        wording = {
+            ref: phrases
+            for ref in leads
+            if (phrases := _matched_wording(entry["where"], cited[ref]))
+        }
         coverage.append(
             {
                 **branch,
@@ -1595,11 +1620,8 @@ def _branch_coverage(plan, traces, spans, *, delivery=False, guide_order=(), del
                 "quoted_lines": len(quoted),
                 **({"earlier_quoted_lines": len(earlier)} if earlier else {}),
                 **({"_quoted_ids": quoted} if delivery else {}),
-                **(
-                    {"lead_source_line_ids": [ref for ref in guide_order if ref in quoted][:2]}
-                    if guide_order and quoted
-                    else {}
-                ),
+                **({"lead_source_line_ids": leads} if leads else {}),
+                **({"lead_matched_wording": wording} if wording else {}),
                 **({"skipped": "unresolved_ref"} if staged and not evaluated else {}),
             }
         )
@@ -2270,6 +2292,16 @@ def render_symbolic_context(
             )
             if references:
                 lines.append(f"Earlier direct matches still in this search: {references}.")
+                earlier_wording = pack.get("previously_delivered_wording", {})
+                cited_wording = [
+                    f"[{ref}] matched {_display_matched_wording(earlier_wording[line])}"
+                    for line, ref in matches.items()
+                    if line not in quoted and line in earlier_wording
+                ]
+                if cited_wording:
+                    lines.append(
+                        "Required wording in earlier searches · " + " · ".join(cited_wording)
+                    )
     if reused := pack.get("reused_plan"):
         lines.append(
             f"Saved plan {reused['run_id']} (compiled at v{reused['compiled_at_version']})"
@@ -2410,12 +2442,14 @@ def render_symbolic_context(
             f"Omitted {omitted} incidental adjacent {'turn' if omitted == 1 else 'turns'}. "
             "Set neighbors explicitly or read a citation to inspect more context."
         )
-    if pack["quote_bytes"] >= RECEIPT_QUOTE_BYTES and any(
-        branch.get("lead_source_line_ids") for branch in pack.get("branch_coverage", ())
-    ):
+    branch_refs = []
+    if any(branch.get("lead_source_line_ids") for branch in pack.get("branch_coverage", ())):
         refs = _display_references(visible)
+        if window:
+            for span in evidence_spans(window):
+                for line in span["evidence"]:
+                    refs.pop(line["source_line_id"], None)
         roots = {step["name"] for step in pack["trace"] if "project_binding" in step}
-        branch_refs = []
         for branch in pack["branch_coverage"]:
             if branch.get("stage") in roots:
                 continue
@@ -2424,7 +2458,12 @@ def render_symbolic_context(
             ]
             if citations:
                 title = branch["stage"] if "stage" in branch else f"Query {branch['query'] + 1}"
-                branch_refs.append(f"- {title} · {', '.join(citations)}")
+                lead = next(ref for ref in branch["lead_source_line_ids"] if ref in refs)
+                wording = branch.get("lead_matched_wording", {}).get(lead)
+                detail = (
+                    f" · First quote matched {_display_matched_wording(wording)}" if wording else ""
+                )
+                branch_refs.append(f"- {title} · {', '.join(citations)}{detail}")
         if len(branch_refs) > 1:
             lines.extend(("Direct matches by query branch", *branch_refs, ""))
     evidence_guide = (_stage_evidence_guide(pack) or _query_evidence_guide(pack)) if guide else []
@@ -2433,7 +2472,9 @@ def render_symbolic_context(
     if not visible["spans"] and prior_turns:
         lines.append("No new original turns in the selected results.")
     else:
-        lines.append(render_context(visible, compact_spacing=bool(evidence_guide)))
+        lines.append(
+            render_context(visible, compact_spacing=bool(evidence_guide or len(branch_refs) > 1))
+        )
     if prior := pack.get("previous_revision_evidence"):
         lines.extend(_render_prior_reused_turns(visible, prior))
     if receipt := pack.get("delivery_receipt"):
@@ -2441,6 +2482,10 @@ def render_symbolic_context(
             f"Evidence receipt {receipt}. Pass it as after_receipt for a focused follow-up."
         )
     return "\n".join(lines)
+
+
+def _display_matched_wording(phrases):
+    return ", ".join(json.dumps(phrase, ensure_ascii=False) for phrase in phrases)
 
 
 def _render_prior_reused_turns(pack, prior):

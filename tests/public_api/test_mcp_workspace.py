@@ -25,6 +25,10 @@ def anyio_backend():
 
 async def test_workspace_tool_delivers_cli_evidence_and_reads_the_latest_snapshot(tmp_path, capsys):
     workspace = tmp_path / "workspace"
+
+    def quotes(text):
+        return [line for line in text.splitlines() if line.startswith("[")]
+
     file = tmp_path / "input.json"
 
     def call(command, value, *options):
@@ -151,7 +155,8 @@ async def test_workspace_tool_delivers_cli_evidence_and_reads_the_latest_snapsho
         assert (
             main(["--workspace", str(workspace), "symbolic", "--reuse", "threshold", "--text"]) == 0
         )
-        assert text.strip() == capsys.readouterr().out.strip()
+        assert quotes(text) == quotes(capsys.readouterr().out)
+        assert 'First quote matched "threshold", "originally"' in text
         stale = await client.call_tool(recall, {**args, "workspace_version": 1})
         assert stale.is_error and "stale_snapshot:" in stale.content[0].text
         combined = await client.call_tool(
@@ -162,7 +167,7 @@ async def test_workspace_tool_delivers_cli_evidence_and_reads_the_latest_snapsho
         assert text.count("[prior#decision]") == 1
         assert "Additional symbolic matches\nRecording date: 2026-09-03" in text
         assert "[revised#decision]" in text
-        assert second.content[0].text.strip() == call(
+        cli_text = call(
             "symbolic",
             {"question": args["question"], "plan": plan, "retry_date_subject": True},
             "--text",
@@ -175,6 +180,7 @@ async def test_workspace_tool_delivers_cli_evidence_and_reads_the_latest_snapsho
             "--max-bytes",
             "3600",
         )
+        assert quotes(second.content[0].text) == quotes(cli_text)
         inline = await client.call_tool(
             recall, {**args, "plan": {**plan, "retry_date_subject": True}}
         )
@@ -608,6 +614,7 @@ async def test_followup_keeps_a_direct_citation_handle_and_omits_incidental_ones
         assert not more.is_error
         text = more.content[0].text
         assert "Earlier direct matches still in this search: [design#approved]." in text
+        assert 'Required wording in earlier searches · [design#approved] matched "rollout"' in text
         assert "[design#fixture] The fixture weighs 30 grams." in text
         assert "The rollout limit is 30." not in text
         assert "[design#discussion]" not in text
