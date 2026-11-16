@@ -84,6 +84,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
     from memoket_kite.tools.retrieve import read_evidence
     from memoket_kite.tools.symbolic import (
         RECEIPT_QUOTE_BYTES,
+        indexed_followup_scopes,
         prepare_symbolic_question,
         render_symbolic_context,
         reuse_symbolic_context,
@@ -163,7 +164,8 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             "its status remains unclear, search for that specific gap and pass the latest Evidence "
             "receipt as after_receipt. Previously quoted direct matches can still support the task. "
             "Cite the turn that states the requested decision and its subject. "
-            "For value follow-ups keep the subject in required where or near conditions."
+            "For a value follow-up, copy the matching 'Follow-up near' object into where.near "
+            "and use where.grep for the value."
         ),
     )
 
@@ -346,6 +348,13 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                     delivered_lead_ids=prior.leads,
                     allow_mentioned_project=True,
                 )
+                if matches := result.get("previously_delivered_matches"):
+                    result["previously_delivered_wording"] = {
+                        line: phrases for line, phrases in prior.wording if line in matches
+                    }
+                result["indexed_followup_scopes"] = indexed_followup_scopes(
+                    workspace.index(), result, result.get("previously_delivered_wording", {})
+                )
                 if known_citations is not None:
                     try:
                         result["supplied_evidence"] = read_evidence(
@@ -357,10 +366,6 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                         result["supplied_citation_error"] = str(exc)
         except ToolError as exc:
             raise MCPToolError(f"{exc.code}: {exc}") from exc
-        if matches := result.get("previously_delivered_matches"):
-            result["previously_delivered_wording"] = {
-                line: phrases for line, phrases in prior.wording if line in matches
-            }
         if (
             after_receipt is not None
             or include_receipt
@@ -443,6 +448,9 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                     include_previous=include_previous,
                     large_reply_guide=True,
                     **options,
+                )
+                result["indexed_followup_scopes"] = indexed_followup_scopes(
+                    workspace.index(), result, {}
                 )
         except ToolError as exc:
             raise MCPToolError(f"{exc.code}: {exc}") from exc

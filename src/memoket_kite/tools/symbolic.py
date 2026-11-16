@@ -2469,6 +2469,12 @@ def render_symbolic_context(
     evidence_guide = (_stage_evidence_guide(pack) or _query_evidence_guide(pack)) if guide else []
     if evidence_guide:
         lines.extend((*evidence_guide, ""))
+    if scopes := pack.get("indexed_followup_scopes"):
+        refs = {**pack.get("previously_delivered_matches", {}), **_display_references(visible)}
+        for line, near in scopes.items():
+            if line in refs:
+                condition = json.dumps(near, ensure_ascii=False, separators=(",", ":"))
+                lines.append(f"Follow-up near for [{refs[line]}] · {condition}")
     if not visible["spans"] and prior_turns:
         lines.append("No new original turns in the selected results.")
     else:
@@ -2486,6 +2492,69 @@ def render_symbolic_context(
 
 def _display_matched_wording(phrases):
     return ", ".join(json.dumps(phrase, ensure_ascii=False) for phrase in phrases)
+
+
+def indexed_followup_scopes(index, pack, earlier_wording):
+    """Suggest a narrow native near filter from labels on selected original turns."""
+    anchors = {step["name"] for step in pack["trace"] if "project_binding" in step}
+    wording = dict(earlier_wording)
+    for branch in pack["branch_coverage"]:
+        if branch.get("stage") in anchors:
+            continue
+        if lead := next(iter(branch.get("lead_matched_wording", {}).items()), None):
+            wording.setdefault(*lead)
+    scopes = {}
+    for ref, phrases in wording.items():
+        segment = index.segments.get(ref)
+        if not segment:
+            continue
+        recording = index.revisions[index.store.lines[ref].unit]
+        if not recording["active"]:
+            continue
+        text = f"_{norm_code(segment['text'])}_"
+        terms = {term for phrase in phrases for term in norm_code(phrase).split("_") if term}
+        cjk_terms = {term for term in terms if re.fullmatch(r"[一-鿿]{2,}", term)}
+        candidates = {}
+        for span in recording.get("index_spans", ()):
+            if segment["segment_id"] not in span["segment_ids"]:
+                continue
+            axes = {
+                "obj": span.get("facets", {}).get("object", ()),
+                "topics": span["topics"],
+                "entities": span["entities"],
+                "place": span.get("facets", {}).get("place", ()),
+                "event": span.get("facets", {}).get("event", ()),
+            }
+            for axis, labels in axes.items():
+                for label in labels:
+                    if not re.search(_project_alias_pattern(label), text):
+                        continue
+                    overlap = terms.intersection(label.split("_"))
+                    if re.fullmatch(r"[一-鿿]{3,}", label):
+                        overlap.update(term for term in cjk_terms if term in label)
+                    elif axis != "entities" and "_" not in label:
+                        continue
+                    if not overlap:
+                        continue
+                    code = (
+                        index.vocab.resolve_topic(label)
+                        if axis == "topics"
+                        else index.vocab.resolve_entity(label)
+                        if axis == "entities"
+                        else label
+                    )
+                    if (axis, code) in index.store.line_annotation_postings:
+                        candidates.setdefault(label, (len(overlap), axis, code))
+        if not candidates:
+            continue
+        score = max(value[0] for value in candidates.values())
+        best = [(axis, code) for rank, axis, code in candidates.values() if rank == score]
+        if len(best) == 1:
+            axis, code = best[0]
+            scopes[ref] = {axis: [code], "turns": 2, "include_anchor": True}
+        if len(scopes) == 3:
+            break
+    return scopes
 
 
 def _render_prior_reused_turns(pack, prior):

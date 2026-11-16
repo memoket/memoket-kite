@@ -623,6 +623,77 @@ async def test_followup_keeps_a_direct_citation_handle_and_omits_incidental_ones
         assert "[design#approved]" not in outside.content[0].text
 
 
+@pytest.mark.parametrize(
+    ("term", "label", "quote"),
+    [
+        ("rollout", "rollout_cap", "The rollout cap is fixed."),
+        ("上线", "上线限额", "上线限额已确定。"),
+    ],
+)
+async def test_copying_indexed_followup_scope_filters_the_same_number_in_another_source(
+    tmp_path, capsys, term, label, quote
+):
+    workspace = tmp_path / "workspace"
+    sources = []
+    for name, turns in (
+        ("decision", [quote, "The approved value is 30."]),
+        ("prototype", ["The prototype weighs 30 grams."]),
+    ):
+        record = {
+            "source": {
+                "format": "conversation",
+                "payload": {
+                    "conversation_id": name,
+                    "source": "test",
+                    "metadata": {"source_reference": name},
+                    "segments": [
+                        {"segment_id": f"line-{n}", "text": text} for n, text in enumerate(turns, 1)
+                    ],
+                },
+            }
+        }
+        if name == "decision":
+            record["annotations"] = {
+                "facts": [],
+                "index_spans": [{"segment_ids": ["line-1"], "facets": {"object": [label]}}],
+            }
+        sources.append(record)
+    path = tmp_path / "input.json"
+    path.write_text(json.dumps({"sources": sources}, ensure_ascii=False), encoding="utf-8")
+    assert main(["--workspace", str(workspace), "index-sources", "--input", str(path)]) == 0
+    capsys.readouterr()
+    base = {"question": f"Find the approved {term} value.", "neighbors": 0}
+    async with Client(create_workspace_server(workspace), raise_exceptions=False) as client:
+        tool = "recall_conversation_evidence"
+        first = await client.call_tool(
+            tool,
+            {
+                **base,
+                "include_receipt": True,
+                "plan": {"queries": [{"select": "lines", "where": {"grep": term}}]},
+            },
+        )
+        assert not first.is_error, first.content
+        text = first.content[0].text
+        token = re.search(r"Evidence receipt ([a-f0-9]{24})\.", text)[1]
+        hint = next(line for line in text.splitlines() if line.startswith("Follow-up near for"))
+        near = json.loads(hint.split(" · ", 1)[1])
+        assert near == {"obj": [label], "turns": 2, "include_anchor": True}
+        followup = await client.call_tool(
+            tool,
+            {
+                **base,
+                "after_receipt": token,
+                "plan": {"queries": [{"select": "lines", "where": {"grep": "30", "near": near}}]},
+            },
+        )
+        assert not followup.is_error, followup.content
+        text = followup.content[0].text
+        assert "[decision#line-2] The approved value is 30." in text
+        assert "[decision#line-1]" in text
+        assert "[prototype#line-1]" not in text
+
+
 async def test_followup_preserves_original_stage_binding_when_head_already_delivered(
     tmp_path, capsys
 ):

@@ -29,6 +29,11 @@ transaction between requests so an import can commit while it is idle.
   The guide shows original wording matched by required text conditions for
   the leading reference when available. Follow-ups can show that earlier
   wording alongside still-relevant references.
+  When a leading quote has a matching source index label, the tool can
+  include a native `Follow-up near` filter. Copy that JSON into
+  `where.near` to keep the follow-up on that subject while searching for
+  its value in `where.grep`. Check that the cited quote belongs to the
+  requested subject before reusing it.
   When `neighbors`
   is omitted, the tool starts with one nearby turn and trims incidental
   adjacent turns above 8,192 original text bytes where possible. Native
