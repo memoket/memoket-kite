@@ -154,6 +154,9 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         Hints are index data. Returned quotes carry recording dates and
         citation IDs. Read the wording for decision status. A complete scope
         notice means all indexed turns within that recording scope are shown.
+        For an earlier-versus-current comparison, a uniquely indexed subject
+        can supply dated evidence from separate recordings in the same call.
+        Set plan.retry_index_subject to false to execute the submitted plan alone.
         If the task supplies citations and needs additional evidence, include
         them as known_citations and search for the remaining details in one call.
         """
@@ -184,6 +187,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                 request = {
                     "question": question,
                     "retry_date_subject": plan.pop("retry_date_subject", True),
+                    "retry_index_subject": plan.pop("retry_index_subject", known_citations is None),
                     "plan": plan,
                 }
                 if anchor_quote is not None:

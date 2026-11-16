@@ -23,6 +23,12 @@ The configured workspace applies to the read-only tools.
   in `where.grep` and a known Topic, Entity or Facet code in `where.near`
   with a distance of 1–4 turns. The tool finds the annotation in the same
   recording and returns the supporting original turn with the value.
+  For a plain-text plan comparing earlier and current decisions, the tool may
+  use a uniquely named index subject to find two explicitly confirmed turns
+  in separate recordings. Both turns and their subject evidence must fit in
+  the quote budget. The original submitted plan runs when the comparison is
+  unresolved. Set `plan.retry_index_subject` to false to use the submitted
+  plan alone.
 - `read_conversation_citations` accepts one to eight known citations and
   returns the original turns with optional surrounding context. A short
   `recording#segment` citation resolves against the active revision. Use a

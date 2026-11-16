@@ -24,6 +24,10 @@ calls for a value already put into effect. For example,
 subject constraint and verify the value and status in the quote. If this
 branch misses, check the same scope for other wording that establishes it.
 
+For an earlier-versus-current decision with a named subject, include
+`"retry_index_subject":true` alongside `question` and `plan` to try verified
+index proximity using the original turns.
+
 For separate earlier and revised dates, include `"retry_date_subject":true`
 alongside `"question"` and `"plan"`. If a date branch has no matches, KITE
 can retry it with a checked subject cue in the same recording scope. Use

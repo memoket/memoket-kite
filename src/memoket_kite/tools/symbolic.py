@@ -96,6 +96,24 @@ _NEGATED_DATE_CHANGE = re.compile(
     r"\b(?:not|never|\w+n['’]t)\b",
     re.I,
 )
+_COMPARISON_CURRENT = re.compile(
+    rf"{_LATER_PHASE.pattern}|现在|目前|现行|现已|生效|最新|\b(?:current(?:ly)?|latest|most recent(?:ly)?|in (?:force|effect))\b",
+    re.I,
+)
+_COMPARISON_PHASES = (
+    rf"{_EARLIER_PHASE.pattern}|初版|旧版|\bfirst (?:decision|approved|agreed)\b",
+    rf"{_COMPARISON_CURRENT.pattern}|从今天起|已改为|批准改为|\b(?:approved|agreed) a new\b",
+)
+_COMPARISON_APPROVAL = (
+    r"确认|批准|通过|敲定|已生效|已改为|"
+    r"\b(?:approv(?:ed|al)|agreed|confirmed|decided|in (?:force|effect))\b"
+)
+_NONFINAL_COMPARISON = re.compile(
+    r"尚未|未经|没有|并未|未通过|未批准|不批准|否决|待定|暂定|提议|考虑|如果|预计|拟于|将(?:生效|获批)|"
+    r"\b(?:not|never|unapproved|reject\w*|proposal|proposed|pending|tentative|"
+    r"would|expected to|will (?:take effect|be (?:approved|confirmed)))\b",
+    re.I,
+)
 SYMBOLIC_RECORDING_DATES = object_schema({}, {"start_date": DATE, "end_date": DATE})
 
 
@@ -739,6 +757,7 @@ def compile_submitted_source_plan(
     question = None
     anchor_quote = None
     retry_date_subject = False
+    retry_index_subject = False
     compiler = "supplied_plan"
     if "plan" in value:
         validate(
@@ -748,6 +767,7 @@ def compile_submitted_source_plan(
                     "snapshot": HASH,
                     "anchor_quote": {**TEXT, "maxLength": 128},
                     "retry_date_subject": {"type": "boolean"},
+                    "retry_index_subject": {"type": "boolean"},
                 },
             ),
             value,
@@ -764,6 +784,7 @@ def compile_submitted_source_plan(
         compiler = "host_generated_plan" if snapshot is not None else "host_inline_plan"
         anchor_quote = value.get("anchor_quote")
         retry_date_subject = value.get("retry_date_subject", False)
+        retry_index_subject = value.get("retry_index_subject", False)
         value = value["plan"]
     try:
         profile = _prepare_question(index, question, project, dates)
@@ -776,6 +797,7 @@ def compile_submitted_source_plan(
             "compiler": compiler,
             **({"question": question} if question is not None else {}),
             **({"retry_date_subject": True} if retry_date_subject else {}),
+            **({"retry_index_subject": True} if retry_index_subject else {}),
             **({"recording_dates": dates} if dates else {}),
             **(
                 {"selected_project": profile.selected_project}
@@ -884,6 +906,7 @@ def reuse_symbolic_context(
             "question": saved["question"],
             "plan": saved["plan"],
             **({"retry_date_subject": True} if saved.get("retry_date_subject") else {}),
+            **({"retry_index_subject": True} if saved.get("retry_index_subject") else {}),
         }
         if "question" in saved
         else saved["plan"]
@@ -1060,6 +1083,144 @@ def _add_query_label_preferences(plan, index, active_units, question):
                     labels[axis] = [name for _, name in sorted(by_axis[axis])[:2]]
         queries.append({**branch, "prefer_labels": labels} if labels else branch)
     return {**plan, field: queries}
+
+
+def _comparison_subject(index, units, question):
+    """Resolve one exact subject to source-backed labels within the requested scope."""
+    text = f"_{norm_code(question)}_"
+    store, vocab = index.store, index.vocab
+    found = []
+    for (axis, label), spans in store.line_annotation_postings.items():
+        if axis == "duration":
+            continue
+        entry = (
+            vocab.topics.get(label)
+            if axis == "topics"
+            else vocab.entities.get(label)
+            if axis == "entities"
+            else None
+        )
+        if axis == "topics" and vocab.resolve_topic(label) != label:
+            continue
+        surfaces = [label, *(entry.aliases if entry else ())]
+        matches = [
+            surface
+            for surface in surfaces
+            if ("_" in surface or re.fullmatch(r"[一-鿿]{3,}", surface))
+            and re.search(_project_alias_pattern(surface), text)
+        ]
+        if not matches:
+            continue
+        anchors = frozenset(
+            line
+            for span in spans
+            for line in store.line_annotation_sources[span]
+            if store.lines[line].unit in units
+        )
+        if anchors:
+            found.append((max(map(len, matches)), axis, label, surfaces, anchors))
+    if not found:
+        return None
+    length = max(entry[0] for entry in found)
+    best = [entry for entry in found if entry[0] == length]
+    if len({(entry[2], entry[4]) for entry in best}) != 1:
+        return None
+    _, axis, label, surfaces, anchors = min(best, key=lambda entry: _LABEL_AXES.index(entry[1]))
+    recordings = {store.lines[line].unit for line in anchors}
+    projects = _unit_projects(index.revisions, recordings)
+    if not 2 <= len(recordings) <= 6 or (
+        projects and (len(projects) != len(recordings) or len(set(projects.values())) != 1)
+    ):
+        return None
+    return axis, label, surfaces, recordings
+
+
+def _indexed_comparison(index, plan, question, active_units, limit, max_bytes):
+    """Try a bounded native comparison when the planner only supplied text clues."""
+    queries = plan.get("queries", ())
+    if (
+        not question
+        or limit < 2
+        or not 1 <= len(queries) <= 2
+        or not _EARLIER_PHASE.search(question)
+        or not _COMPARISON_CURRENT.search(question)
+        or any(entry["where"].keys() - {"grep", "near"} for entry in queries)
+        or any(
+            entry["where"].get("near", {}).keys() - {"grep", "turns", "include_anchor"}
+            for entry in queries
+        )
+    ):
+        return None
+    subject = _comparison_subject(index, active_units, question)
+    if subject is None:
+        return None
+    axis, label, surfaces, recordings = subject
+    # A supplied proximity constraint is eligible only when it identifies
+    # the same subject. Independent caller-provided filters stay in force.
+    if any(
+        not any(re.search(near["grep"], surface.replace("_", " "), re.I) for surface in surfaces)
+        for entry in queries
+        if (near := entry["where"].get("near"))
+    ):
+        return None
+    plan = {
+        "queries": [
+            {
+                "select": "lines",
+                "where": {
+                    "grep_all": [
+                        phase,
+                        _COMPARISON_APPROVAL,
+                        rf"(?s)^(?!.*(?:{_NONFINAL_COMPARISON.pattern}))",
+                    ],
+                    "near": {axis: [label], "turns": 1, "include_anchor": True},
+                },
+            }
+            for phase in _COMPARISON_PHASES
+        ]
+    }
+    rows, trace = execute_plan(
+        index.store,
+        index.vocab,
+        plan,
+        budget=2,
+        pack_v2=True,
+        allowed_line_units=recordings,
+        line_branch_limit=2,
+    )
+    first, last = (trace.line_matches.get(q, set()) for q in range(2))
+    if len(first) != 1 or len(last) != 1:
+        return None
+    first_id, last_id = next(iter(first)), next(iter(last))
+    before, after = (index.store.lines[ref] for ref in (first_id, last_id))
+    if before.unit == after.unit or (
+        before.unit_date and after.unit_date and before.unit_date > after.unit_date
+    ):
+        return None
+    shared = set(_tokens(before.text)).intersection(_tokens(after.text))
+    if (
+        len(shared - _RETRIEVAL_FILLERS - {"approv", "confir", "decide", "agreed", "批准", "确认"})
+        < 2
+    ):
+        return None
+    _, _, quoted = _pack_source_lines(
+        index,
+        rows,
+        0,
+        max_bytes,
+        {},
+        required_support=trace.required_line_support,
+    )
+    if not {first_id, last_id} <= set(quoted):
+        return None
+    detail = {
+        "stage": "indexed_subject_comparison",
+        "atom": axis,
+        "label": label,
+        "recordings": len(recordings),
+        "source_line_ids": [first_id, last_id],
+    }
+    return plan, rows, trace, detail
 
 
 def _prefer_decision_wording(plan, question):
@@ -1818,6 +1979,15 @@ def render_symbolic_context(pack, *, guide=False, show_complete_scope=True):
     if any(step.get("ambiguous") for step in pack["trace"] if step["stage"] == "schedule_change"):
         lines.append("Multiple date-change turns need review in the original recordings.")
     for step in pack["trace"]:
+        if step["stage"] == "indexed_subject_comparison":
+            refs = _display_references(visible)
+            prior, current = step["source_line_ids"]
+            if prior in refs and current in refs:
+                label = step["label"].replace("_", " ")
+                lines.append(
+                    f"Indexed subject {label}: compare earlier {refs[prior]} "
+                    f"and later {refs[current]} in the original recordings."
+                )
         if step["stage"] == "revision_exchange":
             if window:
                 visible = _with_revision_dialogue(visible, step)
@@ -2051,6 +2221,11 @@ def execute_source_plan(
         and question
         and _DATE_DETAIL_QUESTION.search(question)
     )
+    indexed = (
+        _indexed_comparison(index, plan, question, active_units, limit, max_bytes)
+        if compiled.get("retry_index_subject") and changed_recordings is None and not look_for_dates
+        else None
+    )
     trace_steps = []
     source_change = {}
 
@@ -2101,7 +2276,11 @@ def execute_source_plan(
             support.setdefault(line, set()).update(matches)
     else:
         branch_limit = _PRIOR_CANDIDATES_PER_BRANCH if look_for_dates else 0
-        rows, trace = run(active_units, branch_limit=branch_limit)
+        if indexed:
+            plan, rows, trace, detail = indexed
+            trace_steps.extend([detail, *trace.stages])
+        else:
+            rows, trace = run(active_units, branch_limit=branch_limit)
         hints = (
             list(_date_subject_hints(index, plan, trace, question, active_units))
             if question and changed_recordings is None
@@ -2124,7 +2303,7 @@ def execute_source_plan(
         traces = (trace,)
         support = trace.nearby_line_matches
         selected_branches = trace.selected_line_branches
-    reserved = set()
+    reserved = set(indexed[3]["source_line_ids"]) if indexed else set()
     comparison = None
     exchange, exchange_step = [], None
     if compare_schedule:

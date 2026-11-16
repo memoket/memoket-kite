@@ -106,6 +106,12 @@ requires both indexes on the same annotated span. If you also include
 true, the cited decision turn can itself meet the nearby constraints.
 Inspect `expand` steps with `via: "near"` for those index lookups and cite
 both original turns when the decision relies on a separate annotated turn.
+For a text-only plan comparing an earlier and current decision about one
+named subject, pass `retry_index_subject: true` with the submitted question
+and plan. If a unique index subject links two explicitly confirmed turns in
+separate recordings, the execution trace shows `indexed_subject_comparison`
+and the plan it used to retrieve both originals. Otherwise the original
+plan executes.
 Use `prefer_labels` for optional Topic, Entity and Facet ranking. Its values
 are exact label codes from the compiler vocabulary, grouped by axis. The
 trace reports which candidate lines were supported on each axis. A matched

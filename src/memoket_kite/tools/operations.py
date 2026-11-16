@@ -210,6 +210,7 @@ SCHEMAS = {
         {
             "question": TEXT,
             "retry_date_subject": {"type": "boolean"},
+            "retry_index_subject": {"type": "boolean"},
             "selected_project": TEXT,
             "project_alias_scope": object_schema(
                 {

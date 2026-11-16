@@ -448,6 +448,121 @@ async def test_symbolic_recall_cites_a_decision_and_its_nearby_indexed_subject(t
         assert [span["evidence"][0]["text"] for span in retained["spans"]] == [subject, decision]
 
 
+async def test_recall_automatically_uses_one_exact_index_for_a_confirmed_comparison(
+    tmp_path, capsys
+):
+    workspace = tmp_path / "workspace"
+    payload = tmp_path / "input.json"
+
+    def cli(*args, value=None):
+        if value is not None:
+            payload.write_text(json.dumps(value), encoding="utf-8")
+            args = (*args, "--input", str(payload))
+        assert main(["--workspace", str(workspace), *args]) == 0
+        return json.loads(capsys.readouterr().out)
+
+    def note(name, project, date, subject, decision):
+        turns = [
+            {"segment_id": "subject", "text": subject},
+            {"segment_id": "decision", "text": decision},
+            {
+                "segment_id": "rejected",
+                "text": "The current proposal would set the approved cooldown to 3 minutes.",
+            },
+        ]
+        return {
+            "source": {
+                "format": "conversation",
+                "payload": {
+                    "conversation_id": name,
+                    "source": "text",
+                    "source_date": date,
+                    "metadata": {"source_reference": name, "project": project},
+                    "segments": turns,
+                },
+            },
+            "annotations": {
+                "facts": [],
+                "index_spans": [{"segment_ids": ["subject"], "entities": ["Inlet regulator"]}],
+            },
+        }
+
+    earlier = note(
+        "initial",
+        "Foundry",
+        "2026-04-05",
+        "This is the part between the reservoir and the relief leg on the press.",
+        "The original approved cooldown for that fixture is 25 minutes.",
+    )
+    current = note(
+        "review",
+        "Foundry",
+        "2026-04-09",
+        "The control valve coming from the reservoir into the press is up next.",
+        "The revised approved cooldown for that fixture is 12 minutes.",
+    )
+    cli("index-sources", value={"sources": [earlier, current]})
+    request = {
+        "question": "Use the original and current approved cooldown for the inlet regulator.",
+        "plan": {"queries": [{"select": "lines", "where": {"grep": "inlet regulator"}}]},
+    }
+    receipt = cli(
+        "symbolic",
+        "--save",
+        "indexed-comparison",
+        "--limit",
+        "2",
+        value={**request, "retry_index_subject": True},
+    )
+    assert receipt["compiled_plan"] == request["plan"]
+    assert receipt["trace"][0]["stage"] == "indexed_subject_comparison"
+    assert receipt["trace"][0]["label"] == "inlet_regulator"
+    assert [step["hits"] for step in receipt["trace"] if step.get("via") == "near"] == [1, 1]
+    refs = {
+        f"[{source['source']['payload']['conversation_id']}#{segment}]"
+        for source in (earlier, current)
+        for segment in ("subject", "decision")
+    }
+    saved = cli("symbolic", "--reuse", "indexed-comparison")
+    assert saved["plan"] == receipt["plan"]
+
+    async with Client(create_workspace_server(workspace), raise_exceptions=False) as client:
+        tool = "recall_conversation_evidence"
+
+        async def call(**overrides):
+            answer = await client.call_tool(tool, {**request, "neighbors": 0, **overrides})
+            assert not answer.is_error
+            return answer.content[0].text
+
+        text = await call()
+        assert "Indexed subject inlet regulator" in text
+        assert all(ref in text for ref in refs)
+        assert "#rejected]" not in text
+        assert "Indexed subject" not in await call(max_bytes=128)
+        assert "Indexed subject" not in await call(start_date="2026-04-07")
+        assert "Indexed subject" not in await call(
+            plan={**request["plan"], "retry_index_subject": False}
+        )
+        assert "Indexed subject" not in await call(
+            plan={
+                "queries": [
+                    {"select": "lines", "where": {"grep": "inlet regulator", "who": ["sam"]}}
+                ]
+            }
+        )
+        other = note(
+            "other",
+            "Finishing",
+            "2026-04-10",
+            "This is the circulation valve in the second machine.",
+            "The revised approved cooldown for that fixture is 6 minutes.",
+        )
+        cli("index-sources", value={"sources": [other]})
+        assert "Indexed subject" not in await call()
+        text = await call(project="Foundry")
+        assert all(ref in text for ref in refs) and "[other#decision]" not in text
+
+
 async def test_workspace_preparation_binds_index_hints_to_the_submitted_plan(tmp_path, capsys):
     workspace = tmp_path / "workspace"
     script = tmp_path / "input.json"
