@@ -11,6 +11,7 @@ import runpy
 import shutil
 import subprocess
 import sys
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
 from itertools import permutations
@@ -455,6 +456,7 @@ def _verified_symbolic_summary(trials, arms):
         rows = [row for row in retained if row["arm"] == arm]
         delivery[arm] = {
             "verified_trials": len(rows),
+            "verification": dict(Counter(row["symbolic_delivery"]["verification"] for row in rows)),
             "covered_claims": sum(row["symbolic_delivery"]["covered_claims"] for row in rows),
             "total_claims": sum(row["score"]["total_claims"] for row in rows),
             "retrieval_calls": sum(

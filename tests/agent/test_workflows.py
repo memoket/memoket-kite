@@ -7811,6 +7811,14 @@ def test_symbolic_delivery_fits_escaped_quotes_and_reports_missing_branches(work
     assert "Query 3 matched 1 original turn without a quote." in rendered
     assert "Quote delivery omitted 1 original turn " in rendered
     assert "Appendix" not in rendered
+    with_receipt = json.loads(
+        call("symbolic", "--delivery-bytes", "500", "--delivery-receipt", payload=plan)
+    )
+    assert with_receipt["evidence"] == rendered
+    assert with_receipt["receipt"] == {
+        key: value for key, value in call("symbolic", payload=plan).items() if key != "ok"
+    }
+    call("symbolic", "--delivery-receipt", payload=plan, error="invalid_input")
     assert (
         call(
             "symbolic",

@@ -92,8 +92,13 @@ def test_saved_symbolic_submit_searches_without_provider_credentials(tmp_path, m
     launcher.write_text(
         "#!/bin/sh\n"
         'test "$1:$2:$3:$4" = "symbolic:--reuse:release-schedule:--delivery-bytes" || exit 1\n'
-        'test "$#" = 5 || exit 1\n'
-        "printf '%s\\n' '\"Saved plan release-schedule (compiled at v1)\\n[release#L2] Friday.\"'\n"
+        "evidence='\"Saved plan release-schedule (compiled at v1)\\n[release#L2] Friday.\"'\n"
+        'if [ "$6" = "--delivery-receipt" ]; then\n'
+        '  printf \'{"evidence":%s,"receipt":{"plan":{}}}\\n\' "$evidence"\n'
+        "else\n"
+        '  test "$#" = 5 || exit 1\n'
+        '  printf "%s\\n" "$evidence"\n'
+        "fi\n"
         'printf "call\\n" >> calls\n'
     )
     launcher.chmod(0o700)
@@ -106,3 +111,12 @@ def test_saved_symbolic_submit_searches_without_provider_credentials(tmp_path, m
     assert "[release#L2] Friday." in json.loads(result.split("\n", 1)[1])
     assert len(result.encode()) <= 6000
     assert (tmp_path / "calls").read_text() == "call\n"
+    receipts = []
+    captured = prepare(
+        {**event, "prompt": "KITE plan: release-schedule\nUpdate it."},
+        launcher,
+        on_symbolic_receipt=receipts.append,
+    )
+    assert captured == result
+    assert receipts == [{"evidence": json.loads(result.split("\n", 1)[1]), "receipt": {"plan": {}}}]
+    assert (tmp_path / "calls").read_text() == "call\ncall\n"

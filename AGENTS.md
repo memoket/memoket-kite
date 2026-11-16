@@ -52,3 +52,7 @@ history, decisions, commitments, and other conversation evidence.
   evidence as unverified for symbolic attribution. Record project or date
   hints supplied by the caller and separate fresh compilation, host planning,
   and reuse of an existing plan when comparing cost or user input.
+- For installed-hook measurements, capture the receipt from the subprocess
+  that produced the injected context. Identify older replay-verified runs
+  as such. Keep historical full-text measurements attributed to their
+  original path, including when linking to them from a symbolic evaluation.

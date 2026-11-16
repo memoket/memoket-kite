@@ -881,17 +881,29 @@ def render_symbolic_context(pack):
     return "\n".join(lines)
 
 
-def fit_symbolic_delivery(pack, max_bytes):
-    """Return one escaped JSON string within the delivery budget."""
+def fit_symbolic_delivery(pack, max_bytes, *, include_receipt=False):
+    """Return bounded evidence, optionally with the original search receipt."""
 
     def encode_evidence(value):
         return json.dumps(value, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
 
+    def output(evidence):
+        if not include_receipt:
+            return evidence
+        receipt = {key: value for key, value in pack.items() if not key.startswith("_")}
+        receipt["branch_coverage"] = [
+            {key: value for key, value in branch.items() if key != "_quoted_ids"}
+            for branch in pack["branch_coverage"]
+        ]
+        return json.dumps(
+            {"evidence": json.loads(evidence), "receipt": receipt}, ensure_ascii=False
+        )
+
     if not pack["spans"]:
-        return encode_evidence("")
+        return output(encode_evidence(""))
     full = encode_evidence(render_symbolic_context(pack).strip())
     if len(full.encode()) <= max_bytes:
-        return full
+        return output(full)
 
     by_id = {span["evidence"][0]["source_line_id"]: span for span in pack["spans"]}
     linked = pack["_linked_change"] & by_id.keys()
@@ -924,7 +936,7 @@ def fit_symbolic_delivery(pack, max_bytes):
         if len(encoded.encode()) <= max_bytes:
             retained = selected
             delivered = encoded
-    return delivered
+    return output(delivered)
 
 
 def execute_source_plan(

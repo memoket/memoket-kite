@@ -27,6 +27,8 @@ def test_symbolic_delivery_replays_the_observed_budget_and_exact_quotation(tmp_p
         "compiler": "reused_symbolic_plan",
         "memory_version": 2,
         "reused_plan": {"run_id": "rollout"},
+        "plan": {"queries": [{"select": "lines", "where": {"grep": "rollout"}}]},
+        "trace": [{"stage": "lines", "hits": 1}],
         "spans": [
             {
                 "evidence": [
@@ -54,11 +56,55 @@ def test_symbolic_delivery_replays_the_observed_budget_and_exact_quotation(tmp_p
         "calls": [{"args": args, "exit_code": 0}],
     }
     verified = verify_delivery(launcher, "rollout", hook, tmp_path, {}, 2)
-    assert verified == {"verified": True, "reference_ids": ["meeting#L3"], "receipt": receipt}
+    assert verified == {
+        "verified": True,
+        "verification": "legacy_replay",
+        "reference_ids": ["meeting#L3"],
+        "receipt": receipt,
+    }
     assert commands == [[str(launcher), *args], [str(launcher), *args[:3]]]
     assert not verify_delivery(launcher, "rollout", hook, tmp_path, {}, 3)["verified"]
     assert not verify_delivery(launcher, "other", hook, tmp_path, {}, 2)["verified"]
     hook["additional_context"] += "tampered"
+    assert not verify_delivery(launcher, "rollout", hook, tmp_path, {}, 2)["verified"]
+
+
+def test_symbolic_delivery_checks_the_original_receipt_without_replaying(tmp_path, monkeypatch):
+    def unexpected(*args, **kwargs):
+        raise AssertionError("a captured delivery must be verified without any replay")
+
+    monkeypatch.setattr("benchmarks.agent.symbolic_submit.subprocess.check_output", unexpected)
+    text = "Workspace v2\n\n[meeting#L3] Rollout moved."
+    receipt = {
+        "engine": "memoket_kite.core.algebra.execute_plan",
+        "compiler": "reused_symbolic_plan",
+        "memory_version": 2,
+        "reused_plan": {"run_id": "rollout"},
+        "plan": {"queries": [{"select": "lines", "where": {"grep": "Rollout"}}]},
+        "trace": [{"stage": "lines", "hits": 1}],
+        "spans": [
+            {
+                "evidence": [
+                    {"conversation_id": "meeting", "segment_id": "L3", "text": "Rollout moved."}
+                ]
+            }
+        ],
+    }
+    hook = {
+        "additional_context": "Evidence\n" + json.dumps(text),
+        "calls": [
+            {"args": ["symbolic", "--reuse", "rollout", "--delivery-receipt"], "exit_code": 0}
+        ],
+        "receipts": [{"evidence": text, "receipt": receipt}],
+    }
+    launcher = tmp_path / "kite"
+    verified = verify_delivery(launcher, "rollout", hook, tmp_path, {}, 2)
+    assert verified["verification"] == "observed_receipt"
+    assert verified["reference_ids"] == ["meeting#L3"]
+    assert not verify_delivery(launcher, "rollout", hook, tmp_path, {}, 3)["verified"]
+    receipt["trace"] = []
+    assert not verify_delivery(launcher, "rollout", hook, tmp_path, {}, 2)["verified"]
+    hook["receipts"].clear()
     assert not verify_delivery(launcher, "rollout", hook, tmp_path, {}, 2)["verified"]
 
 
@@ -82,6 +128,7 @@ def test_symbolic_summary_excludes_all_arms_from_an_unverified_pair():
             activation_bytes=18,
             symbolic_delivery={
                 "verified": verified,
+                "verification": "observed_receipt",
                 "covered_claims": 1,
                 "observed": {"calls": [{}], "seconds": 0.01},
             },
@@ -102,3 +149,4 @@ def test_symbolic_summary_excludes_all_arms_from_an_unverified_pair():
     assert report["unverified_pairs"] == 1
     assert report["arms"]["files"]["total_tokens"] == 150
     assert report["delivery"]["symbolic-submit"]["covered_claims"] == 1
+    assert report["delivery"]["symbolic-submit"]["verification"] == {"observed_receipt": 1}

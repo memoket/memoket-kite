@@ -246,14 +246,20 @@ saved plans, so plan-creation costs belong to setup.
 
 Add `--baseline-symbolic-marketplace PATH` to compare a second local
 installation against the same files and plans. Each marketplace needs its
-own bundled wheel. Read `verified_symbolic` for comparisons whose captured
-input, engine, snapshot, and injected quotes replayed successfully. Each
-installed trial preserves the observed command, delivery, and source
-receipt. Unverified runs remain in the trial log and are excluded as a
-pair from the verified summary. The manifest records plugin installation
-time separately from task time, and reports the bytes a user would enter
-when typing the selector manually. The command writes its full results and
-exits nonzero when a required symbolic delivery cannot be verified.
+own bundled wheel. Read `verified_symbolic` for comparisons with checked
+engine, saved plan, snapshot, and injected citations. Current installations
+return the capped evidence text with the candidate evidence, plan, and trace
+from the same subprocess. The receipt stays in the local log. Codex gets
+only the capped evidence text. The report labels this `observed_receipt`.
+Older installations can be checked by replaying their captured command. The
+report counts those separately under `legacy_replay`.
+
+Each installed trial preserves the observed command, delivery, and receipt.
+Unverified runs remain in the trial log and are excluded as a pair from the
+verified summary. The manifest records plugin installation time separately
+from task time, and reports the bytes a user would enter when typing the
+selector manually. The command writes its full results and exits nonzero
+when a required symbolic delivery cannot be verified.
 
 For a revision experiment with successive turns, use `codex_trial` with
 `persist_session=True` and a temporary Codex home. Save the returned

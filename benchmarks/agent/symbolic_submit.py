@@ -35,6 +35,7 @@ def observe(launcher: Path, run_id: str, metrics: Path) -> None:
     event["prompt"] = f"KITE plan: {run_id}\n" + event["prompt"]
     api = runpy.run_path(str(launcher.with_name("codex_context.py")))
     calls = []
+    receipts = []
     run = subprocess.run
 
     def observed(command, *args, **kwargs):
@@ -43,8 +44,10 @@ def observe(launcher: Path, run_id: str, metrics: Path) -> None:
         return result
 
     start = time.perf_counter()
+    capture = "SYMBOLIC_RECEIPT_OPTION" in api
     with patch.object(subprocess, "run", observed):
-        context = api["prepare_context"](event, launcher)
+        options = {"on_symbolic_receipt": receipts.append} if capture else {}
+        context = api["prepare_context"](event, launcher, **options)
     metrics.write_text(
         json.dumps(
             {
@@ -52,6 +55,7 @@ def observe(launcher: Path, run_id: str, metrics: Path) -> None:
                 "seconds": time.perf_counter() - start,
                 "calls": calls,
                 "additional_context": context,
+                **({"receipts": receipts} if capture else {}),
             },
             ensure_ascii=False,
         ),
@@ -62,7 +66,7 @@ def observe(launcher: Path, run_id: str, metrics: Path) -> None:
 
 
 def verify_delivery(launcher, run_id, hook, cwd, env, memory_version):
-    """Replay the observed command and recover its original symbolic receipt."""
+    """Verify an observed receipt, or clearly identify a legacy replay."""
     context = hook.get("additional_context")
     if not context or not hook.get("calls"):
         return {"verified": False, "error": "no observed symbolic hook delivery"}
@@ -73,35 +77,32 @@ def verify_delivery(launcher, run_id, hook, cwd, env, memory_version):
         or not arguments
         or arguments[0] != "symbolic"
         or "--reuse" not in arguments
-        or arguments[arguments.index("--reuse") + 1] != run_id
+        or arguments[arguments.index("--reuse") + 1 :][:1] != [run_id]
     ):
         return {"verified": False, "error": "hook did not complete the selected saved query"}
     try:
         output = json.loads(context.split("\n", 1)[1])
-        delivered = subprocess.check_output(
-            [str(launcher), *arguments], cwd=cwd, env=env, timeout=30, text=True
-        ).strip()
-        raw_args = arguments.copy()
-        if "--delivery-bytes" in raw_args:
-            start = raw_args.index("--delivery-bytes")
-            del raw_args[start : start + 2]
-            delivered = json.loads(delivered)
+        if "receipts" in hook or "--delivery-receipt" in arguments:
+            method = "observed_receipt"
+            if "--delivery-receipt" not in arguments or len(hook.get("receipts", ())) != 1:
+                raise ValueError("hook is missing its same-execution receipt")
+            response = hook["receipts"][0]
+            delivered, receipt = response["evidence"], response["receipt"]
         else:
-            raw_args.remove("--text")
-        if output != delivered:
-            raise ValueError("replayed output differs from the injected evidence")
-        receipt = json.loads(
-            subprocess.check_output(
-                [str(launcher), *raw_args], cwd=cwd, env=env, timeout=30, text=True
-            )
-        )
+            method = "legacy_replay"
+            delivered, receipt = _replay_delivery(launcher, arguments, cwd, env)
+        if not isinstance(output, str) or output != delivered:
+            raise ValueError("recorded output differs from the injected evidence")
         if (
             receipt["engine"] != _ENGINE
             or receipt["compiler"] != "reused_symbolic_plan"
             or receipt["memory_version"] != memory_version
             or receipt["reused_plan"]["run_id"] != run_id
+            or not isinstance(receipt["plan"], dict)
+            or not isinstance(receipt["trace"], list)
+            or not receipt["trace"]
         ):
-            raise ValueError("receipt does not match the symbolic engine, saved plan and snapshot")
+            raise ValueError("receipt lacks a matching symbolic engine, plan, trace or snapshot")
         candidates = {
             f"{line['conversation_id']}#{line['segment_id']}": line
             for span in receipt["spans"]
@@ -124,9 +125,38 @@ def verify_delivery(launcher, run_id, hook, cwd, env, memory_version):
             refs.add(ref)
         if not refs:
             raise ValueError("no original citations in the hook delivery")
-    except (subprocess.SubprocessError, ValueError, KeyError, IndexError) as exc:
+    except (
+        OSError,
+        subprocess.SubprocessError,
+        ValueError,
+        TypeError,
+        KeyError,
+        IndexError,
+    ) as exc:
         return {"verified": False, "error": str(exc)}
-    return {"verified": True, "reference_ids": sorted(refs), "receipt": receipt}
+    return {
+        "verified": True,
+        "verification": method,
+        "reference_ids": sorted(refs),
+        "receipt": receipt,
+    }
+
+
+def _replay_delivery(launcher, arguments, cwd, env):
+    def run(args):
+        return subprocess.check_output(
+            [str(launcher), *args], cwd=cwd, env=env, timeout=30, text=True
+        ).strip()
+
+    delivered = run(arguments)
+    raw_args = arguments.copy()
+    if "--delivery-bytes" in raw_args:
+        start = raw_args.index("--delivery-bytes")
+        del raw_args[start : start + 2]
+        delivered = json.loads(delivered)
+    else:
+        raw_args.remove("--text")
+    return delivered, json.loads(run(raw_args))
 
 
 if __name__ == "__main__":
