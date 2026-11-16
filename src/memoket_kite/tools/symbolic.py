@@ -1076,6 +1076,27 @@ def _schedule_follow_up(pack):
     return ""
 
 
+def _calendar_alternatives(store, rows, trace):
+    # Retain the first already selected match for each query.
+    heads = {
+        next((row["id"] for row in rows if row["id"] in matches), None)
+        for matches in trace.line_matches.values()
+    }
+    slots = [row["id"] for row in reversed(rows) if row["id"] not in heads]
+    if not slots:
+        return [], set()
+    selected = {row["id"] for row in rows}
+    dated = []
+    for lane in zip_longest(*trace.line_branch_candidates.values()):
+        for line in lane:
+            if line and line not in selected and _DATE_DETAIL.search(store.lines[line].text):
+                selected.add(line)
+                dated.append(line)
+                if len(dated) == min(2, len(slots)):
+                    return dated, set(slots[: len(dated)])
+    return dated, set(slots[: len(dated)])
+
+
 def _stage_evidence_guide(pack):
     selected = pack.get("_selected_line_branches")
     if not selected:
@@ -1314,6 +1335,13 @@ def execute_source_plan(
     compare_schedule = changed != active_units and _can_search_schedule_change(
         changed, question, plan, limit, dates
     )
+    look_for_dates = (
+        not compare_schedule
+        and limit >= 2
+        and "queries" in plan
+        and question
+        and _DATE_DETAIL_QUESTION.search(question)
+    )
     trace_steps = []
     source_change = {}
 
@@ -1341,7 +1369,7 @@ def execute_source_plan(
         overall, trace = run(
             active_units,
             "current",
-            branch_limit=_PRIOR_CANDIDATES_PER_BRANCH if compare_schedule else 0,
+            branch_limit=_PRIOR_CANDIDATES_PER_BRANCH if compare_schedule or look_for_dates else 0,
         )
         traces = (trace, new_trace)
         support, branches = trace.nearby_line_matches, trace.line_branch_candidates
@@ -1360,7 +1388,9 @@ def execute_source_plan(
         for line, matches in new_trace.nearby_line_matches.items():
             support.setdefault(line, set()).update(matches)
     else:
-        rows, trace = run(active_units)
+        rows, trace = run(
+            active_units, branch_limit=_PRIOR_CANDIDATES_PER_BRANCH if look_for_dates else 0
+        )
         traces = (trace,)
         support = trace.nearby_line_matches
         selected_branches = trace.selected_line_branches
@@ -1393,6 +1423,24 @@ def execute_source_plan(
     spans, quote_bytes, quote_order = _pack_source_lines(
         index, rows, neighbors, max_bytes, support, exchange
     )
+    if (
+        look_for_dates
+        and not exchange_step
+        and not any(
+            _DATE_DETAIL.search(line["text"]) for span in spans for line in span["evidence"]
+        )
+    ):
+        dated, displaced = _calendar_alternatives(index.store, rows, trace)
+        if dated and displaced:
+            candidate_rows = [
+                *(row for row in rows if row["id"] not in displaced),
+                *({"id": line, "unit": index.store.lines[line].unit} for line in dated),
+            ]
+            calendar_pack = _pack_source_lines(index, candidate_rows, neighbors, max_bytes, support)
+            if set(dated) <= set(calendar_pack[2]):
+                rows = candidate_rows
+                spans, quote_bytes, quote_order = calendar_pack
+                trace_steps.append({"stage": "calendar_alternatives", "source_line_ids": dated})
     if exchange_step:
         exchange_ids = {row["id"] for row in exchange}
         if exchange_ids <= set(quote_order):

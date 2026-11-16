@@ -62,6 +62,10 @@ turns on a quantity change. The `revision_exchange` trace links the subject,
 revision wording, reply, and reported adjustment within one recording.
 This also applies to a stage bound to a uniquely matched project's recordings.
 Read those turns in order for the scope and status of the change.
+For date questions, a parallel plan with no calendar wording in its first
+set of quotes can give space to up to two already matched turns with dates.
+The `calendar_alternatives` trace lists those original turns. Check which
+date the speakers approved, proposed, or reported.
 Staged line searches advance past shared hits to give each stage a distinct
 candidate within the quote limit. A project-bound final-decision stage can
 include an alternate decision wording when the stage already uses all four

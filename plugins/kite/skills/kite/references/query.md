@@ -68,6 +68,10 @@ trace identifies the original words, reply, and reported change in order.
 This works for searches in a stage bound to a unique recorded project.
 When it can quote all four turns, KITE lists those citations in order above
 the quotes. Read the reply and the report before using the revised value.
+For a date question whose parallel queries assemble no dated quotation,
+KITE can use up to two other matching turns that contain calendar wording.
+It retains the first match of each contributing query within the same
+result and byte limits. Inspect `calendar_alternatives` in the trace.
 Set `KITE_SYMBOLIC_GUIDE=1` in the Codex submit hook's environment to include
 a stage guide when it fits alongside the original turns. The guide lists
 which stage selected each referenced turn and shows lookup cues. Run

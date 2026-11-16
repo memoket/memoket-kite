@@ -7787,6 +7787,76 @@ def test_symbolic_reserves_unique_schedule_change(work, question, prior, changed
     assert result["trace"][-1]["candidates"] == 2 and not result["trace"][-1]["reserved"]
 
 
+@pytest.mark.parametrize(
+    "question, term, preferred, dated",
+    [
+        (
+            "What was the rollout schedule and who owns the handoff?",
+            "rollout",
+            "We confirmed the rollout",
+            ("The rollout begins on April 14.", "The rollout moved to April 22."),
+        ),
+        (
+            "交付排期是什么，谁负责交接？",
+            "交付",
+            "我们确认交付",
+            ("交付原定4月14日。", "交付改到4月22日。"),
+        ),
+    ],
+)
+def test_symbolic_quotes_matched_calendar_turns_when_first_pack_has_no_date(
+    work, question, term, preferred, dated
+):
+    _, call = work
+    owner = "Sasha owns the handoff."
+    sources = []
+    for i, text in enumerate([*(f"{preferred} in review {i}." for i in range(8)), *dated, owner]):
+        source = text_input(f"recording-{i}", text)["source"]
+        source["payload"]["metadata"]["project"] = "Main"
+        sources.append({"source": source})
+    outside = text_input("another", f"{preferred} on May 10, 2026.")["source"]
+    outside["payload"]["metadata"]["project"] = "Other"
+    call("index-sources", payload={"sources": [*sources, {"source": outside}]})
+    queries = [
+        {"select": "lines", "where": {"grep": term}, "prefer": ["confirmed|确认"]},
+        {"select": "lines", "where": {"grep": "handoff"}},
+    ]
+    baseline = {"question": f"Tell me about {term}.", "plan": {"queries": queries}}
+    request = {**baseline, "question": question}
+    args = ("symbolic", "--project", "Main", "--limit", "4")
+    before = call(*args, payload=baseline)
+    after = call(*args, payload=request)
+    original = [span["evidence"][0]["text"] for span in before["spans"]]
+    changed = [span["evidence"][0]["text"] for span in after["spans"]]
+    assert set(dated).isdisjoint(original) and set(dated) <= set(changed)
+    assert owner in changed and any(text.startswith(preferred) for text in changed)
+    assert after["plan"] == before["plan"] and len(changed) == len(original) == 4
+    selected = next(step for step in after["trace"] if step["stage"] == "calendar_alternatives")
+    assert set(selected["source_line_ids"]) == {
+        line["source_line_id"]
+        for span in after["spans"]
+        for line in span["evidence"]
+        if line["text"] in dated
+    }
+
+    # Preserve every query's head when there are only enough seats for the heads.
+    tight = call("symbolic", "--project", "Main", "--limit", "2", payload=request)
+    assert all(step["stage"] != "calendar_alternatives" for step in tight["trace"])
+    assert owner in {span["evidence"][0]["text"] for span in tight["spans"]}
+    already_dated = {
+        **request,
+        "plan": {
+            "queries": [
+                {"select": "lines", "where": {"units": ["recording-8"]}},
+                queries[1],
+            ]
+        },
+    }
+    result = call(*args, payload=already_dated)
+    assert all(step["stage"] != "calendar_alternatives" for step in result["trace"])
+    assert {span["evidence"][0]["text"] for span in result["spans"]} == {dated[0], owner}
+
+
 def test_symbolic_schedule_uses_shared_annotation_for_a_split_subject(work, monkeypatch):
     _, call = work
 
