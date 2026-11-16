@@ -29,7 +29,7 @@ from .context_eval import codex_trial, corpus_hash, read_corpus, summarize_host,
 from .symbolic_submit import hook_options, symbolic_hook, typed_index_activity, verify_delivery
 
 _REFERENCE = re.compile(
-    r"([\w-]+)(?:\.txt|\.md|(?<=RECORDINGS)\.json)?#(L[0-9]+|text-line-[0-9]+)\b"
+    r"(?<![\w.-])([\w-]+)(?:\.txt|\.md|(?<=RECORDINGS)\.json)?#(L[0-9]+|text-line-[0-9]+)\b"
 )
 _REFERENCE_RANGE = re.compile(rf"{_REFERENCE.pattern}`?\s+(?:through|to)\s+`?{_REFERENCE.pattern}")
 _RECORDING_METADATA_REFS = frozenset({"RECORDINGS#text-line-1", "RECORDINGS#L1"})
@@ -684,7 +684,7 @@ def main():
     args.output.mkdir(mode=0o700, parents=True)
     results = {
         "case_sha256": hashlib.sha256(raw).hexdigest(),
-        "citation_scoring": "line-ranges-v2" if args.citation_ranges else "explicit-lines-v2",
+        "citation_scoring": "line-ranges-v3" if args.citation_ranges else "explicit-lines-v3",
         **(
             {
                 "benchmark_sha256": {

@@ -419,7 +419,7 @@ def main():
             case["workspace"], references, case["bundle"]["manifest"]["memory_version"]
         )
     results = {
-        "protocol": "request-triggered-original-excerpt-v5",
+        "protocol": "request-triggered-original-excerpt-v6",
         "common_codex_options": _CODEX_ISOLATION,
         "case_sha256": hashlib.sha256(raw).hexdigest(),
         "model": args.model,

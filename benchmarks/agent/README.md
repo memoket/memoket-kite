@@ -347,6 +347,9 @@ The v4 scorer accepts the mounted `RECORDINGS.json` line as an additional
 citation in the file arm. Each scored field still requires a reference to
 an accepted original turn. Reports from older scoring protocols retain their
 original scores and can be re-scored from saved answers.
+The v6 handoff and revision protocols use the same citation parser as the
+v3 execution scorer. It checks the whole recording reference so links such
+as `policy.py#L1` are not counted as citations to a recording named `py`.
 The runner disables Codex app connectors for every arm. It records this setting
 under `common_codex_options` in the protocol. The summary also counts
 observed `app_connector_calls`. Inspect saved tool calls when evaluating v1

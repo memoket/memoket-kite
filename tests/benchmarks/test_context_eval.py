@@ -95,6 +95,19 @@ def test_task_benchmark_resolves_mounted_transcript_links_to_the_original_turn()
         assert len(score["claims"]["decision"]["out_of_scope_citations"]) == 1
 
 
+def test_task_benchmark_keeps_code_links_out_of_original_citations():
+    options = {
+        "checks": {"decision": True},
+        "evidence": {"decision": ["review#text-line-4"]},
+        "valid_refs": {"review#text-line-4"},
+    }
+    snippet = "Updated [policy.py](/tmp/project/policy.py#L1) from [review#text-line-4]."
+    result = task_eval._score(answer=snippet, **options)
+    assert result["full_pass"] and result["claims"]["decision"]["out_of_scope_citations"] == []
+    result = task_eval._score(answer=f"{snippet} [py#L1]", **options)
+    assert result["claims"]["decision"]["out_of_scope_citations"] == ["py#L1"]
+
+
 def test_submit_benchmark_counts_prefilled_evidence_even_without_a_tool_call():
     trial = {
         "case": "release",
