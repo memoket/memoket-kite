@@ -396,7 +396,9 @@ against the frozen after state. The runner resumes the original Codex session
 in the same project with the second task. Both phases verify code behavior,
 original citations and tests independently. Scoring never supplies task hints.
 The revision runner shares the handoff benchmark's arm batching from v3 and
-recording-metadata citation scoring from v4.
+recording-metadata citation scoring from v4. In v5, both runners resolve known
+mounted transcript filenames to their recording IDs before checking original
+line citations. The mapping comes from the frozen file arm's source bundle.
 The log preserves the native MCP outputs, the index commit, both code diffs and
 update time separately from the two Codex turns. Read `symbolic_verification`
 for the number of complete pairs, missing citation deliveries in each phase,

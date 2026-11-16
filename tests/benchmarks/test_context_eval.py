@@ -74,6 +74,27 @@ def test_task_benchmark_requires_both_behavior_and_supporting_citation():
     assert outside["passed_claims"] == 0
 
 
+def test_task_benchmark_resolves_mounted_transcript_links_to_the_original_turn():
+    options = {
+        "checks": {"decision": True},
+        "evidence": {"decision": ["release#L4"]},
+        "valid_refs": {"release#L3", "release#L4", "release#L5"},
+        "file_citation_aliases": {"release_transcript": "release"},
+        "citation_ranges": True,
+    }
+    link = "[release#L4](sources/2026-10-19/release_transcript.txt#L4)"
+    score = task_eval._score(answer=link, **options)
+    assert score["full_pass"]
+    assert score["claims"]["decision"]["supporting_citations"] == ["release#L4"]
+    assert task_eval._score(answer="release_transcript.txt#L3 through release#L5", **options)[
+        "full_pass"
+    ]
+    for unexpected in ("release_transcript.txt#L6", "elsewhere_transcript.txt#L4"):
+        score = task_eval._score(answer=f"{link} {unexpected}", **options)
+        assert not score["full_pass"]
+        assert len(score["claims"]["decision"]["out_of_scope_citations"]) == 1
+
+
 def test_submit_benchmark_counts_prefilled_evidence_even_without_a_tool_call():
     trial = {
         "case": "release",

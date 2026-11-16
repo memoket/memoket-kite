@@ -230,7 +230,14 @@ def _trial(args, case, arm, repetition):
         if arm == "files":
             available = available | _RECORDING_METADATA_REFS
         final = turns[-1]
-        score = _score(checks, final["answer"], case["evidence"], available, citation_ranges=True)
+        score = _score(
+            checks,
+            final["answer"],
+            case["evidence"],
+            available,
+            citation_ranges=True,
+            file_citation_aliases=bundle["file_citation_aliases"] if arm == "files" else None,
+        )
         ran_tests = any(
             command["exit_code"] == 0 and _TEST.search(command["output"])
             for command in final.get("commands", ())
@@ -412,7 +419,7 @@ def main():
             case["workspace"], references, case["bundle"]["manifest"]["memory_version"]
         )
     results = {
-        "protocol": "request-triggered-original-excerpt-v4",
+        "protocol": "request-triggered-original-excerpt-v5",
         "common_codex_options": _CODEX_ISOLATION,
         "case_sha256": hashlib.sha256(raw).hexdigest(),
         "model": args.model,

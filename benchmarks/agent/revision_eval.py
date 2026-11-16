@@ -220,7 +220,12 @@ def _trial(args, case, arm, repetition):
                 index["refs"] | _RECORDING_METADATA_REFS if arm == "files" else index["refs"]
             )
             score = _score(
-                checks, turn["answer"], phase["evidence"], available, citation_ranges=True
+                checks,
+                turn["answer"],
+                phase["evidence"],
+                available,
+                citation_ranges=True,
+                file_citation_aliases=index["file_citation_aliases"] if arm == "files" else None,
             )
             ran_tests = any(
                 command["exit_code"] == 0 and _TEST.search(command["output"])
@@ -312,7 +317,7 @@ def main():
     for case in cases:
         _prepare_case(case, args.cases.resolve().parent)
     results = {
-        "protocol": "same-session-source-revision-v4",
+        "protocol": "same-session-source-revision-v5",
         "case_sha256": hashlib.sha256(raw).hexdigest(),
         "codex": subprocess.check_output([args.codex, "--version"], text=True).strip(),
         "model": args.model,

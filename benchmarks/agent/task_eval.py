@@ -61,6 +61,7 @@ def _source_bundle(source_dir: Path, memory: Path, source_format: str) -> dict:
         for identity, record in sorted(records.items())
     ]
     files, originals, dates = [], {}, []
+    file_citation_aliases = {}
     for source in sources:
         conversation = source.conversation
         identity = conversation["conversation_id"]
@@ -79,6 +80,8 @@ def _source_bundle(source_dir: Path, memory: Path, source_format: str) -> dict:
             else Path(source.name)
         )
         files.append((name, source.raw))
+        if source_format == "transcript-text":
+            file_citation_aliases[name.stem] = identity
         originals.update(
             (f"{identity}#{line['segment_id']}", (line.get("speaker_id"), line["text"]))
             for line in conversation["segments"]
@@ -89,6 +92,7 @@ def _source_bundle(source_dir: Path, memory: Path, source_format: str) -> dict:
         "files": files,
         "refs": set(originals),
         "originals": originals,
+        "file_citation_aliases": file_citation_aliases,
         "manifest": {
             "source_count": len(files),
             "source_sha256": corpus_hash(sources),
@@ -131,11 +135,22 @@ def _score(
     valid_refs: set[str],
     *,
     citation_ranges: bool = False,
+    file_citation_aliases: dict[str, str] | None = None,
 ) -> dict:
+    aliases = file_citation_aliases or {}
+
+    def resolve(source, segment):
+        if f"{source}#{segment}" in valid_refs:
+            return source
+        return aliases.get(source, source)
+
     text = answer or ""
-    cited = {f"{source}#{segment}" for source, segment in _REFERENCE.findall(text)}
+    cited = {
+        f"{resolve(source, segment)}#{segment}" for source, segment in _REFERENCE.findall(text)
+    }
     if citation_ranges:
         for source, start, end_source, end in _REFERENCE_RANGE.findall(text):
+            source, end_source = resolve(source, start), resolve(end_source, end)
             if (
                 source != end_source
                 or start.startswith("L") != end.startswith("L")
@@ -255,7 +270,7 @@ def _symbolic_profiles(args, directory: Path) -> tuple[dict, dict]:
     return profiles, manifest
 
 
-def _task_turn(args, case, bundle, cwd, prompt, **options):
+def _task_turn(args, case, bundle, cwd, prompt, *, files_mounted, **options):
     turn = codex_trial(
         args.codex,
         args.model,
@@ -276,6 +291,7 @@ def _task_turn(args, case, bundle, cwd, prompt, **options):
             case["evidence"],
             bundle["refs"],
             citation_ranges=args.citation_ranges,
+            file_citation_aliases=bundle["file_citation_aliases"] if files_mounted else None,
         ),
     }
 
@@ -371,6 +387,7 @@ def _trial(args, case, bundle, arm, repetition):
             bundle,
             cwd,
             task,
+            files_mounted=symbolic or arm == "files",
             codex_env=codex_env,
             codex_options=hook_args,
             load_user_config=symbolic,
@@ -390,6 +407,7 @@ def _trial(args, case, bundle, arm, repetition):
                 bundle,
                 cwd,
                 follow_up,
+                files_mounted=symbolic or arm == "files",
                 codex_env=codex_env,
                 load_user_config=True,
                 resume_session=first["session_id"],
@@ -666,7 +684,7 @@ def main():
     args.output.mkdir(mode=0o700, parents=True)
     results = {
         "case_sha256": hashlib.sha256(raw).hexdigest(),
-        "citation_scoring": "line-ranges-v1" if args.citation_ranges else "explicit-lines-v1",
+        "citation_scoring": "line-ranges-v2" if args.citation_ranges else "explicit-lines-v2",
         **(
             {
                 "benchmark_sha256": {
