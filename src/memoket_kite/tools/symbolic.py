@@ -2046,6 +2046,11 @@ def render_symbolic_context(
         lines.append(f"Supplied citations unavailable: {error}")
     if "history" not in pack:
         lines.append(f"Workspace v{pack['memory_version']}")
+    if prior_turns := pack.get("previously_delivered_turns"):
+        lines.append(
+            f"Follow-up omitted {prior_turns} original "
+            f"{'turn' if prior_turns == 1 else 'turns'} already delivered with the receipt."
+        )
     if reused := pack.get("reused_plan"):
         lines.append(
             f"Saved plan {reused['run_id']} (compiled at v{reused['compiled_at_version']})"
@@ -2160,9 +2165,16 @@ def render_symbolic_context(
     evidence_guide = (_stage_evidence_guide(pack) or _query_evidence_guide(pack)) if guide else []
     if evidence_guide:
         lines.extend((*evidence_guide, ""))
-    lines.append(render_context(visible, compact_spacing=bool(evidence_guide)))
+    if not visible["spans"] and prior_turns:
+        lines.append("No new original turns in the selected results.")
+    else:
+        lines.append(render_context(visible, compact_spacing=bool(evidence_guide)))
     if prior := pack.get("previous_revision_evidence"):
         lines.extend(_render_prior_reused_turns(visible, prior))
+    if receipt := pack.get("delivery_receipt"):
+        lines.append(
+            f"Evidence receipt {receipt}. Pass it as after_receipt for a focused follow-up."
+        )
     return "\n".join(lines)
 
 

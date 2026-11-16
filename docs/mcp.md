@@ -16,6 +16,16 @@ The configured workspace applies to the read-only tools.
   the same workspace snapshot, with separate headings and no repeated turns.
   Project and date filters apply to the search plan. Explicit citations use
   their own recording and revision identifiers.
+  Packs with at least 3,600 original text bytes include an evidence receipt.
+  Request one on a smaller result with `include_receipt: true`. To fill a
+  specific gap, pass that token as `after_receipt` with a focused plan. The
+  tool omits originals already delivered in that receipt chain from the
+  selected result. A revised turn has a new evidence ID, so it can appear
+  after a workspace update. Use `known_citations` to reread particular
+  references, or omit `after_receipt` to replay all matching quotes.
+  Receipts retain up to 4,096 recent turns and expire when the local server
+  restarts or evicts an older receipt. A result with no additional quotes
+  describes the selected result, so a different plan can still find evidence.
   A complete recording scope notice means every indexed turn in the selected
   recording scope is present. Read the original wording to establish approval
   or change status.

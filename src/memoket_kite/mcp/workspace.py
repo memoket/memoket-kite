@@ -1,8 +1,11 @@
 """Read original conversation evidence from a KITE workspace over MCP stdio."""
 
 import json
+from collections import OrderedDict
 from itertools import zip_longest
 from pathlib import Path
+from secrets import token_hex
+from threading import Lock
 from typing import TYPE_CHECKING, Annotated
 
 from memoket_kite import ConfigurationError
@@ -62,7 +65,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             raise
         raise ConfigurationError(_MCP_INSTALL_HINT) from exc
 
-    from memoket_kite.tools.context import render_evidence
+    from memoket_kite.tools.context import evidence_spans, render_evidence
     from memoket_kite.tools.contracts import ToolError
     from memoket_kite.tools.retrieve import read_evidence
     from memoket_kite.tools.symbolic import (
@@ -78,6 +81,8 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         list[Annotated[str, Field(min_length=1, max_length=1024)]],
         Field(min_length=1, max_length=8),
     ]
+    receipts: OrderedDict[str, tuple[str, ...]] = OrderedDict()
+    receipt_lock = Lock()
 
     server = MCPServer(
         "KITE Conversation Memory",
@@ -144,6 +149,18 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             str | None,
             Field(pattern=r"^[0-9a-f]{64}$", description="Snapshot token from a plan-free call."),
         ] = None,
+        after_receipt: Annotated[
+            str | None,
+            Field(
+                pattern=r"^[0-9a-f]{24}$",
+                description="Use the previous Evidence receipt when looking for new details. "
+                "Only the new original turns in this result are quoted. Omit to read all matches.",
+            ),
+        ] = None,
+        include_receipt: Annotated[
+            bool,
+            Field(description="Request a follow-up receipt even for a short pack."),
+        ] = False,
     ) -> str:
         """Find original meeting or conversation quotes for a task using KITE's symbolic search.
 
@@ -159,19 +176,29 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         Set plan.retry_index_subject to false to execute the submitted plan alone.
         If the task supplies citations and needs additional evidence, include
         them as known_citations and search for the remaining details in one call.
+        Large packs include an Evidence receipt. To fill a gap, use that receipt
+        as after_receipt with a focused plan. To reread all evidence, omit it.
         """
         dates = {
             key: value
             for key, value in (("start_date", start_date), ("end_date", end_date))
             if value is not None
         }
+        seen = ()
         try:
+            if after_receipt is not None:
+                with receipt_lock:
+                    seen = receipts.get(after_receipt)
+                if seen is None:
+                    raise ToolError("not_found", "evidence receipt expired. Recall without it")
             with Workspace.open(workspace_path, read_only=True) as workspace:
                 if workspace_version is not None and workspace_version != workspace.version():
                     raise ToolError("stale_snapshot", "recall again against the current workspace")
                 if plan is None:
-                    if snapshot is not None or known_citations is not None:
-                        raise ToolError("invalid_input", "snapshot and known citations need a plan")
+                    if snapshot is not None or known_citations is not None or after_receipt:
+                        raise ToolError(
+                            "invalid_input", "snapshot, citations and evidence receipts need a plan"
+                        )
                     return _render_preparation(
                         prepare_symbolic_question(
                             workspace,
@@ -215,6 +242,32 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                         result["supplied_citation_error"] = str(exc)
         except ToolError as exc:
             raise MCPToolError(f"{exc.code}: {exc}") from exc
+        if after_receipt is not None:
+            prior = set(seen)
+            selected = result["spans"]
+            result["spans"] = [
+                span for span in selected if span["evidence"][0]["source_line_id"] not in prior
+            ]
+            result["previously_delivered_turns"] = len(selected) - len(result["spans"])
+            result["quote_bytes"] = sum(
+                len(line["text"].encode()) for span in result["spans"] for line in span["evidence"]
+            )
+        if after_receipt is not None or include_receipt or result["quote_bytes"] >= 3600:
+            index_spans = result["spans"]
+            if window := result.get("supplied_evidence"):
+                index_spans = [*index_spans, *evidence_spans(window)]
+            delivered = tuple(
+                line["source_line_id"] for span in index_spans for line in span["evidence"]
+            )
+            if delivered:
+                receipt = token_hex(12)
+                with receipt_lock:
+                    receipts[receipt] = tuple(dict.fromkeys((*seen, *delivered)))[-4096:]
+                    if len(receipts) > 48:
+                        receipts.popitem(last=False)
+                result["delivery_receipt"] = receipt
+            elif after_receipt is not None:
+                result["delivery_receipt"] = after_receipt
         return render_symbolic_context(result)
 
     @server.tool(

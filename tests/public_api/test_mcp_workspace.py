@@ -1,6 +1,7 @@
 """Workspace MCP calls must match local symbolic queries and see later commits."""
 
 import json
+import re
 
 import pytest
 
@@ -311,6 +312,99 @@ async def test_workspace_lookup_does_not_create_a_missing_store(tmp_path):
     assert result.is_error
     assert "not_found:" in result.content[0].text
     assert not missing.exists()
+
+
+async def test_followup_receipt_omits_seen_turns_and_returns_revised_evidence(tmp_path, capsys):
+    workspace = tmp_path / "workspace"
+    payload = tmp_path / "input.json"
+
+    def cli(*args, value):
+        payload.write_text(json.dumps(value), encoding="utf-8")
+        assert main(["--workspace", str(workspace), *args, "--input", str(payload)]) == 0
+        return json.loads(capsys.readouterr().out)
+
+    def source(name, text):
+        return {
+            "source": {
+                "format": "conversation",
+                "payload": {
+                    "conversation_id": name,
+                    "source": "text",
+                    "metadata": {"source_reference": name},
+                    "segments": [{"segment_id": "decision", "text": text}],
+                },
+            }
+        }
+
+    quota = "The quota is seven units for each member."
+    window = "The pickup window ends at eight."
+    original = source("review", quota)
+    cli("index-sources", value={"sources": [original, source("session", window)]})
+    request = {
+        "question": "Find the quota.",
+        "plan": {"queries": [{"where": {"grep": "quota"}, "select": "lines"}]},
+    }
+    run = cli("symbolic", value=request["plan"])
+    checksum = run["spans"][0]["evidence"][0]["revision_checksum"]
+    receipt_line = re.compile(r"Evidence receipt ([a-f0-9]{24})\.")
+
+    async with Client(create_workspace_server(workspace), raise_exceptions=False) as client:
+        tool = "recall_conversation_evidence"
+
+        async def recall(value, **options):
+            answer = await client.call_tool(tool, {**value, **options})
+            assert not answer.is_error
+            return answer.content[0].text
+
+        first = await recall(request, include_receipt=True)
+        first_receipt = receipt_line.search(first)[1]
+        assert f"[review#decision] {quota}" in first
+        repeat = await recall(request, after_receipt=first_receipt)
+        assert "No new original turns in the selected results." in repeat
+        assert "No evidence matched" not in repeat and quota not in repeat
+        assert receipt_line.search(repeat)[1] == first_receipt
+        independent = await recall(request)
+        assert quota in independent and not receipt_line.search(independent)
+
+        plan = {
+            "question": "Find the quota and pickup window.",
+            "plan": {"queries": [{"select": "lines", "where": {"grep": "quota|pickup"}}]},
+        }
+        more = await recall(plan, after_receipt=first_receipt)
+        assert "omitted 1 original turn" in more
+        assert f"[session#decision] {window}" in more and quota not in more
+        second_receipt = receipt_line.search(more)[1]
+        assert second_receipt != first_receipt
+        both_seen = await recall(plan, after_receipt=second_receipt)
+        assert "omitted 2 original turns" in both_seen
+        assert quota not in both_seen and window not in both_seen
+
+        explicit = await recall(
+            plan, after_receipt=second_receipt, known_citations=["review#decision"]
+        )
+        assert f"[review#decision] {quota}" in explicit
+        revised_text = "The quota is now five units for each member."
+        revised = source("review", revised_text)
+        revised["source"]["expected_checksum"] = checksum
+        cli("index-sources", value={"sources": [revised]})
+        change = await recall(plan, after_receipt=second_receipt)
+        assert "Workspace v2" in change and f"[review#decision] {revised_text}" in change
+        assert quota not in change and window not in change
+
+        stale = await client.call_tool(tool, {**request, "after_receipt": "0" * 24})
+        assert stale.is_error and "evidence receipt expired" in stale.content[0].text
+        long_turn = "Spotcheck. " + "Check the archive record. " * 145
+        cli("index-sources", value={"sources": [source("archive", long_turn)]})
+        bulk = await recall(
+            {
+                "question": "Find the spotcheck.",
+                "plan": {
+                    "queries": [{"select": "lines", "where": {"grep": "spotcheck"}}],
+                },
+            },
+            max_bytes=4800,
+        )
+        assert "[archive#decision]" in bulk and receipt_line.search(bulk)
 
 
 async def test_symbolic_recall_cites_a_decision_and_its_nearby_indexed_subject(tmp_path, capsys):
