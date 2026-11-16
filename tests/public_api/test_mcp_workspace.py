@@ -2,12 +2,15 @@
 
 import json
 import re
+import sqlite3
+from contextlib import closing
 
 import pytest
 
 from memoket_kite.mcp.workspace import _render_preparation, create_workspace_server
 from memoket_kite.tools.cli import main
 from memoket_kite.tools.symbolic import render_symbolic_context
+from memoket_kite.tools.workspace import Workspace
 
 pytest.importorskip("mcp")
 from mcp import Client  # noqa: E402
@@ -180,6 +183,72 @@ async def test_workspace_tool_delivers_cli_evidence_and_reads_the_latest_snapsho
             recall, {**args, "start_date": "2026-09-04", "end_date": "2026-09-01"}
         )
         assert invalid.is_error and "invalid_input:" in invalid.content[0].text
+
+
+async def test_warm_reader_detects_same_version_corruption_and_file_replacement(
+    tmp_path, capsys, monkeypatch
+):
+    path = tmp_path / "workspace"
+    replacement = tmp_path / "replacement"
+    payload = tmp_path / "input.json"
+    for directory, value in [(path, "five"), (replacement, "three")]:
+        payload.write_text(
+            json.dumps(
+                {
+                    "sources": [
+                        {
+                            "source": {
+                                "format": "conversation",
+                                "payload": {
+                                    "conversation_id": "meeting",
+                                    "source": "text",
+                                    "metadata": {"source_reference": "meeting"},
+                                    "segments": [
+                                        {
+                                            "segment_id": "decision",
+                                            "text": f"Use a threshold of {value}.",
+                                        }
+                                    ],
+                                },
+                            }
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert main(["--workspace", str(directory), "index-sources", "--input", str(payload)]) == 0
+    capsys.readouterr()
+
+    loads = []
+    load = Workspace._load_index
+
+    def counted(workspace, *, verify):
+        loads.append(workspace.version())
+        return load(workspace, verify=verify)
+
+    monkeypatch.setattr(Workspace, "_load_index", counted)
+    args = {
+        "question": "What is the threshold?",
+        "plan": {"queries": [{"select": "lines", "where": {"grep": "threshold"}}]},
+    }
+    call = "recall_conversation_evidence"
+    database = path / "kite.sqlite3"
+    async with Client(create_workspace_server(path), raise_exceptions=False) as client:
+        for _ in range(3):
+            reply = await client.call_tool(call, args)
+            assert not reply.is_error and "threshold of five" in reply.content[0].text
+        assert loads == [1]
+        with closing(sqlite3.connect(database, timeout=1)) as db, db:
+            db.execute("UPDATE memory SET xml=?", (b"<invalid />",))
+        corrupted = await client.call_tool(call, args)
+        assert corrupted.is_error and "integrity_error:" in corrupted.content[0].text
+        assert loads == [1, 1]
+        (replacement / "kite.sqlite3").replace(database)
+        updated = await client.call_tool(call, args)
+        assert not updated.is_error and "threshold of three" in updated.content[0].text
+        assert "threshold of five" not in updated.content[0].text
+        assert loads == [1, 1, 1]
 
 
 async def test_citations_preserve_revision_and_deduplicate_context(tmp_path, capsys):

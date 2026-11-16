@@ -11,6 +11,7 @@ from hashlib import sha256
 from itertools import islice
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Lock
 from uuid import uuid4
 
 from .change_graph import GraphActivity, graph_structure, vocabulary_at_commit
@@ -169,6 +170,37 @@ def _input_sources(raw: str) -> Iterator[tuple]:
                 yield source_identity(value)
 
 
+def _workspace_path(directory: Path, *, read_only: bool) -> tuple[Path, Path, os.stat_result]:
+    directory = directory.expanduser().resolve()
+    if read_only:
+        if not directory.is_dir():
+            raise ToolError("not_found", "workspace directory was not found")
+    else:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.name == "posix" and (directory.stat().st_mode & 0o077):
+        raise ToolError("permission_denied", "workspace directory must be owner-only (chmod 700)")
+    path = directory / "kite.sqlite3"
+    if path.is_symlink():
+        raise ToolError("permission_denied", "workspace database cannot be a symbolic link")
+    if read_only:
+        if not path.is_file():
+            raise ToolError("not_found", "workspace database was not found")
+    else:
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        os.close(fd)
+    status = path.stat()
+    if os.name == "posix" and (status.st_mode & 0o077):
+        raise ToolError("permission_denied", "workspace database must be owner-only")
+    return directory, path, status
+
+
+def _connect_workspace(path: Path, *, read_only: bool, shared: bool = False):
+    location = path.as_uri() + "?mode=ro" if read_only else path
+    db = sqlite3.connect(location, timeout=15, uri=read_only, check_same_thread=not shared)
+    db.row_factory = sqlite3.Row
+    return db
+
+
 class Workspace:
     def __init__(
         self,
@@ -187,47 +219,12 @@ class Workspace:
     @classmethod
     @contextmanager
     def open(cls, directory: Path, *, read_only: bool = False):
-        directory = directory.expanduser().resolve()
-        if read_only:
-            if not directory.is_dir():
-                raise ToolError("not_found", "workspace directory was not found")
-        else:
-            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if os.name == "posix" and (directory.stat().st_mode & 0o077):
-            raise ToolError(
-                "permission_denied", "workspace directory must be owner-only (chmod 700)"
-            )
-        path = directory / "kite.sqlite3"
-        if path.is_symlink():
-            raise ToolError("permission_denied", "workspace database cannot be a symbolic link")
-        if read_only:
-            if not path.is_file():
-                raise ToolError("not_found", "workspace database was not found")
-        else:
-            fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
-            os.close(fd)
-        if os.name == "posix" and (path.stat().st_mode & 0o077):
-            raise ToolError("permission_denied", "workspace database must be owner-only")
-        location = path.as_uri() + "?mode=ro" if read_only else path
-        db = sqlite3.connect(location, timeout=15, uri=read_only)
-        db.row_factory = sqlite3.Row
+        directory, path, _ = _workspace_path(directory, read_only=read_only)
+        db = _connect_workspace(path, read_only=read_only)
         try:
             if read_only:
                 db.execute("BEGIN")
-                tables = {
-                    row[0]
-                    for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                }
-                if not {"memory", "revisions"} <= tables:
-                    raise ToolError("integrity_error", "workspace is missing its memory tables")
-                if not db.execute("SELECT 1 FROM memory WHERE singleton=1").fetchone():
-                    raise ToolError("integrity_error", "workspace is missing its memory snapshot")
-                if not {"topic_hierarchy", "index_seal"} <= tables:
-                    raise ToolError(
-                        "workspace_upgrade_required",
-                        "run kite-tool integrity to upgrade the workspace",
-                    )
-                yield cls(db, directory, read_only=True, has_source_seal="source_seal" in tables)
+                yield cls._read_view(db, directory)
                 return
             db.execute("PRAGMA foreign_keys=ON")
             db.execute("PRAGMA journal_mode=DELETE")
@@ -255,6 +252,19 @@ class Workspace:
             db.commit()
         finally:
             db.close()
+
+    @classmethod
+    def _read_view(cls, db: sqlite3.Connection, directory: Path):
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not {"memory", "revisions"} <= tables:
+            raise ToolError("integrity_error", "workspace is missing its memory tables")
+        if not db.execute("SELECT 1 FROM memory WHERE singleton=1").fetchone():
+            raise ToolError("integrity_error", "workspace is missing its memory snapshot")
+        if not {"topic_hierarchy", "index_seal"} <= tables:
+            raise ToolError(
+                "workspace_upgrade_required", "run kite-tool integrity to upgrade the workspace"
+            )
+        return cls(db, directory, read_only=True, has_source_seal="source_seal" in tables)
 
     @classmethod
     @contextmanager
@@ -1354,3 +1364,77 @@ class Workspace:
             ),
         )
         return {**receipt, "deleted_revisions": len(records), "operation_id": approval}
+
+
+class WorkspaceReader:
+    """Reuse a verified index across short read transactions in one service."""
+
+    def __init__(self, directory: Path):
+        self.directory = directory
+        self._lock = Lock()
+        self._db: sqlite3.Connection | None = None
+        self._file: tuple | None = None
+        self._verified: tuple[int, Index] | None = None
+
+    @staticmethod
+    def _file_stamp(path: Path, status: os.stat_result) -> tuple:
+        return (
+            path,
+            status.st_dev,
+            status.st_ino,
+            status.st_size,
+            status.st_mtime_ns,
+            status.st_ctime_ns,
+        )
+
+    def _discard(self) -> None:
+        if self._db is not None:
+            self._db.close()
+        self._db = self._file = self._verified = None
+
+    def close(self) -> None:
+        with self._lock:
+            self._discard()
+
+    @contextmanager
+    def open(self):
+        # MCP runs sync handlers in worker threads. Only one uses this
+        # connection at a time, and no read transaction survives a reply.
+        with self._lock:
+            try:
+                directory, path, status = _workspace_path(self.directory, read_only=True)
+                stamp = self._file_stamp(path, status)
+                if self._db is None or stamp != self._file:
+                    self._discard()
+                    self._db = _connect_workspace(path, read_only=True, shared=True)
+                    self._file = stamp
+                db = self._db
+                generation = db.execute("PRAGMA data_version").fetchone()[0]
+                db.execute("BEGIN")
+                reusable = False
+                try:
+                    view = Workspace._read_view(db, directory)
+                    # Match the connection's generation on both sides of
+                    # establishing the snapshot. Share only the journal mode
+                    # used by workspace writers.
+                    reusable = (
+                        db.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+                        and db.execute("PRAGMA data_version").fetchone()[0] == generation
+                        and self._file_stamp(path, path.stat()) == stamp
+                    )
+                    if reusable and self._verified and self._verified[0] == generation:
+                        view._snapshot_index = self._verified[1]
+                    else:
+                        self._verified = None
+                    yield view
+                    if reusable and view._snapshot_index is not None:
+                        self._verified = (generation, view._snapshot_index)
+                finally:
+                    db.rollback()
+                    if not reusable:
+                        self._discard()
+            except (OSError, sqlite3.Error, ToolError):
+                # A vanished or damaged workspace must not leave a cached
+                # snapshot available on a later request.
+                self._discard()
+                raise

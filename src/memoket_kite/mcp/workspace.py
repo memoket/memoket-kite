@@ -2,6 +2,7 @@
 
 import json
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 from itertools import zip_longest
 from pathlib import Path
 from secrets import token_hex
@@ -75,7 +76,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         symbolic_context,
     )
     from memoket_kite.tools.workflow import saved_symbolic_plan
-    from memoket_kite.tools.workspace import Workspace
+    from memoket_kite.tools.workspace import WorkspaceReader
 
     CitationList = Annotated[
         list[Annotated[str, Field(min_length=1, max_length=1024)]],
@@ -83,9 +84,18 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
     ]
     receipts: OrderedDict[str, tuple[str, ...]] = OrderedDict()
     receipt_lock = Lock()
+    reader = WorkspaceReader(workspace_path)
+
+    @asynccontextmanager
+    async def lifespan(_server):
+        try:
+            yield
+        finally:
+            reader.close()
 
     server = MCPServer(
         "KITE Conversation Memory",
+        lifespan=lifespan,
         instructions=(
             "For tasks that depend on previous conversations, use reuse_conversation_query when "
             "trusted project guidance or the user names a saved query. Otherwise call "
@@ -202,7 +212,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                     seen = receipts.get(after_receipt)
                 if seen is None:
                     raise ToolError("not_found", "evidence receipt expired. Recall without it")
-            with Workspace.open(workspace_path, read_only=True) as workspace:
+            with reader.open() as workspace:
                 if workspace_version is not None and workspace_version != workspace.version():
                     raise ToolError("stale_snapshot", "recall again against the current workspace")
                 if plan is None:
@@ -303,7 +313,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         the requested turns whole.
         """
         try:
-            with Workspace.open(workspace_path, read_only=True) as workspace:
+            with reader.open() as workspace:
                 if workspace_version is not None and workspace_version != workspace.version():
                     raise ToolError("stale_snapshot", "recall again against the current workspace")
                 window = read_evidence(
@@ -340,7 +350,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             if value is not None
         }
         try:
-            with Workspace.open(workspace_path, read_only=True) as workspace:
+            with reader.open() as workspace:
                 saved = saved_symbolic_plan(workspace, run_id)
                 result = reuse_symbolic_context(
                     workspace,

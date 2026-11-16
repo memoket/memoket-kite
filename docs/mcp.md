@@ -4,6 +4,10 @@
 
 Install KITE with the `agent,mcp` extras to serve a single existing workspace.
 The configured workspace applies to the read-only tools.
+The local server reuses its verified Codebook while the database is unchanged.
+Each request reads a new SQLite transaction. A commit or file replacement
+invalidates the index before the next reuse, and the server releases its read
+transaction between requests so an import can commit while it is idle.
 
 - `recall_conversation_evidence` executes a locally compiled KITE plan and
   returns original turns with citations. Omit `plan` to prepare bounded

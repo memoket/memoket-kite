@@ -71,6 +71,8 @@ def describe(events):
     turn_start = turn_end = None
     pending = {}
     commands = {}
+    calls = {}
+    observed = {"command_execution": commands, "mcp_tool_call": calls}
     for seconds, event in events:
         kind = event.get("type")
         if kind == "turn.started":
@@ -79,13 +81,13 @@ def describe(events):
             turn_end = seconds
         elif kind in {"item.started", "item.completed"}:
             item = event["item"]
-            if item["type"] != "command_execution" or "id" not in item:
+            if item["type"] not in observed or "id" not in item:
                 continue
-            identity = item["id"]
+            identity = (item["type"], item["id"])
             if kind == "item.started":
                 pending[identity] = seconds
             elif identity in pending:
-                commands[identity] = (pending.pop(identity), seconds)
+                observed[item["type"]][item["id"]] = (pending.pop(identity), seconds)
     timing = {
         "startup_seconds": turn_start,
         "turn_seconds": turn_end - turn_start
@@ -93,6 +95,8 @@ def describe(events):
         else None,
         "shell_seconds": interval_seconds(commands.values()),
         "timed_shell_calls": len(commands),
+        "mcp_seconds": interval_seconds(calls.values()),
+        "timed_mcp_calls": len(calls),
     }
     if commands and timing["turn_seconds"] is not None:
         timing["before_first_shell_seconds"] = max(

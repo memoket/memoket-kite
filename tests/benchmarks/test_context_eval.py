@@ -141,8 +141,10 @@ def test_timing_observes_large_events_and_does_not_double_count_shell_intervals(
         (1, {"type": "turn.started"}),
         (2, {"type": "item.started", "item": {"type": "command_execution", "id": "1"}}),
         (3, {"type": "item.started", "item": {"type": "command_execution", "id": "2"}}),
+        (3, {"type": "item.started", "item": {"type": "mcp_tool_call", "id": "1"}}),
         (4, {"type": "item.completed", "item": {"type": "command_execution", "id": "1"}}),
         (5, {"type": "item.completed", "item": {"type": "command_execution", "id": "2"}}),
+        (6, {"type": "item.completed", "item": {"type": "mcp_tool_call", "id": "1"}}),
         (7, {"type": "turn.completed"}),
     ]
     timing, intervals = codex_timing.describe(observed)
@@ -152,6 +154,8 @@ def test_timing_observes_large_events_and_does_not_double_count_shell_intervals(
         "turn_seconds": 6,
         "shell_seconds": 3,
         "timed_shell_calls": 2,
+        "mcp_seconds": 3,
+        "timed_mcp_calls": 1,
         "before_first_shell_seconds": 1,
         "after_last_shell_seconds": 2,
     }
