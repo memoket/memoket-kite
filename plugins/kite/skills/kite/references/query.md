@@ -37,8 +37,11 @@ wording identifies the project.
 Use `prefer_labels` for relevant listed Topic, Entity and Facet codes that can
 rank matching original lines. Use `where` for required constraints. KITE can
 also add ranking labels when both the question and a text branch match a
-label in scope. The JSON output includes the executed plan and per-axis
-candidate counts and bonuses. A zero bonus means the axis changed no scores.
+label in scope. Text in `where.near` can identify a label. When the matched
+nearby turn carries that annotation, it can rank the original value turn.
+The JSON output includes the executed plan, per-axis counts and bonuses.
+`nearby_hits` counts candidates supported only by a matching nearby turn on
+that axis. A zero bonus means the axis changed no scores.
 When a question asks about an approved decision or a final review, KITE can
 add a preference for approval, rejection, and removal wording in text
 stages bound to an earlier stage with an available `prefer` slot. Compare `compiled_plan` and

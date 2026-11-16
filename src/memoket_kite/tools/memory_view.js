@@ -28,7 +28,7 @@
       query: 'Query', subquestion: 'Search subquestion', queryLink: 'Search path',
       retrievalPath: 'How this line was found', retrievalReplay: 'Replay search',
       symbolicSearch: 'Symbolic search', symbolicHit: 'Symbolic match', symbolicChange: 'Date change',
-      symbolicFilter: 'Filter', symbolicRanking: 'Ranking', symbolicExecuted: 'Executed plan', symbolicCompiled: 'Compiled plan',
+      symbolicNearbyHits: 'Supported by nearby turns', symbolicFilter: 'Filter', symbolicRanking: 'Ranking', symbolicExecuted: 'Executed plan', symbolicCompiled: 'Compiled plan',
       symbolicRecordings: 'recordings in scope', symbolicDateFrom: 'From', symbolicDateThrough: 'Through',
       symbolicProjectBound: 'Project matched', symbolicProjectAmbiguous: 'Multiple matching projects',
       symbolicProjectUnassigned: 'Anchor recordings have no project assignment',
@@ -129,7 +129,7 @@
       query: '检索请求', subquestion: '检索子问题', queryLink: '检索路径',
       retrievalPath: '原文如何命中', retrievalReplay: '重播检索',
       symbolicSearch: '符号检索', symbolicHit: '符号命中', symbolicChange: '日期变更',
-      symbolicFilter: '筛选', symbolicRanking: '加权', symbolicExecuted: '实际执行计划', symbolicCompiled: '编译计划',
+      symbolicNearbyHits: '由邻近原文支撑', symbolicFilter: '筛选', symbolicRanking: '加权', symbolicExecuted: '实际执行计划', symbolicCompiled: '编译计划',
       symbolicRecordings: '份录制参与检索', symbolicDateFrom: '起始日期', symbolicDateThrough: '截止日期',
       symbolicProjectBound: '命中项目', symbolicProjectAmbiguous: '命中多个项目',
       symbolicProjectUnassigned: '线索录制缺少项目归属',
@@ -1603,6 +1603,9 @@
             item.append(element('p', `${step.name} · ${t('symbolicProjectAmbiguous')} ${project.projects.join(' / ')}`));
           } else if (project?.unassigned_recordings) {
             item.append(element('p', `${step.name} · ${t('symbolicProjectUnassigned')}`));
+          }
+          if (step.nearby_hits) {
+            item.append(element('p', `${t('symbolicNearbyHits')} · ${number.format(step.nearby_hits)}`));
           }
           for (const label of step.labels || []) {
             const node = (step.matched_labels || []).includes(label) && symbolicIndexNode(step, label);

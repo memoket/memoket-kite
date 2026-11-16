@@ -826,7 +826,11 @@ def _add_query_label_preferences(plan, index, active_units, question):
         where = branch["where"]
         patterns = [
             re.compile(pattern, re.I)
-            for pattern in (where.get("grep"), *where.get("grep_all", ()))
+            for pattern in (
+                where.get("grep"),
+                *where.get("grep_all", ()),
+                where.get("near", {}).get("grep"),
+            )
             if pattern
         ]
         labels = dict(branch.get("prefer_labels", {}))

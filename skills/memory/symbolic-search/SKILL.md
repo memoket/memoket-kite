@@ -76,7 +76,9 @@ constraint on the cited turn itself.
 Set `include_anchor` to true if that same cited turn can satisfy both patterns.
 Use `prefer_labels` for optional Topic, Entity and Facet ranking. Its values
 are exact label codes from the compiler vocabulary, grouped by axis. The
-trace reports which candidate lines were supported on each axis.
+trace reports which candidate lines were supported on each axis. A matched
+`near` turn can support a label. `nearby_hits` counts candidates with label
+support on the matched nearby turn alone.
 To continue across meetings in the project that contains a distinctive clue,
 use `where.units: "$anchor.project_units"` in a later named stage. The anchor
 must match recordings assigned to one project. The trace reports the resolved

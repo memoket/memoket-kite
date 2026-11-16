@@ -8197,6 +8197,90 @@ def test_symbolic_near_option_matches_subject_in_the_cited_turn(work):
     call("symbolic", payload=plan, error="invalid_plan")
 
 
+def test_symbolic_near_ranks_value_by_the_matched_subject_indexes(work):
+    directory, call = work
+    sources = []
+    for recording, day, label_segment in (
+        ("untagged", "2026-01-01", None),
+        ("different-turn", "2026-01-01", "agenda"),
+        ("indexed", "2026-01-01", "subject"),
+        ("later", "2026-02-01", "subject"),
+    ):
+        entry = {
+            "source": {
+                "format": "conversation",
+                "payload": {
+                    "conversation_id": recording,
+                    "source": "text",
+                    "source_date": day,
+                    "metadata": {"source_reference": recording},
+                    "segments": [
+                        {"segment_id": "subject", "text": "Dock lead: time for returns routing."},
+                        {"segment_id": "value", "text": "Start with the narrow carton."},
+                        {"segment_id": "agenda", "text": "Any other business?"},
+                    ],
+                },
+            },
+        }
+        if label_segment:
+            entry["annotations"] = {
+                "facts": [],
+                "entity_aliases": [{"name": "Dockmaster", "aliases": ["Dock lead"]}],
+                "index_spans": [
+                    {
+                        "segment_ids": [label_segment],
+                        "topics": ["returns routing"],
+                        "entities": ["Dockmaster"],
+                        "facets": {"event": ["returns routing"]},
+                    }
+                ],
+            }
+        sources.append(entry)
+    call("index-sources", payload={"sources": sources})
+    plan = {
+        "queries": [
+            {
+                "select": "lines",
+                "where": {
+                    "grep": "carton",
+                    "near": {"grep": "Dock lead|returns routing", "turns": 1},
+                },
+            }
+        ]
+    }
+    result = call(
+        "symbolic",
+        "--limit",
+        "1",
+        "--end-date",
+        "2026-01-31",
+        "--save",
+        "near-indexes",
+        payload={
+            "question": "Which carton did the Dock lead choose for returns routing?",
+            "plan": plan,
+        },
+    )
+    assert result["compiled_plan"] == plan
+    assert result["plan"]["queries"][0]["prefer_labels"] == {
+        "topics": ["returns_routing"],
+        "entities": ["dockmaster"],
+        "event": ["returns_routing"],
+    }
+    assert result["branch_coverage"] == [{"query": 0, "matched_lines": 3, "quoted_lines": 1}]
+    evidence = [line for span in result["spans"] for line in span["evidence"]]
+    assert {line["conversation_id"] for line in evidence} == {"indexed"}
+    assert [(line["segment_id"], line["role"]) for line in evidence] == [
+        ("subject", "nearby_match"),
+        ("value", "symbolic_match"),
+    ]
+    ranked = [step for step in result["trace"] if step["stage"] == "prefer_labels"]
+    assert {step["atom"] for step in ranked} == {"topics", "entities", "event"}
+    assert all(step["hits"] == step["nearby_hits"] == 1 and step["bonus"] > 0 for step in ranked)
+    graph = viewer._snapshot(directory, [], run_id="near-indexes")
+    assert graph["search_trace"]["symbolic"]["indexes"] == ranked
+
+
 def test_symbolic_followup_keeps_changed_and_retained_turns(work, monkeypatch):
     _, call = work
     old = {

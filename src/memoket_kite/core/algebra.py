@@ -1026,6 +1026,7 @@ def execute(
                         rank_patterns.extend(_grep_branches(pattern, rx))
                 except re.error:
                     ids = set()
+            nearby_support = {}
             if w.near:
                 pattern, radius = w.near
                 rx = re.compile(pattern, re.I)
@@ -1044,6 +1045,7 @@ def execute(
                         }
                         if supporting:
                             matched.add(line)
+                            nearby_support[line] = supporting
                             trace.nearby_line_matches.setdefault(line, set()).update(supporting)
                         if w.near_include_anchor and rx.search(store.lines[line].text):
                             matched.add(line)
@@ -1074,17 +1076,28 @@ def execute(
                     scores[i] += weight
             if preferences:
                 trace.log("prefer", q=qi, hits=len(preferred_ids))
+            label_scope = ids
+            if sq.prefer_labels and nearby_support:
+                label_scope = ids | set().union(*nearby_support.values())
             for axis, labels in sorted(sq.prefer_labels.items()):
-                label_lines = {
-                    label: {
+                label_lines = {}
+                direct = set()
+                for label in labels:
+                    annotated = {
                         line
                         for span in store.line_annotation_postings.get((axis, label), ())
                         for line in store.line_annotation_sources[span]
-                        if line in ids
+                        if line in label_scope
                     }
-                    for label in labels
-                }
+                    direct_matches = annotated & ids
+                    direct.update(direct_matches)
+                    label_lines[label] = direct_matches | {
+                        line
+                        for line, support in nearby_support.items()
+                        if not annotated.isdisjoint(support)
+                    }
                 supporting_lines = set().union(*label_lines.values())
+                nearby_hits = len(supporting_lines - direct)
                 matched = len(supporting_lines)
                 weight = 1 - matched / max(1, len(ids))
                 for line in supporting_lines:
@@ -1100,6 +1113,7 @@ def execute(
                     hits=matched,
                     bonus=round(weight, 4) if matched else 0,
                     target="line_annotations",
+                    **({"nearby_hits": nearby_hits} if nearby_hits else {}),
                 )
             if pack_v2 and allowed_line_units is not None and scores:
                 top = sorted(scores, key=lambda i: (-scores[i], i))[: max(2, line_branch_limit)]
