@@ -275,6 +275,9 @@ with a fixed amount of user input. Count any extra evaluator prompts
 separately from actual user messages. For claims about automatic compilation,
 capture the compiler request, response, runtime and token usage from the same
 run. A comparison using saved plans measures execution after compilation.
+Keep timeouts in the completion counts and report reruns separately. A timed
+out trial can retain observed tools and their results, while its final answer
+and complete token usage remain unavailable.
 
 For execution tasks that allow citation ranges, enable `--citation-ranges`
 before running either arm. A range such as `meeting#L15 through meeting#L18`

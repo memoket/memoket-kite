@@ -11,6 +11,12 @@ import time
 from contextlib import suppress
 
 
+class ObservationTimeout(subprocess.TimeoutExpired):
+    def __init__(self, command, timeout, events):
+        super().__init__(command, timeout)
+        self.events = events
+
+
 def read_events(command, prompt, env, start, *, timeout=180):
     """Timestamp completed lines as they reach the benchmark process."""
     deadline = start + timeout
@@ -46,10 +52,10 @@ def read_events(command, prompt, env, start, *, timeout=180):
                     if time.perf_counter() >= deadline:
                         break
                 raise subprocess.TimeoutExpired(command, timeout)
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as exc:
                 with suppress(ProcessLookupError):
                     os.killpg(process.pid, signal.SIGKILL)
-                raise
+                raise ObservationTimeout(command, timeout, observed) from exc
 
 
 def interval_seconds(intervals):

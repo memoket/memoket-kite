@@ -157,6 +157,43 @@ def test_timing_observes_large_events_and_does_not_double_count_shell_intervals(
     }
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="timed pipe observation uses POSIX selectors")
+def test_codex_timeout_preserves_observed_mcp_result_without_scoring_completion(
+    monkeypatch, tmp_path
+):
+    read_events = codex_timing.read_events
+    call = {"type": "mcp_tool_call", "tool": "reuse_conversation_query", "status": "completed"}
+    observed = [
+        {"type": "thread.started", "thread_id": "timeout-session"},
+        {"type": "turn.started"},
+        {"type": "item.completed", "item": call},
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "partial"}},
+    ]
+    code = f"import time; print({chr(10).join(map(json.dumps, observed))!r}, flush=True); time.sleep(60)"
+
+    def short_trial(command, prompt, env, start):
+        return read_events([sys.executable, "-c", code], prompt, env, start, timeout=1)
+
+    monkeypatch.setattr(codex_timing, "read_events", short_trial)
+    result = context_eval.codex_trial(
+        "codex",
+        "model",
+        tmp_path,
+        "Run the task",
+        trace_timing=True,
+        record_mcp_output=True,
+        record_tool_output=True,
+        persist_session=True,
+    )
+
+    assert result["error"] == "timeout"
+    assert result["usage"] is result["answer"] is result["exit_code"] is None
+    assert result["session_id"] == "timeout-session"
+    assert result["timing"]["turn_seconds"] is None
+    assert result["commands"] == []
+    assert result["mcp_calls"] == [call]
+
+
 def test_comparison_benchmark_uses_disjoint_recording_windows(tmp_path):
     corpus = tmp_path / "transcripts"
     corpus.mkdir()

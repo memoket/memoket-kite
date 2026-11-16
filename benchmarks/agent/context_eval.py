@@ -422,6 +422,7 @@ def codex_trial(
         "-",
     ]
     start = time.perf_counter()
+    timed_out = False
     try:
         if trace_timing:
             from . import codex_timing
@@ -433,16 +434,14 @@ def codex_trial(
             )
             exit_code = result.returncode
             raw_events = [(None, line) for line in result.stdout.splitlines()]
-    except subprocess.TimeoutExpired:
-        return {
-            "seconds": time.perf_counter() - start,
-            "usage": None,
-            "answer": None,
-            "command_calls": None,
-            "tool_stdout_bytes": None,
-            "error": "timeout",
-            "exit_code": None,
-        }
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        exit_code = None
+        raw_events = (
+            exc.events
+            if trace_timing and isinstance(exc, codex_timing.ObservationTimeout)
+            else [(None, line) for line in (exc.stdout or b"").splitlines()]
+        )
     usage = answer = error = session_id = None
     calls = stdout_bytes = 0
     commands = []
@@ -481,7 +480,10 @@ def codex_trial(
                                 **({"event_id": item.get("id")} if trace_timing else {}),
                             }
                         )
-    if usage is None and error is None:
+    if timed_out:
+        usage = answer = None
+        error = "timeout"
+    elif usage is None and error is None:
         error = "no completed Codex turn"
     timing = None
     if trace_timing:
