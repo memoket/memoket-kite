@@ -629,6 +629,85 @@ async def test_followup_keeps_a_direct_citation_handle_and_omits_incidental_ones
         assert "[design#approved]" not in outside.content[0].text
 
 
+async def test_followup_recovers_an_already_quoted_nonleading_citation(tmp_path, capsys):
+    workspace = tmp_path / "workspace"
+    originals = {
+        "review-a": "The access review used a square violet marker.",
+        "review-b": "The approved trial temperature is 24 degrees.",
+        "review-c": "The trial limit is 16 units.",
+    }
+    sources = [
+        {
+            "source": {
+                "format": "conversation",
+                "payload": {
+                    "conversation_id": name,
+                    "source": "text",
+                    "metadata": {"source_reference": name, "project": "Cobalt"},
+                    "segments": [{"segment_id": "turn", "text": text}],
+                },
+            }
+        }
+        for name, text in originals.items()
+    ]
+    path = tmp_path / "input.json"
+    path.write_text(json.dumps({"sources": sources}), encoding="utf-8")
+    assert main(["--workspace", str(workspace), "index-sources", "--input", str(path)]) == 0
+    capsys.readouterr()
+
+    async with Client(create_workspace_server(workspace), raise_exceptions=False) as client:
+        tool = "recall_conversation_evidence"
+        initial = await client.call_tool(
+            tool,
+            {
+                "question": "Find the policy for the project with the square violet marker.",
+                "anchor_quote": "square violet marker",
+                "plan": {
+                    "queries": [
+                        {
+                            "select": "lines",
+                            "where": {"grep": "marker|trial"},
+                            "prefer": ["marker|approved"],
+                        }
+                    ]
+                },
+            },
+        )
+        text = initial.content[0].text
+        assert not initial.is_error and "Complete indexed recording scope for Cobalt" in text
+        assert "[review-c#turn] The trial limit is 16 units." in text
+        token = re.search(r"Evidence receipt ([a-f0-9]{24})\.", text)[1]
+        plan = {"queries": [{"select": "lines", "where": {"grep": "limit"}}]}
+        next_result = await client.call_tool(tool, {"after_receipt": token, "plan": plan})
+        assert not next_result.is_error, next_result.content
+        text = next_result.content[0].text
+        assert "Earlier direct matches still in this search: [review-c#turn]." in text
+        assert "3 already quoted with the receipt" in text
+        assert "No new original turns" in text
+        assert "16 units" not in text and "[review-a#turn]" not in text
+        missing = await client.call_tool(tool, {"plan": plan})
+        assert missing.is_error and "submit a question" in missing.content[0].text
+
+        # Coverage must be checked against current indexed turns, including ones
+        # the follow-up plan and its older receipt do not match or contain.
+        extra = {
+            "format": "conversation",
+            "payload": {
+                "source": "text",
+                "conversation_id": "review-d",
+                "metadata": {"source_reference": "review-d", "project": "Cobalt"},
+                "segments": [{"segment_id": "turn", "text": "A new maintenance note."}],
+            },
+        }
+        path.write_text(json.dumps({"sources": [{"source": extra}]}), encoding="utf-8")
+        assert main(["--workspace", str(workspace), "index-sources", "--input", str(path)]) == 0
+        capsys.readouterr()
+        changed = await client.call_tool(tool, {"after_receipt": token, "plan": plan})
+        assert not changed.is_error
+        assert "Workspace v2" in changed.content[0].text
+        assert "Complete indexed recording scope" not in changed.content[0].text
+
+
 @pytest.mark.parametrize(
     ("term", "label", "quote"),
     [

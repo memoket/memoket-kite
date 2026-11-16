@@ -643,6 +643,7 @@ class Trace:
     line_alternatives: dict[int, tuple[str, float]] = field(default_factory=dict)
     selected_line_branches: dict[str, int] = field(default_factory=dict)
     line_binding_head: str | None = None
+    previously_delivered_heads: dict[int, str] = field(default_factory=dict)
 
     def log(self, stage: str, **kw):
         self.stages.append({"stage": stage, **kw})
@@ -1212,6 +1213,8 @@ def execute(
                 ranked = sorted(scores, key=lambda i: (-scores[i], i))
                 if delivered_line_ids:
                     trace.line_binding_head = ranked[0]
+                    if ranked[0] in delivered_line_ids:
+                        trace.previously_delivered_heads[qi] = ranked[0]
                 new_heads = islice((i for i in ranked if i not in delivered_line_ids), 2)
                 subquery_top.append([f"L::{i}" for i in new_heads])
                 if line_branch_limit:
@@ -1784,6 +1787,8 @@ def execute_plan(
             stage_details["matched_recordings"] = len(units)
             if 0 in st_trace.line_matches:
                 trace.line_matches[i] = st_trace.line_matches[0]
+            if 0 in st_trace.previously_delivered_heads:
+                trace.previously_delivered_heads[i] = st_trace.previously_delivered_heads[0]
             if name in project_anchors:
                 projects = {unit_projects[unit] for unit in units if unit in unit_projects}
                 if len(projects) == 1 and all(unit in unit_projects for unit in units):

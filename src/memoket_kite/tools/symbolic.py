@@ -2070,8 +2070,10 @@ def _display_references(pack):
     return references
 
 
-def _complete_recording_scope(index, units, spans, trace, unit_projects, compiled):
-    """Report completeness only when the quotes contain every indexed turn in scope."""
+def _complete_recording_scope(
+    index, units, spans, trace, unit_projects, compiled, delivered_line_ids=frozenset()
+):
+    """Require every indexed turn in scope in this pack or its evidence receipt."""
     project = compiled.get("selected_project")
     bindings = [step["project_binding"] for step in trace if "project_binding" in step]
     if bindings and all(binding["status"] == "resolved" for binding in bindings):
@@ -2081,17 +2083,20 @@ def _complete_recording_scope(index, units, spans, trace, unit_projects, compile
             units = {unit for unit in units if unit_projects.get(unit) == project}
     if not units or not (project or compiled["units"]):
         return None
-    shown = {line["source_line_id"] for span in spans for line in span["evidence"]}
+    current = {line["source_line_id"] for span in spans for line in span["evidence"]}
+    shown = current | delivered_line_ids
     if len(units) > len(shown):
         return None
     lines = index.store.lines_by_unit
     count = sum(len(lines[unit]) for unit in units)
     if count > len(shown) or not all(shown.issuperset(lines[unit]) for unit in units):
         return None
+    earlier = count - sum(ref in current for unit in units for ref in lines[unit])
     return {
         "recordings": len(units),
         "turns": count,
         "revisions": sorted({index.revisions[unit]["checksum"] for unit in units}),
+        **({"previously_quoted_turns": earlier} if earlier else {}),
         **({"project": project} if project else {}),
     }
 
@@ -2107,12 +2112,20 @@ def _complete_scope_message(pack):
         for line in span["evidence"]
         if line["revision_checksum"] in revisions
     }
-    if len(quoted) != coverage["turns"]:
+    earlier = coverage.get("previously_quoted_turns", 0)
+    if len(quoted) + earlier != coverage["turns"]:
         return None
     project = coverage.get("project")
     scope = f" for {' '.join(project.split())}" if project else ""
     turns = coverage["turns"]
     recordings = coverage["recordings"]
+    if earlier:
+        return (
+            f"Complete indexed recording scope{scope}: all {turns} original "
+            f"{'turn' if turns == 1 else 'turns'} from {recordings} "
+            f"{'recording' if recordings == 1 else 'recordings'} covered, "
+            f"{earlier} already quoted with the receipt."
+        )
     return (
         f"Complete indexed recording scope{scope}: all {turns} original "
         f"{'turn' if turns == 1 else 'turns'} from {recordings} "
@@ -3000,8 +3013,31 @@ def execute_source_plan(
             quote_bytes -= sum(repeats.values())
         omitted = old_matches | repeats.keys()
         if omitted:
+            project_anchors = {step["name"] for step in trace_steps if "project_binding" in step}
+            targets = (
+                [
+                    i
+                    for i, stage in enumerate(plan["stages"])
+                    if stage.get("name") not in project_anchors
+                ]
+                if "stages" in plan
+                else list(range(len(plan["queries"])))
+            )
+            target_matches = old_matches.intersection(
+                line
+                for executed in traces
+                for i in targets
+                for line in executed.line_matches.get(i, ())
+            )
+            ranked = [
+                executed.previously_delivered_heads[i]
+                for i in targets
+                for executed in traces
+                if i in executed.previously_delivered_heads
+            ]
+            candidates = dict.fromkeys((*ranked, *delivered_lead_ids))
             leads = []
-            for ref in (line for line in delivered_lead_ids if line in old_matches):
+            for ref in (line for line in candidates if line in target_matches):
                 record = index.revisions[index.store.lines[ref].unit]
                 leads.append({"evidence": [_citation(record, ref, index.segments[ref])]})
                 if len(leads) == 4:
@@ -3015,6 +3051,9 @@ def execute_source_plan(
                     for line in span["evidence"]
                 },
             }
+        complete_scope = _complete_recording_scope(
+            index, active_units, spans, trace_steps, unit_projects, compiled, delivered_line_ids
+        )
     changed_checksums = {index.revisions[uid]["checksum"] for uid in changed}
     if changed_recordings is not None:
         cited = {line["revision_checksum"] for span in spans for line in span["evidence"]}

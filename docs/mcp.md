@@ -47,14 +47,18 @@ transaction between requests so an import can commit while it is idle.
   Set `neighbors` explicitly to request a specific original context window.
   All packs with original quotes include an evidence receipt. To fill a
   specific gap, pass the latest token as `after_receipt` with a focused plan.
+  Omit `question` to reuse the receipt's existing retrieval question for the
+  same task. Supply a new question when the task changes.
   When the next call supplies no project, quote anchor, date bounds, preparation
   snapshot, staged plan or plan recording filters, it carries over the receipt's project
   or quote anchor and date bounds. KITE applies that scope to the current
   workspace. Use explicit scope to change it.
   Previously delivered direct matches leave room for new evidence within
   the same quote limit. The plan still uses all matches to bind its stages.
-  A reply can cite an earlier matching turn by reference and quote previous
-  nearby subject wording when a new turn depends on it. A revised turn has
+  The reply can reference an already delivered leading match of the current
+  plan and report complete coverage when its quotes and the receipt together
+  cover the selected recordings. A nearby subject can still be quoted when
+  a new turn depends on it. A revised turn has
   a new evidence ID, so it can appear
   after a workspace update. Use `known_citations` to reread particular
   references, or omit `after_receipt` to replay all matching quotes.

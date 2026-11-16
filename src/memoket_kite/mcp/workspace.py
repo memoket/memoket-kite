@@ -40,6 +40,7 @@ class _EvidenceReceipt:
     snapshot: tuple[str, int] | None = None
     focuses: tuple[tuple[str, _CitationFocus], ...] = ()
     scope: _RecallScope = _RecallScope()
+    question: str | None = None
 
     def followup_plan(self, snapshot, citation, grep):
         from memoket_kite.tools.contracts import ToolError
@@ -144,7 +145,13 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
     reader = WorkspaceReader(workspace_path)
 
     def attach_receipt(
-        result, workspace, *, prior=_EvidenceReceipt(), parent=None, scope=_RecallScope()
+        result,
+        workspace,
+        *,
+        prior=_EvidenceReceipt(),
+        parent=None,
+        scope=_RecallScope(),
+        question=None,
     ):
         spans = result["spans"]
         delivered = [line["source_line_id"] for span in spans for line in span["evidence"]]
@@ -196,6 +203,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                         (ref, focus) for ref, focus in focuses.items() if focus.source_line in turns
                     )[-8:],
                     scope=scope,
+                    question=question,
                 )
                 if len(receipts) > 48:
                     receipts.popitem(last=False)
@@ -234,7 +242,14 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         structured_output=False,
     )
     def recall_conversation_evidence(
-        question: Annotated[str | None, Field(min_length=1, max_length=4000)] = None,
+        question: Annotated[
+            str | None,
+            Field(
+                min_length=1,
+                max_length=4000,
+                description="Retrieval question. For the same task, omit with after_receipt and plan.",
+            ),
+        ] = None,
         follow_up: Annotated[
             CitationFollowUp | None,
             Field(
@@ -359,7 +374,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         Replies with quotes include an Evidence receipt.
         Search around that cited subject by passing follow_up and after_receipt.
         For gaps across recordings, use the receipt with a focused plan. Omit
-        the project or quote anchor and dates to carry their existing scope.
+        the question and recording scope to continue the same task.
         """
         dates = {
             key: value
@@ -404,12 +419,16 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                     request, focus = prior.followup_plan(
                         workspace.snapshot_identity(), follow_up.citation, follow_up.grep
                     )
-                elif question is None:
-                    raise ToolError("invalid_input", "recall needs question or follow_up")
                 elif plan is None:
-                    if snapshot is not None or known_citations is not None or after_receipt:
+                    if (
+                        question is None
+                        or snapshot is not None
+                        or known_citations is not None
+                        or after_receipt
+                    ):
                         raise ToolError(
-                            "invalid_input", "snapshot, citations and evidence receipts need a plan"
+                            "invalid_input",
+                            "preparation needs a question; snapshots, citations and receipts need a plan",
                         )
                     return _render_preparation(
                         prepare_symbolic_question(
@@ -424,6 +443,13 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                         )
                     )
                 else:
+                    if question is None:
+                        if prior.question is None or snapshot is not None:
+                            raise ToolError(
+                                "invalid_input",
+                                "submit a question or continue its evidence receipt",
+                            )
+                        question = prior.question
                     plan = plan.copy()
                     if (
                         prior.scope != _RecallScope()
@@ -492,7 +518,15 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                 )
                 if focus is not None:
                     scope = prior.scope
-                attach_receipt(result, workspace, prior=prior, parent=after_receipt, scope=scope)
+                    question = prior.question
+                attach_receipt(
+                    result,
+                    workspace,
+                    prior=prior,
+                    parent=after_receipt,
+                    scope=scope,
+                    question=question,
+                )
         except ToolError as exc:
             raise MCPToolError(f"{exc.code}: {exc}") from exc
         return render_symbolic_context(result)
@@ -579,7 +613,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                     saved.get("selected_project"),
                     dates=tuple(sorted(result["scope"].get("recording_dates", {}).items())),
                 )
-                attach_receipt(result, workspace, scope=scope)
+                attach_receipt(result, workspace, scope=scope, question=saved.get("question"))
         except ToolError as exc:
             raise MCPToolError(f"{exc.code}: {exc}") from exc
         return render_symbolic_context(result)
