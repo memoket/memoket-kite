@@ -114,6 +114,23 @@ _NONFINAL_COMPARISON = re.compile(
     r"would|expected to|will (?:take effect|be (?:approved|confirmed)))\b",
     re.I,
 )
+_ALIAS_WORDING = re.compile(
+    r"\b(?:(?:are|is|were|was|refer(?:s)? to|denote) (?:both )?(?:the )?same "
+    r"(?:physical )?(?:place|location|site|space|room|bay|door|entrance|device|unit|asset|equipment|"
+    r"object|item|component|facility|record|account|person|team|project|product|thing)|"
+    r"also called|also known as|(?:two|both) names for|one and the same|are aliases)\b|"
+    r"(?:是|指向|指的是|说的是)同一(?:个|处|台|条|笔|项|批|座)|是一个地方|也叫|又称",
+    re.I,
+)
+_ALIAS_UNCERTAINTY = re.compile(
+    r"[?？]|是否|是不是|不一定|不(?:是|属)同一|并非同一|可能|未确认|不同(?:的)?|"
+    r"\b(?:maybe|perhaps|(?:might|may|could) be|"
+    r"(?:are|is|refer to|describe) (?:two )?(?:different|separate|distinct)|"
+    r"(?:not|never|(?:isn|aren|wasn|weren)['’]t)(?:\s+\w+){0,3}\s+(?:same|called)|"
+    r"(?:two|both) separate)\b",
+    re.I,
+)
+_ALIAS_CLAUSE = re.compile(r"(?<=[.。!！;；])\s*")
 SYMBOLIC_RECORDING_DATES = object_schema({}, {"start_date": DATE, "end_date": DATE})
 
 
@@ -1144,6 +1161,56 @@ def _comparison_subject(index, units, question):
     return axis, label, surfaces, recordings
 
 
+def _indexed_alias_evidence(index, axis, label, recordings, subjects, decisions):
+    """Find one explicit original statement linking both descriptions of a subject."""
+    store = index.store
+    left, right = (set(_tokens(store.lines[ref].text)) - _RETRIEVAL_FILLERS for ref in subjects)
+    cues = (left - right, right - left)
+    if any(len(terms) < 2 for terms in cues):
+        return None
+    plan = {
+        "queries": [
+            {
+                "select": "lines",
+                "where": {
+                    axis: [{"code": label, "closure": False}] if axis == "topics" else [label],
+                    "grep": rf"{_ALIAS_WORDING.pattern}|{_ALIAS_UNCERTAINTY.pattern}",
+                },
+            }
+        ]
+    }
+    _, trace = execute_plan(
+        store,
+        index.vocab,
+        plan,
+        budget=1,
+        allowed_line_units=recordings,
+    )
+    hits = []
+    for ref in sorted(trace.line_matches.get(0, set()) - set(subjects) - set(decisions)):
+        text = store.lines[ref].text
+        terms = set(_tokens(text))
+        if any(len(terms & description) < 2 for description in cues):
+            continue
+        if _ALIAS_UNCERTAINTY.search(text):
+            return {
+                "status": "unresolved",
+                "source_line_id": ref,
+                "plan": plan,
+                "trace": trace.stages,
+            }
+        for clause in _ALIAS_CLAUSE.split(text):
+            words = set(_tokens(clause))
+            if _ALIAS_WORDING.search(clause) and all(
+                len(words & description) >= 2 for description in cues
+            ):
+                hits.append(ref)
+                break
+    if len(hits) != 1:
+        return None
+    return {"status": "linked", "source_line_id": hits[0], "plan": plan, "trace": trace.stages}
+
+
 def _indexed_comparison(index, plan, question, active_units, limit, max_bytes):
     """Try a bounded native comparison when the planner only supplied text clues."""
     queries = plan.get("queries", ())
@@ -1212,7 +1279,7 @@ def _indexed_comparison(index, plan, question, active_units, limit, max_bytes):
         < 2
     ):
         return None
-    _, _, quoted = _pack_source_lines(
+    _, used, quoted = _pack_source_lines(
         index,
         rows,
         0,
@@ -1237,6 +1304,15 @@ def _indexed_comparison(index, plan, question, active_units, limit, max_bytes):
         "source_line_ids": [first_id, last_id],
         "subject_line_ids": subject_ids,
     }
+    if limit >= 3 and (
+        alias := _indexed_alias_evidence(
+            index, axis, label, recordings, subject_ids, detail["source_line_ids"]
+        )
+    ):
+        ref = alias["source_line_id"]
+        if used + len(index.segments[ref]["text"].encode()) <= max_bytes:
+            rows.append({"id": ref, "unit": index.store.lines[ref].unit, "role": "subject_alias"})
+            detail["alias_evidence"] = alias
     return plan, rows, trace, detail
 
 
@@ -2012,6 +2088,15 @@ def render_symbolic_context(
                     f"Indexed subject {label} ({axis}) links [{earlier_subject}] to the earlier "
                     f"decision [{refs[prior]}] and [{later_subject}] to the later decision [{refs[current]}]."
                 )
+                if (alias := step.get("alias_evidence")) and (
+                    ref := refs.get(alias["source_line_id"])
+                ):
+                    message = (
+                        "Original wording linking the two subject descriptions"
+                        if alias["status"] == "linked"
+                        else "Original wording questioning or distinguishing the two subject descriptions"
+                    )
+                    lines.append(f"{message} is at [{ref}].")
             elif not subjects and prior in refs and current in refs:
                 label = step["label"].replace("_", " ")
                 lines.append(

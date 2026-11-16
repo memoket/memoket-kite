@@ -111,8 +111,11 @@ named subject, pass `retry_index_subject: true` with the submitted question
 and plan. If a unique index subject links two explicitly confirmed turns in
 separate recordings, the execution trace shows `indexed_subject_comparison`
 and the original subject turn paired with each original decision. The pack
-describes each pair using the exact citation IDs. Otherwise the original plan
-executes.
+describes each pair using exact citation IDs. If an additional original turn
+explicitly links the two descriptions, it is quoted and traced in
+`alias_evidence`. An annotation shows where to look for the subject.
+Verify the identity in the original wording before applying a decision.
+When the comparison can't be established, the original plan executes.
 Use `prefer_labels` for optional Topic, Entity and Facet ranking. Its values
 are exact label codes from the compiler vocabulary, grouped by axis. The
 trace reports which candidate lines were supported on each axis. A matched

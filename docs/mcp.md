@@ -27,7 +27,11 @@ The configured workspace applies to the read-only tools.
   use a uniquely named index subject to find two explicitly confirmed turns
   in separate recordings. Both turns and their subject evidence must fit in
   the quote budget. The tool names the exact annotated turn that supports
-  each decision, so the reader can verify references to the same subject.
+  each decision, so the reader can verify the references. When another
+  indexed turn explicitly links both descriptions, the tool quotes that
+  turn as separate evidence. If a matched turn questions or distinguishes
+  the descriptions, the tool quotes that wording for review. Use the
+  original wording to verify what the labels refer to.
   The original submitted plan runs when the comparison is
   unresolved. Set `plan.retry_index_subject` to false to use the submitted
   plan alone.

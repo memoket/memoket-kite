@@ -30,6 +30,8 @@
       symbolicSearch: 'Symbolic search', symbolicHit: 'Symbolic match', symbolicChange: 'Date change',
       symbolicSubjectRetry: 'Retried date subject', symbolicNearbyHits: 'Supported by nearby turns', symbolicFilter: 'Filter', symbolicNearbyFilter: 'Nearby turn filter', symbolicRanking: 'Ranking', symbolicExecuted: 'Executed plan', symbolicCompiled: 'Compiled plan',
       symbolicIndexedComparison: 'Compared earlier and later decisions using the subject index',
+      symbolicAliasEvidence: 'Original wording linking the subject descriptions',
+      symbolicAliasUnresolved: 'Original wording questioning or distinguishing the subject descriptions',
       symbolicScheduleProbe: 'Supplemental date comparison', symbolicSchedulePair: 'Linked date citations returned',
       symbolicRecordings: 'recordings in scope', symbolicDateFrom: 'From', symbolicDateThrough: 'Through',
       symbolicProjectBound: 'Project matched', symbolicProjectAmbiguous: 'Multiple matching projects',
@@ -133,6 +135,8 @@
       symbolicSearch: '符号检索', symbolicHit: '符号命中', symbolicChange: '日期变更',
       symbolicSubjectRetry: '用邻近主题词重试', symbolicNearbyHits: '由邻近原文支撑', symbolicFilter: '筛选', symbolicNearbyFilter: '邻近发言筛选', symbolicRanking: '加权', symbolicExecuted: '实际执行计划', symbolicCompiled: '编译计划',
       symbolicIndexedComparison: '按主体索引比较前后决定',
+      symbolicAliasEvidence: '证明两种叫法指向同一主体的原文',
+      symbolicAliasUnresolved: '质疑或区分两种叫法的原文',
       symbolicScheduleProbe: '补查原排期和改期', symbolicSchedulePair: '返回了关联的日期引用',
       symbolicRecordings: '份录制参与检索', symbolicDateFrom: '起始日期', symbolicDateThrough: '截止日期',
       symbolicProjectBound: '命中项目', symbolicProjectAmbiguous: '命中多个项目',
@@ -1623,6 +1627,12 @@
               if (subject !== decision) row.append(' → ', link(decision));
               item.append(row);
             });
+            const alias = lines.get(step.alias_evidence?.source_line_id);
+            if (alias) {
+              const kind = step.alias_evidence.status === 'linked' ? 'symbolicAliasEvidence' : 'symbolicAliasUnresolved';
+              item.append(button(t(kind) + ' · ' + alias.conversation_id + '#' + alias.segment_id,
+                () => choose(alias), 'citation-link'));
+            }
           }
           if (code === 'schedule_pair_probe') {
             if (step.reserved) item.append(element('p', t('symbolicSchedulePair')));

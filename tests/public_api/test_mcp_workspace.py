@@ -588,6 +588,47 @@ async def test_recall_automatically_uses_one_exact_index_for_a_confirmed_compari
                 ]
             }
         )
+        dimensions = note(
+            "dimensions",
+            "Foundry",
+            "2026-04-10",
+            "The part at the relief leg and the control valve coming from the reservoir are the same size.",
+            "Keep the dimensions in the recording.",
+        )
+        cli("index-sources", value={"sources": [dimensions]})
+        assert "Original wording linking the two subject descriptions" not in await call()
+        names = note(
+            "names",
+            "Foundry",
+            "2026-04-10",
+            "The part at the relief leg and the control valve coming from the reservoir are the same device.",
+            "Keep both descriptions in the recording.",
+        )
+        cli("index-sources", value={"sources": [names]})
+        text = await call()
+        assert (
+            "Original wording linking the two subject descriptions is at [names#subject]." in text
+        )
+        assert "[names#subject] The part at the relief leg" in text
+        without_room = await call(max_bytes=receipt["quote_bytes"])
+        assert all(ref in without_room for ref in refs) and "[names#subject]" not in without_room
+        assert "[names#subject]" not in await call(limit=2)
+        contradictory = note(
+            "correction",
+            "Foundry",
+            "2026-04-11",
+            "The part at the relief leg and the control valve coming from the reservoir aren't the same device.",
+            "Keep each item's history separate.",
+        )
+        cli("index-sources", value={"sources": [contradictory]})
+        text = await call()
+        assert all(ref in text for ref in refs)
+        assert "Original wording linking the two subject descriptions" not in text
+        assert "[names#subject]" not in text
+        assert (
+            "Original wording questioning or distinguishing the two subject descriptions "
+            "is at [correction#subject]." in text
+        )
         other = note(
             "other",
             "Finishing",
