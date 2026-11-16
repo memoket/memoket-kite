@@ -7325,6 +7325,78 @@ def test_symbolic_host_quote_expands_to_saved_project_stages(work):
     }
 
 
+def test_symbolic_project_stages_skip_already_selected_lines_in_each_round(work):
+    _, call = work
+    sources = []
+    for name, text in (
+        ("anchor", "The blue latch identifies this rollout."),
+        ("shared", "Shared handoff and route notes."),
+        ("note-21", "The handoff has three checklists."),
+        ("note-89", "The route uses Gate B."),
+    ):
+        source = text_input(name, text)["source"]
+        source["payload"]["metadata"]["project"] = "Cedar"
+        sources.append({"source": source})
+    call("index-sources", payload={"sources": sources})
+    pack = call(
+        "symbolic",
+        "--limit",
+        "3",
+        payload={
+            "question": "Use the project with the blue latch. Find the handoff and route.",
+            "anchor_quote": "blue latch",
+            "plan": {
+                "queries": [
+                    {"select": "lines", "where": {"grep": term}, "prefer": ["shared"]}
+                    for term in ("handoff", "route")
+                ],
+            },
+        },
+    )
+    assert {span["evidence"][0]["conversation_id"] for span in pack["spans"]} == {
+        "anchor",
+        "shared",
+        "note-89",
+    }
+
+
+def test_symbolic_project_includes_unrepresented_outcome_wording(work):
+    _, call = work
+    sources = []
+    for name, text in (
+        ("anchor", "The copper tab identifies the project."),
+        ("discussion", "Finally, the standard sample labels came up."),
+        ("proposal", "We decided to discuss sample labels separately."),
+        ("decision", "Except sample labels, the list is approved."),
+    ):
+        source = text_input(name, text)["source"]
+        source["payload"]["metadata"]["project"] = "Cedar"
+        sources.append({"source": source})
+    call("index-sources", payload={"sources": sources})
+    pack = call(
+        "symbolic",
+        "--limit",
+        "3",
+        payload={
+            "question": "For the copper tab project, what happened to sample labels at final review?",
+            "anchor_quote": "copper tab",
+            "plan": {
+                "queries": [
+                    {
+                        "select": "lines",
+                        "where": {"grep": "sample labels"},
+                        "prefer": ["finally", "standard", "decided", "will not"],
+                    }
+                ],
+            },
+        },
+    )
+    lines = {span["evidence"][0]["conversation_id"]: span["evidence"][0] for span in pack["spans"]}
+    assert set(lines) == {"anchor", "discussion", "decision"}
+    stage = next(step for step in pack["trace"] if step.get("name") == "evidence_1")
+    assert stage["alternate_wording_line"] == lines["decision"]["source_line_id"]
+
+
 @pytest.mark.parametrize(
     "subject, proposal, outcome, question, preference",
     [

@@ -52,6 +52,10 @@ _DECISION_WORDING = (
     r"(?:final|formal) approval|approved|confirmed|adopted)\b|"
     r"移除|删除|取消|否决|去掉|下线|不再|保留|最终|确认|敲定|选定|批准|通过|就按"
 )
+_OUTCOME_PREFERENCE = re.compile(
+    r"\b(?:final|standard|decid\w*|confirm\w*|approv\w*|agre\w*)\b|最终|确认|批准|通过|敲定",
+    re.I,
+)
 SYMBOLIC_RECORDING_DATES = object_schema({}, {"start_date": DATE, "end_date": DATE})
 
 
@@ -1131,6 +1135,19 @@ def execute_source_plan(
         for stage in plan.get("stages", ())
     )
     unit_projects = _unit_projects(index.revisions, active_units) if project_join else None
+    stage_alternatives = {}
+    if project_join and question and _DECISION_QUESTION.search(question):
+        outcome_pattern = re.compile(_DECISION_WORDING, re.I)
+        stage_alternatives = {
+            stage["name"]: outcome_pattern
+            for stage in plan["stages"]
+            if stage.get("name")
+            and isinstance(units := stage["where"].get("units"), str)
+            and units.endswith(".project_units")
+            and len(preferences := stage.get("prefer", ())) == 4
+            and _DECISION_WORDING not in preferences
+            and any(_OUTCOME_PREFERENCE.search(pattern) for pattern in preferences)
+        }
     changed = active_units & changed_recordings if changed_recordings is not None else set()
     compare_schedule = changed != active_units and _can_search_schedule_change(
         changed, question, plan, limit, dates
@@ -1148,6 +1165,7 @@ def execute_source_plan(
             allowed_line_units=units,
             line_branch_limit=branch_limit,
             line_unit_projects=unit_projects,
+            line_stage_alternatives=stage_alternatives,
         )
         trace_steps.extend({**step, "lane": lane} if lane else step for step in trace.stages)
         return rows, trace

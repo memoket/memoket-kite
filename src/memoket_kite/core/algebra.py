@@ -581,6 +581,7 @@ class Trace:
     nearby_line_matches: dict[str, set[str]] = field(default_factory=dict)
     line_matches: dict[int, set[str]] = field(default_factory=dict)
     line_branch_candidates: dict[int, list[str]] = field(default_factory=dict)
+    line_alternatives: dict[int, tuple[str, float]] = field(default_factory=dict)
 
     def log(self, stage: str, **kw):
         self.stages.append({"stage": stage, **kw})
@@ -953,6 +954,7 @@ def execute(
     coverage: bool = False,
     allowed_line_units: set[str] | None = None,
     line_branch_limit: int = 0,
+    line_alternative_pattern: re.Pattern | None = None,
 ) -> tuple[list[dict], Trace]:
     """Run subqueries, pool, rank globally, refine, pack with diversity caps."""
     trace = Trace()
@@ -1103,6 +1105,20 @@ def execute(
                 subquery_top.append([f"L::{i}" for i in top[:2]])
                 if line_branch_limit:
                     trace.line_branch_candidates[qi] = top[:line_branch_limit]
+                if line_alternative_pattern:
+                    # The usual ranking already covers the caller's wording.
+                    # Look for an additional phrasing among the same matches.
+                    alternative = min(
+                        (
+                            line
+                            for line in ids - preferred_ids
+                            if line_alternative_pattern.search(store.lines[line].text)
+                        ),
+                        key=lambda line: (-scores[line], line),
+                        default=None,
+                    )
+                    if alternative is not None:
+                        trace.line_alternatives[qi] = (alternative, scores[alternative])
             for i, score in scores.items():
                 key = f"L::{i}"
                 pooled[key] = max(pooled.get(key, 0), score)
@@ -1534,6 +1550,22 @@ def _stage_binding(rows: list[dict]) -> dict:
     }
 
 
+def _interleave_distinct_line_rows(lanes):
+    seen = set()
+    lanes = [iter(rows) for rows in lanes]
+    while lanes:
+        remaining = []
+        for lane in lanes:
+            for row in lane:
+                key = (row["type"], row["id"])
+                if key not in seen:
+                    seen.add(key)
+                    remaining.append(lane)
+                    yield row
+                    break
+        lanes = remaining
+
+
 def execute_plan(
     store: Store,
     vocab: Vocab,
@@ -1548,6 +1580,7 @@ def execute_plan(
     *,
     line_branch_limit: int = 0,
     line_unit_projects: dict[str, str] | None = None,
+    line_stage_alternatives: dict[str, re.Pattern] | None = None,
 ) -> tuple[list[dict], Trace]:
     """Entry point for compile output. Two shapes:
     - {"queries": [...]} : parallel subqueries, pooled and ranked in one pass
@@ -1608,10 +1641,18 @@ def execute_plan(
             pack_v2=pack_v2,
             coverage=coverage,
             allowed_line_units=allowed_line_units,
+            line_alternative_pattern=(line_stage_alternatives or {}).get(name),
         )
         binding = _stage_binding(rows)
         stage_details = {}
         if allowed_line_units is not None:
+            rows.sort(key=lambda row: (-row.get("score", 0), row.get("id", "")))
+            if alternative := st_trace.line_alternatives.get(0):
+                line_id, score = alternative
+                if not any(row["id"] == line_id for row in rows[:2]):
+                    rows = [row for row in rows if row["id"] != line_id]
+                    rows.insert(1, _row(store, "L", line_id, score))
+                    stage_details["alternate_wording_line"] = line_id
             # A downstream join uses the matched recordings. Quotation
             # limits only decide what the reader sees.
             units = binding["units"]
@@ -1645,7 +1686,6 @@ def execute_plan(
         for line, support in st_trace.nearby_line_matches.items():
             trace.nearby_line_matches.setdefault(line, set()).update(support)
         if allowed_line_units is not None:
-            rows.sort(key=lambda row: (-row.get("score", 0), row.get("id", "")))
             line_stages.append((uses_ref, rows))
         bindings[name] = binding
         if uses_ref:
@@ -1663,12 +1703,7 @@ def execute_plan(
         # Keep evidence establishing the anchor as well as evidence from each
         # dependent stage. A large dependent result must not hide its premise.
         lanes = [rows for _, rows in sorted(line_stages, key=lambda stage: not stage[0])]
-        ordered = [
-            rows[position]
-            for position in range(max(map(len, lanes)))
-            for rows in lanes
-            if position < len(rows)
-        ]
+        ordered = _interleave_distinct_line_rows(lanes)
     for r in ordered:
         key = (r.get("type"), r.get("id"))
         if key in seen:

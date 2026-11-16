@@ -57,6 +57,10 @@ When a question asks about an approved decision or a final review, the
 executed plan can add a preference for decision wording in matching text
 stages bound to an earlier stage. Read the original turns for their status
 and context.
+Staged line searches advance past shared hits to give each stage a distinct
+candidate within the quote limit. A project-bound final-decision stage can
+include an alternate decision wording when the stage already uses all four
+ranking patterns. Inspect `alternate_wording_line` in the stage trace.
 Use `near` inside `where` to require a matching turn nearby in the same
 recording. Supply `grep` and `turns` (1–4) in `near` and a separate text
 constraint on the cited turn itself.

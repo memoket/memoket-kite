@@ -47,6 +47,10 @@ For a literal project clue, add `anchor_quote` beside `question` and `plan`
 in the local `--input` request. Supply up to three source-line `queries` in
 `plan` and omit their `unit` and `units` filters. KITE validates and saves
 the expanded staged plan, so the trace and reuse follow the same project join.
+Overlapping stages advance past lines already included by another stage.
+For a final-decision stage with four preferences, the trace can show an
+`alternate_wording_line` selected from the same matching set. Read that
+line and surrounding turns for the decision's status.
 
 For a follow-up after a workspace update, pass the earlier result's
 `memory_version` as `--since-version VERSION`. KITE reserves evidence for
