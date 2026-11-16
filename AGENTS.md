@@ -60,6 +60,10 @@ history, decisions, commitments, and other conversation evidence.
   that produced the injected context. Identify older replay-verified runs
   as such. Keep historical full-text measurements attributed to their
   original path, including when linking to them from a symbolic evaluation.
+- For workspace MCP measurements, match the receipt against the delivered
+  output of the configured symbolic tool. Require the engine, compiler,
+  plan, trace, and workspace version before counting a trial as verified
+  symbolic retrieval.
 - For user-handoff comparisons, record which sources each arm can already
   access. Count scripted responses to actual assistant questions separately
   from evaluator feedback. Include a same-source control for claims about

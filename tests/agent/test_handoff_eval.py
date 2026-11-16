@@ -1,8 +1,51 @@
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from benchmarks.agent import handoff_eval
+
+
+def test_receipts_require_a_matching_symbolic_mcp_call_and_compiled_plan(tmp_path):
+    path = tmp_path / "symbolic.jsonl"
+    reference = "review#L1"
+    quote = "We approved nine signups."
+    text = f"[{reference}] {quote}"
+    delivery = {
+        "text": text,
+        "receipt": {
+            "engine": "memoket_kite.core.algebra.execute_plan",
+            "compiler": "host_inline_plan",
+            "memory_version": 2,
+            "plan": {"queries": [{"select": "lines", "where": {"grep": "signups"}}]},
+            "trace": [{"stage": "results", "hits": 1}],
+            "spans": [
+                {"evidence": [{"conversation_id": "review", "segment_id": "L1", "text": quote}]}
+            ],
+        },
+    }
+    call = {
+        "server": "kite_context",
+        "tool": "recall_conversation_evidence",
+        "status": "completed",
+        "result": {"content": [{"type": "text", "text": text}]},
+    }
+    bundle = {"manifest": {"memory_version": 2}, "refs": {reference}}
+    path.write_text(json.dumps(delivery) + "\n", encoding="utf-8")
+    assert handoff_eval._observed_receipts(path, {"mcp_calls": [call]}, bundle) == [
+        {**delivery, "reference_ids": [reference]}
+    ]
+    for other_call in (
+        {**call, "server": "other"},
+        {**call, "tool": "read_conversation_citations"},
+    ):
+        assert not handoff_eval._observed_receipts(path, {"mcp_calls": [other_call]}, bundle)
+    for missing in ("compiler", "plan", "trace"):
+        invalid_receipt = dict(delivery["receipt"])
+        del invalid_receipt[missing]
+        invalid = {**delivery, "receipt": invalid_receipt}
+        path.write_text(json.dumps(invalid) + "\n", encoding="utf-8")
+        assert not handoff_eval._observed_receipts(path, {"mcp_calls": [call]}, bundle)
 
 
 @pytest.mark.parametrize("request_history", [True, False])

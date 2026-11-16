@@ -23,6 +23,8 @@ from .symbolic_submit import _ENGINE
 from .task_eval import _isolated_codex_home, _score, _source_bundle, _verify
 
 _ARMS = ("external", "files", "kite")
+_MCP_SERVER = "kite_context"
+_SYMBOLIC_TOOLS = frozenset({"recall_conversation_evidence", "reuse_conversation_query"})
 _REQUEST = re.compile(r"^Meeting context request:[ \t]+(\S[^\r\n]*)$", re.M)
 _TEST = re.compile(r"Ran [1-9]\d* tests? in .+\n\s*OK\b|[1-9]\d* passed")
 _GUIDE = """
@@ -93,7 +95,11 @@ def _observed_receipts(path, turn, bundle):
     outputs = {
         content["text"]
         for call in turn.get("mcp_calls", ())
-        if call.get("status") == "completed" and not call.get("error") and call.get("result")
+        if call.get("server") == _MCP_SERVER
+        and call.get("tool") in _SYMBOLIC_TOOLS
+        and call.get("status") == "completed"
+        and not call.get("error")
+        and call.get("result")
         for content in call["result"]["content"]
         if content["type"] == "text"
     }
@@ -104,6 +110,8 @@ def _observed_receipts(path, turn, bundle):
         if (
             text not in outputs
             or receipt.get("engine") != _ENGINE
+            or not receipt.get("compiler")
+            or not isinstance(receipt.get("plan"), dict)
             or not receipt.get("trace")
             or receipt["memory_version"] != bundle["manifest"]["memory_version"]
         ):
@@ -152,11 +160,11 @@ def _trial(args, case, arm, repetition):
             ]
             options = (
                 "-c",
-                f"mcp_servers.kite_context.command={json.dumps(args.kite_python)}",
+                f"mcp_servers.{_MCP_SERVER}.command={json.dumps(args.kite_python)}",
                 "-c",
-                f"mcp_servers.kite_context.args={json.dumps(command)}",
+                f"mcp_servers.{_MCP_SERVER}.args={json.dumps(command)}",
                 "-c",
-                "mcp_servers.kite_context.required=true",
+                f"mcp_servers.{_MCP_SERVER}.required=true",
             )
         citations = (
             "Cite timestamped transcripts as recording-id#L42, omitting _transcript.txt."
