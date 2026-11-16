@@ -21,19 +21,16 @@ If a KITE result says `Date comparison needs original turns`, use its two
 evidence IDs with `bash "$KITE" evidence FIRST_ID --also SECOND_ID --text`.
 Read both original turns before applying the revised date to the task.
 
-For an implementation task, read the code and tests before writing the plan.
-Read the fields and assertions first so the query covers the decisions the
-code needs. Look up those decisions through KITE before searching full
-transcripts when the project or subject can be resolved from the task.
-Give each independent decision or value its own query, up to three.
-Translate code identifiers into words people might have said. Put likely
-spoken words in `grep` and narrower status or value cues in `prefer`.
-For example, use `price|prices|selling` to admit candidates and
-`suggest|could sell|per unit` to rank them. Use separate queries for an
-initial limit, a later estimate and a final recommendation.
-Once the original lines support the required behavior, implement it and run
-the tests. Carry forward citations already verified in this chat. A later
-decision belongs in a later turn when the user asks for the original plan first.
+For an implementation task, read the code and its tests, then check which
+behavior needs conversation evidence in this turn. Once the returned original
+lines support that behavior and its requested status, implement it and run the
+tests. A later decision belongs in a later turn when the user asks for the
+original plan first. Carry forward citations already verified in this chat.
+Use the code's fields and the task to give each independent decision or
+value its own query. Running tests and editing files are actions to perform
+after lookup. Include ordinary spoken words in `grep` and put narrower
+status or value cues in `prefer`. For example, use `price|prices|selling`
+to admit candidates and `suggest|could sell|per unit` to rank them.
 
 If a quotation identifies the project, let KITE resolve the scope before
 opening original files. Give the literal `anchor_quote`
@@ -74,10 +71,6 @@ KITE_PLAN
 ```
 
 For earlier and final decisions, use separate queries and `--neighbors 2`.
-If the user explicitly identifies an individual recording, its exact
-recording ID can go in `where.units` for the branch that needs it. Use
-the reported dates and original wording to distinguish decisions within
-a project when the task names no recording.
 For an update after a previous KITE lookup in this chat, add
 `--since-version N` using the prior lookup's workspace version. When the task
 needs a new date or quantity, search for its spoken forms and units in
