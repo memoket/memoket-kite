@@ -79,7 +79,9 @@ For a scoped final-decision query, a matched subject can lead to nearby
 turns on a quantity change. The `revision_exchange` trace links the subject,
 revision wording, reply, and reported adjustment within one recording.
 This also applies to a stage bound to a uniquely matched project's recordings.
-Read those turns in order for the scope and status of the change.
+When supplied citations and search matches split this exchange, the combined
+response brings the existing quotes together in their source order. Read
+the full sequence to identify the subject and status of the change.
 For date questions, a parallel plan with no calendar wording in its first
 set of quotes can give space to up to two already matched turns with dates.
 The `calendar_alternatives` trace lists those original turns. Check which

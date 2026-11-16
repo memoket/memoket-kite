@@ -34,6 +34,8 @@ from memoket_kite.tools import (
     context,
     memoket_source,
     operations,
+    retrieve,
+    symbolic,
     viewer,
     workflow,
     workspace,
@@ -7494,7 +7496,7 @@ def test_symbolic_prefers_decision_wording_inside_the_original_project_scope(
 def test_symbolic_includes_a_scoped_revision_exchange_as_original_turns(
     work, spoken, question, preference, plain
 ):
-    _, call = work
+    directory, call = work
     subject = "sampler trays" if plain else "采样托盘"
     speakers = ("Reviewer", "Lead", "Reviewer", "Lead", "Reviewer")
 
@@ -7566,6 +7568,27 @@ def test_symbolic_includes_a_scoped_revision_exchange_as_original_turns(
     assert all(f"alder-notes-x7#line-{i}" not in tight for i in (1, 2, 3, 5))
     assert "Review the revision discussion in order:" not in tight
     assert "kickoff#text-1" in tight
+
+    # The citation lookup contains the proposal and its immediate reply;
+    # the symbolic plan has the later report in a separate set of results.
+    with workspace.Workspace.open(directory, read_only=True) as reader:
+        supplied = retrieve.read_evidence(
+            reader, ["alder-notes-x7#line-2", "kickoff#text-1"], radius=1
+        )
+        only_kickoff = retrieve.read_evidence(reader, ["kickoff#text-1"], radius=0)
+    combined = symbolic.render_symbolic_context({**result, "supplied_evidence": supplied})
+    refs = re.findall(r"^\[([^\]\n]+)\]", combined, re.M)
+    start = refs.index("alder-notes-x7#line-1")
+    assert refs.index("kickoff#text-1") < start
+    assert refs[start : start + 4] == [f"alder-notes-x7#line-{i}" for i in (1, 2, 3, 5)]
+    assert sorted(refs) == sorted(
+        f"{line['conversation_id']}#{line['segment_id']}"
+        for span in result["spans"]
+        for line in span["evidence"]
+    )
+    assert "Original revision exchange (some intervening turns omitted)" in combined
+    unsplit = symbolic.render_symbolic_context({**result, "supplied_evidence": only_kickoff})
+    assert "Original revision exchange" not in unsplit
 
     anchored = {
         **request,

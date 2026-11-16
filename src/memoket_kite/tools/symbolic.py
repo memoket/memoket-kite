@@ -1429,10 +1429,62 @@ def _with_supplied_citations(pack, window):
     return {**pack, "spans": [*supplied, *matches]}
 
 
+def _with_revision_dialogue(pack, step):
+    subject_id, report_id = step["subject_line_id"], step["reported_change_line_id"]
+    prefix, _, first = subject_id.rpartition("L")
+    _, _, last = report_id.rpartition("L")
+    window = [f"{prefix}L{i}" for i in range(int(first), int(last) + 1)]
+    quotes = {
+        line["source_line_id"]: (span, line) for span in pack["spans"] for line in span["evidence"]
+    }
+    required = {subject_id, step["revision_line_id"], step["reply_line_id"], report_id}
+    if not required <= quotes.keys():
+        return pack
+    dialogue = {line_id: quotes[line_id][1] for line_id in window if line_id in quotes}
+    displayed = list(quotes)
+    start, end = displayed.index(subject_id), displayed.index(report_id)
+    if displayed[start : end + 1] == list(dialogue):
+        return pack
+
+    block = {
+        **quotes[subject_id][0],
+        "heading": "Original revision exchange"
+        + (" (some intervening turns omitted)" if len(dialogue) < len(window) else ""),
+        "evidence": list(dialogue.values()),
+    }
+    spans = []
+    heading = None
+    for span in pack["spans"]:
+        heading = span.get("heading", heading)
+        context = {k: v for k, v in span.items() if k not in {"heading", "evidence"}}
+        preceding, following = [], []
+        at_report = False
+        for line in span["evidence"]:
+            line_id = line["source_line_id"]
+            if line_id == report_id:
+                at_report = True
+            elif line_id not in dialogue:
+                (following if at_report else preceding).append(line)
+        if preceding:
+            spans.append(
+                {**context, "evidence": preceding, **({"heading": heading} if heading else {})}
+            )
+            heading = None
+        if at_report:
+            spans.append(block)
+        if following:
+            spans.append(
+                {**context, "evidence": following, **({"heading": heading} if heading else {})}
+            )
+            heading = None
+    return {**pack, "spans": spans}
+
+
 def render_symbolic_context(pack, *, guide=False):
     lines = []
     visible = pack
-    if window := pack.get("supplied_evidence"):
+    window = pack.get("supplied_evidence")
+    if window:
         visible = _with_supplied_citations(pack, window)
         for entry in window.get("unavailable", ()):
             lines.append(f"Supplied citation {entry['index']}: {entry['message']}")
@@ -1466,30 +1518,18 @@ def render_symbolic_context(pack, *, guide=False):
         lines.append("Multiple date-change turns need review in the original recordings.")
     for step in pack["trace"]:
         if step["stage"] == "revision_exchange":
-            selected = {
-                line["source_line_id"]: line for span in pack["spans"] for line in span["evidence"]
-            }
-            reply_ids = [
-                step[key]
-                for key in (
-                    "subject_line_id",
-                    "revision_line_id",
-                    "reply_line_id",
-                    "reported_change_line_id",
-                )
-            ]
-            if all(line_id in selected for line_id in reply_ids):
-                subject = selected[reply_ids[0]]
-                recording = subject["conversation_id"]
-                if any(
-                    line["conversation_id"] == recording and line["source"] != subject["source"]
-                    for line in selected.values()
-                ):
-                    recording = f"{subject['source']}/{recording}"
-                refs = ", ".join(
-                    f"{recording}#{selected[line_id]['segment_id']}" for line_id in reply_ids
-                )
-                lines.append(f"Review the revision discussion in order: {refs}.")
+            if window:
+                visible = _with_revision_dialogue(visible, step)
+            refs = _display_references(visible)
+            ids = (
+                step["subject_line_id"],
+                step["revision_line_id"],
+                step["reply_line_id"],
+                step["reported_change_line_id"],
+            )
+            if all(line_id in refs for line_id in ids):
+                sequence = ", ".join(refs[line_id] for line_id in ids)
+                lines.append(f"Review the revision discussion in order: {sequence}.")
         if step["stage"] == "date_subject_retry":
             queries = ", ".join(str(hint["q"] + 1) for hint in step["hints"])
             lines.append(f"Retried empty date queries {queries} with scoped subject alternatives.")
