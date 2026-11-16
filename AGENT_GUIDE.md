@@ -128,7 +128,9 @@ For the recording time or location of a known quotation, use
 with quoted phrases, `--matching-lines` compiles those phrases and returns
 their original matching lines. Use `evidence` when you need surrounding turns.
 Read several citations in one call with `evidence FIRST --also SECOND --context 2 --text`.
-Overlapping turns are returned once per revision.
+Overlapping turns are returned once per revision. In the text output, a
+`Requested turns` line identifies the chosen citations within the original
+dialogue. Check the subject and decision status before citing a nearby turn.
 For missing or conditional evidence, repeat `--term` in one matching-line
 lookup. Use `--conversation-id` when the relevant recording is already known.
 Use `context --all-terms --term SUBJECT --term CLUE --text` when both phrases

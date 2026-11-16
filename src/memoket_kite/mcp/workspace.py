@@ -630,8 +630,9 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         recording#segment references or revision-bound evidence IDs. Use the
         revision-bound ID for an earlier revision. Pass the recall result's
         workspace_version to guard against changes between calls. Overlapping
-        windows are returned once. The budget limits nearby context and keeps
-        the requested turns whole.
+        windows are returned once. The reply labels requested turns within
+        nearby dialogue. The budget limits nearby context and keeps the
+        requested turns whole.
         """
         try:
             with reader.open() as workspace:

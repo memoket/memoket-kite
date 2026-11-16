@@ -20,6 +20,8 @@ transaction between requests so an import can commit while it is idle.
   turns around the last leading citations that are still current.
   Direct citation windows accept 0–20 neighboring turns on each side.
   Symbolic plans accept 0–4.
+  When a window includes surrounding dialogue, its text labels the requested
+  citations or indicates that a receipt already delivered them.
   Use a focused plan when looking for matches beyond those windows.
   When a task supplies known references
   and needs more evidence, pass them as `known_citations` and give the missing
@@ -99,7 +101,8 @@ transaction between requests so an import can commit while it is idle.
   unresolved. Set `plan.retry_index_subject` to false to use the submitted
   plan alone.
 - `read_conversation_citations` accepts one to eight known citations and
-  returns the original turns with optional surrounding context. A short
+  returns the original turns with optional surrounding context and labels
+  the requested citations within that dialogue. A short
   `recording#segment` citation resolves against the active revision. Use a
   revision-bound source line ID for a retained revision, or include the
   `workspace_version` from recall to check that the workspace has stayed on

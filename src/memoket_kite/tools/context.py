@@ -4905,6 +4905,13 @@ def render_context(pack: dict, *, compact_spacing: bool = False) -> str:
                 namespaces[line["conversation_id"]].add(line["source"])
             for source in span.get("same_text_sources", ()):
                 namespaces[source["conversation_id"]].add(source["source"])
+
+    def display_reference(line):
+        identity = line["conversation_id"]
+        if len(namespaces[identity]) > 1:
+            identity = f"{line['source']}/{identity}"
+        return f"{identity}#{line['segment_id']}"
+
     lines = []
     if scope := pack.get("scope", {}).get("project_alias_scope"):
         if scope["status"] == "resolved":
@@ -4992,10 +4999,24 @@ def render_context(pack: dict, *, compact_spacing: bool = False) -> str:
                     if len(copies) > _TEXT_SOURCE_COPIES:
                         locations.append(f"{len(copies) - _TEXT_SOURCE_COPIES} more in JSON")
                     lines.append("Same text and segment IDs in: " + ", ".join(locations))
+            if anchors := span.get("anchors"):
+                requested = [
+                    display_reference(line)
+                    for line in span["evidence"]
+                    if line["source_line_id"] in anchors
+                ]
+                if len(requested) < len(span["evidence"]):
+                    if requested:
+                        label = "Requested turns: " + ", ".join(requested)
+                        if len(requested) < len(anchors):
+                            label += " (additional requested turns already delivered)"
+                        lines.append(f"{label} · Other turns are nearby context.")
+                    else:
+                        lines.append(
+                            "Nearby original turns only · Requested turns already delivered."
+                        )
             for line in span["evidence"]:
-                ref = f"{line['conversation_id']}#{line['segment_id']}"
-                if len(namespaces[line["conversation_id"]]) > 1:
-                    ref = f"{line['source']}/{ref}"
+                ref = display_reference(line)
                 speaker = f" {line['speaker_id']}:" if "speaker_id" in line else ""
                 quote = f"{speaker} {line['text']}"
                 if len(parts) > 1:
@@ -5044,6 +5065,7 @@ def evidence_spans(window: dict) -> list[dict]:
     return [
         {
             "source_date": window["source_time"],
+            "anchors": [window["evidence"]["source_line_id"]],
             "evidence": [*window["before"], window["evidence"], *window["after"]],
         }
     ]
@@ -5051,7 +5073,7 @@ def evidence_spans(window: dict) -> list[dict]:
 
 def render_evidence(window: dict) -> str:
     """Render a single or batched citation lookup in original turn order."""
-    spans = evidence_spans(window)
+    spans = [span for span in evidence_spans(window) if span["evidence"]]
     text = render_context({"spans": spans})
     if "windows" in window:
         return "\n".join(
