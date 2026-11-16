@@ -26,6 +26,28 @@ behavior needs conversation evidence in this turn. Once the returned original
 lines support that behavior and its requested status, implement it and run the
 tests. A later decision belongs in a later turn when the user asks for the
 original plan first. Carry forward citations already verified in this chat.
+Use the code's fields and the task to give each independent decision or
+value its own query. Running tests and editing files are actions to perform
+after lookup. Include ordinary spoken words in `grep` and put narrower
+status or value cues in `prefer`. For example, use `price|prices|selling`
+to admit candidates and `suggest|could sell|per unit` to rank them.
+
+If a quotation identifies the project, let KITE resolve the scope before
+opening original files. Give the literal `anchor_quote`
+alongside the question and up to three queries. The launcher escapes the
+quotation and builds the anchor and dependent stages using the recorded
+project. Leave `unit` and `units` out of the queries. This runs in one
+local call. Example:
+
+```bash
+bash "$KITE" symbolic --input - --limit 8 --neighbors 1 --max-bytes 3600 --text <<'KITE_PLAN'
+{"question":"Update the handoff for the project whose meeting mentions a folding hinge.","anchor_quote":"folding hinge","plan":{"queries":[{"select":"lines","where":{"grep":"ship|rollout|go live"},"prefer":["agreed|confirmed|will ship"]},{"select":"lines","where":{"grep":"own|handoff|take care"},"prefer":["I'll|will handle"]}]}}
+KITE_PLAN
+```
+
+For a separately requested date window, add the recording date flags to
+the same command. A missing or ambiguous anchor leaves the dependent
+queries unresolved.
 
 For a recording window in the task, pass `--start-date` or `--end-date` in
 ISO format to apply it to every query. Use `grep_all` for independent subject
@@ -63,9 +85,10 @@ Use `prefer_labels` to boost matching Topic, Entity, or Facet codes. Use
 `where` for required filters. If a second query depends on the recordings
 found by the first, use `stages` with `units: "$anchor.units"` in the second.
 For a task spanning other recordings of the same project, use
-`units: "$anchor.project_units"` after a stage that matches distinctive
-wording. All matching anchor recordings must belong to a single recorded
-project. If several projects match, narrow the anchor or ask which one.
+`anchor_quote` for a literal clue or `units: "$anchor.project_units"`
+after a stage with a custom anchor expression. All matching anchor
+recordings must belong to a single recorded project. If several projects
+match, narrow the anchor or ask which one.
 
 When the user asks to save a recurring lookup, add `--save RUN_ID` to the
 symbolic plan submission. Use `symbolic --reuse RUN_ID --text` for a later

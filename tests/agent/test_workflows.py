@@ -7266,6 +7266,65 @@ def test_symbolic_project_binding_resolves_only_a_unique_anchor_project(work):
     call("symbolic", payload={**request, "plan": malformed}, error="invalid_plan")
 
 
+def test_symbolic_host_quote_expands_to_saved_project_stages(work):
+    _, call = work
+
+    def meeting(name, text, project):
+        source = text_input(name, text)["source"]
+        source["payload"]["metadata"]["project"] = project
+        return {"source": source}
+
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                meeting("clue", "The two-pin (A+B) connector was shipped.", "Alder"),
+                meeting("decision", "Approved preview capacity is 20.", "Alder"),
+                meeting("distractor", "Approved preview capacity is 55.", "Beech"),
+            ]
+        },
+    )
+    question = "Find approved preview capacity for the project with the two-pin (A+B) connector."
+    query = {"select": "lines", "where": {"grep": "capacity"}}
+    request = {
+        "question": question,
+        "anchor_quote": "two-pin (A+B) connector",
+        "plan": {"queries": [query]},
+    }
+    result = call("symbolic", "--save", "preview", payload=request)
+    assert result["engine"] == "memoket_kite.core.algebra.execute_plan"
+    assert result["compiler"] == "host_inline_plan"
+    assert result["plan"]["stages"][0]["where"]["grep"] == r"two\-pin\s+\(A\+B\)\s+connector"
+    assert result["plan"]["stages"][1]["where"] == {
+        "grep": "capacity",
+        "units": "$anchor.project_units",
+    }
+    assert {span["evidence"][0]["conversation_id"] for span in result["spans"]} == {
+        "clue",
+        "decision",
+    }
+
+    call(
+        "symbolic",
+        payload={
+            **request,
+            "plan": {"queries": [{**query, "where": {"grep": "capacity", "unit": "distractor"}}]},
+        },
+        error="invalid_plan",
+    )
+    call(
+        "index-sources",
+        payload={"sources": [meeting("competing-clue", "A two-pin (A+B) connector.", "Beech")]},
+    )
+    ambiguous = call("symbolic", "--reuse", "preview")
+    assert ambiguous["trace"][0]["project_binding"]["status"] == "multiple"
+    assert ambiguous["branch_coverage"][1]["skipped"] == "unresolved_ref"
+    assert {span["evidence"][0]["conversation_id"] for span in ambiguous["spans"]} == {
+        "clue",
+        "competing-clue",
+    }
+
+
 @pytest.mark.parametrize(
     "subject, proposal, outcome, question, preference",
     [

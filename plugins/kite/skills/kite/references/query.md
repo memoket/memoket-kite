@@ -43,6 +43,10 @@ to search other recordings of that project. All anchor matches must have the
 same recorded project. The join honors the query's recording scope, including
 its date bounds. If more than one project matches, the trace names the projects
 and the dependent stage waits for a narrower anchor.
+For a literal project clue, add `anchor_quote` beside `question` and `plan`
+in the local `--input` request. Supply up to three source-line `queries` in
+`plan` and omit their `unit` and `units` filters. KITE validates and saves
+the expanded staged plan, so the trace and reuse follow the same project join.
 
 For a follow-up after a workspace update, pass the earlier result's
 `memory_version` as `--since-version VERSION`. KITE reserves evidence for

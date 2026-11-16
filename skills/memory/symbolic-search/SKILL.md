@@ -19,6 +19,10 @@ To use a plan generated in the current chat, supply it as
 `{"request":{"submitted_plan":{"question":"…","snapshot":"…","plan":{…}}}}`.
 Advance `compile` locally without `--allow-provider`. In the CLI,
 `symbolic --input PLAN.json --save RUN_ID` runs and stores both stages.
+If a literal quotation identifies the project, submit `anchor_quote` with
+`question` and `plan.queries`. Give each source-line query its own evidence
+need. The compile stage expands them into a literal anchor and project-bound
+stages. Omit recording filters within those queries.
 Include `project` in the request to limit both stages to that exact imported
 project. Use the project's recorded name.
 With no explicit scope, a unique project alias in the question scopes the

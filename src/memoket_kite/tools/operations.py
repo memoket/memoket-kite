@@ -409,7 +409,7 @@ TOOLS = {
         {"request": "symbolic_request"},
         "symbolic_plan",
         "provider",
-        version=10,
+        version=11,
         prepare_provider=_prepare_symbolic,
     ),
     "search_symbolic": Tool(

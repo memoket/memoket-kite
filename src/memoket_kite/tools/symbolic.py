@@ -114,6 +114,10 @@ def _unit_projects(revisions, units):
     }
 
 
+def _literal_quote_pattern(quote):
+    return r"\s+".join(re.escape(word) for word in quote.split())
+
+
 class SourceLineProfile:
     KINDS = ()
     COMPILE_PROMPT = """Return only a KITE plan for retrieving verbatim conversation lines.
@@ -255,7 +259,7 @@ Question: {question}
         )[:3]
         if not phrases:
             return []
-        patterns = [r"\s+".join(re.escape(word) for word in phrase.split()) for phrase in phrases]
+        patterns = [_literal_quote_pattern(phrase) for phrase in phrases]
         units = self.scoped_units
         _, trace = execute_plan(
             store,
@@ -425,6 +429,28 @@ def _validate_source_plan(plan):
     return plan
 
 
+def _bind_queries_to_project_quote(plan, quote):
+    queries = plan.get("queries")
+    if not queries or any({"unit", "units"} & query["where"].keys() for query in queries):
+        raise ToolError(
+            "invalid_plan", "anchor_quote requires queries without their own recording filters"
+        )
+    return {
+        **{key: value for key, value in plan.items() if key != "queries"},
+        "stages": [
+            {"name": "anchor", "select": "lines", "where": {"grep": _literal_quote_pattern(quote)}},
+            *(
+                {
+                    **query,
+                    "name": f"evidence_{number}",
+                    "where": {**query["where"], "units": "$anchor.project_units"},
+                }
+                for number, query in enumerate(queries, 1)
+            ),
+        ],
+    }
+
+
 def _source_options(limit, neighbors, max_bytes):
     if not 1 <= limit <= 100:
         raise ToolError("invalid_input", "symbolic evidence limit must be between 1 and 100")
@@ -548,10 +574,14 @@ def compile_submitted_source_plan(
 ):
     dates = _validated_recording_dates(recording_dates)
     question = None
+    anchor_quote = None
     compiler = "supplied_plan"
     if "plan" in value:
         validate(
-            object_schema({"plan": {"type": "object"}, "question": TEXT}, {"snapshot": HASH}),
+            object_schema(
+                {"plan": {"type": "object"}, "question": TEXT},
+                {"snapshot": HASH, "anchor_quote": {**TEXT, "maxLength": 128}},
+            ),
             value,
             "prepared symbolic plan",
         )
@@ -564,11 +594,15 @@ def compile_submitted_source_plan(
                 "stale_snapshot", "prepare the question again for the current workspace and project"
             )
         compiler = "host_generated_plan" if snapshot is not None else "host_inline_plan"
+        anchor_quote = value.get("anchor_quote")
         value = value["plan"]
     try:
         profile = _prepare_question(index, question, project, dates)
+        plan = _validate_source_plan(value)
+        if anchor_quote is not None:
+            plan = _validate_source_plan(_bind_queries_to_project_quote(plan, anchor_quote))
         return {
-            "plan": _validate_source_plan(value),
+            "plan": plan,
             "units": sorted(profile.scope),
             "compiler": compiler,
             **({"question": question} if question is not None else {}),
