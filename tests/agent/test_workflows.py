@@ -8346,9 +8346,12 @@ def test_symbolic_delivery_fits_escaped_quotes_and_reports_missing_branches(work
         call("symbolic", "--delivery-bytes", "500", "--delivery-receipt", payload=plan)
     )
     assert with_receipt["evidence"] == rendered
-    assert with_receipt["receipt"] == {
-        key: value for key, value in call("symbolic", payload=plan).items() if key != "ok"
-    }
+    direct = call("symbolic", payload=plan)
+    assert direct.pop("ok")
+    for receipt in (with_receipt["receipt"], direct):
+        elapsed = next(step for step in receipt["trace"] if step["stage"] == "pack").pop("ms")
+        assert elapsed >= 0
+    assert with_receipt["receipt"] == direct
     call("symbolic", "--delivery-receipt", payload=plan, error="invalid_input")
     assert (
         call(
