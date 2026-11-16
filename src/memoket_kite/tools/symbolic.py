@@ -2,7 +2,7 @@
 
 import json
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from itertools import zip_longest
 
 from memoket_kite.core.algebra import _tokens, execute_plan
@@ -40,7 +40,7 @@ from .contracts import (
     validate,
 )
 from .decision_replies import find_revision_exchanges
-from .index import build_index
+from .index import build_index, revision_id
 from .ingest import RECORDING_CLOCK_FIELDS, source_day
 from .retrieve import _citation
 
@@ -812,9 +812,18 @@ def compile_source_question(index, question, model, project=None, *, recording_d
 
 
 def reuse_symbolic_context(
-    workspace, run_id, saved, *, project=None, recording_dates=None, **options
+    workspace,
+    run_id,
+    saved,
+    *,
+    project=None,
+    recording_dates=None,
+    include_previous=False,
+    **options,
 ):
     """Validate and resolve the saved query against the selected snapshot again."""
+    if include_previous and options.get("history_scope"):
+        raise ToolError("invalid_input", "previous revisions require a current workspace query")
     saved_project = saved.get("selected_project")
     if saved_project is not None and project not in (None, saved_project):
         raise ToolError("invalid_input", "saved plan belongs to another project")
@@ -847,6 +856,8 @@ def reuse_symbolic_context(
         recording_dates=dates,
         **{**saved["options"], **options},
     )
+    if include_previous and result.get("source_change", {}).get("cited_changed_recordings"):
+        result["previous_revision_evidence"] = _prior_reused_turns(workspace, result, dates)
     return {
         **result,
         "compiler": "reused_symbolic_plan",
@@ -861,6 +872,64 @@ def reuse_symbolic_context(
             ),
         },
     }
+
+
+def _prior_reused_turns(workspace, pack, dates):
+    """Read changed turns by original segment ID at the plan's comparison baseline."""
+    version = pack["source_change"]["from_version"]
+    budget = max(0, pack["quote_budget_bytes"] - pack["quote_bytes"])
+    previously_visible = workspace.visible_revision_checksums(version)
+    selected = defaultdict(list)
+    for span in pack["spans"]:
+        for line in span["evidence"]:
+            checksum = line["revision_checksum"]
+            if line["role"] != "adjacent_turn" and checksum not in previously_visible:
+                selected[checksum].append(line)
+
+    pairs = []
+    omitted = []
+    index = workspace.index()
+    for checksum, lines in selected.items():
+        first = lines[0]
+        scope = {key: first[key] for key in ("source", "conversation_id")}
+        previous = workspace.records_at(version, scope)
+        if not previous:
+            continue
+        record = previous[0]
+        conversation = record["conversation"]
+        current = index.revisions[revision_id({"checksum": checksum})]["conversation"]
+        if conversation["metadata"].get("project") != current["metadata"].get("project") or (
+            dates and not _within_recording_dates(conversation, dates)
+        ):
+            continue
+        prefix = revision_id(record)
+        segments = {
+            segment["segment_id"]: (position, segment)
+            for position, segment in enumerate(conversation["segments"], 1)
+        }
+        for line in lines:
+            prior = segments.get(line["segment_id"])
+            if prior is None:
+                continue
+            position, original = prior
+            if all(line.get(key) == original.get(key) for key in ("text", "speaker_id")):
+                continue
+            current_id = line["source_line_id"]
+            previous_id = f"{prefix}L{position}"
+            size = len(original["text"].encode())
+            if size > budget:
+                omitted.append(
+                    {"current_source_line_id": current_id, "previous_source_line_id": previous_id}
+                )
+                continue
+            budget -= size
+            pairs.append(
+                {
+                    "current_source_line_id": current_id,
+                    "previous": _citation(record, previous_id, original),
+                }
+            )
+    return {"version": version, "pairs": pairs, "omitted": omitted}
 
 
 def _resolve_unit_names(plan, index, active_units):
@@ -1575,7 +1644,34 @@ def render_symbolic_context(pack, *, guide=False):
     if evidence_guide:
         lines.extend((*evidence_guide, ""))
     lines.append(render_context(visible, compact_spacing=bool(evidence_guide)))
+    if prior := pack.get("previous_revision_evidence"):
+        lines.extend(_render_prior_reused_turns(visible, prior))
     return "\n".join(lines)
+
+
+def _render_prior_reused_turns(pack, prior):
+    references = _display_references(pack)
+    lines = []
+    for pair in prior["pairs"]:
+        current = pair["current_source_line_id"]
+        if current not in references:
+            continue
+        line = pair["previous"]
+        speaker = f"{line['speaker_id']}: " if "speaker_id" in line else ""
+        lines.append(f"Same segment as current {references[current]} (evidence ID {current})")
+        lines.append(f"[{line['source_line_id']}] {speaker}{line['text']}")
+    omitted = [
+        item["previous_source_line_id"]
+        for item in prior["omitted"]
+        if item["current_source_line_id"] in references
+    ]
+    if omitted:
+        lines.append(
+            f"Quote budget omitted {len(omitted)} earlier turns. Evidence IDs: {', '.join(omitted[:4])}"
+        )
+    if lines:
+        lines.insert(0, f"\nEarlier source revisions at workspace v{prior['version']}")
+    return lines
 
 
 def fit_symbolic_delivery(pack, max_bytes, *, include_receipt=False, guide=False):

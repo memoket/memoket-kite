@@ -42,9 +42,10 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
     server = MCPServer(
         "KITE Conversation Memory",
         instructions=(
-            "For tasks that depend on previous conversations, call recall_conversation_evidence "
-            "directly with the task question and a symbolic plan. This server is bound to one "
-            "configured KITE workspace. Use the original turns and citation IDs in its result."
+            "For tasks that depend on previous conversations, use reuse_conversation_query when "
+            "trusted project guidance or the user names a saved query. Otherwise call "
+            "recall_conversation_evidence with the question and a symbolic plan. This server is "
+            "bound to one configured KITE workspace. Use the original turns and citation IDs."
         ),
     )
 
@@ -184,6 +185,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         since_version: Annotated[int | None, Field(strict=True, ge=0)] = None,
         limit: Annotated[int | None, Field(strict=True, ge=1, le=100)] = None,
         max_bytes: Annotated[int | None, Field(strict=True, ge=128, le=32768)] = None,
+        include_previous: Annotated[bool, Field(strict=True)] = False,
     ) -> str:
         """Run a named saved KITE symbolic query against the current workspace.
 
@@ -191,7 +193,9 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         query ID for a repeated task. The plan retains its project and date
         scope. Reuse checks for changes since the plan was saved, or since
         the supplied workspace version. Use the cited turns to check which
-        decisions are still in effect.
+        decisions are still in effect. For an in-place transcript revision,
+        set include_previous to receive earlier wording for matched segment IDs
+        within the quote budget. Earlier turns carry revision-bound evidence IDs.
         """
         options = {
             name: value
@@ -202,7 +206,12 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             with Workspace.open(workspace_path, read_only=True) as workspace:
                 saved = saved_symbolic_plan(workspace, run_id)
                 result = reuse_symbolic_context(
-                    workspace, run_id, saved, since_version=since_version, **options
+                    workspace,
+                    run_id,
+                    saved,
+                    since_version=since_version,
+                    include_previous=include_previous,
+                    **options,
                 )
         except ToolError as exc:
             raise MCPToolError(f"{exc.code}: {exc}") from exc

@@ -339,6 +339,8 @@ def read_evidence(
     def resolve_reference(reference, budget):
         namespace, conversation_id, segment_id = source, conversation, segment
         if reference is not None:
+            if reference.startswith("[") and reference.endswith("]"):
+                reference = reference[1:-1]
             if "#" not in reference:
                 if any(value is not None for value in (source, conversation, checksum)):
                     raise ToolError(
@@ -349,8 +351,6 @@ def read_evidence(
                 raise ToolError(
                     "invalid_input", "the short citation already includes a conversation ID"
                 )
-            if reference.startswith("[") and reference.endswith("]"):
-                reference = reference[1:-1]
             conversation_id, _, segment_id = reference.rpartition("#")
             if "/" in conversation_id:
                 embedded, conversation_id = conversation_id.split("/", 1)

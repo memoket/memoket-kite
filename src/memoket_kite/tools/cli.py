@@ -312,6 +312,11 @@ def _parser() -> argparse.ArgumentParser:
     symbolic_history.add_argument(
         "--since-version", type=int, help="reserve evidence for sources changed since a version"
     )
+    symbolic.add_argument(
+        "--include-previous",
+        action="store_true",
+        help="with --reuse, quote earlier revisions of matched segments within the quote budget",
+    )
     symbolic.add_argument("--model", default="gpt-4.1-mini", help="provider model for --question")
     symbolic.add_argument("--limit", type=int, help="maximum cited lines (1–100)")
     symbolic.add_argument("--neighbors", type=int, help="adjacent turns per match (0–4)")
@@ -958,6 +963,8 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
     if args.command == "symbolic":
         if args.brief and args.prepare is None:
             raise ToolError("invalid_input", "--brief requires --prepare")
+        if args.include_previous and args.reuse is None:
+            raise ToolError("invalid_input", "--include-previous requires --reuse")
         plan = _object(args.input) if args.input is not None else None
         history_scope = {
             key: value
@@ -1025,6 +1032,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                     history_scope=history_scope,
                     since_version=args.since_version,
                     recording_dates=dates,
+                    include_previous=args.include_previous,
                     **options,
                 ), None
             return symbolic_context(

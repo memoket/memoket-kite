@@ -126,6 +126,13 @@ call `reuse_conversation_query` with that ID in a fresh chat. KITE searches
 the latest workspace within the saved scope and reports changes since the
 stored plan's version. The result includes the compilation version and
 current evidence.
+When a task needs the wording before a recording was edited, pass
+`include_previous: true` in the same MCP call. The CLI equivalent is
+`kite-tool symbolic --reuse RUN_ID --include-previous --text`. KITE checks the
+same segment IDs at the comparison version and shows earlier turns with exact
+revision-bound IDs. If earlier turns do not fit, the text shows up to four IDs
+for `read_conversation_citations`. For added or removed segment IDs, use the
+[source revision comparison in the memory graph](#view-the-memory-graph).
 
 The server needs no separate model key. The first startup installs an optional runtime
 with the MCP SDK. If the download exceeds the configured startup timeout,

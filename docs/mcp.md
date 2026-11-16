@@ -21,7 +21,10 @@ The configured workspace applies to the read-only tools.
 - `reuse_conversation_query` accepts a trusted saved `symbolic-search` run
   ID. It executes the saved plan against the current workspace with its
   original scope and considers changes since the plan was compiled. It also
-  accepts `since_version` for a later comparison baseline.
+  accepts `since_version` for a later comparison baseline. Set
+  `include_previous` to compare matched original segment IDs in revised
+  recordings with the same segment IDs at the baseline. Earlier turns carry
+  exact revision-bound evidence IDs and share the original quote budget.
 
 ```bash
 kite-mcp --workspace /absolute/path/to/workspace

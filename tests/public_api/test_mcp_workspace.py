@@ -196,7 +196,7 @@ async def test_citations_preserve_revision_and_deduplicate_context(tmp_path, cap
         "symbolic",
         "--save",
         "review-query",
-        payload={"queries": [{"select": "lines", "where": {"grep": "shipping threshold"}}]},
+        payload={"queries": [{"select": "lines", "where": {"grep": "Use a threshold"}}]},
     )
     original = json.loads(cli("evidence", "review#decision"))["value"]
     old_id = original["evidence"]["source_line_id"]
@@ -230,7 +230,7 @@ async def test_citations_preserve_revision_and_deduplicate_context(tmp_path, cap
         stale = await client.call_tool(tool, lookup)
         assert stale.is_error and "stale_snapshot:" in stale.content[0].text
         both = await client.call_tool(
-            tool, {"citations": [old_id, "review#decision"], "byte_budget": 128}
+            tool, {"citations": [f"[{old_id}]", "review#decision"], "byte_budget": 128}
         )
         assert not both.is_error
         text = both.content[0].text
@@ -248,6 +248,21 @@ async def test_citations_preserve_revision_and_deduplicate_context(tmp_path, cap
         assert f"Revision: {source['expected_checksum']}" in text
         assert "[review#decision] Use a threshold of five." in text
         assert "[review#decision] Use a threshold of three." in text
+        reuse = "reuse_conversation_query"
+        reused = await client.call_tool(reuse, {"run_id": "review-query"})
+        assert not reused.is_error
+        assert "threshold of three." in reused.content[0].text
+        assert "threshold of five." not in reused.content[0].text
+        comparison = {"run_id": "review-query", "include_previous": True}
+        compared = await client.call_tool(reuse, comparison)
+        assert not compared.is_error
+        text = compared.content[0].text
+        assert "[review#decision] Use a threshold of three." in text
+        assert "Earlier source revisions at workspace v1" in text
+        assert f"[{old_id}] Use a threshold of five." in text
+        assert text == cli("symbolic", "--reuse", "review-query", "--include-previous", "--text")
+        later = await client.call_tool(reuse, {**comparison, "since_version": 2})
+        assert not later.is_error and "threshold of five." not in later.content[0].text
 
         cli(
             "start",
@@ -265,8 +280,9 @@ async def test_citations_preserve_revision_and_deduplicate_context(tmp_path, cap
         assert not combined.is_error
         assert "Supplied citations unavailable:" in combined.content[0].text
         assert "threshold of five." not in combined.content[0].text
-        discarded = await client.call_tool("reuse_conversation_query", {"run_id": "review-query"})
+        discarded = await client.call_tool(reuse, comparison)
         assert discarded.is_error and "invalidated_run:" in discarded.content[0].text
+        assert "threshold of five." not in discarded.content[0].text
 
 
 async def test_workspace_lookup_does_not_create_a_missing_store(tmp_path):
@@ -279,3 +295,68 @@ async def test_workspace_lookup_does_not_create_a_missing_store(tmp_path):
     assert result.is_error
     assert "not_found:" in result.content[0].text
     assert not missing.exists()
+
+
+async def test_previous_turns_share_the_budget_and_keep_revision_specific_positions(
+    tmp_path, capsys
+):
+    workspace = tmp_path / "workspace"
+    path = tmp_path / "input.json"
+
+    def call(*options, payload=None):
+        if payload is not None:
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            options = (*options, "--input", str(path))
+        assert main(["--workspace", str(workspace), *options]) == 0
+        result = json.loads(capsys.readouterr().out)
+        return result.get("value", result)
+
+    long_original = "Approved batch size: five. " + "补" * 72
+    conversation = {
+        "conversation_id": "review",
+        "source": "text",
+        "source_date": "2026-09-01",
+        "metadata": {"source_reference": "review", "project": "Probe"},
+        "segments": [
+            {"segment_id": "intro", "text": "A note on this session."},
+            {"segment_id": "decision", "text": long_original},
+        ],
+    }
+
+    def source(**options):
+        return {
+            "sources": [{"source": {"format": "conversation", "payload": conversation, **options}}]
+        }
+
+    call("index-sources", payload=source())
+    call(
+        "symbolic",
+        "--save",
+        "review",
+        "--project",
+        "Probe",
+        "--start-date",
+        "2026-09-01",
+        payload={"queries": [{"select": "lines", "where": {"grep": "Approved batch size"}}]},
+    )
+    original = call("evidence", "review#decision")["evidence"]
+    conversation["segments"].pop(0)
+    conversation["segments"][0]["text"] = "Approved batch size: three."
+    call("index-sources", payload=source(expected_checksum=original["revision_checksum"]))
+    reuse = "reuse_conversation_query"
+    args = {"run_id": "review", "include_previous": True}
+    async with Client(create_workspace_server(workspace), raise_exceptions=False) as client:
+        narrow = await client.call_tool(reuse, {**args, "max_bytes": 128})
+        assert not narrow.is_error
+        text = narrow.content[0].text
+        assert "Approved batch size: three." in text
+        assert long_original not in text
+        assert f"omitted 1 earlier turns. Evidence IDs: {original['source_line_id']}" in text
+        expanded = await client.call_tool(reuse, {**args, "max_bytes": 512})
+        assert not expanded.is_error
+        text = expanded.content[0].text
+        assert f"[{original['source_line_id']}] {long_original}" in text
+        raw = call("symbolic", "--reuse", "review", "--include-previous", "--max-bytes", "512")
+        pair = raw["previous_revision_evidence"]["pairs"][0]
+        assert pair["current_source_line_id"].endswith("L1")
+        assert pair["previous"]["source_line_id"].endswith("L2")
