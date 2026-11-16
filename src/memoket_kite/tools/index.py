@@ -297,7 +297,8 @@ def _validate_correction_links(facts: dict) -> None:
 
 def _load_index(xml: bytes, facts: dict, segments: dict, revisions: dict) -> Index:
     try:
-        store, vocab = Store.load([io.BytesIO(xml)], strict=True)
+        # Original-turn plans consult source postings and predicates directly.
+        store, vocab = Store.load([io.BytesIO(xml)], strict=True, defer_text_index=True)
         if set(store.facts) != facts.keys() or set(store.lines) != segments.keys():
             raise ToolError("integrity_error", "Codebook IDs differ from source records")
         if any(

@@ -83,6 +83,7 @@ def _scoring_context_fingerprint(store, vocab) -> str:
     The full hash walks every fact, line, unit, and df token — O(corpus) — so
     it is memoized on the Store. Codebooks are read-only after load; the memo
     key still tracks cheap mutation counters so post-load writes invalidate."""
+    store._ensure_text_index()
     memo_key = (
         len(store.facts),
         len(store.lines),

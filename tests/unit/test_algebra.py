@@ -829,6 +829,23 @@ def test_store_treats_an_identical_unit_in_two_shards_as_idempotent(tmp_path):
     assert store.lines_by_unit == {"s1": ["l1"]}
 
 
+def test_store_defers_lexical_postings_through_symbolic_line_execution(tmp_path):
+    path = _write_store_fixture(tmp_path / "index.xml", "1")
+    eager, vocab = Store.load([path, path])
+    deferred, _ = Store.load([path, path], defer_text_index=True)
+    queries = [SubQuery(select="lines", where=Where(grep="line"))]
+    scope = {"s1"}
+
+    eager_rows, _ = execute(eager, vocab, queries, allowed_line_units=scope)
+    deferred_rows, _ = execute(deferred, vocab, queries, allowed_line_units=scope)
+    assert eager_rows == deferred_rows
+    assert deferred._pending_text and not deferred._by_token
+    assert deferred.by_token == eager.by_token
+    assert deferred.avg_doc_tokens() == eager.avg_doc_tokens()
+    assert deferred.idf("line") == eager.idf("line")
+    assert deferred._pending_text is None
+
+
 def test_store_rejects_same_unit_header_with_different_children(tmp_path):
     first = _write_store_fixture(tmp_path / "first.xml", "1")
     second = tmp_path / "second.xml"

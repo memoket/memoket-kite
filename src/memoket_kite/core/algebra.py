@@ -17,6 +17,7 @@ import time as _time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field, replace
 from datetime import date as _date
+from threading import Lock
 
 from memoket_kite.core.vocab import Vocab, norm_code
 
@@ -93,7 +94,7 @@ def _valid_event_time(value: str) -> bool:
 class Store:
     """In-memory index over one codebook (or several shards)."""
 
-    def __init__(self):
+    def __init__(self, *, defer_text_index: bool = False):
         self.facts: dict[str, FactRecord] = {}
         self.lines: dict[str, Line] = {}
         self.units: dict[str, Unit] = {}
@@ -122,19 +123,27 @@ class Store:
         self._fact_specificity: dict[str, float] = {}
         # Token postings power the deterministic lexical channel without a
         # corpus scan. Keys are ("F", fact_id) / ("L", line_id).
-        self.by_token: dict[str, set] = {}
+        self._by_token: dict[str, set] = {}
         self._doc_tokens: dict[tuple, int] = {}
         self._total_tokens: int = 0
+        self._pending_text: list[tuple[str, tuple | None]] | None = [] if defer_text_index else None
+        self._text_index_lock = Lock() if defer_text_index else None
         self._scoring_fp_memo: tuple | None = None  # compile_plan memoization
 
     # ---------- deterministic lexical statistics ----------
     def _index_text(self, text: str, key: tuple | None = None):
+        if self._pending_text is not None:
+            self._pending_text.append((text, key))
+        else:
+            self._index_document(text, key)
+
+    def _index_document(self, text: str, key: tuple | None):
         self._ndocs += 1
         toks = _tokens(text)
         for tok in set(toks):
             self._df[tok] = self._df.get(tok, 0) + 1
             if key is not None:
-                self.by_token.setdefault(tok, set()).add(key)
+                self._by_token.setdefault(tok, set()).add(key)
         if key is not None:
             self._doc_tokens[key] = len(toks)
             self._total_tokens += len(toks)
@@ -142,11 +151,26 @@ class Store:
         # loading remains linear and only facts that reach a ranking pass pay it.
         self._fact_specificity.clear()
 
+    def _ensure_text_index(self):
+        if self._pending_text is None:
+            return
+        with self._text_index_lock:
+            if self._pending_text is not None:
+                for text, key in self._pending_text:
+                    self._index_document(text, key)
+                self._pending_text = None
+
+    @property
+    def by_token(self) -> dict[str, set]:
+        self._ensure_text_index()
+        return self._by_token
+
     def avg_doc_tokens(self) -> float:
+        self._ensure_text_index()
         return self._total_tokens / max(1, len(self._doc_tokens))
 
     def idf(self, term: str) -> float:
-
+        self._ensure_text_index()
         df = self._df.get(term.lower(), 0)
         return math.log(1 + (self._ndocs + 1) / (df + 1))
 
@@ -223,7 +247,9 @@ class Store:
                     )
 
     @classmethod
-    def load(cls, xml_paths: list[str], *, strict: bool = False) -> tuple["Store", Vocab]:
+    def load(
+        cls, xml_paths: list[str], *, strict: bool = False, defer_text_index: bool = False
+    ) -> tuple["Store", Vocab]:
         """Load Codebook shards into a single queryable Store.
 
         ``strict`` governs taxonomy consistency only: with it off, a topic or
@@ -231,8 +257,11 @@ class Store:
         posting key. Malformed records, IDs that two shards define
         differently, invalid unit dates, and dangling provenance are rejected
         in every mode.
+
+        ``defer_text_index`` delays the token postings and document statistics
+        until a lexical lookup needs them. Symbolic postings load immediately.
         """
-        st = cls()
+        st = cls(defer_text_index=defer_text_index)
         vocab = None
         for p in xml_paths:
             root = ET.parse(p).getroot()
