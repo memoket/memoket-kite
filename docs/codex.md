@@ -113,8 +113,21 @@ Start a new local chat after configuring the server. Codex can call
 original quotes and citations in one tool result. The server reads the
 configured workspace on each call, so later imports and updates are visible.
 It needs no separate model key. The first startup installs an optional runtime
-with the MCP SDK. Keep using the KITE skill to import sources, manage memory,
-and view the graph. See [Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp)
+with the MCP SDK. If the download exceeds the configured startup timeout,
+prepare the runtime once in a terminal, then start a new chat.
+
+```sh
+bash /absolute/path/to/scripts/kite.sh workspace-mcp /absolute/path/to/workspace </dev/null
+```
+
+For routine tasks, add this guidance once to the project's `AGENTS.md`.
+
+> If the KITE recall_conversation_evidence MCP tool is available, call it to
+> retrieve the recorded decisions needed for the task. Use original sources
+> when the tool is unavailable or leaves an evidence gap.
+
+Keep using the KITE skill to import sources, manage memory, and view the graph.
+See [Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp)
 for project and desktop setup.
 
 ## Load evidence before the task
