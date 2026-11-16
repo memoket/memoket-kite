@@ -101,6 +101,47 @@ def _clone_workspace(source, destination):
         original.db.backup(copy)
 
 
+def _symbolic_pairs(trials):
+    """Count observed deliveries for both phases of each same-source pair."""
+    groups = {}
+    for trial in trials:
+        key = (trial["case"], trial["repetition"])
+        group = groups.setdefault(key, {})
+        if trial["arm"] in group:
+            raise ValueError("duplicate benchmark arm for a case and repetition")
+        group[trial["arm"]] = trial
+
+    complete, incomplete = 0, 0
+    verified = []
+    missing_before, missing_after = 0, 0
+    for (case, repetition), group in sorted(groups.items()):
+        if group.keys() != set(_ARMS) or any(len(row["turns"]) != 2 for row in group.values()):
+            incomplete += 1
+            continue
+        files, kite = (group[arm] for arm in _ARMS)
+        if files["guidance_sha256"] != kite["guidance_sha256"] or any(
+            left["prompt"] != right["prompt"]
+            for left, right in zip(files["turns"], kite["turns"], strict=True)
+        ):
+            raise ValueError("paired runs must have the same guidance and user messages")
+        complete += 1
+        before, after = (
+            any(receipt["reference_ids"] for receipt in turn["original_symbolic_results"])
+            for turn in kite["turns"]
+        )
+        missing_before += not before
+        missing_after += not after
+        if before and after:
+            verified.append({"case": case, "repetition": repetition})
+    return {
+        "complete_pairs": complete,
+        "incomplete_pairs": incomplete,
+        "pairs_without_before_citations": missing_before,
+        "pairs_without_after_citations": missing_after,
+        "pairs_with_both_citations": verified,
+    }
+
+
 def _trial(args, case, arm, repetition):
     before, after = case["states"]
     with TemporaryDirectory(prefix="kite-revision-chat-") as temporary:
@@ -261,7 +302,7 @@ def main():
     for case in cases:
         _prepare_case(case, args.cases.resolve().parent)
     results = {
-        "protocol": "same-session-source-revision-v1",
+        "protocol": "same-session-source-revision-v2",
         "case_sha256": hashlib.sha256(raw).hexdigest(),
         "codex": subprocess.check_output([args.codex, "--version"], text=True).strip(),
         "model": args.model,
@@ -292,6 +333,7 @@ def main():
         for completed in as_completed(jobs):
             trial = completed.result()
             results["trials"].append(trial)
+            results["symbolic_verification"] = _symbolic_pairs(results["trials"])
             print(
                 trial["case"],
                 trial["arm"],

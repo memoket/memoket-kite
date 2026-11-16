@@ -31,7 +31,7 @@ def test_receipts_require_a_matching_symbolic_mcp_call_and_compiled_plan(tmp_pat
         "status": "completed",
         "result": {"content": [{"type": "text", "text": text}]},
     }
-    bundle = {"manifest": {"memory_version": 2}, "refs": {reference}}
+    bundle = {"manifest": {"memory_version": 2}, "originals": {reference: (None, quote)}}
     path.write_text(json.dumps(delivery) + "\n", encoding="utf-8")
     assert handoff_eval._observed_receipts(path, {"mcp_calls": [call]}, bundle) == [
         {**delivery, "reference_ids": [reference]}
@@ -49,6 +49,13 @@ def test_receipts_require_a_matching_symbolic_mcp_call_and_compiled_plan(tmp_pat
         invalid = {**delivery, "receipt": invalid_receipt}
         path.write_text(json.dumps(invalid) + "\n", encoding="utf-8")
         assert not handoff_eval._observed_receipts(path, {"mcp_calls": [call]}, bundle)
+
+    path.write_text(json.dumps(delivery) + "\n", encoding="utf-8")
+    for original in ((None, "We discussed nine signups."), ("Taylor", quote)):
+        frozen = {**bundle, "originals": {reference: original}}
+        assert handoff_eval._observed_receipts(path, {"mcp_calls": [call]}, frozen) == [
+            {**delivery, "reference_ids": []}
+        ]
 
 
 def test_symbolic_summary_requires_matched_arms_and_citations_delivered():
@@ -79,6 +86,7 @@ def test_symbolic_summary_requires_matched_arms_and_citations_delivered():
     ]
     rows.append(trial("kite", 3, [{"reference_ids": ["release#L2"]}]))
     assert handoff_eval._summary(rows)["kite"]["passed"] == 4
+    assert handoff_eval._summary(rows)["kite"]["verified_symbolic_trials"] == 2
     verified = handoff_eval._verified_symbolic_summary(rows)
     assert verified["matched_trials"] == 1
     assert verified["groups_without_verified_citations"] == 2

@@ -78,3 +78,39 @@ def test_revision_benchmark_changes_sources_and_resumes_with_edited_project(
     trial = revision_eval._trial(args, case, arm, 1)
     assert trial["passed"] and len(trial["turns"]) == 2
     assert len(viewed) == 2 and trial["update_seconds"] >= 0
+
+
+def test_revision_attribution_requires_verified_citations_in_both_turns():
+    def trial(arm, repetition, refs_by_turn):
+        return {
+            "case": "release",
+            "arm": arm,
+            "repetition": repetition,
+            "guidance_sha256": "same",
+            "turns": [
+                {
+                    "prompt": f"Apply decision {phase}.",
+                    "original_symbolic_results": [{"reference_ids": refs}],
+                }
+                for phase, refs in enumerate(refs_by_turn)
+            ],
+        }
+
+    old, current = ["old#L1"], ["current#L2"]
+    rows = [
+        trial("kite", 1, [old, current]),
+        trial("kite", 2, [old, []]),
+        trial("kite", 3, [[], current]),
+        trial("kite", 4, [old]),
+        *(trial("files", repetition, [[], []]) for repetition in range(1, 5)),
+    ]
+    assert revision_eval._symbolic_pairs(rows) == {
+        "complete_pairs": 3,
+        "incomplete_pairs": 1,
+        "pairs_without_before_citations": 1,
+        "pairs_without_after_citations": 1,
+        "pairs_with_both_citations": [{"case": "release", "repetition": 1}],
+    }
+    rows[0]["turns"][0]["prompt"] = "Apply decision 0 for Project Alpha."
+    with pytest.raises(ValueError, match="same guidance and user messages"):
+        revision_eval._symbolic_pairs(rows)

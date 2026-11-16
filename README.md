@@ -212,7 +212,7 @@ No embeddings, no vector database, no layers to embed, sort, and re-rank every r
 <td width="33%" valign="top"><h4 align="center">🗂️ Structured facts</h4>
 Conversations crystallize into typed, dated, topic-indexed memory you can open and read.</td>
 <td width="33%" valign="top"><h4 align="center">🔍 Inspectable queries</h4>
-Every question becomes a symbolic plan, revealing exactly how each answer was matched.</td>
+A symbolic query records the plan, the index lookups it ran, and the original turns it matched.</td>
 </tr>
 <tr>
 <td valign="top"><h4 align="center">🕐 Time-aware retrieval</h4>

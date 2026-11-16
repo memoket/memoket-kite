@@ -119,12 +119,13 @@ def _observed_receipts(path, turn, bundle):
             continue
         outputs[text] -= 1
         refs = set()
+        delivered = f"\n{text}\n"
         for span in receipt["spans"]:
             for original in span["evidence"]:
                 ref = f"{original['conversation_id']}#{original['segment_id']}"
-                speaker = f"{original['speaker_id']}: " if "speaker_id" in original else ""
-                quote = f"[{ref}] {speaker}{original['text']}"
-                if ref in bundle["refs"] and quote in text:
+                speaker, quote = original.get("speaker_id"), original["text"]
+                line = f"[{ref}] {speaker}: {quote}" if speaker is not None else f"[{ref}] {quote}"
+                if bundle["originals"].get(ref) == (speaker, quote) and f"\n{line}\n" in delivered:
                     refs.add(ref)
         results.append({**observed, "reference_ids": sorted(refs)})
     return results
@@ -284,7 +285,13 @@ def _summary(trials):
             first_turn_passed=int(row["passed"] and len(turns) == 1),
             correct_fields=row["score"]["passed_claims"],
             fields=row["score"]["total_claims"],
-            verified_symbolic_trials=int(any(turn["original_symbolic_results"] for turn in turns)),
+            verified_symbolic_trials=int(
+                any(
+                    receipt["reference_ids"]
+                    for turn in turns
+                    for receipt in turn["original_symbolic_results"]
+                )
+            ),
             first_turn_evidence_fields=row["first_turn_evidence_fields"],
             user_messages=len(turns),
             initial_user_bytes=len(turns[0]["prompt"].encode()),

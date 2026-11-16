@@ -388,9 +388,15 @@ against the frozen after state. The runner resumes the original Codex session
 in the same project with the second task. Both phases verify code behavior,
 original citations and tests independently. Scoring never supplies task hints.
 The log preserves the native MCP outputs, the index commit, both code diffs and
-update time separately from the two Codex turns. Only compare completed pairs
-from the same corpus and record phase-level accuracy as well as full-run pass
-rates. Use `--repeat` for repeated comparisons.
+update time separately from the two Codex turns. Read `symbolic_verification`
+for the number of complete pairs, missing citation deliveries in each phase,
+and the matched pairs with verified original citations in both phases. A
+citation qualifies when the same-turn MCP output contains the quoted text and
+speaker from the frozen source for that phase and the corresponding receipt
+records the native engine, compiler, plan, trace and workspace version.
+Report completion and phase-level accuracy across all attempted runs. For
+phase-specific symbolic claims, disclose which pairs delivered native evidence
+in that phase. Use `--repeat` for repeated comparisons.
 
 ## Evaluate original conversation context
 

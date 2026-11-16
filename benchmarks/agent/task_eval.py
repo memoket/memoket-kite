@@ -57,7 +57,7 @@ def _source_bundle(source_dir: Path, memory: Path, source_format: str) -> dict:
         )
         for identity, record in sorted(records.items())
     ]
-    files, refs, dates = [], set(), []
+    files, originals, dates = [], {}, []
     for source in sources:
         conversation = source.conversation
         identity = conversation["conversation_id"]
@@ -76,12 +76,16 @@ def _source_bundle(source_dir: Path, memory: Path, source_format: str) -> dict:
             else Path(source.name)
         )
         files.append((name, source.raw))
-        refs.update(f"{identity}#{line['segment_id']}" for line in conversation["segments"])
+        originals.update(
+            (f"{identity}#{line['segment_id']}", (line.get("speaker_id"), line["text"]))
+            for line in conversation["segments"]
+        )
     if records:
         raise ValueError("the index contains sources unavailable to the file arm")
     return {
         "files": files,
-        "refs": refs,
+        "refs": set(originals),
+        "originals": originals,
         "manifest": {
             "source_count": len(files),
             "source_sha256": corpus_hash(sources),

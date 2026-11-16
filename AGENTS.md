@@ -63,7 +63,9 @@ history, decisions, commitments, and other conversation evidence.
 - For workspace MCP measurements, match the receipt against the delivered
   output of the configured symbolic tool. Require the engine, compiler,
   plan, trace, and workspace version before counting a trial as verified
-  symbolic retrieval.
+  symbolic retrieval. Check quoted text and speaker against the frozen
+  original for each phase. For a same-session revision comparison, report
+  verification for both turns and retain incomplete pairs in the attempt log.
 - For user-handoff comparisons, record which sources each arm can already
   access. Count scripted responses to actual assistant questions separately
   from evaluator feedback. Disable app connectors across arms and inspect
