@@ -45,6 +45,10 @@ For source-line plans, use `where` for required constraints. A query can
 also include a `prefer` array of up to four case-insensitive regexes to
 prioritize matching turns within that candidate set. The trace reports the
 number of candidates matching those ranking expressions.
+When a question asks about an approved decision or a final review, the
+executed plan can add a preference for decision wording in matching text
+stages bound to an earlier stage. Read the original turns for their status
+and context.
 Use `near` inside `where` to require a matching turn nearby in the same
 recording. Supply `grep` and `turns` (1–4) in `near` and a separate text
 constraint on the cited turn itself.

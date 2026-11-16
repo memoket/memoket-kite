@@ -40,6 +40,17 @@ from .retrieve import _citation
 
 _LABEL_AXES = ("topics", "entities", "obj", "place", "event", "duration")
 _PRIOR_CANDIDATES_PER_BRANCH = 16
+_DECISION_QUESTION = re.compile(
+    r"\b(?:final review|final decision|approved|agreed|confirmed|decided)\b|最终|已批准|已确认|已定案",
+    re.I,
+)
+_DECISION_WORDING = (
+    r"\b(?:remov\w*|exclud\w*|drop(?:ped|ping)?|cancel\w*|reject\w*|retain\w*|"
+    r"omit\w*|take\b.{0,40}\bout|no longer|except|"
+    r"we (?:agreed|decided|approved|chose|selected|confirmed)|"
+    r"(?:final|formal) approval|approved|confirmed|adopted)\b|"
+    r"移除|删除|取消|否决|去掉|下线|不再|保留|最终|确认|敲定|选定|批准|通过|就按"
+)
 SYMBOLIC_RECORDING_DATES = object_schema({}, {"start_date": DATE, "end_date": DATE})
 
 
@@ -707,6 +718,22 @@ def _add_query_label_preferences(plan, index, active_units, question):
     return {**plan, field: queries}
 
 
+def _prefer_decision_wording(plan, question):
+    if "stages" not in plan or not question or not _DECISION_QUESTION.search(question):
+        return plan
+    entries = []
+    for branch in plan["stages"]:
+        where = branch["where"]
+        units = where.get("units", where.get("unit"))
+        keyword = any(where.get(key) for key in ("grep", "grep_all", "near"))
+        bound = isinstance(units, str) and units.startswith("$")
+        preferences = branch.get("prefer", [])
+        if keyword and bound and len(preferences) < 4 and _DECISION_WORDING not in preferences:
+            branch = {**branch, "prefer": [*preferences, _DECISION_WORDING]}
+        entries.append(branch)
+    return {**plan, "stages": entries}
+
+
 def _calendar_window(store, row):
     source = store.lines_by_unit[row["unit"]]
     offset = int(row["id"].rpartition("L")[2]) - 1
@@ -999,7 +1026,9 @@ def execute_source_plan(
             if _within_recording_dates(index.revisions[uid]["conversation"], dates)
         }
     plan = _resolve_unit_names(compiled["plan"], index, active_units)
-    plan = _add_query_label_preferences(plan, index, active_units, compiled.get("question"))
+    question = compiled.get("question")
+    plan = _add_query_label_preferences(plan, index, active_units, question)
+    plan = _prefer_decision_wording(plan, question)
     project_join = any(
         isinstance(units := stage["where"].get("units"), str) and units.endswith(".project_units")
         for stage in plan.get("stages", ())
@@ -1017,7 +1046,6 @@ def execute_source_plan(
         else None
     )
     changed = active_units & changed_recordings if changed_recordings is not None else set()
-    question = compiled.get("question")
     compare_schedule = changed != active_units and _can_search_schedule_change(
         changed, question, plan, limit, dates
     )

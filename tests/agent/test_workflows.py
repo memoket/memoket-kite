@@ -7217,6 +7217,71 @@ def test_symbolic_project_binding_resolves_only_a_unique_anchor_project(work):
     call("symbolic", payload={**request, "plan": malformed}, error="invalid_plan")
 
 
+@pytest.mark.parametrize(
+    "subject, proposal, outcome, question, preference",
+    [
+        (
+            "sample labels",
+            "Optional sample labels for the pilot.",
+            "We will take the sample labels out of the pilot.",
+            "What did the final review say about sample labels?",
+            "optional",
+        ),
+        (
+            "访客提醒",
+            "访客提醒可以作为可选项。",
+            "这次确认去掉访客提醒。",
+            "访客提醒最终怎么处理？",
+            "可选",
+        ),
+    ],
+)
+def test_symbolic_prefers_decision_wording_inside_the_original_project_scope(
+    work, subject, proposal, outcome, question, preference
+):
+    _, call = work
+    sources = []
+    for name, content, project in (
+        ("anchor", "The folder has a blue carabiner.", "Harbor"),
+        *((f"proposal-{number}", proposal, "Harbor") for number in range(5)),
+        ("confirm-note-7", outcome, "Harbor"),
+        ("other", outcome, "Valley"),
+    ):
+        source = text_input(name, content)["source"]
+        source["payload"]["metadata"]["project"] = project
+        sources.append({"source": source})
+    call("index-sources", payload={"sources": sources})
+    plan = {
+        "stages": [
+            {"name": "anchor", "select": "lines", "where": {"grep": "blue carabiner"}},
+            {
+                "name": "answer",
+                "select": "lines",
+                "prefer": [preference],
+                "where": {"units": "$anchor.project_units", "grep": subject},
+            },
+        ]
+    }
+    ordinary = call("symbolic", "--limit", "2", payload=plan)
+    assert any(
+        line["conversation_id"].startswith("proposal-")
+        for span in ordinary["spans"]
+        for line in span["evidence"]
+    )
+    result = call("symbolic", "--limit", "2", payload={"question": question, "plan": plan})
+    assert {line["conversation_id"] for span in result["spans"] for line in span["evidence"]} == {
+        "anchor",
+        "confirm-note-7",
+    }
+    assert result["compiled_plan"] == ordinary["plan"]
+    assert result["plan"]["stages"][1]["where"] == ordinary["plan"]["stages"][1]["where"]
+    assert len(result["plan"]["stages"][1]["prefer"]) == 2
+
+    query = {"queries": [{"select": "lines", "prefer": [preference], "where": {"grep": subject}}]}
+    parallel = call("symbolic", "--limit", "2", payload={"question": question, "plan": query})
+    assert parallel["plan"] == query
+
+
 def test_symbolic_project_scope_limits_preparation_and_evidence(work, monkeypatch):
     _, call = work
     sources = []

@@ -26,6 +26,11 @@ rank matching original lines. Use `where` for required constraints. KITE can
 also add ranking labels when both the question and a text branch match a
 label in scope. The JSON output includes the executed plan and per-axis
 candidate counts and bonuses. A zero bonus means the axis changed no scores.
+When a question asks about an approved decision or a final review, KITE can
+add a preference for approval, rejection, and removal wording in text
+stages bound to an earlier stage with an available `prefer` slot. Compare `compiled_plan` and
+`plan` to inspect the added preference. Read the cited turns to determine
+whether the change was actually accepted.
 
 In a staged source-line query, `where.units: "$anchor.units"` follows the
 recordings matched by the named anchor. Use `where.units: "$anchor.project_units"`
