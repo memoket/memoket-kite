@@ -51,6 +51,9 @@ to search other recordings of that project. All anchor matches must have the
 same recorded project. The join honors the query's recording scope, including
 its date bounds. If more than one project matches, the trace names the projects
 and the dependent stage waits for a narrower anchor.
+When submitting a source-line plan locally, KITE moves an unambiguous
+`unit` or `units` from the query or stage into its `where` clause. Supply
+only one recording filter.
 For a literal project clue, add `anchor_quote` beside `question` and `plan`
 in the local `--input` request. Supply up to three source-line `queries` in
 `plan` and omit their `unit` and `units` filters. KITE validates and saves
@@ -62,6 +65,7 @@ line and surrounding turns for the decision's status.
 For a scoped final-decision lookup, KITE can preserve a nearby quantity
 revision exchange when the later turns omit the subject. The `revision_exchange`
 trace identifies the original words, reply, and reported change in order.
+This works for searches in a stage bound to a unique recorded project.
 When it can quote all four turns, KITE lists those citations in order above
 the quotes. Read the reply and the report before using the revised value.
 Set `KITE_SYMBOLIC_GUIDE=1` in the Codex submit hook's environment to include

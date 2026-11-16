@@ -60,6 +60,7 @@ and context.
 For a scoped final-decision query, a matched subject can lead to nearby
 turns on a quantity change. The `revision_exchange` trace links the subject,
 revision wording, reply, and reported adjustment within one recording.
+This also applies to a stage bound to a uniquely matched project's recordings.
 Read those turns in order for the scope and status of the change.
 Staged line searches advance past shared hits to give each stage a distinct
 candidate within the quote limit. A project-bound final-decision stage can
@@ -77,3 +78,6 @@ use `where.units: "$anchor.project_units"` in a later named stage. The anchor
 must match recordings assigned to one project. The trace reports the resolved
 project, competing projects, or missing project assignments. The join respects
 the requested recording date range.
+In a submitted source-line plan, a single `unit` or `units` beside `where`
+is moved into `where` before validation. Plans with competing recording
+filters require an explicit choice.

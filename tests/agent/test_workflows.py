@@ -7567,6 +7567,22 @@ def test_symbolic_includes_a_scoped_revision_exchange_as_original_turns(
     assert "Review the revision discussion in order:" not in tight
     assert "kickoff#text-1" in tight
 
+    anchored = {
+        **request,
+        "question": f"{question} Use the project mentioning “budget is 50”.",
+        "anchor_quote": "budget is 50",
+    }
+    result = call("symbolic", "--limit", "4", payload=anchored)
+    step = next(step for step in result["trace"] if step["stage"] == "revision_exchange")
+    assert step["stages"] == ["evidence_2"]
+    assert step["reported_change_line_id"] == related[-1]["source_line_id"]
+    outside = text_input("another-kickoff", "The kickoff budget is 50.")["source"]
+    outside["payload"]["metadata"]["project"] = "Pine"
+    call("index-sources", payload={"sources": [{"source": outside}]})
+    ambiguous_project = call("symbolic", "--limit", "4", payload=anchored)
+    assert ambiguous_project["trace"][0]["project_binding"]["status"] == "multiple"
+    assert all(step["stage"] != "revision_exchange" for step in ambiguous_project["trace"])
+
     # Two supported exchanges in the same scope require the caller to disambiguate.
     call(
         "index-sources",
@@ -7576,6 +7592,55 @@ def test_symbolic_includes_a_scoped_revision_exchange_as_original_turns(
     assert all(step["stage"] != "revision_exchange" for step in ambiguous["trace"])
     assert all(
         line["role"] == "symbolic_match" for span in ambiguous["spans"] for line in span["evidence"]
+    )
+
+
+def test_symbolic_normalizes_local_recording_filters_without_relaxing_scope(work):
+    _, call = work
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {"source": text_input("briefing-east", "Shipment starts Friday.")["source"]},
+                {"source": text_input("briefing-west", "Shipment starts Monday.")["source"]},
+            ]
+        },
+    )
+    entry = {"select": "lines", "where": {"grep": "Shipment"}, "units": ["briefing-east"]}
+    plan = {"queries": [entry]}
+    expected = {"select": "lines", "where": {"grep": "Shipment", "units": ["briefing-east"]}}
+    request = {"question": "When is shipment?", "plan": plan}
+    result = call("symbolic", "--save", "shipment", payload=request)
+    assert result["compiled_plan"] == {"queries": [expected]}
+    assert result["compiler"] == "host_inline_plan"
+    assert result["spans"][0]["evidence"][0]["text"] == "Shipment starts Friday."
+    assert call("symbolic", "--reuse", "shipment")["spans"] == result["spans"]
+    assert call("symbolic", payload=plan)["spans"] == result["spans"]
+
+    stages = [
+        {"name": "anchor", "select": "lines", "unit": "briefing-east"},
+        {
+            "name": "shipment",
+            "select": "lines",
+            "where": {"grep": "Shipment"},
+            "units": "$anchor.units",
+        },
+    ]
+    result = call("symbolic", payload={"stages": stages})
+    assert result["spans"][0]["evidence"][0]["text"] == "Shipment starts Friday."
+    assert result["plan"]["stages"][1]["where"]["units"] == "$anchor.units"
+    for invalid in (
+        {**entry, "where": {**entry["where"], "unit": "briefing-west"}},
+        {**entry, "unit": "briefing-west"},
+        {**entry, "units": [42]},
+        {**entry, "where": None},
+        {**entry, "unit_scope": "briefing-east"},
+    ):
+        call("symbolic", payload={"queries": [invalid]}, error="invalid_plan")
+    call(
+        "symbolic",
+        payload={**request, "anchor_quote": "Shipment starts Friday"},
+        error="invalid_plan",
     )
 
 

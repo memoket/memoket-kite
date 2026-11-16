@@ -442,6 +442,33 @@ def _validate_source_plan(plan):
     return plan
 
 
+def _normalize_submitted_recording_filters(plan):
+    """Move host-supplied recording filters to the canonical source-line clause."""
+    field = "queries" if "queries" in plan else "stages"
+    entries = plan.get(field)
+    if not isinstance(entries, list):
+        return plan
+    normalized = []
+    for entry in entries:
+        filters = {"unit", "units"} & entry.keys() if isinstance(entry, dict) else set()
+        if not filters or entry.get("select") != "lines":
+            normalized.append(entry)
+            continue
+        where = entry.get("where", {})
+        if not isinstance(where, dict) or len(filters) != 1 or {"unit", "units"} & where.keys():
+            raise InvalidQueryError(
+                "put a single recording filter in plan where.unit or where.units"
+            )
+        key = next(iter(filters))
+        normalized.append(
+            {
+                **{name: value for name, value in entry.items() if name != key},
+                "where": {**where, key: entry[key]},
+            }
+        )
+    return {**plan, field: normalized}
+
+
 def _bind_queries_to_project_quote(plan, quote):
     queries = plan.get("queries")
     if not queries or any({"unit", "units"} & query["where"].keys() for query in queries):
@@ -611,7 +638,7 @@ def compile_submitted_source_plan(
         value = value["plan"]
     try:
         profile = _prepare_question(index, question, project, dates)
-        plan = _validate_source_plan(value)
+        plan = _validate_source_plan(_normalize_submitted_recording_filters(value))
         if anchor_quote is not None:
             plan = _validate_source_plan(_bind_queries_to_project_quote(plan, anchor_quote))
         return {
@@ -996,11 +1023,24 @@ def _branch_coverage(plan, traces, spans, *, delivery=False):
 
 
 def _revision_exchange(index, compiled, plan, trace, question):
-    if "queries" not in plan or not compiled["units"] or not question:
+    if not question or not _DECISION_QUESTION.search(question):
         return [], None
-    if not _DECISION_QUESTION.search(question):
+    stages = plan.get("stages")
+    line_matches = trace.line_matches
+    if stages:
+        projects = {
+            f"${step['name']}.project_units"
+            for step in trace.stages
+            if step.get("project_binding", {}).get("status") == "resolved"
+        }
+        line_matches = {
+            number: matches
+            for number, matches in line_matches.items()
+            if isinstance(ref := stages[number]["where"].get("units"), str) and ref in projects
+        }
+    elif not compiled["units"]:
         return [], None
-    matches = find_revision_exchanges(index.store, trace.line_matches)
+    matches = find_revision_exchanges(index.store, line_matches)
     if len(matches) != 1:
         return [], None
     line_ids, branches = next(iter(matches.items()))
@@ -1014,7 +1054,11 @@ def _revision_exchange(index, compiled, plan, trace, question):
     ]
     return rows, {
         "stage": "revision_exchange",
-        "queries": sorted(branches),
+        **(
+            {"stages": [stages[i].get("name") or f"s{i + 1}" for i in sorted(branches)]}
+            if stages
+            else {"queries": sorted(branches)}
+        ),
         "subject_line_id": line_ids[0],
         "revision_line_id": line_ids[1],
         "reply_line_id": line_ids[2],
