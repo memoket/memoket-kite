@@ -219,6 +219,42 @@ project is seeded and the source index is ready. Compare efficiency on tasks
 both arms passed and keep failed checks visible. Keep private case data,
 source corpora and results under an ignored directory.
 
+### Compare an installed symbolic hook with raw files
+
+Use a local marketplace assembled with
+`scripts/build_codex_marketplace.py` and a built KITE wheel. The runner
+installs the plugin through Codex app-server in its own temporary profile.
+Both arms can read the same original files and receive identical task
+messages. The installed hook receives the saved-plan selector through the
+benchmark event and delivers its actual cited evidence to Codex.
+
+```sh
+python -m benchmarks.agent.symbolic_fixture artifacts/orchard-fixture
+python -m benchmarks.agent.task_eval artifacts/orchard-fixture/cases.json \
+  artifacts/orchard-results --model "$MODEL" --codex "$CODEX" \
+  --symbolic-marketplace "$MARKETPLACE" --trace-timing
+```
+
+The synthetic example evaluates two fresh execution tasks on the same saved
+plan, before and after adding a confirmed decision and an unapproved proposal.
+Each case declares `symbolic_run` in the existing case schema. Set optional
+`scope_hint` to give every arm the same additional project instructions.
+Set optional `follow_up` to a fixed evaluator message sent once when the
+first turn fails. The results retain the separate turns and count all user
+prompt bytes and model usage. The supplied cases have already compiled their
+saved plans, so plan-creation costs belong to setup.
+
+Add `--baseline-symbolic-marketplace PATH` to compare a second local
+installation against the same files and plans. Each marketplace needs its
+own bundled wheel. Read `verified_symbolic` for comparisons whose captured
+input, engine, snapshot, and injected quotes replayed successfully. Each
+installed trial preserves the observed command, delivery, and source
+receipt. Unverified runs remain in the trial log and are excluded as a
+pair from the verified summary. The manifest records plugin installation
+time separately from task time, and reports the bytes a user would enter
+when typing the selector manually. The command writes its full results and
+exits nonzero when a required symbolic delivery cannot be verified.
+
 For a revision experiment with successive turns, use `codex_trial` with
 `persist_session=True` and a temporary Codex home. Save the returned
 `session_id`, apply the source change to both arms, and pass that ID as
@@ -232,6 +268,19 @@ is installed. This lets Codex discover the actual skill. Use a separate empty
 home for the file comparison, and record the plugin version and skill digest
 with the model and case manifests. Count skill loading in end-to-end time and
 token usage. Report source lookup commands separately from all commands.
+
+For a symbolic retrieval comparison, identify the observed path for each arm.
+Record the request, the plan (with its origin), the engine trace and the
+original citations. Use the installed skill and the saved tool logs to verify
+which path ran. Label host-compiled plans, inline host plans, and externally
+supplied plans separately. Report `context-search` (including SQLite FTS),
+direct annotation filtering and other fallback paths separately from execution
+by `memoket_kite.core.algebra.execute_plan`.
+Verify the path in each measured trial before aggregating results. Record the
+workspace version and the caller-supplied project, date, or annotation hints.
+For installed plugin comparisons, preserve the actual injected evidence and
+the corresponding execution trace. For a fresh-compilation versus saved-plan
+comparison, report setup and per-task costs separately.
 
 ## Evaluate original conversation context
 

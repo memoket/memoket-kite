@@ -1,0 +1,133 @@
+"""Observe an installed KITE submit hook and verify its saved symbolic execution."""
+
+from __future__ import annotations
+
+import json
+import re
+import runpy
+import shlex
+import subprocess
+import sys
+import time
+from pathlib import Path
+from unittest.mock import patch
+
+_ENGINE = "memoket_kite.core.algebra.execute_plan"
+_QUOTE = re.compile(r"^\[([^\]\n]+#[^\]\n]+)\]", re.M)
+
+
+def hook_options(command: list[str]) -> tuple[str, ...]:
+    config = (
+        'hooks.UserPromptSubmit=[{hooks=[{type="command",timeout=8,command='
+        f"{json.dumps(shlex.join(command))}}}]}}]"
+    )
+    return ("--dangerously-bypass-hook-trust", "-c", config)
+
+
+def symbolic_hook(launcher: Path, run_id: str, metrics: Path) -> tuple[str, ...]:
+    return hook_options(
+        [sys.executable, "-I", str(Path(__file__).resolve()), str(launcher), run_id, str(metrics)]
+    )
+
+
+def observe(launcher: Path, run_id: str, metrics: Path) -> None:
+    event = json.load(sys.stdin)
+    event["prompt"] = f"KITE plan: {run_id}\n" + event["prompt"]
+    api = runpy.run_path(str(launcher.with_name("codex_context.py")))
+    calls = []
+    run = subprocess.run
+
+    def observed(command, *args, **kwargs):
+        result = run(command, *args, **kwargs)
+        calls.append({"args": command[1:], "exit_code": result.returncode})
+        return result
+
+    start = time.perf_counter()
+    with patch.object(subprocess, "run", observed):
+        context = api["prepare_context"](event, launcher)
+    metrics.write_text(
+        json.dumps(
+            {
+                "bytes": len((context or "").encode()),
+                "seconds": time.perf_counter() - start,
+                "calls": calls,
+                "additional_context": context,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    if context:
+        print(json.dumps(api["hook_output"](context)))
+
+
+def verify_delivery(launcher, run_id, hook, cwd, env, memory_version):
+    """Replay the observed command and recover its original symbolic receipt."""
+    context = hook.get("additional_context")
+    if not context or not hook.get("calls"):
+        return {"verified": False, "error": "no observed symbolic hook delivery"}
+    call = hook["calls"][-1]
+    arguments = call["args"]
+    if (
+        call["exit_code"] != 0
+        or not arguments
+        or arguments[0] != "symbolic"
+        or "--reuse" not in arguments
+        or arguments[arguments.index("--reuse") + 1] != run_id
+    ):
+        return {"verified": False, "error": "hook did not complete the selected saved query"}
+    try:
+        output = json.loads(context.split("\n", 1)[1])
+        delivered = subprocess.check_output(
+            [str(launcher), *arguments], cwd=cwd, env=env, timeout=30, text=True
+        ).strip()
+        raw_args = arguments.copy()
+        if "--delivery-bytes" in raw_args:
+            start = raw_args.index("--delivery-bytes")
+            del raw_args[start : start + 2]
+            delivered = json.loads(delivered)
+        else:
+            raw_args.remove("--text")
+        if output != delivered:
+            raise ValueError("replayed output differs from the injected evidence")
+        receipt = json.loads(
+            subprocess.check_output(
+                [str(launcher), *raw_args], cwd=cwd, env=env, timeout=30, text=True
+            )
+        )
+        if (
+            receipt["engine"] != _ENGINE
+            or receipt["compiler"] != "reused_symbolic_plan"
+            or receipt["memory_version"] != memory_version
+            or receipt["reused_plan"]["run_id"] != run_id
+        ):
+            raise ValueError("receipt does not match the symbolic engine, saved plan and snapshot")
+        candidates = {
+            f"{line['conversation_id']}#{line['segment_id']}": line
+            for span in receipt["spans"]
+            for line in span["evidence"]
+        }
+        refs, position = set(), 0
+        while match := _QUOTE.search(output, position):
+            ref = match[1]
+            line = candidates.get(ref)
+            if line is None:
+                raise ValueError(f"injected citation {ref} missing from the symbolic receipt")
+            speaker = f" {line['speaker_id']}:" if "speaker_id" in line else ""
+            quote = f"{speaker} {line['text']}"
+            if output.startswith(quote, match.end()):
+                position = match.end() + len(quote)
+            elif output[match.end() :] == quote.rstrip():
+                position = len(output)
+            else:
+                raise ValueError(f"injected quotation differs from original at {ref}")
+            refs.add(ref)
+        if not refs:
+            raise ValueError("no original citations in the hook delivery")
+    except (subprocess.SubprocessError, ValueError, KeyError, IndexError) as exc:
+        return {"verified": False, "error": str(exc)}
+    return {"verified": True, "reference_ids": sorted(refs), "receipt": receipt}
+
+
+if __name__ == "__main__":
+    observe(Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3]))
