@@ -49,6 +49,17 @@ If the result supplies two date-comparison evidence IDs, pass the first ID
 to `evidence` and the second with `--also` to read both original turns in
 one call. The IDs refer to the revisions used by the search.
 
+Source-line plans can use `where.date_wording` with `"calendar"` or
+`"change"`. Use a subject filter or `near` to connect dates to the relevant
+recordings or turns. Compilation expands the field to the native
+`grep_all` predicate. A date-change match still needs its original wording
+checked for approval.
+An empty date branch with a literal compound subject can yield a
+`date_subject_hint` from a small probe using the existing recording scope.
+The result keeps the submitted branch's original matches. Review the
+suggested subject wording and retry using the same scope if it fits.
+
+
 For source-line plans, use `where` for required constraints. A query can
 also include a `prefer` array of up to four case-insensitive regexes to
 prioritize matching turns within that candidate set. The trace reports the

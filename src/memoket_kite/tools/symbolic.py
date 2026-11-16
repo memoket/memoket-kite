@@ -13,6 +13,7 @@ from memoket_kite.research.errors import InvalidQueryError
 from memoket_kite.research.query import QueryPlan
 
 from .context import (
+    _ACRONYMS,
     _DATE_DETAIL,
     _DATE_DETAIL_QUESTION,
     _DECISION_STATUS,
@@ -68,6 +69,7 @@ _CURRENT_SCHEDULE = re.compile(
 _DATE_AFTER_CHANGE = re.compile(
     rf"(?:{_SCHEDULE_CHANGE.pattern})[^。！？!?；;]{{0,24}}?(?:{_DATE_DETAIL.pattern})", re.I
 )
+_DATE_WORDING = {"calendar": _DATE_DETAIL.pattern, "change": _DATE_AFTER_CHANGE.pattern}
 _REVISION_CLAUSE_BREAK = re.compile(r"[，,。！？!?；;]")
 _NEGATED_DATE_CHANGE = re.compile(
     r"尚未|没有|并未|不能|不会|不(?:再|会|是|用|应|要)?$|"
@@ -146,7 +148,10 @@ class SourceLineProfile:
 {{"queries":[{{"select":"lines","where":{{"grep":"ship|deliver|pickup"}},"prefer_labels":{{"topics":["delivery"]}},"prefer":["can ship|ready to deliver"]}}]}}
 Use up to three queries for independent evidence needs. Separate earlier and later decisions
 when the question needs both. where keys: topics, entities, obj, place, event, duration, units,
-who, time [start,end], grep, grep_all, near. Each supplied constraint is required. For relevant
+who, time [start,end], grep, grep_all, near, date_wording. Each supplied constraint is required.
+Use date_wording "calendar" for a spoken date, or "change" for date-change wording on the same
+turn. Use a subject expression in near to connect surrounding turns. This matches wording,
+so check the original lines for approval. For relevant
 listed labels, use prefer_labels to boost original lines supported by the index without excluding
 untagged lines. Its axes are topics, entities, obj, place, event, duration. Use one to four
 exact codes per axis. Use where labels
@@ -268,6 +273,9 @@ Question: {question}
             ensure_ascii=False,
             separators=(",", ":"),
         )
+
+    def normalize_plan(self, value):
+        return _expand_date_wording(value)
 
     def compile_quote_hints(self, question, vocab, store):
         """Check literal user quotations in the native source-line engine."""
@@ -449,8 +457,40 @@ def _pack_source_lines(index, rows, neighbors, max_bytes, nearby_matches, exchan
     return spans, used, tuple(selected)
 
 
+def _expand_date_wording(plan):
+    """Compile source-only calendar predicates to the ordinary symbolic plan."""
+    if not isinstance(plan, dict):
+        return plan
+    field = "queries" if "queries" in plan else "stages"
+    entries = plan.get(field)
+    if not isinstance(entries, list):
+        return plan
+    expanded = []
+    for entry in entries:
+        where = entry.get("where") if isinstance(entry, dict) else None
+        if not isinstance(where, dict) or "date_wording" not in where:
+            expanded.append(entry)
+            continue
+        wording = where["date_wording"]
+        if (
+            entry.get("select") != "lines"
+            or not isinstance(wording, str)
+            or wording not in _DATE_WORDING
+        ):
+            raise InvalidQueryError(
+                'date_wording requires a source-line query and "calendar" or "change"'
+            )
+        texts = where.get("grep_all", [])
+        if not isinstance(texts, list):
+            raise InvalidQueryError("plan where grep_all must be a list of strings")
+        filters = {name: value for name, value in where.items() if name != "date_wording"}
+        filters["grep_all"] = [*texts, _DATE_WORDING[wording]]
+        expanded.append({**entry, "where": filters})
+    return {**plan, field: expanded}
+
+
 def _validate_source_plan(plan):
-    plan = QueryPlan.from_dict(plan).to_dict()
+    plan = QueryPlan.from_dict(_expand_date_wording(plan)).to_dict()
     for entry in plan.get("queries", plan.get("stages", [])):
         if entry.get("select") != "lines" or not any(entry.get("where", {}).values()):
             raise ToolError(
@@ -1107,6 +1147,61 @@ def _schedule_follow_up(pack):
     return ""
 
 
+def _split_subject_cues(pattern, wording):
+    """Find short literal cues in a compound subject supplied by the planner."""
+    cues = []
+    for variant in pattern.split("|"):
+        if re.fullmatch(r"[㐀-鿿]{4,10}", variant):
+            cues.append(variant[:-2] if wording == "calendar" else variant[-2:])
+        elif re.fullmatch(r"[a-zA-Z]+(?:[ -][a-zA-Z]+){1,4}", variant):
+            words = re.split("[ -]", variant)
+            cues.append(words[0] if wording == "calendar" else words[-1])
+    return sorted(set(cues))[:3]
+
+
+def _date_subject_hints(index, plan, traces, question, active_units):
+    """Probe alternative subject cues without relaxing the submitted result."""
+    acronyms = set(re.findall(_ACRONYMS.pattern, question, re.ASCII))
+    for i, entry in enumerate(plan.get("queries", ())):
+        where = entry["where"]
+        near = where.get("near")
+        if not near or any(trace.line_matches.get(i) for trace in traces):
+            continue
+        expressions = where.get("grep_all", ())
+        wording = next(
+            (name for name, pattern in _DATE_WORDING.items() if pattern in expressions),
+            None,
+        )
+        if not wording or not (cues := _split_subject_cues(near["grep"], wording)):
+            continue
+        hint = {
+            **where,
+            "near": {**near, "grep": "|".join(map(re.escape, cues))},
+            "date_wording": wording,
+        }
+        rest = [value for value in expressions if value != _DATE_WORDING[wording]]
+        if rest:
+            hint["grep_all"] = rest
+        else:
+            hint.pop("grep_all")
+        if wording == "calendar" and not rest and not where.get("grep") and len(acronyms) == 1:
+            acronym = re.escape(next(iter(acronyms)))
+            hint["grep"] = rf"(?a:\b{acronym}\b)"
+        probe = _validate_source_plan({"queries": [{"select": "lines", "where": hint}]})
+        _, checked = execute_plan(
+            index.store, index.vocab, probe, budget=1, allowed_line_units=active_units
+        )
+        matching = len(checked.line_matches.get(0, ()))
+        if 0 < matching <= 12:
+            yield {
+                "stage": "date_subject_hint",
+                "q": i,
+                "matches": matching,
+                "suggested_where": hint,
+                "probe_plan": probe,
+            }
+
+
 def _plan_heads(rows, trace):
     selected = {row["id"] for row in rows}
     return {
@@ -1294,6 +1389,20 @@ def render_symbolic_context(pack, *, guide=False):
                     f"{recording}#{selected[line_id]['segment_id']}" for line_id in reply_ids
                 )
                 lines.append(f"Review the revision discussion in order: {refs}.")
+        if step["stage"] == "date_subject_hint":
+            where = step["suggested_where"]
+            # Render recording names from the submitted plan, not internal index IDs.
+            original = pack.get("compiled_plan", pack["plan"])["queries"][step["q"]]["where"]
+            if "unit" in original:
+                where = {k: v for k, v in where.items() if k != "units"}
+                where["unit"] = original["unit"]
+            elif "units" in original:
+                where = {**where, "units": original["units"]}
+            candidate = json.dumps(where, ensure_ascii=False, separators=(",", ":"))
+            lines.append(
+                f"A scoped alternative for query {step['q'] + 1} matched "
+                f"{step['matches']} original turns. Try this where clause {candidate}."
+            )
         binding = step.get("project_binding", {})
         if binding.get("status") == "multiple":
             names = [" ".join(name.split()) for name in binding["projects"][:6]]
@@ -1581,6 +1690,8 @@ def execute_source_plan(
         if exchange_ids <= set(quote_order):
             trace_steps.append(exchange_step)
             reserved = exchange_ids
+    if question and changed_recordings is None:
+        trace_steps.extend(_date_subject_hints(index, plan, traces, question, active_units))
     changed_checksums = {index.revisions[uid]["checksum"] for uid in changed}
     if changed_recordings is not None:
         cited = {line["revision_checksum"] for span in spans for line in span["evidence"]}

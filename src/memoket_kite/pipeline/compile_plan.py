@@ -221,15 +221,18 @@ def compile_plan(
             cached_plan = _read_cached_plan(cache_path)
             if cached_plan is not None:
                 return cached_plan
+    normalize = getattr(profile, "normalize_plan", None)
     if scorer is None:
-        plan = _compile_uncached(prompt, model)
+        plan = _compile_uncached(prompt, model, normalize=normalize)
     else:
         # candidate 1 = greedy (t=0) anchor; the rest explore at high temperature.
         # A deterministic scorer picks the winner, the cache pins it.
         best, best_s = None, float("-inf")
         for k in range(n_candidates):
             try:
-                cand = _compile_uncached(prompt, model, temperature=0.0 if k == 0 else 0.8)
+                cand = _compile_uncached(
+                    prompt, model, temperature=0.0 if k == 0 else 0.8, normalize=normalize
+                )
             except RuntimeError:
                 continue
             s = scorer(cand)
@@ -301,5 +304,11 @@ def render_compile_prompt(question: str, vocab, store, profile, *, today: str = 
     return prompt
 
 
-def _compile_uncached(prompt: str, model: str, temperature: float = 0.0) -> dict:
-    return _validated_compiled_plan(llm_json(prompt, model=model, temperature=temperature))
+def _compile_uncached(prompt: str, model: str, temperature: float = 0.0, *, normalize=None) -> dict:
+    value = llm_json(prompt, model=model, temperature=temperature)
+    if normalize:
+        try:
+            value = normalize(value)
+        except ValueError as exc:
+            raise RuntimeError(f"compiler returned an invalid query plan: {exc}") from exc
+    return _validated_compiled_plan(value)

@@ -7968,6 +7968,126 @@ def test_symbolic_packs_a_related_dated_revision_from_the_current_snapshot(
     assert all(step["stage"] != "dated_revision" for step in insufficient_bytes["trace"])
 
 
+def test_source_date_wording_compiles_to_native_regex_with_the_same_scope(work, monkeypatch):
+    _, call = work
+    old = "这次QA对外办理登记，原定10月12日。"
+    change = "那就改到10月20日。"
+    fixtures = []
+    for name, project, date, turns in (
+        ("first", "Intake", "2026-09-14", [old]),
+        ("second", "Intake", "2026-09-20", ["现在谈QA登记。", change]),
+        ("spare", "Intake", "2026-09-23", ["QA登记", "考虑2026-10-22。"]),
+        ("other", "Warehouse", "2026-09-20", ["QA登记", "改到10月26日。"]),
+    ):
+        fixtures.append(
+            {
+                "source": {
+                    "format": "conversation",
+                    "payload": {
+                        "conversation_id": name,
+                        "source": "text",
+                        "source_date": date,
+                        "metadata": {"source_reference": name, "project": project},
+                        "segments": [
+                            {"segment_id": f"turn-{i}", "text": text}
+                            for i, text in enumerate(turns)
+                        ],
+                    },
+                }
+            }
+        )
+    call("index-sources", payload={"sources": fixtures})
+    question = "QA登记原来和最新的日期分别是什么？"
+    raw = {
+        "queries": [
+            {
+                "select": "lines",
+                "where": {
+                    "grep_all": [r"(?a:\bQA\b)", "原定"],
+                    "date_wording": "calendar",
+                },
+            },
+            {
+                "select": "lines",
+                "where": {
+                    "near": {"grep": "QA登记", "turns": 1},
+                    "date_wording": "change",
+                },
+            },
+        ]
+    }
+    args = ("symbolic", "--project", "Intake", "--end-date", "2026-09-22")
+    request = {"question": question, "plan": raw}
+    host = call(*args, "--save", "qa-dates", payload=request)
+    assert host["engine"] == "memoket_kite.core.algebra.execute_plan"
+    assert [branch["matched_lines"] for branch in host["branch_coverage"]] == [1, 1]
+    assert {
+        (line["text"], line["role"]) for span in host["spans"] for line in span["evidence"]
+    } == {(old, "symbolic_match"), (change, "symbolic_match"), ("现在谈QA登记。", "nearby_match")}
+    filters = [query["where"] for query in host["plan"]["queries"]]
+    assert all("date_wording" not in where for where in filters)
+    assert filters[0]["grep_all"][:2] == raw["queries"][0]["where"]["grep_all"]
+    assert filters[1]["near"] == raw["queries"][1]["where"]["near"]
+    assert call(*args, payload={**request, "plan": host["plan"]})["spans"] == host["spans"]
+    assert call("symbolic", "--reuse", "qa-dates")["spans"] == host["spans"]
+
+    def provider(prompt, **kwargs):
+        assert 'date_wording "calendar"' in prompt
+        assert "QA登记原来" in prompt
+        return raw
+
+    monkeypatch.setattr("memoket_kite.pipeline.compile_plan.llm_json", provider)
+    actual = call(*args, "--question", question, "--model", "fixture-model")
+    assert actual["compiler"] == "memoket_kite.pipeline.compile_plan"
+    assert actual["plan"] == host["plan"]
+    assert actual["spans"] == host["spans"]
+    missed_plan = {
+        "queries": [
+            {
+                "select": "lines",
+                "where": {
+                    "date_wording": "calendar",
+                    "units": ["first"],
+                    "near": {"grep": "对外登记", "turns": 1, "include_anchor": True},
+                },
+            },
+            {
+                "select": "lines",
+                "where": {
+                    "date_wording": "change",
+                    "near": {"grep": "对外登记", "turns": 1},
+                },
+            },
+        ]
+    }
+    missed = call(*args, payload={**request, "plan": missed_plan})
+    assert not missed["spans"]
+    assert [b["matched_lines"] for b in missed["branch_coverage"]] == [0, 0]
+    hints = [step for step in missed["trace"] if step["stage"] == "date_subject_hint"]
+    assert [(step["q"], step["matches"]) for step in hints] == [(0, 1), (1, 1)]
+    text = call(*args, "--text", payload={**request, "plan": missed_plan})
+    suggestions = [
+        json.loads(line.split(" where clause ")[1].rstrip("."))
+        for line in text.splitlines()
+        if line.startswith("A scoped alternative")
+    ]
+    assert suggestions[0]["units"] == ["first"]
+    assert suggestions[0]["grep"] == r"(?a:\bQA\b)"
+    assert [hint["near"]["grep"] for hint in suggestions] == ["对外", "登记"]
+    retry = {"queries": [{"select": "lines", "where": where} for where in suggestions]}
+    rerun = call(*args, payload={**request, "plan": retry})
+    assert rerun["spans"] == host["spans"]
+    missed_plan["queries"][0]["where"]["near"]["grep"] = "^对外登记$"
+    exact = call(*args, payload={**request, "plan": missed_plan})
+    assert [s["q"] for s in exact["trace"] if s["stage"] == "date_subject_hint"] == [1]
+    for invalid in ("relative", 42, ["calendar"]):
+        call(
+            *args,
+            payload={"queries": [{"select": "lines", "where": {"date_wording": invalid}}]},
+            error="invalid_plan",
+        )
+
+
 def test_symbolic_schedule_uses_shared_annotation_for_a_split_subject(work, monkeypatch):
     _, call = work
 

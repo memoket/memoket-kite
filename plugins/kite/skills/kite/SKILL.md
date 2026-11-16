@@ -17,6 +17,16 @@ details. Use `where.grep` for plausible spoken alternatives and `prefer` to
 rank cues such as units or wording for approval and correction. KITE resolves
 the project and validates and runs the plan locally.
 
+For separate earlier and revised dates, start with two branches. Use
+`where.date_wording: "calendar"` with a narrow subject for the earlier date.
+Use `where.date_wording: "change"` with nearby subject or action words for
+the revised date. For example, date wording can be on a turn with, or
+next to, a phrase about inspection: `{"date_wording":"change","near":
+{"grep":"inspection|inspect","turns":3,"include_anchor":true}}`.
+Split compound phrases into short spoken cues. If an acronym may touch
+Chinese text, use an ASCII boundary such as `(?a:\bQA\b)`. Check which
+original turns express a proposal or an approved change.
+
 If a KITE result says `Date comparison needs original turns`, use its two
 evidence IDs with `bash "$KITE" evidence FIRST_ID --also SECOND_ID --text`.
 Read both original turns before applying the revised date to the task.
@@ -60,8 +70,9 @@ alternatives when words change stem or suffix. Use `--limit` on the
 command and `where.time` for a branch-specific date range. For a first pass,
 start with 4–6 results and 2,800–3,600 bytes.
 Increase the budget for a remaining evidence gap.
-When the result says a query matched no turns, check its expressions or
-filters. When it matched turns but none were quoted, query just that branch
+If KITE returns a scoped alternative where clause, try it in one focused
+query with the same recording scope. When a query matched no turns, check
+its expressions or filters. When it matched turns but none were quoted, query just that branch
 with the same recording scope and use the resulting original citations.
 
 ```bash

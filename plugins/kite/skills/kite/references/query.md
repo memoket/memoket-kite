@@ -14,6 +14,15 @@ When the question supplies the subject and useful search terms, submit
 KITE resolves the scope and executes against one snapshot. The trace reports
 `host_inline_plan`. Inspect the compiler's candidate vocabulary first when
 choosing unfamiliar topic, entity, facet or recording names.
+Use `where.date_wording` with `"calendar"` for a spoken date or `"change"`
+for explicit date-change wording in the same turn. Combine with a subject
+expression or `near` for nearby subject turns. KITE compiles the field to a
+native `grep_all` expression and keeps the other filters. Read the original
+words to verify approval and the applicable subject.
+An empty date branch can show a scoped alternative where clause from a
+local probe. Use that clause in one focused follow-up when appropriate.
+Keep the recording scope, original question, and the other task requirements.
+
 Use `grep_all` for cues that must all occur in one turn. Include inflections
 and spoken alternatives, then rank more specific wording in `prefer`.
 For a value or decision that might omit the subject, search for its spoken
