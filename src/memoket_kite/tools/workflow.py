@@ -26,7 +26,7 @@ from .index import revision_id
 from .ingest import RECORDING_CLOCK_FIELDS, prepare_source, source_identity
 from .operations import EXTERNAL, SCHEMAS, TOOLS, Context
 
-SNAPSHOT_KINDS = {"resolved", "matches", "report", "deletion_plan", "integrity"}
+SNAPSHOT_KINDS = {"resolved", "matches", "report", "deletion_plan", "integrity", "symbolic_plan"}
 LOCAL_IMPORT_TOOLS = {"normalize", "annotate", "commit", "validate_commit"}
 SCRIPTED_IMPORT_STAGES = {
     "memory-ingestion": (
@@ -43,6 +43,7 @@ SCRIPTED_IMPORT_STAGES = {
     ),
 }
 TRACE_PIPELINES = ("topic-tracing", "task-tracing", "timeline-reconstruction", "decision-evolution")
+SAVED_SEARCH_KINDS = {"context-search": "context_evidence", "symbolic-search": "symbolic_evidence"}
 _REPLACEABLE_STAGE_INPUTS = {
     "annotate": ("annotations", {"invalid_evidence", "invalid_input", "integrity_error"}),
     "resolve": ("query", {"invalid_input", "stale_snapshot"}),
@@ -602,9 +603,14 @@ def artifact(context: Context, run_id: str, stage_id: str) -> dict:
 
 
 def saved_context_search(workspace, run_id: str) -> dict:
+    return saved_search(workspace, run_id, kind="context_evidence")
+
+
+def saved_search(workspace, run_id: str, *, kind: str | None = None) -> dict:
     """Read a completed search for display without reopening it for execution."""
     run, checkpoint = _run(workspace, run_id)
-    if checkpoint["pipeline_id"] != "context-search":
+    expected = SAVED_SEARCH_KINDS.get(checkpoint["pipeline_id"])
+    if expected is None or (kind is not None and kind != expected):
         raise ToolError("not_found", "saved search was not found")
     if checkpoint["state"] == "invalidated":
         raise ToolError("invalidated_run", "a permanent deletion removed this saved search")
@@ -615,7 +621,7 @@ def saved_context_search(workspace, run_id: str) -> dict:
     result = _artifact(workspace, checkpoint, "search")
     manifest, value = result["manifest"], result["value"]
     if (
-        manifest["kind"] != "context_evidence"
+        manifest["kind"] != expected
         or manifest["memory_version"] != checkpoint["memory_version"]
         or value.get("memory_version") != checkpoint["memory_version"]
     ):
@@ -623,10 +629,43 @@ def saved_context_search(workspace, run_id: str) -> dict:
     return result
 
 
+def saved_symbolic_plan(workspace, run_id: str) -> dict:
+    """Read a stored compile artifact as a plan for a new, independent query."""
+    run, checkpoint = _run(workspace, run_id)
+    if checkpoint["pipeline_id"] != "symbolic-search":
+        raise ToolError("not_found", "saved symbolic plan was not found")
+    if checkpoint["state"] == "invalidated":
+        raise ToolError("invalidated_run", "a permanent deletion removed this saved plan")
+    if run["definition"] != checkpoint["definition_digest"]:
+        raise ToolError("integrity_error", "checkpoint definition digest differs from its record")
+    result = _artifact(workspace, checkpoint, "compile", check_snapshot=False)
+    manifest, value = result["manifest"], result["value"]
+    if (
+        manifest["kind"] != "symbolic_plan"
+        or manifest["memory_version"] != checkpoint["memory_version"]
+        or value.get("memory_version") != manifest["memory_version"]
+    ):
+        raise ToolError("integrity_error", "saved plan does not match its compilation snapshot")
+    return value
+
+
 def save_context_search(
     context: Context, request: dict, run_id: str | None
 ) -> tuple[dict, ToolError | None]:
-    stages = (("compile", "compile_context"), ("search", "search_context"))
+    return _save_search(
+        context, request, run_id, (("compile", "compile_context"), ("search", "search_context"))
+    )
+
+
+def save_symbolic_search(
+    context: Context, request: dict, run_id: str | None
+) -> tuple[dict, ToolError | None]:
+    return _save_search(
+        context, request, run_id, (("compile", "compile_symbolic"), ("search", "search_symbolic"))
+    )
+
+
+def _save_search(context, request, run_id, stages) -> tuple[dict, ToolError | None]:
     checkpoint = start(
         context,
         {"request": request},
@@ -801,7 +840,7 @@ def _source_line_page(
     }
 
 
-def _artifact(workspace, checkpoint: dict, stage_id: str) -> dict:
+def _artifact(workspace, checkpoint: dict, stage_id: str, *, check_snapshot=True) -> dict:
     stage = checkpoint["stages"].get(stage_id, {})
     manifest = stage.get("artifact")
     if stage.get("state") != "completed" or not manifest:
@@ -812,7 +851,11 @@ def _artifact(workspace, checkpoint: dict, stage_id: str) -> dict:
     if row is None:
         raise ToolError("integrity_error", "checkpoint refers to a missing artifact")
     value = _verified_artifact_value(row, manifest)
-    if row["kind"] in SNAPSHOT_KINDS and manifest["memory_version"] != workspace.version():
+    if (
+        check_snapshot
+        and row["kind"] in SNAPSHOT_KINDS
+        and manifest["memory_version"] != workspace.version()
+    ):
         raise ToolError("stale_snapshot", "stage artifact was produced against an older snapshot")
     validate(SCHEMAS[row["kind"]], value, "stored artifact")
     return {"manifest": manifest, "value": value}
@@ -855,11 +898,16 @@ def _provider_result(context, row, checkpoint, stage, tool, pending_inputs):
     with context.workspace.provider_slot(run_id, stage["id"]):
         try:
             args = _stage_args(context, checkpoint, stage, pending_inputs)
+            version = context.workspace.version()
+            if tool.prepare_provider:
+                args = tool.prepare_provider(context, **args)
+            else:
+                args["allow_provider"] = context.allow_provider
         except ToolError as error:
             return None, error
         with context.workspace.unlocked_for_provider():
             try:
-                value, error = tool.function(allow_provider=context.allow_provider, **args), None
+                value, error = tool.function(**args), None
             except ToolError as failure:
                 value, error = None, failure
 
@@ -869,8 +917,11 @@ def _provider_result(context, row, checkpoint, stage, tool, pending_inputs):
         _bound_definition(context, current, current_checkpoint)
         if current != row:
             raise ToolError(
-                "conflict", "run changed during extraction; retry from its current checkpoint"
+                "conflict",
+                "run changed during the provider request; inspect its current checkpoint",
             )
+        if tool.prepare_provider and version != context.workspace.version():
+            return None, ToolError("stale_snapshot", "workspace changed while compiling the plan")
         return value, error
 
 

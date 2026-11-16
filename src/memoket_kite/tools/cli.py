@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from .activity import FOLLOW_STAGES
+from .annotation_blocks import annotation_blocks
 from .audio import audio_source
 from .captions import CAPTION_FORMATS
 from .context import context_pack, question_pack, render_context
@@ -38,6 +39,13 @@ from .retrieve import (
 )
 from .source_batch import commit_batch, prepare_batch, read_transcript_batch
 from .source_diff import source_changes
+from .symbolic import (
+    fit_symbolic_delivery,
+    prepare_symbolic_question,
+    render_symbolic_context,
+    reuse_symbolic_context,
+    symbolic_context,
+)
 from .trace_text import render_status, render_trace
 from .viewer import view_memory
 from .workflow import (
@@ -52,6 +60,8 @@ from .workflow import (
     resume_ingestion,
     save_context_search,
     save_source_indexing,
+    save_symbolic_search,
+    saved_symbolic_plan,
     source_lines,
     start,
     status,
@@ -200,10 +210,22 @@ def _parser() -> argparse.ArgumentParser:
         metavar="RUN_ID",
         help="save the batch preview, commit and verification as a workflow",
     )
+    blocks = commands.add_parser(
+        "annotation-blocks", help="prepare original turns for content annotation"
+    )
+    blocks.add_argument(
+        "--input", required=True, metavar="FILE", help="source-only JSON or - for stdin"
+    )
     context = commands.add_parser("context", help="pack cited original passages for an agent task")
     context_input = context.add_mutually_exclusive_group(required=True)
     context_input.add_argument("--term", action="append", help="search phrase, repeatable")
     context_input.add_argument("--question", help="compile a task into search phrases locally")
+    context.add_argument(
+        "--requirement",
+        dest="requirements",
+        action="append",
+        help="original phrase for one independent task requirement; repeat with --question",
+    )
     context.add_argument("--compare-with", help="search a second question within the same budget")
     context.add_argument(
         "--from-version",
@@ -216,6 +238,15 @@ def _parser() -> argparse.ArgumentParser:
         "--save", nargs="?", const="", metavar="RUN_ID", help="save the compile and search results"
     )
     context.add_argument("--source", help="restrict search to one source namespace")
+    context.add_argument(
+        "--topic", dest="topics", action="append", help="require a topic or its descendant"
+    )
+    context.add_argument(
+        "--entity", dest="entities", action="append", help="require a named entity"
+    )
+    context.add_argument(
+        "--facet", action="append", metavar="AXIS=VALUE", help="require a facet on the cited span"
+    )
     context.add_argument(
         "--after", metavar="RUN_ID", help="skip original lines from a saved search"
     )
@@ -246,6 +277,52 @@ def _parser() -> argparse.ArgumentParser:
     context.add_argument("--neighbors", type=int, help="adjacent turns on either side (default 1)")
     context.add_argument(
         "--text", action="store_true", help="compact original quotes and citation IDs"
+    )
+    symbolic = commands.add_parser(
+        "symbolic", help="execute a KITE symbolic plan over source lines"
+    )
+    symbolic_input = symbolic.add_mutually_exclusive_group(required=True)
+    symbolic_input.add_argument("--input", metavar="FILE", help="symbolic plan JSON or - for stdin")
+    symbolic_input.add_argument(
+        "--question", help="compile a question with the configured provider"
+    )
+    symbolic_input.add_argument("--prepare", metavar="QUESTION", help="render the prompt locally")
+    symbolic_input.add_argument(
+        "--reuse", metavar="RUN_ID", help="run a saved symbolic-search plan"
+    )
+    symbolic.add_argument(
+        "--save",
+        nargs="?",
+        const="",
+        metavar="RUN_ID",
+        help="save the plan and evidence from --input",
+    )
+    symbolic.add_argument("--brief", action="store_true", help="return index hints with --prepare")
+    symbolic.add_argument(
+        "--project",
+        default=os.environ.get("KITE_SYMBOLIC_PROJECT"),
+        help="scope to an exact project (default: KITE_SYMBOLIC_PROJECT)",
+    )
+    symbolic.add_argument("--start-date", help="first recording date, inclusive (YYYY-MM-DD)")
+    symbolic.add_argument("--end-date", help="last recording date, inclusive (YYYY-MM-DD)")
+    symbolic_history = symbolic.add_mutually_exclusive_group()
+    symbolic_history.add_argument(
+        "--at-version", type=int, help="query retained turns at a workspace version"
+    )
+    symbolic_history.add_argument(
+        "--known-at", help="query retained turns known at an ISO timestamp with offset"
+    )
+    symbolic_history.add_argument(
+        "--since-version", type=int, help="reserve evidence for sources changed since a version"
+    )
+    symbolic.add_argument("--model", default="gpt-4.1-mini", help="provider model for --question")
+    symbolic.add_argument("--limit", type=int, help="maximum cited lines (1–100)")
+    symbolic.add_argument("--neighbors", type=int, help="adjacent turns per match (0–4)")
+    symbolic.add_argument("--max-bytes", type=int, help="original quote byte budget")
+    symbolic_output = symbolic.add_mutually_exclusive_group()
+    symbolic_output.add_argument("--text", action="store_true", help="compact original quotes")
+    symbolic_output.add_argument(
+        "--delivery-bytes", type=int, help="cap the escaped JSON text of the original quotes"
     )
     query = commands.add_parser("query", help="run a read-only trace without saving a checkpoint")
     query.add_argument("--pipeline", choices=TRACE_PIPELINES, default="topic-tracing")
@@ -345,6 +422,11 @@ def _parser() -> argparse.ArgumentParser:
         help="cite nonblank text lines by their file line number",
     )
     _source_metadata_arguments(source)
+    source.add_argument(
+        "--project-alias",
+        action="append",
+        help="familiar project name for symbolic queries, repeat for other names",
+    )
     source.add_argument("--expected-checksum", help="current source checksum for a revision")
     source.add_argument(
         "--page",
@@ -813,7 +895,15 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             )
             return commit_batch(context, records, repairs), None
 
+    if args.command == "annotation-blocks":
+        value = _object(args.input)
+        validate(object_schema({"source": SCHEMAS["source"]}), value, "annotation source")
+        _, conversation = prepare_source(root, value["source"])
+        return {"blocks": annotation_blocks(conversation)}, None
+
     if args.command == "context":
+        if args.requirements and args.question is None:
+            raise ToolError("invalid_input", "--requirement needs --question")
         if args.compact and args.question is None:
             raise ToolError("invalid_input", "compact context requires a question")
         if args.question is None and (
@@ -833,6 +923,16 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             plan["all_terms"] = True
         if args.explain:
             plan["explain"] = True
+        annotations = {
+            key: getattr(args, key) for key in ("topics", "entities") if getattr(args, key)
+        }
+        for facet in args.facet or ():
+            axis, separator, value = facet.partition("=")
+            if not separator:
+                raise ToolError("invalid_input", "use --facet AXIS=VALUE")
+            annotations.setdefault("facets", []).append({"axis": axis, "value": value})
+        if annotations:
+            plan["annotations"] = annotations
         neighbors = (
             args.neighbors
             if args.neighbors is not None
@@ -861,6 +961,8 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 request["limit"] = args.limit
             if args.after is not None:
                 request["after"] = args.after
+            if args.requirements:
+                request["requirements"] = args.requirements
             if args.question is None:
                 request["terms"] = args.term
             else:
@@ -893,6 +995,80 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
                 neighbors=neighbors,
             ), None
 
+    if args.command == "symbolic":
+        if args.brief and args.prepare is None:
+            raise ToolError("invalid_input", "--brief requires --prepare")
+        plan = _object(args.input) if args.input is not None else None
+        history_scope = {
+            key: value
+            for key in ("at_version", "known_at")
+            if (value := getattr(args, key)) is not None
+        }
+        dates = {
+            key: value
+            for key in ("start_date", "end_date")
+            if (value := getattr(args, key)) is not None
+        }
+        options = {
+            key: value
+            for key in ("limit", "neighbors", "max_bytes")
+            if (value := getattr(args, key)) is not None
+        }
+        if args.delivery_bytes is not None:
+            if args.save is not None or args.prepare is not None:
+                raise ToolError("invalid_input", "--delivery-bytes requires an executed search")
+            if not 256 <= args.delivery_bytes <= 65536:
+                raise ToolError("invalid_input", "--delivery-bytes must be between 256 and 65536")
+            options["delivery"] = True
+        if args.save is not None:
+            if args.input is None or history_scope:
+                raise ToolError(
+                    "invalid_input", "--save requires --input and the current workspace"
+                )
+            request = {
+                "submitted_plan": plan,
+                **options,
+                **({"project": args.project} if args.project is not None else {}),
+                **({"since_version": args.since_version} if args.since_version is not None else {}),
+                **({"recording_dates": dates} if dates else {}),
+            }
+            with Workspace.open(args.workspace) as workspace:
+                context = Context(root, workspace, "symbolic-search", extension_root=extension_root)
+                return save_symbolic_search(context, request, args.save or None)
+        with Workspace.open(args.workspace, read_only=True) as workspace:
+            if args.prepare is not None:
+                return prepare_symbolic_question(
+                    workspace,
+                    args.prepare,
+                    args.project,
+                    history_scope=history_scope,
+                    brief=args.brief,
+                    since_version=args.since_version,
+                    recording_dates=dates,
+                ), None
+            if args.reuse is not None:
+                return reuse_symbolic_context(
+                    workspace,
+                    args.reuse,
+                    saved_symbolic_plan(workspace, args.reuse),
+                    project=args.project,
+                    history_scope=history_scope,
+                    since_version=args.since_version,
+                    recording_dates=dates,
+                    **options,
+                ), None
+            return symbolic_context(
+                workspace,
+                question=args.question,
+                model=args.model,
+                plan=plan,
+                project=args.project,
+                history_scope=history_scope,
+                since_version=args.since_version,
+                recording_dates=dates,
+                **options,
+            ), None
+
     if args.command == "topics":
         with Workspace.open(args.workspace, read_only=True) as workspace:
             return topic_inventory(
@@ -908,6 +1084,7 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             source_date=args.source_date,
             started_at=args.started_at,
             project=args.project,
+            project_aliases=args.project_alias,
             expected_checksum=args.expected_checksum,
             split_lines=args.split_lines,
             pages=args.page,
@@ -1126,6 +1303,10 @@ def main(argv=None) -> int:
         print(render_decision_story(result["value"]))
     elif args.command == "query" and args.text_output:
         print(result["text"])
+    elif args.command == "symbolic" and args.delivery_bytes is not None:
+        print(fit_symbolic_delivery(result, args.delivery_bytes))
+    elif args.command == "symbolic" and args.prepare is None and args.text:
+        print(render_symbolic_context(result))
     elif args.command == "context" and args.text:
         print(render_context(result))
     elif args.command == "source-compare" and args.text:

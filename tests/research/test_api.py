@@ -242,8 +242,8 @@ def test_query_validation():
         ),
         pytest.param({"select": "units", "where": {"kind": ["plan"]}}, id="ignored-unit-kind"),
         pytest.param(
-            {"select": "lines", "where": {"entities": ["alice"]}},
-            id="ignored-line-entities",
+            {"select": "lines", "where": {"kind": ["plan"]}},
+            id="ignored-line-kind",
         ),
         pytest.param(
             {"select": "facts", "where": {"grep_all": ["["]}},

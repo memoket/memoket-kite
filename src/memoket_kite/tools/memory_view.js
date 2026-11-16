@@ -9,7 +9,8 @@
   let filterStep = -1;
   let filterTimer;
   const number = new Intl.NumberFormat();
-  const searching = Boolean(snapshot.search_terms?.length);
+  const symbolicTrace = snapshot.search_trace?.symbolic;
+  const searching = Boolean(snapshot.search_terms?.length || symbolicTrace);
   const groupedSearch = snapshot.search_subquestion_branches?.length > 0;
   const comparison = snapshot.search_comparison || [];
   const versionComparison = snapshot.search_version_comparison;
@@ -22,9 +23,13 @@
   const copy = {
     en: {
       title: 'Memory Graph', searchTitle: 'Search Evidence', topics: 'Topics', terms: 'Search terms', questions: 'Search questions',
-      topic: 'Topic', memory: 'Memory', line: 'Quoted line', source: 'Source revision', state: 'State',
+      topic: 'Topic', project: 'Project', projectCount: 'projects', projectTopics: 'Projects and topics',
+      memory: 'Memory', line: 'Quoted line', source: 'Source revision', state: 'State',
       query: 'Query', subquestion: 'Search subquestion', queryLink: 'Search path',
       retrievalPath: 'How this line was found', retrievalReplay: 'Replay search',
+      symbolicSearch: 'Symbolic search', symbolicHit: 'Symbolic match', symbolicChange: 'Date change',
+      symbolicFilter: 'Filter', symbolicRanking: 'Ranking', symbolicExecuted: 'Executed plan', symbolicCompiled: 'Compiled plan',
+      symbolicRecordings: 'recordings in scope', symbolicDateFrom: 'From', symbolicDateThrough: 'Through',
       sourceTextRoute: 'Text in the same recording', textIndexRoute: 'Full-text index',
       findOpeningGuidance: 'Find opening guidance',
       dateIndexRoute: 'Recording dates + date in the transcript', labelIndexRoute: 'Annotation index + full text',
@@ -59,6 +64,7 @@
       packingSegments: 'Segments',
       corroboratingTerms: 'Multiple clues match this passage',
       recordingSelection: {
+        annotation_filter: 'Topic, entity or facet filter',
         other_recording_followup: 'Follow-up in another recording',
         selective_original_clue: 'Rare query clue matches multiple original lines',
         dated_plan_followup: 'A later recording repeats a date from the earlier discussion and mentions a change',
@@ -116,9 +122,13 @@
     },
     zh: {
       title: '记忆图谱', searchTitle: '原文检索', topics: '主题', terms: '检索词', questions: '检索问题',
-      topic: '主题', memory: '记忆', line: '原文行', source: '来源版本', state: '状态',
+      topic: '主题', project: '项目', projectCount: '个项目', projectTopics: '项目与主题',
+      memory: '记忆', line: '原文行', source: '来源版本', state: '状态',
       query: '检索请求', subquestion: '检索子问题', queryLink: '检索路径',
       retrievalPath: '原文如何命中', retrievalReplay: '重播检索',
+      symbolicSearch: '符号检索', symbolicHit: '符号命中', symbolicChange: '日期变更',
+      symbolicFilter: '筛选', symbolicRanking: '加权', symbolicExecuted: '实际执行计划', symbolicCompiled: '编译计划',
+      symbolicRecordings: '份录制参与检索', symbolicDateFrom: '起始日期', symbolicDateThrough: '截止日期',
       sourceTextRoute: '同一录制的正文', textIndexRoute: '全文索引',
       findOpeningGuidance: '查找开场建议',
       dateIndexRoute: '录制日期索引＋原文日期', labelIndexRoute: '标注索引＋正文',
@@ -152,6 +162,7 @@
       packingSegments: '原文段', sortCandidatesByDate: '按录制日期排列',
       corroboratingTerms: '同一片段命中多个线索',
       recordingSelection: {
+        annotation_filter: '主题、实体或 Facet 筛选',
         other_recording_followup: '另一份录制有匹配的后续原文',
         selective_original_clue: '低频检索词命中多行原文',
         dated_plan_followup: '后续录制重提前次讨论的日期并提到改期',
@@ -233,10 +244,14 @@
   for (const topic of snapshot.topics) {
     topics.set(topic.code, {
       id: 'topic:' + topic.code, kind: 'topic', code: topic.code,
-      label: topic.code.replaceAll('_', ' '), parents: topic.parents,
+      get label() {
+        return topic.project_label?.[language] || topic.project_label?.en || topic.code.replaceAll('_', ' ');
+      },
+      isProject: Boolean(topic.project_label), parents: topic.parents,
       aliases: topic.aliases, children: [], memories: [],
     });
   }
+  const projectCount = [...topics.values()].filter(topic => topic.isProject).length;
   for (const term of snapshot.search_terms || []) {
     const part = comparison.find(part => part.key === term);
     const subject = groupedSearch && term === snapshot.search_question
@@ -506,7 +521,14 @@
       });
       candidates = [...ranked.filter(memory => related.has(memory)), ...diverse, ...ranked];
     }
-    if (searching && isGroup(node)) candidates = [...candidates, ...memories.values()];
+    if (searching && isGroup(node)) {
+      candidates = [...candidates, ...memories.values()];
+      if (symbolicTrace) {
+        const priority = memory => memory.retrieval?.some(route => route.reason === 'schedule_change_match') ? 2
+          : memory.retrieval?.length ? 1 : 0;
+        candidates.sort((a, b) => priority(b) - priority(a));
+      }
+    }
     if (node?.kind === 'topic' && !searching) candidates = importedFirst(newestTopicMemories(candidates));
     if (focused) {
       const explicit = [memories.get(focused.supersedes), ...focused.corrections].filter(Boolean);
@@ -736,31 +758,40 @@
   }
 
   function renderNavigation() {
-    byId('nav-title').textContent = t(searching ? (snapshot.search_question ? 'questions' : 'terms') : 'topics');
+    const allTopics = mode === 'all' && !searching;
+    const title = t(searching ? (snapshot.search_question ? 'questions' : 'terms')
+      : projectCount ? 'projectTopics' : 'topics');
+    byId('nav-title').textContent = allTopics ? `${title} · ${number.format(topics.size)}` : title;
     byId('coverage').textContent = searching || !topics.size
       ? number.format(snapshot.sources) + ' ' + t('workspace')
-      : number.format(covered) + '/' + number.format(snapshot.sources) + ' ' + t('coverage');
+      : [projectCount ? number.format(projectCount) + ' ' + t('projectCount') : null,
+        number.format(covered) + '/' + number.format(snapshot.sources) + ' ' + t('coverage')].filter(Boolean).join(' · ');
     byId('overview').hidden = !searching;
     byId('overview').textContent = t('overview');
     const expanded = new Set(lineage(browseTopic));
+    const renderedBranches = new Set();
     function branch(nodes, seen = new Set()) {
       const list = element('ul');
       for (const node of nodes) {
         if (seen.has(node)) continue;
         const item = element('li');
         const row = button(undefined, () => choose(node), 'tree-row');
-        row.dataset.kind = node.kind;
-        row.setAttribute('aria-current', String(node === browseTopic));
+        row.dataset.kind = node.isProject ? 'project' : node.kind;
+        row.setAttribute('aria-current', String(node === (allTopics ? selected : browseTopic)));
         row.title = node.label;
         row.append(element('span', '', 'tree-symbol'), element('span', node.label),
           element('span', number.format(topicMemories(node).length), 'tree-count'));
         item.append(row);
-        if (expanded.has(node) && node.children.length) item.append(branch(node.children, new Set([...seen, node])));
+        if (node.children.length && (allTopics ? !renderedBranches.has(node) : expanded.has(node))) {
+          renderedBranches.add(node);
+          item.append(branch(node.children, new Set([...seen, node])));
+        }
         list.append(item);
       }
       return list;
     }
     const categories = byId('categories');
+    categories.dataset.allTopics = String(allTopics);
     categories.replaceChildren(branch(searching ? searchRoots : roots));
     if (searching && roots.length) categories.append(element('h3', t('topics')), branch(roots));
     renderCatalogNavigation();
@@ -913,8 +944,9 @@
     }
     const kind = selected.kind;
     const header = element('div');
-    const badge = element('p', t(kind), 'detail-kind');
-    badge.dataset.kind = kind;
+    const displayKind = selected.isProject ? 'project' : kind;
+    const badge = element('p', t(displayKind), 'detail-kind');
+    badge.dataset.kind = displayKind;
     header.append(badge, element('h2', selected.label));
     panel.append(header);
 
@@ -1020,7 +1052,7 @@
   }
 
   function renderLegend() {
-    const kinds = new Set(displayed.layers.flatMap(layer => layer.nodes.map(node => node.kind)));
+    const kinds = new Set(displayed.layers.flatMap(layer => layer.nodes.map(node => node.isProject ? 'project' : node.kind)));
     const legend = byId('legend');
     legend.replaceChildren();
     for (const kind of kinds) {
@@ -1160,7 +1192,7 @@
     },
   };
   const workflowKinds = {
-    'memory-update': 'update', 'context-search': 'query',
+    'memory-update': 'update', 'context-search': 'query', 'symbolic-search': 'query',
     'memory-consolidation': 'merge', 'memory-deletion': 'delete',
   };
 
@@ -1228,7 +1260,8 @@
     const statusElement = byId('workflow-status');
     const totalChanges = progress.change?.retained_source_changes || 0;
     const multipleSources = changedSources.size > 1;
-    const message = [labels[kind], status, multipleSources && `${number.format(totalChanges)} ${labels.changedSources}`]
+    const message = [progress.pipeline === 'symbolic-search' ? t('symbolicSearch') : labels[kind],
+      status, multipleSources && `${number.format(totalChanges)} ${labels.changedSources}`]
       .filter(Boolean).join(' · ');
     if (statusElement.textContent !== message) statusElement.textContent = message;
     const result = byId('workflow-result');
@@ -1280,6 +1313,7 @@
           || (recordedValue && [`${recordedValue.subject} · ${recordedValue.measure}`])
           || done.named_duration?.subjects.map(subject => [subject.name, subject.description].filter(Boolean).join(' '))
           || (done.opening_scope && [done.opening_scope.subject, t('findOpeningGuidance')])
+          || done.keyword_groups?.map(group => group.join(' · '))
           || done.terms || [])
         : (done?.citations?.map(citation => citation.reference) || []);
       steps.hidden = !details.length;
@@ -1301,6 +1335,9 @@
 
   function retrievalLabel(route) {
     const { reason, clues, labels } = route;
+    if (reason === 'symbolic_match' || reason === 'schedule_change_match') {
+      return t(reason === 'symbolic_match' ? 'symbolicHit' : 'symbolicChange');
+    }
     const kind = reason === 'dated_plan_followup' ? t('dateIndexRoute')
       : labels?.length ? t('labelIndexRoute')
       : ['all_terms', 'output_target', 'corroborated_original'].includes(reason) ? t('textIndexRoute')
@@ -1317,10 +1354,26 @@
       memory.id, line.id, 'source:' + line.revision_checksum];
   }
 
+  function symbolicIndexNode(step, label) {
+    const id = step.atom === 'topics' ? 'topic:' + label
+      : step.atom === 'entities' ? 'entity:' + label
+      : 'facet:' + (step.atom === 'obj' ? 'object' : step.atom) + ':' + label;
+    return annotationNodes.get(id);
+  }
+
+  function symbolicIndexPaths(steps = []) {
+    return steps.flatMap(step => {
+      if (step.stage.endsWith('prefer_labels') && !step.bonus) return [];
+      const ids = (step.matched_labels || []).map(label => symbolicIndexNode(step, label)?.id).filter(Boolean);
+      return ids.length ? [ids] : [];
+    });
+  }
+
   function renderSearchReplay(animate = false) {
     if (!retrievalRoutes.length) return;
     const shown = new Set(displayed.layers.flatMap(layer => layer.nodes));
-    const routes = retrievalRoutes.filter(({ line }) => shown.has(line));
+    const visibleRoutes = retrievalRoutes.filter(({ line }) => shown.has(line));
+    const routes = symbolicTrace && isGroup(selected) ? retrievalRoutes : visibleRoutes;
     const status = byId('workflow-status');
     byId('workflow-activity').hidden = false;
     status.textContent = t('retrievalPath');
@@ -1343,7 +1396,8 @@
       item.append(label);
       return item;
     }));
-    if (animate) view.playWorkflowEffect('query', routes.map(retrievalPath));
+    if (animate) view.playWorkflowEffect('query',
+      [...symbolicIndexPaths(symbolicTrace?.indexes), ...visibleRoutes.map(retrievalPath)]);
   }
 
   function playWorkflowEffect() {
@@ -1391,7 +1445,8 @@
       view.playWorkflowEffect('import', [affected]);
       return;
     }
-    const citations = progress.stages.find(stage => stage.name === 'search')?.citations;
+    const search = progress.stages.find(stage => stage.name === 'search');
+    const citations = search?.citations;
     if (!citations?.length) return;
     const paths = new Map();
     for (const citation of citations) {
@@ -1405,7 +1460,7 @@
       }
       path.add('line:' + citation.line_id);
     }
-    view.playWorkflowEffect('query', [...paths.values()].slice(0, 3));
+    view.playWorkflowEffect('query', [...symbolicIndexPaths(search.symbolic_indexes), ...[...paths.values()].slice(0, 3)]);
   }
 
   function watchWorkflow() {
@@ -1465,7 +1520,8 @@
     const nodeCount = displayed.layers.reduce((count, layer) => count + layer.nodes.length, 0);
     byId('graph-summary').textContent = [
       number.format(groupedSearch ? snapshot.search_subquestion_branches.length : searching ? searchBranches.size : topics.size)
-        + ' ' + t(searching ? (snapshot.search_question ? 'questions' : 'terms') : 'topics'),
+        + ' ' + t(searching ? (snapshot.search_question ? 'questions' : 'terms')
+          : projectCount ? 'projectTopics' : 'topics'),
       number.format(passageCount) + ' ' + t('record'),
       number.format(nodeCount) + ' ' + t('scope'),
     ].join(' · ');
@@ -1502,9 +1558,48 @@
     trace.hidden = !snapshot.search_trace;
     if (snapshot.search_trace) {
       const stats = snapshot.search_trace;
-      trace.replaceChildren(element('strong', snapshot.search_question ? t('compile') : t('terms')));
+      trace.replaceChildren(element('strong', symbolicTrace ? t('symbolicSearch')
+        : snapshot.search_question ? t('compile') : t('terms')));
       if (snapshot.search_all_terms) trace.append(element('p', t('allTerms')));
-      if (comparison.length) {
+      if (symbolicTrace) {
+        const { engine, compiler, scope } = symbolicTrace;
+        const { start_date: start, end_date: end } = scope.recording_dates || {};
+        const scopeDetails = [
+          scope.active_recordings == null ? null : `${number.format(scope.active_recordings)} ${t('symbolicRecordings')}`,
+          ...(scope.matched_projects || []),
+          start && `${t('symbolicDateFrom')} ${start}`,
+          end && `${t('symbolicDateThrough')} ${end}`,
+        ].filter(Boolean);
+        trace.append(element('p', [engine, compiler].filter(Boolean).join(' · ')));
+        if (scopeDetails.length) trace.append(element('p', scopeDetails.join(' · ')));
+        const planFields = [['symbolicExecuted', symbolicTrace.executed_plan]];
+        if (JSON.stringify(symbolicTrace.plan) !== JSON.stringify(symbolicTrace.executed_plan)) {
+          planFields.unshift(['symbolicCompiled', symbolicTrace.plan]);
+        }
+        for (const [title, value] of planFields) {
+          const details = element('details', undefined, 'search-plan');
+          details.append(element('summary', t(title)), element('pre', JSON.stringify(value, null, 2)));
+          trace.append(details);
+        }
+        const steps = element('ol', undefined, 'symbolic-index-steps');
+        for (const step of symbolicTrace.steps) {
+          const [name, operation] = step.stage.split(':');
+          const code = operation || name;
+          const prefix = operation ? name : step.q == null ? '' : String(step.q + 1);
+          const action = code === 'expand' ? t('symbolicFilter')
+            : code === 'prefer_labels' ? t('symbolicRanking') : code;
+          const axis = step.atom && ({ topics: 'topic', entities: 'entity', obj: 'object' }[step.atom] || step.atom);
+          const hits = step.hits ?? step.candidates ?? step.n;
+          const item = element('li', [prefix, action, axis && t(axis), hits == null ? null : number.format(hits)]
+            .filter(value => value != null && value !== '').join(' · '));
+          for (const label of step.labels || []) {
+            const node = (step.matched_labels || []).includes(label) && symbolicIndexNode(step, label);
+            item.append(' ', node ? button(label, () => choose(node), 'citation-link') : element('span', label));
+          }
+          steps.append(item);
+        }
+        trace.append(steps);
+      } else if (comparison.length) {
         const branches = element('div', undefined, 'comparison-trace');
         for (const part of comparison) {
           const branch = element('div');
@@ -1592,7 +1687,7 @@
           trace.append(element('h4', t('subquestions')), list);
         }
       }
-      trace.append(element('p', [number.format(stats.candidate_spans) + ' ' + t('candidates'),
+      trace.append(element('p', [stats.candidate_spans == null ? null : number.format(stats.candidate_spans) + ' ' + t('candidates'),
           stats.candidate_sources === null ? null : number.format(stats.candidate_sources) + ' ' + t('candidateSources'),
           stats.anchor_sources ? number.format(stats.anchor_sources) + ' ' + t('anchorSources') : null,
           number.format(stats.sources) + ' ' + t('sourceCatalog'),
@@ -1656,7 +1751,7 @@
           trace.append(row);
         }
       }
-      if (retrievalRoutes.length && !retrievalRoutes.some(({ route }) => route.labels?.length)) {
+      if (!symbolicTrace && retrievalRoutes.length && !retrievalRoutes.some(({ route }) => route.labels?.length)) {
         trace.append(element('p', t('noUsedLabels')));
       }
       if (retrievalRoutes.length) {

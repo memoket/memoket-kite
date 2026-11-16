@@ -16,14 +16,14 @@ from urllib.parse import parse_qs, urlencode
 
 from memoket_kite.core.vocab import norm_code
 
-from .activity import memory_activity, workflow_progress
+from .activity import memory_activity, symbolic_index_steps, workflow_progress
 from .change_graph import change_comparison
 from .context import _tokens, context_enabled, context_pack, question_pack
 from .contracts import ToolError
 from .index import SPAN_FACET_AXES, revision_id
 from .ingest import RECORDING_CLOCK_FIELDS
 from .retrieve import compare_revisions, memory_snapshot
-from .workflow import saved_context_search, source_revision_page
+from .workflow import saved_search, saved_symbolic_plan, source_revision_page
 from .workspace import Workspace
 
 IDLE_TIMEOUT = 3600
@@ -83,6 +83,12 @@ def _filter_trace(snapshot: dict, topic: str, entity: str, facet: str) -> dict:
 
 def _recording_dates(plan: dict) -> dict:
     return {key: plan[key] for key in ("start_date", "end_date") if key in plan}
+
+
+def _search_terms(pack):
+    if groups := pack.get("compilation", {}).get("keyword_groups"):
+        return list(dict.fromkeys(term for group in groups for term in group))
+    return pack["plan"].get("terms", [])
 
 
 def _selected_search_lines(pack: dict):
@@ -192,7 +198,12 @@ def _search_snapshot(
     compare_date_overrides = {}
     version_comparison = False
     subquestion_branches = {}
-    if question is not None:
+    symbolic = saved is not None and saved["manifest"]["kind"] == "symbolic_evidence"
+    if symbolic:
+        result = saved["value"]
+        terms = [question] if question else []
+        packs = [(question, result)]
+    elif question is not None:
         result = (
             saved["value"]
             if saved is not None
@@ -282,19 +293,24 @@ def _search_snapshot(
     for term, pack in packs:
         selected_lines = dict(_selected_search_lines(pack))
         compiled = [
-            (phrase, f" {tokens} ")
-            for phrase in pack["plan"]["terms"]
-            if (tokens := _tokens(phrase))
+            (phrase, f" {tokens} ") for phrase in _search_terms(pack) if (tokens := _tokens(phrase))
         ]
         for span in pack["spans"]:
             lines = span["evidence"]
             quote_occurrences += len(lines)
             first, last = lines[0], lines[-1]
             checksum = first["revision_checksum"]
+            title = span.get("title")
+            if title is None:
+                if checksum in sources:
+                    title = sources[checksum]["title"]
+                else:
+                    conversation = workspace.record(checksum)["conversation"]
+                    title = conversation.get("title", conversation["conversation_id"])
             sources[checksum] = {
                 "checksum": checksum,
                 "reference": first["source_reference"],
-                "title": span["title"],
+                "title": title,
                 "day": span["source_date"],
                 **{key: span[key] for key in RECORDING_CLOCK_FIELDS if key in span},
                 "active": span.get("source_revision_active", True),
@@ -332,6 +348,11 @@ def _search_snapshot(
             passage = passages.setdefault(ids, {"label": citation, "evidence": ids, "terms": []})
             for line in ids:
                 selection = selected_lines.get(line)
+                if symbolic and evidence[line]["role"] in {
+                    "symbolic_match",
+                    "schedule_change_match",
+                }:
+                    selection = {"reason": evidence[line]["role"]}
                 if pack["plan"].get("all_terms"):
                     selection = {"reason": "all_terms", "clues": evidence[line]["matched_terms"]}
                 if selection:
@@ -407,7 +428,11 @@ def _search_snapshot(
             for key in ("source", "conversation_id")
             if key in packs[0][1]["plan"]
         },
-        "search_recording_bounds": _recording_dates(packs[0][1]["plan"]),
+        "search_recording_bounds": (
+            result["scope"].get("recording_dates", {})
+            if symbolic
+            else _recording_dates(packs[0][1]["plan"])
+        ),
         "search_comparison_recording_overrides": compare_date_overrides,
         **(
             {
@@ -425,7 +450,22 @@ def _search_snapshot(
             else {}
         ),
         "search_trace": {
-            "terms": packs[0][1]["compilation"]["terms"] if question is not None else terms,
+            **(
+                {
+                    "symbolic": {
+                        "engine": result["engine"],
+                        "compiler": result["compiler"],
+                        "scope": result["scope"],
+                        "plan": result.get("compiled_plan", result["plan"]),
+                        "executed_plan": result["plan"],
+                        "steps": result["trace"],
+                        "indexes": symbolic_index_steps(result["trace"]),
+                    }
+                }
+                if symbolic
+                else {}
+            ),
+            "terms": _search_terms(packs[0][1]) if question is not None else terms,
             "word_forms": packs[0][1].get("compilation", {}).get("word_forms", []),
             "repeated_terms": packs[0][1].get("compilation", {}).get("repeated_terms", []),
             "change_phases": packs[0][1].get("compilation", {}).get("change_phases", []),
@@ -459,9 +499,11 @@ def _search_snapshot(
                 for key, pack in packs
                 if "packing_trace" in pack
             ],
-            "candidate_spans": sum(pack["candidate_spans"] for _, pack in packs),
+            "candidate_spans": None
+            if symbolic
+            else sum(pack["candidate_spans"] for _, pack in packs),
             "candidate_sources": packs[0][1]["candidate_sources"]
-            if question and not comparison
+            if question and not comparison and not symbolic
             else None,
             "anchor_sources": packs[0][1].get("anchor_sources", 0)
             if question and not comparison
@@ -508,13 +550,16 @@ def _snapshot(
                 else None
             )
             if run_id is not None:
-                saved = saved_context_search(workspace, run_id)
+                saved = saved_search(workspace, run_id)
                 pack = saved["value"]
                 first = pack["parts"][0] if "parts" in pack else pack
+                question = (
+                    saved_symbolic_plan(workspace, run_id).get("question")
+                    if saved["manifest"]["kind"] == "symbolic_evidence"
+                    else first.get("compilation", {}).get("question")
+                )
                 return {
-                    **_search_snapshot(
-                        workspace, [], first.get("compilation", {}).get("question"), {}, saved=saved
-                    ),
+                    **_search_snapshot(workspace, [], question, {}, saved=saved),
                     "history_origin": origin,
                     "saved_search": {
                         "version": saved["manifest"]["memory_version"],
@@ -902,7 +947,7 @@ def view_memory(
         raise ToolError("invalid_input", "use up to three nonempty search phrases")
     if run_id is not None:
         with Workspace.open(directory, read_only=True) as workspace:
-            saved_context_search(workspace, run_id)
+            saved_search(workspace, run_id)
     if follow is not None:
         _workflow_snapshot(directory, follow)
     command = [sys.executable, "-m", __name__, str(directory.expanduser().resolve())]

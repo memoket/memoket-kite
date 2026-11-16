@@ -2,7 +2,7 @@
 
 from .contracts import ID, ToolError, decode_object, validate
 from .index import revision_id
-from .workflow import _artifact, _run, committed_topic_merge
+from .workflow import SAVED_SEARCH_KINDS, _artifact, _run, committed_topic_merge
 
 _PIPELINES = {
     "source-indexing": "index",
@@ -13,10 +13,19 @@ _PIPELINES = {
     "memory-consolidation": "merge",
     "topic-reclassification": "reclassify",
     "context-search": "search",
+    "symbolic-search": "search",
     "source-revision-review": "compare",
 }
 _BATCH_STAGE_FIELDS = {
-    "preview": ("sources_seen", "source_lines", "index_spans", "dated_sources"),
+    "preview": (
+        "sources_seen",
+        "source_lines",
+        "index_spans",
+        "topic_spans",
+        "entity_spans",
+        "facet_spans",
+        "dated_sources",
+    ),
     "commit": ("sources_changed", "sources_seen", "elapsed_time_repairs"),
     "verify": ("sources", "source_lines", "search_spans"),
 }
@@ -27,7 +36,12 @@ FOLLOW_STAGES = {
     "memory-consolidation": ("commit", "verify"),
     "memory-deletion": ("preview", "apply"),
     "context-search": ("compile", "search"),
+    "symbolic-search": ("compile", "search"),
 }
+
+
+def symbolic_index_steps(trace: list[dict]) -> list[dict]:
+    return [step for step in trace if step.get("target") == "line_annotations"]
 
 
 def workflow_progress(workspace, run_id: str) -> dict:
@@ -61,7 +75,9 @@ def workflow_progress(workspace, run_id: str) -> dict:
             "search",
             "commit",
         }:
-            value = _artifact(workspace, checkpoint, name)["value"]
+            value = _artifact(
+                workspace, checkpoint, name, check_snapshot=pipeline != "symbolic-search"
+            )["value"]
         if pipeline == "source-indexing":
             stage["counts"] = {key: value[key] for key in _BATCH_STAGE_FIELDS[name] if key in value}
         if pipeline == "memory-deletion" and name == "preview":
@@ -70,7 +86,13 @@ def workflow_progress(workspace, run_id: str) -> dict:
                 for key in ("revisions", "facts", "runs_to_invalidate", "run_artifacts_to_purge")
             }
         if name == "compile":
-            stage["terms"] = value["terms"]
+            stage["terms"] = value.get(
+                "terms", [value["question"]] if value.get("question") else []
+            )
+            if pipeline == "symbolic-search":
+                stage["compiler"] = value["compiler"]
+            if value.get("keyword_groups"):
+                stage["keyword_groups"] = value["keyword_groups"]
             if value.get("comparison_terms"):
                 stage["comparison_terms"] = value["comparison_terms"]
             if value.get("output_targets"):
@@ -90,10 +112,13 @@ def workflow_progress(workspace, run_id: str) -> dict:
         if name == "search":
             parts = value.get("parts", [value])
             stage["counts"] = {
-                "candidate_spans": sum(part["candidate_spans"] for part in parts),
                 "cited_spans": sum(len(part["spans"]) for part in parts),
                 "quote_bytes": value["quote_bytes"],
             }
+            if pipeline == "symbolic-search":
+                stage["symbolic_indexes"] = symbolic_index_steps(value["trace"])
+            else:
+                stage["counts"]["candidate_spans"] = sum(part["candidate_spans"] for part in parts)
             stage["citations"] = [
                 {
                     "reference": f"{line['conversation_id']}#{line['segment_id']}",
@@ -247,10 +272,10 @@ def memory_activity(
                 **({"follow_run": row["id"]} if record["pipeline_id"] in FOLLOW_STAGES else {}),
                 **(
                     {"saved_search": row["id"]}
-                    if record["pipeline_id"] == "context-search"
+                    if record["pipeline_id"] in SAVED_SEARCH_KINDS
                     and record["state"] == "completed"
                     and record["stages"].get("search", {}).get("artifact", {}).get("kind")
-                    == "context_evidence"
+                    == SAVED_SEARCH_KINDS[record["pipeline_id"]]
                     else {}
                 ),
                 "stages": [

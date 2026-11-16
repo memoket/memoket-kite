@@ -27,9 +27,10 @@ it as of November 4 and the plan was Friday. The next meeting assigned Maya and 
 Tuesday because Friday's build failed validation. A later Monday proposal stays
 in the history while Tuesday remains the confirmed plan.
 
-KITE stores each claim with its topic, status, original evidence, and date when
-known. A new Codex or Claude Code session can use the same memory to answer
-questions and act on the team's latest confirmed decisions.
+KITE keeps original conversation turns with their citations and recording
+dates. Topics, entities, and facets help an agent find the relevant passages.
+A new Codex or Claude Code session can use the same memory to answer questions
+and act on the team's latest confirmed decisions.
 
 ### Install KITE in Codex desktop
 
@@ -43,10 +44,14 @@ codex plugin marketplace add memoket/memoket-kite --ref codex/agent-native-memor
 ```
 
 See the [Codex installation guide](docs/codex.md) for first-run setup, import,
-and citation examples. The [optional submit hook](docs/codex.md#load-evidence-before-codex-starts)
-loads cited evidence before Codex starts an explicitly prefixed `KITE:` turn.
+and citation examples. Codex can compile a symbolic query in the current chat,
+then save the plan for later tasks. The [optional submit hook](docs/codex.md#load-evidence-before-codex-starts)
+can run that saved plan against updated original recordings before Codex starts
+the task. The [paired execution benchmark](benchmarks/agent/README.md#compare-an-installed-symbolic-hook-with-raw-files)
+compares this workflow with Codex reading the same files directly.
 Ask **“Open my KITE memory graph”** and choose **All topics**
-to see the whole workspace in one rotatable view. Select a topic to see its
+to see the whole workspace in one rotatable view, with the topic tree expanded
+in the sidebar. Select a topic to see its
 parents, children, and other topics that share its memories. Open a memory to
 follow its citations to the original lines and source revisions, and inspect
 any entities and facets indexed for that memory. Use **Entities** and **Facets**
@@ -139,8 +144,9 @@ service or a model call.
 
 ## ⚙️ How It Works
 
-The whole idea in one line: **conversations settle into facts under topics, and a
-question finds its topic and pulls that topic's memories, receipts included.**
+Conversation turns can be indexed with topics, entities, and facets. KITE
+compiles a question into a symbolic plan that filters and ranks the original
+evidence. Structured facts can also be stored for decision and owner tracking.
 
 <a id="video"></a>
 

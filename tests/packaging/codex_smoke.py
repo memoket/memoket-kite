@@ -193,6 +193,55 @@ def verify_workflows(
     ).stdout
     assert "[handoff#L4] Speaker A: Rollout depends on the checklist." in context, context
     assert "Recording started at: 2026-01-14 08:00:00 (timezone unknown)" in context, context
+    question = "What does rollout depend on?"
+    prepared = json.loads(run("symbolic", "--prepare", question, cwd=subdirectory).stdout)
+    assert f"Question: {question}" in prepared["prompt"]
+    brief = json.loads(run("symbolic", "--prepare", question, "--brief", cwd=subdirectory).stdout)
+    assert brief["snapshot"] == prepared["snapshot"] and "prompt" not in brief, brief
+    plan = {"queries": [{"select": "lines", "where": {"grep": "rollout depends"}}]}
+    symbolic = json.loads(
+        run(
+            "symbolic",
+            "--input",
+            "-",
+            data={"question": question, "snapshot": prepared["snapshot"], "plan": plan},
+            cwd=subdirectory,
+        ).stdout
+    )
+    assert symbolic["compiler"] == "host_generated_plan", symbolic
+    assert symbolic["engine"] == "memoket_kite.core.algebra.execute_plan", symbolic
+    assert symbolic["spans"][0]["evidence"][0]["segment_id"] == "L4", symbolic
+    inline = json.loads(
+        run("symbolic", "--input", "-", data={"question": question, "plan": plan}).stdout
+    )
+    assert inline["compiler"] == "host_inline_plan", inline
+    assert inline["spans"] == symbolic["spans"], inline
+    saved = json.loads(
+        run(
+            "symbolic",
+            "--input",
+            "-",
+            "--save",
+            "rollout-checklist",
+            data={"question": question, "snapshot": prepared["snapshot"], "plan": plan},
+            cwd=subdirectory,
+        ).stdout
+    )
+    assert saved["saved_run"] == "rollout-checklist" and saved["spans"] == symbolic["spans"], saved
+    reused = json.loads(run("symbolic", "--reuse", "rollout-checklist", cwd=subdirectory).stdout)
+    assert reused["reused_plan"]["original_compiler"] == "host_generated_plan", reused
+    plan_hook = json.loads(
+        submit("KITE plan: rollout-checklist\nUpdate the checklist.", subdirectory)
+    )
+    assert "[handoff#L4]" in plan_hook["hookSpecificOutput"]["additionalContext"], plan_hook
+    dated = run(
+        "symbolic", "--input", "-", "--start-date", "2026-01-14", "--text", data=plan
+    ).stdout
+    assert "Recording dates: 2026-01-14 to any" in dated and "[handoff#L4]" in dated, dated
+    empty = json.loads(
+        run("symbolic", "--input", "-", "--start-date", "2026-01-15", data=plan).stdout
+    )
+    assert empty["scope"]["active_recordings"] == 0 and empty["spans"] == [], empty
     hook = json.loads(
         submit("KITE：What does rollout depend on?\nUpdate the checklist.", subdirectory)
     )
@@ -330,6 +379,25 @@ def verify_workflows(
     difference = run("source-compare", baseline, "--text").stdout
     assert "− [handoff#L4] Rollout depends on the checklist." in difference, difference
     assert "+ [handoff#L4] Rollout depends on QA signoff." in difference, difference
+    symbolic_before = json.loads(
+        run(
+            "symbolic",
+            "--at-version",
+            str(indexed["memory_version"]),
+            "--input",
+            "-",
+            data=plan,
+        ).stdout
+    )
+    assert symbolic_before["history"]["version"] == indexed["memory_version"]
+    assert symbolic_before["spans"][0]["evidence"][0]["text"] == "Rollout depends on the checklist."
+    symbolic_after = json.loads(
+        run(
+            "symbolic", "--since-version", str(indexed["memory_version"]), "--input", "-", data=plan
+        ).stdout
+    )
+    assert symbolic_after["source_change"]["cited_changed_recordings"] == 1, symbolic_after
+    assert symbolic_after["spans"][0]["evidence"][0]["text"] == "Rollout depends on QA signoff."
     historical = run(
         "context",
         "--question",
@@ -353,6 +421,7 @@ def main() -> None:
     parser.add_argument("--marketplace", default=str(Path(__file__).resolve().parents[2]))
     parser.add_argument("--ref", help="Git branch for a remote marketplace")
     parser.add_argument("--sparse", action="append", help="Sparse Git marketplace path, repeatable")
+    parser.add_argument("--plugin-version", help="expected installed KITE plugin version")
     parser.add_argument(
         "--context-search-version", type=int, help="expected installed pipeline version"
     )
@@ -379,6 +448,10 @@ def main() -> None:
             project,
             env,
         )
+        if args.plugin_version is not None:
+            manifest = launcher.parents[3] / ".codex-plugin" / "plugin.json"
+            installed_version = json.loads(manifest.read_text(encoding="utf-8"))["version"]
+            assert installed_version == args.plugin_version, installed_version
         print("KITE installed and discoverable in Codex", flush=True)
         verify_workflows(
             launcher, project, scratch, env, context_search_version=args.context_search_version

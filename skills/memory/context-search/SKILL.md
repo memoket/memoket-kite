@@ -8,6 +8,17 @@ For an implementation request with evidence questions, pass the request as
 given. The compiler can keep the task subject and questions together and
 skip trailing implementation instructions during retrieval. Apply the user's
 implementation constraints after reading the cited original lines.
+For ordinary compact English queries, the compiler can drop common words and
+search the remaining keywords together. When an implementation request lists
+several details, it can search their keywords separately and alternate the
+candidate passages within the same evidence budget. Select an original line
+from each available requirement before spending the remaining budget on nearby
+turns. The compile stage shows
+the keyword groups. Check whether the returned lines cover each requested detail.
+Use `--topic NAME`, `--entity NAME`, and `--facet AXIS=VALUE` for explicit
+constraints on a current search. All filters must match one annotated span.
+The original text must also match the search. When a useful annotation is
+missing, run a text search for the uncovered requirement.
 For a compact lookup, explicit instructions to set an output field can be
 reduced to their evidence wording. A field supported by original text or the
 current index vocabulary stays in the search. Quote a field name when it is

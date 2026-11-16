@@ -72,7 +72,11 @@ def work(tmp_path, capsys, monkeypatch):
         assert code == (2 if error else 0), output
         if not error and (
             args[0] == "codebook"
-            or (args[0] in {"query", "status", "evidence", "context"} and "--text" in args)
+            or (args[0] == "symbolic" and "--delivery-bytes" in args)
+            or (
+                args[0] in {"query", "status", "evidence", "context", "symbolic"}
+                and "--text" in args
+            )
         ):
             return output
         data = json.loads(output)
@@ -613,7 +617,14 @@ def test_source_indexing_rejects_changed_preview_and_shows_committed_stages(work
                 "source": source,
                 "annotations": {
                     "facts": [],
-                    "index_spans": [{"topics": ["rollout"], "segment_ids": ["text-1"]}],
+                    "index_spans": [
+                        {
+                            "topics": ["rollout"],
+                            "entities": ["KITE"],
+                            "facets": {"object": ["checklist"]},
+                            "segment_ids": ["text-1"],
+                        }
+                    ],
                 },
             }
         ]
@@ -628,6 +639,7 @@ def test_source_indexing_rejects_changed_preview_and_shows_committed_stages(work
     )
     preview = call("stage", "preview", "preview")["value"]
     assert (preview["sources_seen"], preview["source_lines"], preview["index_spans"]) == (1, 1, 1)
+    assert [preview[f"{kind}_spans"] for kind in ("topic", "entity", "facet")] == [1, 1, 1]
     pending = viewer._activity_snapshot(directory)["runs"][0]
     assert pending["run_id"] == "preview" and pending["stages"][0]["counts"]["index_spans"] == 1
     progress = viewer._workflow_snapshot(directory, "preview")
@@ -684,7 +696,7 @@ def test_source_indexing_rejects_changed_preview_and_shows_committed_stages(work
     assert not call("stage", "verify-spans", "commit")["value"]["changed"]
     assert "change" not in viewer._workflow_snapshot(directory, "verify-spans")
     with workspace.Workspace.open(directory) as db:
-        db.db.execute("DELETE FROM context_spans")
+        db.db.execute("UPDATE context_spans SET labels = ''")
     call("stage", "verify-spans", "verify", error="integrity_error")
 
 
@@ -886,8 +898,8 @@ def test_cli_help_still_prints_usage(capsys):
 def test_discovery_and_invalid_pipeline(work, tmp_path):
     _, call = work
     pipelines = call("pipelines")["pipelines"]
-    assert len(pipelines) == 15
-    assert {"context-search", "source-indexing", "source-revision-review"} <= {
+    assert len(pipelines) == 16
+    assert {"context-search", "symbolic-search", "source-indexing", "source-revision-review"} <= {
         entry["id"] for entry in pipelines
     }
     assert call("describe", "delete")["delete"]["effect"] == "delete"
@@ -4856,6 +4868,19 @@ def test_file_source_split_lines_preserves_quotes_line_numbers_and_source_checks
     assert not workspace.exists()
     conversation = prepared["source"]["payload"]
     assert conversation["metadata"]["source_sha256"] == hashlib.sha256(original).hexdigest()
+    aliased = call(
+        *command,
+        "--project",
+        "launch-26",
+        "--project-alias",
+        "Prism migration",
+        "--project-alias",
+        "棱镜切换",
+    )["source"]["payload"]
+    assert aliased["metadata"]["project"] == "launch-26"
+    assert aliased["metadata"]["project_aliases"] == ["Prism migration", "棱镜切换"]
+    assert aliased["segments"] == conversation["segments"]
+    call(*command, "--project-alias", "Prism migration", error="invalid_input")
     assert conversation["segments"] == [
         {"segment_id": "text-line-1", "text": "Launch planning"},
         {"segment_id": "text-line-3", "text": quote},
@@ -6391,6 +6416,173 @@ def test_context_explains_packing_without_adding_unquoted_text(work):
         viewer._snapshot(directory, [], run_id="packing")
 
 
+def test_compact_keyword_search_reserves_passages_for_distinct_task_requirements(work):
+    directory, call = work
+    sources = [
+        ("opening", "The initial staffing ceiling is eight people."),
+        ("review", "The team chose amber panels for the lighting fixtures."),
+        ("other", "The project review discussed general configuration changes."),
+    ]
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {"source": text_input(identity, original)["source"]}
+                for identity, original in sources
+            ]
+        },
+    )
+    question = (
+        "Update the project configuration. "
+        "Keep the initial staffing ceiling and apply the lighting fixture decision."
+    )
+    result = call(
+        "context",
+        "--question",
+        question,
+        "--compact",
+        "--explain",
+        "--limit",
+        "2",
+        "--save",
+        "keywords",
+    )
+    assert result["compilation"]["keyword_groups"] == [
+        ["initial", "staffing", "ceiling"],
+        ["lighting", "fixture", "decision"],
+    ]
+    assert [line["conversation_id"] for span in result["spans"] for line in span["evidence"]] == [
+        "opening",
+        "review",
+    ]
+    snapshot = viewer._snapshot(directory, [], run_id="keywords")
+    assert snapshot["search_trace"]["terms"] == [
+        "initial",
+        "staffing",
+        "ceiling",
+        "lighting",
+        "fixture",
+        "decision",
+    ]
+    exact = call("context", "--question", '"staffing ceiling"', "--compact", "--matching-lines")
+    assert "keyword_groups" not in exact["compilation"]
+
+
+def test_content_annotation_build_and_typed_search(work):
+    directory, call = work
+    source = {
+        "format": "conversation",
+        "payload": {
+            "conversation_id": "museum-session",
+            "source": "archive",
+            "metadata": {"source_reference": "museum-session"},
+            "segments": [
+                {"segment_id": "a", "text": "Acme donated the prototype."},
+                {"segment_id": "b", "text": "The prototype needs a display case."},
+                {"segment_id": "c", "text": "The prototype is not available for loan."},
+            ],
+        },
+    }
+    blocks = call("annotation-blocks", payload={"source": source})["blocks"]
+    assert [row["segment_id"] for block in blocks for row in block["segments"]] == ["a", "b", "c"]
+    assert not directory.exists()
+    supported = {
+        "segment_ids": ["a"],
+        "topics": ["Museum donations"],
+        "entities": ["Acme Foundation"],
+        "entity_mentions": [{"entity": "Acme Foundation", "segment_id": "a", "text": "Acme"}],
+        "facets": {"object": ["Prototype"]},
+    }
+    annotations = {
+        "facts": [],
+        "taxonomy": [{"name": "Museum donations", "parents": ["Museum operations"]}],
+        "entity_aliases": [{"name": "Acme Foundation", "aliases": ["Acme"]}],
+        "index_spans": [
+            supported,
+            {"segment_ids": ["b"], "topics": ["Acme"], "facets": {"object": ["Display case"]}},
+            {
+                "segment_ids": ["c"],
+                "topics": ["Museum donations"],
+                "facets": {"event": ["Prototype"]},
+            },
+        ],
+    }
+    payload = {"sources": [{"source": source, "annotations": annotations}]}
+    supported["entity_mentions"][0]["segment_id"] = "b"
+    call("index-sources", payload=payload, error="invalid_evidence")
+    supported["entity_mentions"][0]["segment_id"] = "a"
+    call("index-sources", payload=payload)
+    request = ("--term", "prototype", "--topic", "Museum operations", "--entity", "Acme")
+    result = call(
+        "context", *request, "--facet", "object=Prototype", "--explain", "--save", "typed"
+    )
+    assert [line["segment_id"] for span in result["spans"] for line in span["evidence"]] == ["a"]
+    assert not call("context", *request, "--facet", "object=Display case")["spans"]
+    assert not call("context", *request, "--facet", "event=Prototype")["spans"]
+    graph = viewer._snapshot(directory, [], run_id="typed")
+    assert {line["segment_id"] for line in graph["evidence"].values()} == {"a"}
+
+
+def test_requirement_lines_share_budget_and_can_use_one_search_window(work):
+    _, call = work
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {
+                    "source": {
+                        "format": "conversation",
+                        "payload": {
+                            "conversation_id": "field-log",
+                            "source": "archive",
+                            "metadata": {"source_reference": "field-log"},
+                            "segments": [
+                                {"segment_id": "one", "text": "北侧入口由夜班保安开启。"},
+                                {"segment_id": "two", "text": "水泵压力保持在四巴。"},
+                                {"segment_id": "three", "text": "冷库钥匙由值班人员保管。"},
+                            ],
+                        },
+                    }
+                },
+            ]
+        },
+    )
+    result = call(
+        "context",
+        "--question",
+        "整理三个交接要求",
+        "--limit",
+        "1",
+        "--max-bytes",
+        "512",
+        "--requirement",
+        "北侧入口",
+        "--requirement",
+        "水泵压力",
+        "--requirement",
+        "冷库钥匙",
+    )
+    assert len(result["spans"]) == 1
+    assert [line["segment_id"] for line in result["spans"][0]["evidence"]] == [
+        "one",
+        "two",
+        "three",
+    ]
+    assert result["quote_bytes"] <= 512
+    assert all(group["source_line_ids"] for group in result["requirement_coverage"])
+    missing = call(
+        "context",
+        "--question",
+        "检查交接",
+        "--requirement",
+        "北侧入口",
+        "--requirement",
+        "不存在的交接事项",
+        "--text",
+    )
+    assert "Evidence missing for:" in missing
+
+
 def test_compact_context_preserves_matches_and_records_trimmed_neighbors(work):
     directory, call = work
     sources = [
@@ -6495,6 +6687,1138 @@ def test_context_reserves_distinct_named_subquestion_lines_in_one_pack(work):
     assert all(
         item.get("selection", {}).get("term") != "Which app did Lotus use"
         for item in ambiguous["packing_trace"]["candidates"]
+    )
+
+
+def test_symbolic_plan_uses_cited_annotations_in_the_core_executor(work):
+    directory, call = work
+    labels = {
+        "topics": ["returns routing"],
+        "entities": ["Dockmaster"],
+        "facets": {"event": ["shift checklist"], "duration": "PT30M", "object": ["amber kit"]},
+    }
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {
+                    "source": text_input("shift", "Start with the amber kit.")["source"],
+                    "annotations": {
+                        "facts": [],
+                        "taxonomy": [
+                            {"name": "returns routing", "parents": ["warehouse operations"]}
+                        ],
+                        "entity_aliases": [{"name": "Dockmaster", "aliases": ["Dock lead"]}],
+                        "index_spans": [{**labels, "segment_ids": ["text-1"]}],
+                    },
+                },
+                {
+                    "source": text_input("other", "Start with the wrong carton.")["source"],
+                    "annotations": {
+                        "facts": [],
+                        "index_spans": [
+                            {"topics": labels["topics"], "segment_ids": ["text-1"]},
+                            {
+                                "entities": labels["entities"],
+                                "facets": labels["facets"],
+                                "segment_ids": ["text-1"],
+                            },
+                        ],
+                    },
+                },
+            ]
+        },
+    )
+    where = {
+        "topics": ["warehouse operations"],
+        "entities": ["Dock lead"],
+        "event": ["shift checklist"],
+        "duration": ["PT30M"],
+        "grep": "start",
+    }
+    plan = {
+        "stages": [
+            {"name": "shift", "select": "lines", "where": where},
+            {
+                "name": "detail",
+                "select": "lines",
+                "where": {"units": "$shift.units", "grep": "amber"},
+            },
+        ]
+    }
+    result = call("symbolic", payload=plan)
+    assert result["engine"] == "memoket_kite.core.algebra.execute_plan"
+    assert result["compiler"] == "supplied_plan"
+    assert [span["evidence"][0]["text"] for span in result["spans"]] == [
+        "Start with the amber kit."
+    ]
+    assert any(row.get("name") == "detail" and row.get("bound") for row in result["trace"])
+    assert {row["atom"] for row in result["trace"] if row.get("target") == "line_annotations"} == {
+        "topics",
+        "entities",
+        "event",
+        "duration",
+    }
+    saved = call(
+        "symbolic",
+        "--save",
+        "indexed-query",
+        payload={"question": "What should the shift start with?", "plan": plan},
+    )
+    graph = viewer._snapshot(directory, [], run_id="indexed-query")
+    trace = graph["search_trace"]["symbolic"]
+    assert trace["engine"] == saved["engine"] and trace["steps"] == saved["trace"]
+    assert trace["plan"] == plan and trace["executed_plan"] == saved["plan"]
+    assert {label for step in trace["indexes"] for label in step["matched_labels"]} == {
+        "returns_routing",
+        "dockmaster",
+        "shift_checklist",
+        "PT30M",
+    }
+    line = next(iter(graph["evidence"].values()))
+    assert line["text"] == "Start with the amber kit."
+    assert "facet:object:amber_kit" in line["index_nodes"]
+    assert graph["passages"][0]["retrieval"][0]["reason"] == "symbolic_match"
+    assert graph["search_trace"]["candidate_spans"] is None
+    progress = viewer._workflow_snapshot(directory, "indexed-query")
+    assert progress["saved_search"] == "indexed-query"
+    assert progress["stages"][-1]["symbolic_indexes"] == trace["indexes"]
+    assert progress["stages"][-1]["citations"][0]["reference"] == "shift#text-1"
+    assert (
+        viewer._activity_snapshot(directory, run_id="indexed-query")["runs"][0]["saved_search"]
+        == "indexed-query"
+    )
+    where["entities"] = ["missing entity"]
+    assert call("symbolic", payload=plan)["spans"] == []
+    ranked_plan = {
+        "queries": [
+            {
+                "select": "lines",
+                "where": {"grep": "Start"},
+                "prefer_labels": {
+                    "topics": ["returns routing"],
+                    "entities": ["Dock lead"],
+                    "event": ["shift checklist"],
+                },
+            }
+        ]
+    }
+    ranked = call("symbolic", payload=ranked_plan)
+    assert {span["evidence"][0]["conversation_id"] for span in ranked["spans"]} == {
+        "shift",
+        "other",
+    }
+    assert {row["atom"] for row in ranked["trace"] if row["stage"] == "prefer_labels"} == {
+        "topics",
+        "entities",
+        "event",
+    }
+    ranked_plan["queries"][0]["prefer_labels"] = {"topics": ["made-up label"]}
+    unchanged = call("symbolic", payload=ranked_plan)
+    assert next(row for row in unchanged["trace"] if row["stage"] == "prefer_labels")["hits"] == 0
+    assert unchanged["spans"] == ranked["spans"]
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {"source": text_input("unindexed", "Start with an untagged instruction.")["source"]}
+            ]
+        },
+    )
+    ranked_plan["queries"][0]["prefer_labels"] = {"entities": ["Dock lead"]}
+    boosted = call("symbolic", "--limit", "1", payload=ranked_plan)
+    assert boosted["spans"][0]["evidence"][0]["conversation_id"] in {"shift", "other"}
+    index_matches = next(row for row in boosted["trace"] if row["stage"] == "prefer_labels")
+    assert index_matches["labels"] == ["dockmaster"] and index_matches["hits"] == 2
+    assert next(row for row in boosted["trace"] if row["stage"] == "lines")["hits"] == 3
+
+
+def test_symbolic_workflow_binds_compilation_to_workspace_version(work, monkeypatch):
+    _, call = work
+    calls = []
+
+    def planner(question, vocab, store, profile, model):
+        calls.append((question, model))
+        return {"queries": [{"select": "lines", "where": {"grep": "rollout", "units": ["a"]}}]}
+
+    monkeypatch.setattr("memoket_kite.tools.symbolic.compile_plan", planner)
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {
+                    "source": text_input("a", "Rollout is ready.")["source"],
+                    "annotations": {
+                        "facts": [],
+                        "index_spans": [
+                            {
+                                "segment_ids": ["text-1"],
+                                "topics": ["rollout"],
+                                "facets": {"event": ["rollout review"]},
+                            }
+                        ],
+                    },
+                }
+            ]
+        },
+    )
+    request = {"request": {"question": "What about rollout?", "model": "test-model"}}
+    call("start", "symbolic-search", "--run-id", "query", payload=request)
+    call("stage", "query", "search", error="dependency_pending")
+    call("stage", "query", "compile", error="permission_denied")
+    assert calls == []
+    compiled = call("stage", "query", "compile", "--allow-provider")["value"]
+    assert calls == [("What about rollout?", "test-model")]
+    result = call("stage", "query", "search")["value"]
+    assert result["memory_version"] == compiled["memory_version"]
+    assert result["spans"][0]["evidence"][0]["text"] == "Rollout is ready."
+    assert result["compiled_plan"] == compiled["plan"]
+    assert result["plan"]["queries"][0]["where"]["units"][0].startswith("c-")
+    assert result["plan"]["queries"][0]["prefer_labels"] == {
+        "topics": ["rollout"],
+        "event": ["rollout_review"],
+    }
+    prepared = call("symbolic", "--prepare", request["request"]["question"])
+    assert "Question: What about rollout?" in prepared["prompt"]
+    assert "Rollout is ready." not in prepared["prompt"]
+    brief = call("symbolic", "--prepare", request["request"]["question"], "--brief")
+    assert "prompt" not in brief and brief["snapshot"] == prepared["snapshot"]
+    assert brief["index"]["topics"] == "rollout (1)"
+    assert brief["index"]["facets"] == {"event": ["rollout_review (1)"]}
+    assert brief["index"]["recordings"] == []
+    host_plan = {
+        "question": request["request"]["question"],
+        "snapshot": brief["snapshot"],
+        "plan": compiled["plan"],
+    }
+    call("symbolic", "--brief", payload=host_plan, error="invalid_input")
+    host = call("symbolic", payload=host_plan)
+    assert host["compiler"] == "host_generated_plan"
+    assert host["spans"] == result["spans"]
+    assert host["plan"] == result["plan"]
+    call(
+        "symbolic", payload={**host_plan, "question": "different question"}, error="stale_snapshot"
+    )
+    call("start", "symbolic-search", "--run-id", "stale-query", payload=request)
+    call("stage", "stale-query", "compile", "--allow-provider")
+    call(
+        "index-sources",
+        payload={"sources": [{"source": text_input("b", "Rollout moved.")["source"]}]},
+    )
+    call("stage", "stale-query", "search", error="stale_snapshot")
+    call("symbolic", payload=host_plan, error="stale_snapshot")
+    assert calls == [
+        ("What about rollout?", "test-model"),
+        ("What about rollout?", "test-model"),
+    ]
+
+
+def test_symbolic_save_preserves_host_plan_snapshot_and_provenance(work, monkeypatch):
+    _, call = work
+    monkeypatch.setattr(
+        "memoket_kite.tools.symbolic.compile_plan", lambda *_: pytest.fail("unexpected provider")
+    )
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {"source": text_input("plan", "Rollout is ready.", date="2026-05-01")["source"]}
+            ]
+        },
+    )
+    question = "What about rollout?"
+    prepared = call("symbolic", "--prepare", question, "--brief", "--start-date", "2026-05-01")
+    submission = {
+        "question": question,
+        "snapshot": prepared["snapshot"],
+        "plan": {"queries": [{"select": "lines", "where": {"grep": "rollout"}}]},
+    }
+    args = ("symbolic", "--save", "rollout", "--start-date", "2026-05-01")
+    saved = call(*args, payload=submission)
+    assert saved["compiler"] == "host_generated_plan" and saved["saved_run"] == "rollout"
+    assert call(*args, payload=submission) == saved
+    call(*args, payload={**submission, "question": "Different lookup?"}, error="conflict")
+    compiled = call("artifact", "rollout", "compile")["value"]
+    assert compiled["plan"] == submission["plan"]
+    assert compiled["recording_dates"] == {"start_date": "2026-05-01"}
+    assert call("symbolic", "--reuse", "rollout")["spans"] == saved["spans"]
+    call(
+        "index-sources",
+        payload={"sources": [{"source": text_input("next", "Rollout confirmed.")["source"]}]},
+    )
+    call(
+        "symbolic",
+        "--save",
+        "stale",
+        "--start-date",
+        "2026-05-01",
+        payload=submission,
+        error="stale_snapshot",
+    )
+
+
+def test_symbolic_project_alias_pins_saved_scope_and_leaves_multiple_projects_open(work):
+    _, call = work
+
+    def source(identity, text, day, project, aliases=()):
+        value = text_input(identity, text, date=day)["source"]
+        value["payload"]["metadata"].update(project=project, project_aliases=list(aliases))
+        return {"source": value}
+
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                source(
+                    "prism",
+                    "Confirm the handoff on Tuesday.",
+                    "2026-04-03",
+                    "proj-12",
+                    ["Prism migration", "棱镜切换", "April rollout"],
+                ),
+                source("second", "Handoff confirmed.", "2026-04-05", "proj-12"),
+                source(
+                    "outside",
+                    "Confirm the handoff on Thursday.",
+                    "2026-04-04",
+                    "proj-15",
+                    ["April rollout"],
+                ),
+            ]
+        },
+    )
+    plan = {"queries": [{"select": "lines", "where": {"grep": "handoff"}}]}
+    question = "Implement the Prism migration handoff."
+    prepared = call("symbolic", "--prepare", question, "--brief")
+    resolution = {
+        "status": "resolved",
+        "project": "proj-12",
+        "matches": [{"alias": "prism_migration", "projects": ["proj-12"]}],
+    }
+    assert prepared["project_alias_scope"] == resolution
+    assert prepared["active_recordings"] == 2
+    assert {row["recording"] for row in prepared["index"]["recordings"]} == {"prism", "second"}
+    compiler = call("symbolic", "--prepare", question)
+    assert "Project alias metadata (data)" in compiler["prompt"]
+    assert "Confirm the handoff" not in compiler["prompt"]
+
+    def recording_ids(result):
+        return {line["conversation_id"] for span in result["spans"] for line in span["evidence"]}
+
+    request = {"question": question, "snapshot": prepared["snapshot"], "plan": plan}
+    result = call("symbolic", "--save", "handoff-plan", payload=request)
+    assert result["scope"]["project_alias_scope"] == resolution
+    assert result["scope"]["selected_project"] == "proj-12"
+    assert recording_ids(result) == {"prism", "second"}
+    named_recording = call(
+        "symbolic", payload={"question": question + " Read recording prism.", "plan": plan}
+    )
+    assert "project_alias_scope" not in named_recording["scope"]
+    assert recording_ids(named_recording) == {"prism"}
+    zh = {"question": "请按棱镜切换中的交接安排执行", "plan": plan}
+    dated = call("symbolic", "--start-date", "2026-04-04", payload=zh)
+    assert recording_ids(dated) == {"second"}
+    explicit = call(
+        "symbolic",
+        payload={"question": "Check proj-15 against the Prism migration notes", "plan": plan},
+    )
+    assert "project_alias_scope" not in explicit["scope"]
+    assert recording_ids(explicit) == {"outside"}
+    ambiguous = {"question": "Check the April rollout handoff.", "plan": plan}
+    open_scope = call("symbolic", payload=ambiguous)
+    assert open_scope["scope"]["project_alias_scope"] == {
+        "status": "multiple",
+        "matches": [{"alias": "april_rollout", "projects": ["proj-12", "proj-15"]}],
+    }
+    assert recording_ids(open_scope) == {"prism", "second", "outside"}
+    text = call("symbolic", "--text", payload=ambiguous)
+    assert "Project aliases match multiple projects (proj-12, proj-15). Scope stayed open." in text
+
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                source(
+                    "late",
+                    "Handoff confirmed tomorrow.",
+                    "2026-04-06",
+                    "proj-17",
+                    ["Prism migration"],
+                )
+            ]
+        },
+    )
+    reopened = call("symbolic", payload={"question": question, "plan": plan})
+    assert reopened["scope"]["project_alias_scope"]["status"] == "multiple"
+    assert recording_ids(reopened) == {"prism", "second", "outside", "late"}
+    saved_again = call("symbolic", "--reuse", "handoff-plan")
+    assert saved_again["scope"]["selected_project"] == "proj-12"
+    assert saved_again["reused_plan"]["original_project_alias_scope"] == resolution
+    assert recording_ids(saved_again) == {"prism", "second"}
+    call("symbolic", "--project", "proj-17", "--reuse", "handoff-plan", error="invalid_input")
+
+
+def test_reuse_saved_symbolic_plan_rebinds_after_update_and_respects_deletion(work, monkeypatch):
+    _, call = work
+    calls = []
+
+    def planner(*args):
+        calls.append(args[0])
+        return {"queries": [{"select": "lines", "where": {"grep": "rollout"}}]}
+
+    def source(identity, text, day, project="North", **options):
+        value = text_input(identity, text, date=day)["source"]
+        value["payload"]["metadata"]["project"] = project
+        return {"source": {**value, **options}}
+
+    monkeypatch.setattr("memoket_kite.tools.symbolic.compile_plan", planner)
+    original = source("current", "The rollout is Wednesday.", "2026-05-02")
+    outside = source("outside", "The rollout is Monday.", "2026-05-02", "South")
+    early = source("early", "The rollout is Tuesday.", "2026-05-01")
+    call("index-sources", payload={"sources": [original, outside, early]})
+    request = {
+        "question": "When is the rollout?",
+        "model": "test-model",
+        "project": "North",
+        "recording_dates": {"start_date": "2026-05-02"},
+        "max_bytes": 128,
+    }
+    call("start", "symbolic-search", "--run-id", "rollout", payload={"request": request})
+    call("symbolic", "--reuse", "rollout", error="not_found")
+    compiled = call("stage", "rollout", "compile", "--allow-provider")["value"]
+    before = call("stage", "rollout", "search")["value"]
+    first = before["spans"][0]["evidence"][0]
+    amended = source(
+        "current",
+        "The rollout is Friday.",
+        "2026-05-02",
+        expected_checksum=first["revision_checksum"],
+    )
+    call("index-sources", payload={"sources": [amended]})
+    call("artifact", "rollout", "compile", error="stale_snapshot")
+    call("symbolic", "--reuse", "rollout", "--project", "South", error="invalid_input")
+    after = call("symbolic", "--reuse", "rollout", "--start-date", "2026-05-01")
+    assert after["engine"] == "memoket_kite.core.algebra.execute_plan"
+    assert after["compiler"] == "reused_symbolic_plan"
+    assert after["reused_plan"] == {
+        "run_id": "rollout",
+        "compiled_at_version": compiled["memory_version"],
+        "original_compiler": compiled["compiler"],
+    }
+    assert after["memory_version"] > before["memory_version"]
+    assert after["source_change"] == {
+        "from_version": before["memory_version"],
+        "changed_recordings": 1,
+        "cited_changed_recordings": 1,
+    }
+    assert after["quote_budget_bytes"] == 128
+    assert after["scope"]["selected_project"] == "North"
+    assert after["scope"]["recording_dates"] == request["recording_dates"]
+    assert [line["text"] for span in after["spans"] for line in span["evidence"]] == [
+        "The rollout is Friday."
+    ]
+    _delete_source(call, "erase-rollout", {"source": "text", "conversation_id": "current"})
+    call("symbolic", "--reuse", "rollout", error="invalidated_run")
+    assert calls == [request["question"]]
+
+
+def test_symbolic_stage_binding_keeps_recordings_beyond_quote_limit(work):
+    _, call = work
+    sources = [
+        {"source": text_input(str(i), "Common anchor with priority.")["source"]} for i in range(13)
+    ]
+    sources.append({"source": text_input("linked", "Common anchor.\nThe linked answer.")["source"]})
+    call("index-sources", payload={"sources": sources})
+    plan = {
+        "stages": [
+            {
+                "name": "anchor",
+                "select": "lines",
+                "where": {"grep": "Common anchor"},
+                "prefer": ["priority"],
+            },
+            {
+                "name": "answer",
+                "select": "lines",
+                "where": {"units": "$anchor.units", "grep": "linked answer"},
+            },
+        ],
+    }
+    result = call("symbolic", "--limit", "2", payload=plan)
+    assert any(
+        line["conversation_id"] == "linked" for span in result["spans"] for line in span["evidence"]
+    )
+    anchor = next(row for row in result["trace"] if row.get("name") == "anchor")
+    assert anchor["matched_recordings"] == 14 and anchor["hits"] == 12
+
+
+def test_symbolic_project_scope_limits_preparation_and_evidence(work, monkeypatch):
+    _, call = work
+    sources = []
+    for project, label in (("North", "amber"), ("South", "violet")):
+        source = text_input(f"{project}-review", f"Rollout uses {label}.")["source"]
+        source["payload"]["metadata"]["project"] = project
+        sources.append(
+            {
+                "source": source,
+                "annotations": {
+                    "facts": [],
+                    "index_spans": [{"segment_ids": ["text-1"], "topics": [label]}],
+                },
+            }
+        )
+    call("index-sources", payload={"sources": sources})
+    question = "What did we decide about rollout?"
+    prepared = call("symbolic", "--prepare", question, "--project", "North")
+    assert prepared["active_recordings"] == 1
+    assert "amber" in prepared["prompt"] and "violet" not in prepared["prompt"]
+    assert "North-review" in prepared["prompt"] and "South-review" not in prepared["prompt"]
+    brief = call("symbolic", "--prepare", question, "--brief", "--project", "North")
+    assert brief["snapshot"] == prepared["snapshot"]
+    assert brief["index"]["topics"] == "amber (1)"
+    assert [unit["recording"] for unit in brief["index"]["recordings"]] == ["North-review"]
+    plan = {"queries": [{"select": "lines", "where": {"grep": "rollout"}}]}
+    submitted = {"question": question, "snapshot": prepared["snapshot"], "plan": plan}
+    call("symbolic", payload=submitted, error="stale_snapshot")
+    monkeypatch.setenv("KITE_SYMBOLIC_PROJECT", "North")
+    result = call("symbolic", payload=submitted)
+    assert result["scope"]["selected_project"] == "North"
+    assert [row["conversation_id"] for span in result["spans"] for row in span["evidence"]] == [
+        "North-review"
+    ]
+    inline = call("symbolic", payload={"question": question, "plan": plan})
+    assert inline["compiler"] == "host_inline_plan"
+    assert inline["scope"] == result["scope"] and inline["spans"] == result["spans"]
+    call("symbolic", payload={**submitted, "snapshot": None}, error="invalid_input")
+    conflicting_plan = {"queries": [{"select": "lines", "where": {"units": ["South-review"]}}]}
+    assert call("symbolic", payload={**submitted, "plan": conflicting_plan})["spans"] == []
+    call("symbolic", "--project", "South", payload=submitted, error="stale_snapshot")
+    call("symbolic", "--prepare", "What did South decide?", error="invalid_input")
+    call("symbolic", "--prepare", question, "--project", "Unknown", error="not_found")
+    other = call("symbolic", "--project", "South", payload=plan)
+    assert other["scope"]["matched_projects"] == ["South"]
+    monkeypatch.setattr("memoket_kite.tools.symbolic.compile_plan", lambda *_: plan)
+    call(
+        "start",
+        "symbolic-search",
+        "--run-id",
+        "project-search",
+        payload={"request": {"question": question, "model": "test-model", "project": "South"}},
+    )
+    call("stage", "project-search", "compile", "--allow-provider")
+    scoped = call("stage", "project-search", "search")["value"]
+    assert scoped["scope"]["selected_project"] == "South"
+    assert scoped["spans"] == other["spans"]
+
+
+@pytest.mark.parametrize(
+    "question, prior, changed, alternative",
+    [
+        (
+            "Update the delivery schedule and keep the original date.",
+            "Original delivery on September 2.",
+            "For delivery, move to September 12, once QA is ready.",
+            "Moved to September 18 for a different delivery.",
+        ),
+        (
+            "更新发货排期，保留原计划。",
+            "原定发货日期是9月2日。",
+            "发货那就改上9月12日，做完测试再走。",
+            "另一批改到9月18日。",
+        ),
+    ],
+)
+def test_symbolic_reserves_unique_schedule_change(work, question, prior, changed, alternative):
+    _, call = work
+    original = {"source": text_input("prior", prior, date="2026-09-01")["source"]}
+    baseline = str(call("index-sources", payload={"sources": [original]})["memory_version"])
+    revision = {"source": text_input("next", changed, date="2026-09-10")["source"]}
+    call("index-sources", payload={"sources": [revision]})
+    plan = {"queries": [{"select": "lines", "where": {"grep": "Original delivery|原定发货"}}]}
+    request = {"question": question, "plan": plan}
+
+    def quotes(pack):
+        return {line["text"]: line["role"] for span in pack["spans"] for line in span["evidence"]}
+
+    result = call("symbolic", "--since-version", baseline, "--limit", "2", payload=request)
+    assert quotes(result) == {prior: "symbolic_match", changed: "schedule_change_match"}
+    assert result["trace"][-1]["stage"] == "schedule_change"
+    assert result["trace"][-1]["candidates"] == 1
+    assert result["trace"][-1]["subject_support"]["terms"]
+    assert quotes(call("symbolic", payload=request)) == {prior: "symbolic_match"}
+    date_plan = copy.deepcopy(plan)
+    date_where = date_plan["queries"][0]["where"]
+    date_where["time"] = ["2026-09-01", ""]
+    timed_args = ("--since-version", baseline, "--start-date", "2026-09-01", "--limit", "2")
+    assert quotes(call("symbolic", *timed_args, payload={**request, "plan": date_plan})) == quotes(
+        result
+    )
+    date_where["time"][1] = "2026-09-09"
+    assert quotes(call("symbolic", *timed_args, payload={**request, "plan": date_plan})) == {
+        prior: "symbolic_match"
+    }
+    scoped = {
+        "queries": [
+            {"select": "lines", "where": {"units": ["prior"], "grep": "Original delivery|原定发货"}}
+        ]
+    }
+    assert quotes(
+        call("symbolic", "--since-version", baseline, payload={**request, "plan": scoped})
+    ) == {prior: "symbolic_match"}
+    ambiguous = {
+        "source": {
+            "format": "conversation",
+            "payload": {
+                "conversation_id": "ambiguous",
+                "source": "text",
+                "metadata": {"source_reference": "ambiguous"},
+                "segments": [
+                    {"segment_id": "a", "text": changed},
+                    {"segment_id": "b", "text": alternative},
+                ],
+            },
+        }
+    }
+    version = str(result["memory_version"])
+    unrelated = {
+        "source": text_input(
+            "unrelated", "Move to September 18 for a warehouse audit. 那就把审计改到9月18日。"
+        )["source"]
+    }
+    after = call("index-sources", payload={"sources": [unrelated]})["memory_version"]
+    result = call("symbolic", "--since-version", version, "--limit", "2", payload=request)
+    assert quotes(result) == {prior: "symbolic_match"}
+    assert result["trace"][-1]["candidates"] == 1 and not result["trace"][-1]["reserved"]
+    call("index-sources", payload={"sources": [ambiguous]})
+    result = call("symbolic", "--since-version", str(after), "--limit", "2", payload=request)
+    assert quotes(result) == {prior: "symbolic_match"}
+    assert result["trace"][-1]["candidates"] == 2 and not result["trace"][-1]["reserved"]
+
+
+def test_symbolic_schedule_uses_shared_annotation_for_a_split_subject(work, monkeypatch):
+    _, call = work
+
+    def source(name, turns, topic):
+        segments = [{"segment_id": str(i), "text": text} for i, text in enumerate(turns)]
+        return {
+            "source": {
+                "format": "conversation",
+                "payload": {
+                    "source": "text",
+                    "conversation_id": name,
+                    "segments": segments,
+                    "metadata": {"source_reference": name},
+                },
+            },
+            "annotations": {
+                "facts": [],
+                "index_spans": [{"segment_ids": ["0"], "topics": [topic]}],
+            },
+        }
+
+    initial = source(
+        "initial", ["Originally on November 4.", "This is for dispatch."], "winter routing"
+    )
+    other = source("other", ["For dispatch, move to November 7."], "equipment audit")
+    update = source("update", ["For dispatch, move to November 6."], "winter routing")
+    baseline = call("index-sources", payload={"sources": [initial]})["memory_version"]
+    current = call("index-sources", payload={"sources": [other]})["memory_version"]
+    request = {
+        "question": "What is the dispatch date?",
+        "plan": {
+            "queries": [
+                {"select": "lines", "where": {"grep": "Originally on"}},
+            ]
+        },
+    }
+    mismatch = call("symbolic", "--since-version", str(baseline), payload=request)
+    assert mismatch["trace"][-1]["candidates"] == 1 and not mismatch["trace"][-1]["reserved"]
+    call("index-sources", payload={"sources": [update]})
+    result = call("symbolic", "--since-version", str(current), payload=request)
+    support = result["trace"][-1]["subject_support"]
+    assert support["terms"] == ["dispat"]
+    assert support["labels"] == [["topics", "winter_routing"]]
+    evidence = [line for span in result["spans"] for line in span["evidence"]]
+    assert {line["conversation_id"] for line in evidence} == {"initial", "update"}
+
+    monkeypatch.setattr("memoket_kite.tools.symbolic.compile_plan", lambda *_: request["plan"])
+    call(
+        "start",
+        "symbolic-search",
+        "--run-id",
+        "calendar",
+        payload={
+            "request": {"question": request["question"], "model": "test", "since_version": current}
+        },
+    )
+    call("stage", "calendar", "compile", "--allow-provider")
+    phased = call("stage", "calendar", "search")["value"]
+    assert phased["spans"] == result["spans"]
+    assert phased["trace"][-1]["subject_support"] == support
+
+
+def test_symbolic_recording_dates_scope_compilation_and_every_branch(work, monkeypatch):
+    _, call = work
+    recordings = [
+        ("old", "2026-09-01"),
+        ("inside", "2026-09-02"),
+        ("later", "2026-09-03"),
+        ("undated", None),
+    ]
+    sources = [
+        {
+            "source": text_input(
+                identity, "External customers were invited to test the app.", date=day
+            )["source"]
+        }
+        for identity, day in recordings
+    ]
+    baseline = call("index-sources", payload={"sources": [sources[0]]})["memory_version"]
+    call("index-sources", payload={"sources": sources[1:]})
+    plan = {
+        "queries": [
+            {"select": "lines", "where": {"grep_all": ["external|outside", "test|trial"]}},
+            {"select": "lines", "where": {"grep": "invited"}},
+        ]
+    }
+    question = "When was external testing discussed?"
+    date = "2026-09-02"
+    bounds = ["--start-date", date, "--end-date", date]
+    prepared = call(
+        "symbolic", "--prepare", question, "--brief", *bounds, "--since-version", str(baseline)
+    )
+    assert (
+        prepared["active_recordings"] == 1 and prepared["source_change"]["changed_recordings"] == 1
+    )
+    request = {"question": question, "plan": plan, "snapshot": prepared["snapshot"]}
+    call("symbolic", "--since-version", str(baseline), payload=request, error="stale_snapshot")
+    result = call("symbolic", "--since-version", str(baseline), *bounds, payload=request)
+    assert result["scope"]["recording_dates"] == {"start_date": date, "end_date": date}
+    assert {line["conversation_id"] for span in result["spans"] for line in span["evidence"]} == {
+        "inside"
+    }
+    assert [step["hits"] for step in result["trace"] if step["stage"] == "lines"] == [1, 1]
+    assert (
+        call("symbolic", *bounds, payload={"question": "Search recording old", "plan": plan})[
+            "spans"
+        ]
+        == []
+    )
+    call(
+        "symbolic",
+        "--start-date",
+        "2026-09-03",
+        "--end-date",
+        date,
+        payload=plan,
+        error="invalid_input",
+    )
+    monkeypatch.setattr("memoket_kite.tools.symbolic.compile_plan", lambda *_: plan)
+    call(
+        "start",
+        "symbolic-search",
+        "--run-id",
+        "dated",
+        payload={
+            "request": {
+                "question": question,
+                "model": "test",
+                "recording_dates": {"start_date": date, "end_date": date},
+            }
+        },
+    )
+    call("stage", "dated", "compile", "--allow-provider")
+    phased = call("stage", "dated", "search")["value"]
+    assert phased["spans"] == result["spans"]
+
+
+def test_symbolic_schedule_recovers_prior_date_below_merged_quote_cutoff(work):
+    _, call = work
+    older = "Original dispatch date was September 2. 当时问的是什么？"
+    revised = "For dispatch, move to September 12."
+    retained = [{"source": text_input("old-dispatch", older)["source"]}]
+    retained.extend(
+        {
+            "source": text_input(f"recording-{i}", "Original inventory date was September 8.")[
+                "source"
+            ]
+        }
+        for i in range(5)
+    )
+    baseline = call("index-sources", payload={"sources": retained})["memory_version"]
+    call(
+        "index-sources", payload={"sources": [{"source": text_input("update", revised)["source"]}]}
+    )
+    request = {
+        "question": "What is the updated dispatch date? 日期是什么？",
+        "plan": {
+            "queries": [
+                {"select": "lines", "where": {"grep": "inventory"}},
+                {"select": "lines", "where": {"grep": "Original"}, "prefer": ["inventory"]},
+            ]
+        },
+    }
+
+    def quotes(pack):
+        return {line["text"] for span in pack["spans"] for line in span["evidence"]}
+
+    assert older not in quotes(call("symbolic", "--limit", "2", payload=request))
+    result = call("symbolic", "--limit", "2", "--since-version", str(baseline), payload=request)
+    assert quotes(result) == {older, revised}
+    assert result["trace"][-1]["subject_support"]["prior_branch"] == {"query": 1, "rank": 6}
+
+    unrelated = "For the audit, move to September 14. 那是什么？"
+    call(
+        "index-sources", payload={"sources": [{"source": text_input("audit", unrelated)["source"]}]}
+    )
+    result = call(
+        "symbolic",
+        "--limit",
+        "2",
+        "--since-version",
+        str(result["memory_version"]),
+        payload=request,
+    )
+    assert result["trace"][-1]["candidates"] == 1 and not result["trace"][-1]["reserved"]
+
+
+def test_symbolic_near_option_matches_subject_in_the_cited_turn(work):
+    _, call = work
+    sources = [
+        {"source": text_input("same", "Agreed: 45 units for rollout.")["source"]},
+        {
+            "source": {
+                "format": "conversation",
+                "payload": {
+                    "conversation_id": "split",
+                    "source": "text",
+                    "metadata": {"source_reference": "split"},
+                    "segments": [
+                        {"segment_id": "subject", "text": "The rollout is next."},
+                        {"segment_id": "decision", "text": "Agreed: 24 units."},
+                    ],
+                },
+            }
+        },
+        {"source": text_input("outside", "Agreed: 100 units.")["source"]},
+    ]
+    call("index-sources", payload={"sources": sources})
+    nearby = {"grep": "rollout", "turns": 1}
+    plan = {"queries": [{"select": "lines", "where": {"grep": "Agreed:.*units", "near": nearby}}]}
+
+    def quotes(result):
+        return {
+            (line["text"], line["role"]) for span in result["spans"] for line in span["evidence"]
+        }
+
+    ordinary = call("symbolic", payload=plan)
+    assert quotes(ordinary) == {
+        ("The rollout is next.", "nearby_match"),
+        ("Agreed: 24 units.", "symbolic_match"),
+    }
+    nearby["include_anchor"] = True
+    inclusive = call("symbolic", payload=plan)
+    assert quotes(inclusive) == quotes(ordinary) | {
+        ("Agreed: 45 units for rollout.", "symbolic_match")
+    }
+    assert (
+        next(step for step in inclusive["trace"] if step["stage"] == "near")["same_turn_hits"] == 1
+    )
+
+    nearby["include_anchor"] = "true"
+    call("symbolic", payload=plan, error="invalid_plan")
+
+
+def test_symbolic_followup_keeps_changed_and_retained_turns(work, monkeypatch):
+    _, call = work
+    old = {
+        "source": text_input("earlier", "Rollout decision: 40 units.", date="2026-05-02")["source"]
+    }
+    baseline = call("index-sources", payload={"sources": [old]})["memory_version"]
+    sources = [
+        {
+            "source": {
+                "format": "conversation",
+                "payload": {
+                    "conversation_id": "later",
+                    "source": "text",
+                    "source_date": "2026-05-03",
+                    "metadata": {"source_reference": "later"},
+                    "segments": [
+                        {"segment_id": "first", "text": "The rollout is next."},
+                        {"segment_id": "second", "text": "Agreed: 24 units."},
+                    ],
+                },
+            }
+        },
+        {"source": text_input("unrelated", "Agreed: 100 units.", date="2026-05-03")["source"]},
+        {"source": text_input("backfill", "Older agenda.", date="2026-05-01")["source"]},
+    ]
+    current = call("index-sources", payload={"sources": sources})["memory_version"]
+    question = "Keep the original rollout and apply the new agreed quantity."
+    plan = {
+        "queries": [
+            {"select": "lines", "where": {"grep": "Rollout decision"}},
+            {
+                "select": "lines",
+                "where": {"grep": "Agreed:.*units", "near": {"grep": "rollout", "turns": 1}},
+            },
+        ]
+    }
+    previous = str(baseline)
+    prepared = call("symbolic", "--prepare", question, "--brief", "--since-version", previous)
+    assert prepared["memory_version"] == current
+    assert prepared["source_change"] == {"from_version": baseline, "changed_recordings": 3}
+    submitted = {"question": question, "snapshot": prepared["snapshot"], "plan": plan}
+    call("symbolic", payload=submitted, error="stale_snapshot")
+    result = call("symbolic", "--since-version", previous, "--limit", "2", payload=submitted)
+    assert result["source_change"] == {**prepared["source_change"], "cited_changed_recordings": 1}
+    assert [
+        (line["text"], line["role"]) for span in result["spans"] for line in span["evidence"]
+    ] == [
+        ("Rollout decision: 40 units.", "symbolic_match"),
+        ("The rollout is next.", "nearby_match"),
+        ("Agreed: 24 units.", "symbolic_match"),
+    ]
+    assert any(
+        step["stage"] == "near" and step["lane"] == "changed" and step["hits"] == 1
+        for step in result["trace"]
+    )
+    call("symbolic", "--since-version", "9999", payload=plan, error="history_unavailable")
+    call(
+        "symbolic",
+        payload={
+            "queries": [{"select": "lines", "where": {"near": {"grep": "rollout", "turns": 1}}}]
+        },
+        error="invalid_plan",
+    )
+    monkeypatch.setattr("memoket_kite.tools.symbolic.compile_plan", lambda *_: plan)
+    call(
+        "start",
+        "symbolic-search",
+        "--run-id",
+        "followup",
+        payload={
+            "request": {
+                "question": question,
+                "model": "test",
+                "since_version": baseline,
+                "limit": 2,
+            }
+        },
+    )
+    call("stage", "followup", "compile", "--allow-provider")
+    phased = call("stage", "followup", "search")["value"]
+    assert phased["source_change"] == result["source_change"] and phased["spans"] == result["spans"]
+
+
+def test_symbolic_pack_keeps_distinct_evidence_under_a_small_budget(work):
+    _, call = work
+    text = [
+        "We should discuss filters.",
+        "The market has filters.",
+        "The final proposal removed the filters to save money.",
+        "We agreed to use the amber case.",
+    ]
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {
+                    "source": {
+                        "format": "conversation",
+                        "payload": {
+                            "source": "text",
+                            "conversation_id": "review",
+                            "source_date": "2026-10-03",
+                            "metadata": {"source_reference": "review"},
+                            "segments": [
+                                {"segment_id": str(i), "text": line} for i, line in enumerate(text)
+                            ],
+                        },
+                    },
+                }
+            ]
+        },
+    )
+    result = call(
+        "symbolic",
+        "--limit",
+        "2",
+        payload={
+            "queries": [
+                {"select": "lines", "where": {"grep": "filters|proposal|removed"}},
+                {"select": "lines", "where": {"grep": "amber case"}},
+            ]
+        },
+    )
+    assert [span["evidence"][0]["text"] for span in result["spans"]] == text[2:]
+    expanded = call(
+        "symbolic",
+        "--limit",
+        "1",
+        "--neighbors",
+        "1",
+        "--max-bytes",
+        "128",
+        payload={"queries": [{"select": "lines", "where": {"grep": "final proposal"}}]},
+    )
+    lines = [span["evidence"][0] for span in expanded["spans"]]
+    assert [line["text"] for line in lines] == text[1:]
+    assert [line["role"] for line in lines] == [
+        "adjacent_turn",
+        "symbolic_match",
+        "adjacent_turn",
+    ]
+    assert expanded["quote_bytes"] == sum(len(line.encode()) for line in text[1:])
+    two_turns = call(
+        "symbolic",
+        "--limit",
+        "1",
+        "--neighbors",
+        "2",
+        "--max-bytes",
+        "256",
+        payload={"queries": [{"select": "lines", "where": {"grep": "we should discuss"}}]},
+    )
+    assert [span["evidence"][0]["text"] for span in two_turns["spans"]] == text[:3]
+    assert two_turns["spans"][2]["evidence"][0]["role"] == "adjacent_turn"
+    rendered = call(
+        "symbolic",
+        "--text",
+        payload={"queries": [{"select": "lines", "where": {"grep": "final proposal"}}]},
+    )
+    assert "Recording date: 2026-10-03" in rendered
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {"source": text_input("early", "Filters " + "x" * 106, date="2026-10-02")["source"]}
+            ]
+        },
+    )
+    parallel = {
+        "queries": [
+            {"select": "lines", "where": {"grep": "amber case"}},
+            {"select": "lines", "where": {"grep": "filters", "units": ["early"]}},
+            {"select": "lines", "where": {"grep": "onboarding"}},
+        ]
+    }
+    budgeted = call(
+        "symbolic",
+        "--limit",
+        "4",
+        "--max-bytes",
+        "128",
+        payload=parallel,
+    )
+    assert "We agreed to use the amber case." in [
+        span["evidence"][0]["text"] for span in budgeted["spans"]
+    ]
+    assert budgeted["branch_coverage"] == [
+        {"query": 0, "matched_lines": 1, "quoted_lines": 1},
+        {"query": 1, "matched_lines": 1, "quoted_lines": 0},
+        {"query": 2, "matched_lines": 0, "quoted_lines": 0},
+    ]
+    rendered = call("symbolic", "--max-bytes", "128", "--text", payload=parallel)
+    assert "Query 2 matched 1 original turn without a quote." in rendered
+    assert "Query 3 matched no original turns." in rendered
+    staged = call(
+        "symbolic",
+        "--limit",
+        "2",
+        payload={
+            "stages": [
+                {"name": "decision", "select": "lines", "where": {"grep": "amber case"}},
+                {
+                    "select": "lines",
+                    "where": {"units": "$decision.units", "grep": "filters"},
+                },
+            ],
+        },
+    )
+    assert {span["evidence"][0]["text"] for span in staged["spans"]} >= {text[-1]}
+    assert staged["branch_coverage"] == [
+        {"stage": "decision", "matched_lines": 1, "quoted_lines": 1},
+        {"stage": "s2", "matched_lines": 3, "quoted_lines": 1},
+    ]
+    unresolved = call(
+        "symbolic",
+        payload={
+            "stages": [
+                {"name": "anchor", "select": "lines", "where": {"grep": "onboarding"}},
+                {"select": "lines", "where": {"units": "$anchor.units", "grep": "filters"}},
+            ],
+        },
+    )
+    assert unresolved["branch_coverage"] == [
+        {"stage": "anchor", "matched_lines": 0, "quoted_lines": 0},
+        {"stage": "s2", "matched_lines": 0, "quoted_lines": 0, "skipped": "unresolved_ref"},
+    ]
+    preferred = call(
+        "symbolic",
+        "--limit",
+        "1",
+        payload={
+            "queries": [
+                {"select": "lines", "where": {"grep": "filters"}, "prefer": ["removed"]},
+            ]
+        },
+    )
+    assert preferred["spans"][0]["evidence"][0]["text"] == text[2]
+    assert any(row["stage"] == "lines" and row["hits"] == 4 for row in preferred["trace"])
+    assert any(row["stage"] == "prefer" and row["hits"] == 1 for row in preferred["trace"])
+    required = call(
+        "symbolic",
+        "--limit",
+        "1",
+        payload={
+            "queries": [
+                {"select": "lines", "where": {"grep": "filters"}, "prefer": ["amber case"]},
+            ]
+        },
+    )
+    assert "filters" in required["spans"][0]["evidence"][0]["text"].lower()
+
+
+def test_symbolic_delivery_fits_escaped_quotes_and_reports_missing_branches(work):
+    _, call = work
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {"source": text_input("revision-a", "The schedule is approved <today>.")["source"]},
+                {"source": text_input("revision-b", "The check is confirmed.")["source"]},
+                {"source": text_input("revision-c", "Appendix " + "<" * 1000)["source"]},
+            ]
+        },
+    )
+    plan = {
+        "queries": [
+            {"select": "lines", "where": {"grep": term}}
+            for term in ("schedule is approved", "check is confirmed", "appendix")
+        ]
+    }
+    full = call("symbolic", "--text", payload=plan).strip()
+    oversized = call("symbolic", "--delivery-bytes", "8192", payload=plan).strip()
+    assert json.loads(oversized) == full
+    assert "<" not in oversized
+    encoded = call("symbolic", "--delivery-bytes", "500", payload=plan).strip()
+    assert len(encoded.encode()) <= 500
+    rendered = json.loads(encoded)
+    assert "The schedule is approved <today>." in rendered
+    assert "The check is confirmed." in rendered
+    assert "Query 3 matched 1 original turn without a quote." in rendered
+    assert "Quote delivery omitted 1 original turn " in rendered
+    assert "Appendix" not in rendered
+    assert (
+        call(
+            "symbolic",
+            "--delivery-bytes",
+            "500",
+            payload={"queries": [{"select": "lines", "where": {"grep": "unseen"}}]},
+        ).strip()
+        == '""'
     )
 
 
@@ -8429,6 +9753,11 @@ def test_context_index_source_revision_merge_and_delete(work, monkeypatch):
     assert old["text"] == "确认周五交付。"
     update = entry("确认周一交付。", "2026-10-03", old["revision_checksum"])
     assert call("index-sources", payload={"sources": [update]})["sources_changed"] == 1
+    symbolic_plan = {"queries": [{"select": "lines", "where": {"topics": ["发布"]}}]}
+    symbolic_result = call("symbolic", payload=symbolic_plan)
+    assert [line["text"] for span in symbolic_result["spans"] for line in span["evidence"]] == [
+        "确认周一交付。"
+    ]
     assert call("context", "--term", "周五")["spans"] == []
     assert call("context", "--term", "交付", "--end-date", "2026-10-02")["spans"] == []
     new = call("context", "--term", "上线")["spans"][0]["evidence"][0]
@@ -8453,6 +9782,7 @@ def test_context_index_source_revision_merge_and_delete(work, monkeypatch):
     call("index-sources", payload={"sources": [invalid]}, error="conflict")
     _delete_source(call, "erase-indexed", {"source": "text", "conversation_id": "rollout"})
     assert call("context", "--term", "交付")["spans"] == []
+    assert call("symbolic", payload=symbolic_plan)["spans"] == []
     call("evidence", old["source_line_id"], error="not_found")
     call("source-compare", old["revision_checksum"], error="not_found")
     assert call("status", "compare")["state"] == "invalidated"
@@ -8735,6 +10065,7 @@ def test_historical_context_separates_recording_date_and_knowledge_time(
     initial = call("index-sources", payload={"sources": [entry("handoff", original, "2026-07-01")]})
     version = initial["memory_version"]
     baseline = call("source-history", "text", "handoff")["current_checksum"]
+    symbolic_plan = {"queries": [{"select": "lines", "where": {"units": ["handoff"]}}]}
     moment = "2026-07-02T05:00:00+00:00"
     update = call(
         "index-sources", payload={"sources": [entry("handoff", corrected, "2026-07-01", baseline)]}
@@ -8755,6 +10086,26 @@ def test_historical_context_separates_recording_date_and_knowledge_time(
         "2026-07-01",
     )
     assert quotes(past) == {original}
+    symbolic_past = call(
+        "symbolic",
+        "--known-at",
+        "2026-07-02T12:59:59+08:00",
+        payload=symbolic_plan,
+    )
+    assert quotes(symbolic_past) == {original}
+    assert symbolic_past["memory_version"] == version
+    assert symbolic_past["history"]["basis"] == "retained_original_turns"
+    assert quotes(call("symbolic", payload=symbolic_plan)) == {corrected}
+    all_symbolic = {"queries": [{"select": "lines", "where": {"grep": phrase}}]}
+    assert quotes(call("symbolic", "--at-version", str(version), payload=all_symbolic)) == {
+        original
+    }
+    assert quotes(call("symbolic", payload=all_symbolic)) == {corrected, late}
+    call("symbolic", "--known-at", "2026-07-02", payload=all_symbolic, error="invalid_input")
+    prepared = call("symbolic", "--prepare", phrase, "--at-version", str(version))
+    submitted = {"question": phrase, "snapshot": prepared["snapshot"], "plan": symbolic_plan}
+    assert quotes(call("symbolic", "--at-version", str(version), payload=submitted)) == {original}
+    call("symbolic", payload=submitted, error="stale_snapshot")
     assert past["history"]["version"] == version and past["history"]["later_deletions"] == 0
     assert past["spans"][0]["evidence"][0]["revision_checksum"] == baseline
     assert not past["spans"][0]["source_revision_active"]
@@ -8861,6 +10212,9 @@ def test_historical_context_separates_recording_date_and_knowledge_time(
     _delete_source(call, "erase-history", {"source": "text", "conversation_id": "handoff"})
     remaining = call("context", "--term", phrase, "--at-version", str(version))
     assert quotes(remaining) == set() and remaining["history"]["later_deletions"] == 1
+    symbolic_erased = call("symbolic", "--at-version", str(version), payload=symbolic_plan)
+    assert quotes(symbolic_erased) == set() and symbolic_erased["history"]["later_deletions"] == 1
+    call("symbolic", "--at-version", str(version), payload=submitted, error="stale_snapshot")
     assert call("status", "historical")["state"] == "invalidated"
     assert call("status", "change")["state"] == "invalidated"
     erased = call("context", *args, "--at-version", str(versions[1]))

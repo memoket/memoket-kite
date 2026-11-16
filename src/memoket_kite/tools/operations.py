@@ -21,6 +21,13 @@ from .source_batch import (
     preview_source_batch,
     verify_source_batch,
 )
+from .symbolic import (
+    SYMBOLIC_RECORDING_DATES,
+    _changed_recordings,
+    compile_source_question,
+    compile_submitted_source_plan,
+    execute_source_plan,
+)
 from .workspace import Workspace
 
 SOURCE_SCOPE = object_schema(
@@ -162,6 +169,52 @@ SCHEMAS = {
     "context_request": CONTEXT_REQUEST,
     "context_plan": CONTEXT_PLAN,
     "context_evidence": JSON_OBJECT,
+    "symbolic_request": {
+        **object_schema(
+            {},
+            {
+                "question": {**TEXT, "maxLength": 4000},
+                "model": TEXT,
+                "submitted_plan": JSON_OBJECT,
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "neighbors": {"type": "integer", "minimum": 0, "maximum": 4},
+                "max_bytes": {"type": "integer", "minimum": 128, "maximum": 32768},
+                "project": TEXT,
+                "since_version": COUNT,
+                "recording_dates": SYMBOLIC_RECORDING_DATES,
+            },
+        ),
+        "oneOf": [
+            {"required": ["question", "model"], "not": {"required": ["submitted_plan"]}},
+            {
+                "required": ["submitted_plan"],
+                "not": {"anyOf": [{"required": ["question"]}, {"required": ["model"]}]},
+            },
+        ],
+    },
+    "symbolic_plan": object_schema(
+        {
+            "plan": JSON_OBJECT,
+            "units": array(TEXT),
+            "compiler": TEXT,
+            "memory_version": COUNT,
+            "options": JSON_OBJECT,
+        },
+        {
+            "question": TEXT,
+            "selected_project": TEXT,
+            "project_alias_scope": object_schema(
+                {
+                    "status": {"enum": ["resolved", "multiple"]},
+                    "matches": array(object_schema({"alias": TEXT, "projects": array(TEXT)})),
+                },
+                {"project": TEXT},
+            ),
+            "since_version": COUNT,
+            "recording_dates": SYMBOLIC_RECORDING_DATES,
+        },
+    ),
+    "symbolic_evidence": JSON_OBJECT,
     "revision_comparison": REVISION_COMPARISON,
     "revision_difference": JSON_OBJECT,
     "batch_selection": BATCH_SELECTION,
@@ -181,6 +234,7 @@ EXTERNAL = frozenset(
         "topic_move",
         "model",
         "context_request",
+        "symbolic_request",
         "revision_comparison",
         "batch_selection",
     }
@@ -205,6 +259,7 @@ class Tool:
     output: str
     effect: str = "read"
     version: int = 1
+    prepare_provider: Callable | None = None
 
 
 def _commit(context: Context, annotated: dict) -> dict:
@@ -250,6 +305,68 @@ def _search_context(context: Context, compiled: dict) -> dict:
     return search_question(context.workspace, compiled)
 
 
+def _prepare_symbolic(context: Context, request: dict) -> dict:
+    local = "submitted_plan" in request
+    if not local and not context.allow_provider:
+        raise ToolError("permission_denied", "symbolic compilation requires --allow-provider")
+    index = context.workspace.index()
+    since = request.get("since_version")
+    _changed_recordings(context.workspace, index, since)
+    submitted = (
+        compile_submitted_source_plan(
+            context.workspace,
+            index,
+            request["submitted_plan"],
+            request.get("project"),
+            None,
+            since,
+            request.get("recording_dates"),
+        )
+        if local
+        else None
+    )
+    return {
+        "index": index,
+        "request": request,
+        "version": context.workspace.version(),
+        "submitted": submitted,
+    }
+
+
+def _compile_symbolic(*, index, request, version, submitted) -> dict:
+    return {
+        **(
+            submitted
+            if submitted is not None
+            else compile_source_question(
+                index,
+                request["question"],
+                request["model"],
+                request.get("project"),
+                recording_dates=request.get("recording_dates"),
+            )
+        ),
+        "memory_version": version,
+        "options": {
+            key: request[key] for key in ("limit", "neighbors", "max_bytes") if key in request
+        },
+        **({"since_version": request["since_version"]} if "since_version" in request else {}),
+    }
+
+
+def _search_symbolic(context: Context, compiled: dict) -> dict:
+    index = context.workspace.index()
+    since = compiled.get("since_version")
+    return execute_source_plan(
+        index,
+        compiled,
+        context.workspace.version(),
+        changed_recordings=_changed_recordings(context.workspace, index, since),
+        since_version=since,
+        **compiled["options"],
+    )
+
+
 def _compare_revisions(context: Context, request: dict) -> dict:
     return compare_revisions(context.workspace, request)
 
@@ -267,7 +384,7 @@ TOOLS = {
         annotate,
         {"normalized": "conversation", "annotations": "annotations"},
         "annotated",
-        version=2,
+        version=3,
     ),
     "commit": Tool(_commit, {"annotated": "annotated"}, "receipt", "write", version=2),
     "amend": Tool(_amend, {"annotated": "annotated"}, "receipt", "write", version=2),
@@ -282,10 +399,21 @@ TOOLS = {
     "preview_delete": Tool(_preview, {"target": "deletion_target"}, "deletion_plan", version=4),
     "delete": Tool(_delete, {"plan": "deletion_plan"}, "receipt", "delete", version=4),
     "compile_context": Tool(
-        _compile_context, {"request": "context_request"}, "context_plan", version=28
+        _compile_context, {"request": "context_request"}, "context_plan", version=30
     ),
     "search_context": Tool(
-        _search_context, {"compiled": "context_plan"}, "context_evidence", version=46
+        _search_context, {"compiled": "context_plan"}, "context_evidence", version=48
+    ),
+    "compile_symbolic": Tool(
+        _compile_symbolic,
+        {"request": "symbolic_request"},
+        "symbolic_plan",
+        "provider",
+        version=8,
+        prepare_provider=_prepare_symbolic,
+    ),
+    "search_symbolic": Tool(
+        _search_symbolic, {"compiled": "symbolic_plan"}, "symbolic_evidence", version=11
     ),
     "compare_revisions": Tool(
         _compare_revisions, {"request": "revision_comparison"}, "revision_difference", version=2

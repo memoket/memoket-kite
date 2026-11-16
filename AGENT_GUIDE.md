@@ -34,6 +34,7 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
 | Import text, a transcript or a Memoket record | `memory-ingestion` |
 | Preview, commit and verify a batch of original sources | `source-indexing` |
 | Compile a task and find original passages | `context-search` |
+| Compile and inspect a KITE symbolic plan, then retrieve original turns | `symbolic-search` |
 | Propose facts with an authorized model endpoint | `memory-provider-ingestion` |
 | Recover discussions, proposals and decisions by topic | `topic-tracing` |
 | Recover assignments, blockers and status reported in conversation | `task-tracing` |
@@ -47,6 +48,13 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
 | Rebuild a damaged snapshot from committed records | `memory-rebuild` |
 | Preview and apply permanent workspace deletion | `memory-deletion` |
 
+For a focused lookup in a host session, pass a JSON object containing
+`question` and `plan` to `kite-tool symbolic --input -`. KITE uses the same
+snapshot for project resolution, index preferences, execution and evidence.
+For unfamiliar labels or recording scope, use `symbolic --prepare QUESTION
+--brief` to inspect index hints and obtain a snapshot token for the plan.
+Omit `--brief` to inspect the full compiler prompt.
+
 ## Advance and recover
 
 For a source-only batch, run `kite-tool index-sources --transcripts DIR --save`
@@ -57,6 +65,16 @@ commit's original citations. For a preview before the write, start
 `source-indexing` and advance its stages individually. Its input
 `selection` accepts an absolute `transcripts` directory or `batch_file`,
 with optional `recording_metadata` for transcript imports.
+
+When preparing source-backed annotations, run
+`kite-tool annotation-blocks --input SOURCE.json` on the source-only JSON.
+The output suggests contiguous blocks and shows the adjacent turns. The host
+can join or split them to fit the conversation and supply original segment
+IDs, topics, entities, and facets in the batch JSON. To verify an entity's
+provenance, supply its exact original wording and segment in `entity_mentions`.
+
+Use `kite-tool context --term "prototype" --topic design --entity Apple --facet object=buttons --text`
+to require those labels on one cited span in a current search.
 
 If the user asks to watch a workflow, start it and open
 `kite-tool view --follow RUN_ID` before advancing the first stage. Pass

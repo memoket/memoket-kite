@@ -20,6 +20,18 @@ attach topics, entities, or facets to original segment IDs. The optional
 `duration` string. When updating a source, get its current checksum with
 `source-check` and include it as `expected_checksum` in the source input. Reuse
 the original source identity.
+For conversation JSON, `metadata.project` can hold the stable project name and
+`metadata.project_aliases` can list the names the user actually uses for that
+project. Preserve these fields on revisions. Use known aliases supplied by the
+user or source metadata.
+
+For a semantic index, prepare the source JSON and run
+`bash "$KITE" annotation-blocks --input SOURCE_JSON` to read suggested blocks
+with adjacent turns. Assign supported topics, entities and facets to the
+smallest cited spans. Keep the IDs from the original turns. Add
+`entity_mentions` entries with `entity`, `segment_id` and verbatim `text` for
+the named entities, and leave `facts` empty. Review the three annotation counts
+in the source-indexing preview.
 
 Add `--save` to a transcript-directory or JSON-file import to show its
 preview, commit and verification in **Workflows**. For a separate preview,

@@ -778,6 +778,20 @@ def memory_snapshot(workspace) -> dict:
             evidence.setdefault(line["source_line_id"], line)
         row["evidence"] = [line["source_line_id"] for line in row["evidence"]]
     passages = _indexed_passages(index, evidence)
+    project_labels = {}
+    for record in index.revisions.values():
+        metadata = record["conversation"]["metadata"]
+        project = metadata.get("project")
+        labels = metadata.get("project_topic_label")
+        if not record["active"] or not isinstance(project, str) or not isinstance(labels, dict):
+            continue
+        localized = {
+            language: label.strip()
+            for language, label in labels.items()
+            if language in {"en", "zh"} and isinstance(label, str) and label.strip()
+        }
+        if localized:
+            project_labels[norm_code(project)] = localized
 
     return {
         "version": workspace.version(),
@@ -788,7 +802,16 @@ def memory_snapshot(workspace) -> dict:
             }
         ),
         "topics": [
-            {"code": topic.code, "aliases": sorted(topic.aliases), "parents": sorted(topic.parents)}
+            {
+                "code": topic.code,
+                "aliases": sorted(topic.aliases),
+                "parents": sorted(topic.parents),
+                **(
+                    {"project_label": project_labels[topic.code]}
+                    if topic.code in project_labels
+                    else {}
+                ),
+            }
             for topic in index.vocab.topics.values()
             if topic.status != "deprecated"
         ],

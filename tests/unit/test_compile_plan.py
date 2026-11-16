@@ -87,7 +87,7 @@ def test_compile_prompt_orders_same_day_units_by_timestamp_then_id():
     store.units["a-late"] = Unit("a-late", "2026-01-01", "2026-01-01T18:00:00", "", 0, 0)
     store.units["z-early"] = Unit("z-early", "2026-01-01", "2026-01-01T09:00:00", "", 0, 0)
 
-    prompt = compilation._compile_prompt("When?", _vocab("alice"), store, Profile)
+    prompt = compilation.render_compile_prompt("When?", _vocab("alice"), store, Profile)
 
     assert prompt.index("z-early=2026-01-01") < prompt.index("a-late=2026-01-01")
 

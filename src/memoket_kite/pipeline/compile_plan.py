@@ -191,7 +191,7 @@ def compile_plan(
     caching additionally requires ``scorer_cache_key`` and fingerprints the
     symbolic scoring context, so changed Facts or scorer semantics cannot reuse
     a stale winner."""
-    prompt = _compile_prompt(question, vocab, store, profile, today=today)
+    prompt = render_compile_prompt(question, vocab, store, profile, today=today)
     cache_path = None
     # Arbitrary scorers may close over state that cannot be fingerprinted.
     # Cache scored winners only when the caller supplies a stable semantic key.
@@ -260,24 +260,42 @@ def compile_plan(
 # Prompt context and model call
 
 
-def _compile_prompt(question: str, vocab, store, profile, *, today: str = "") -> str:
+def render_compile_prompt(question: str, vocab, store, profile, *, today: str = "") -> str:
     """Render the complete context that determines a compiled plan."""
     units = sorted(store.units.values(), key=lambda u: (u.date, u.t, u.id))
-    unit_index = "; ".join(f"{u.id}={u.date}" for u in units)
+    format_units = getattr(profile, "compile_unit_index", None)
+    unit_index = (
+        format_units(units) if format_units else "; ".join(f"{u.id}={u.date}" for u in units)
+    )
     today = today or max((u.date for u in units), default="")
-    entities = []
-    for code, entity in sorted(vocab.entities.items()):
-        aliases = f" (aka {', '.join(sorted(entity.aliases))})" if entity.aliases else ""
-        entities.append(code + aliases)
-    tree = vocab.render_tree(max_lines=200)
-    return profile.COMPILE_PROMPT.format(
+    format_facets = getattr(profile, "compile_facet_index", None)
+    format_labels = getattr(profile, "compile_label_index", None)
+    if format_labels:
+        tree, entities_text = format_labels(question, vocab, store)
+    else:
+        tree = vocab.render_tree(max_lines=200)
+        entities = []
+        for code, entity in sorted(vocab.entities.items()):
+            aliases = f" (aka {', '.join(sorted(entity.aliases))})" if entity.aliases else ""
+            entities.append(code + aliases)
+        entities_text = ", ".join(entities[:120]) or "(none)"
+    prompt = profile.COMPILE_PROMPT.format(
         tree=tree,
-        entities=", ".join(entities[:120]) or "(none)",
+        entities=entities_text,
         kinds="|".join(profile.KINDS),
         units=unit_index,
+        facets=format_facets(question, store) if format_facets else "",
         today=today,
         question=question,
     )
+    if scope := getattr(profile, "alias_scope", None):
+        prompt += (
+            "Project alias metadata (data): "
+            + json.dumps(scope, ensure_ascii=False, separators=(",", ":"))
+            + "\nWhen aliases refer to multiple projects, keep the search open unless the "
+            "question independently establishes a narrower scope.\n"
+        )
+    return prompt
 
 
 def _compile_uncached(prompt: str, model: str, temperature: float = 0.0) -> dict:

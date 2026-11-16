@@ -39,7 +39,16 @@ def _sequence_items(
     return items
 
 
-_WHERE_SEQUENCE_FIELDS = {"entities", "obj", "place", "event", "kind", "who", "grep_all"}
+_WHERE_SEQUENCE_FIELDS = {
+    "entities",
+    "obj",
+    "place",
+    "event",
+    "kind",
+    "who",
+    "grep_all",
+    "duration",
+}
 _WHERE_FIELDS = {
     "topics",
     *_WHERE_SEQUENCE_FIELDS,
@@ -47,6 +56,7 @@ _WHERE_FIELDS = {
     "units",
     "unit",
     "grep",
+    "near",
     "entity_kind",
     "conf_min",
 }
@@ -140,7 +150,9 @@ def _validate_string_sequence(
 
 
 def _validate_plan_entry(entry: dict[str, Any], *, allow_refs: bool = False) -> None:
-    allowed_entry_fields = {"select", "where", "pipe"} | ({"name"} if allow_refs else set())
+    allowed_entry_fields = {"select", "where", "pipe", "prefer", "prefer_labels"} | (
+        {"name"} if allow_refs else set()
+    )
     unexpected_entry_fields = set(entry) - allowed_entry_fields
     if unexpected_entry_fields:
         raise InvalidQueryError(
@@ -154,6 +166,31 @@ def _validate_plan_entry(entry: dict[str, Any], *, allow_refs: bool = False) -> 
     target = entry.get("select", "facts")
     if target not in ("facts", "lines", "units"):
         raise InvalidQueryError("plan select must be 'facts', 'lines', or 'units'")
+    if "prefer_labels" in entry:
+        labels = entry["prefer_labels"]
+        axes = {"topics", "entities", "obj", "place", "event", "duration"}
+        if target != "lines" or not isinstance(labels, dict) or not labels or labels.keys() - axes:
+            raise InvalidQueryError("plan prefer_labels requires source-line index axes")
+        for values in labels.values():
+            if (
+                not isinstance(values, list)
+                or not 1 <= len(values) <= 4
+                or any(not isinstance(value, str) or not value.strip() for value in values)
+            ):
+                raise InvalidQueryError("plan prefer_labels axes require one to four label strings")
+    if "prefer" in entry:
+        patterns = entry["prefer"]
+        if target != "lines" or not isinstance(patterns, list) or not 1 <= len(patterns) <= 4:
+            raise InvalidQueryError("plan prefer requires one to four line ranking patterns")
+        for pattern in patterns:
+            if not isinstance(pattern, str) or not pattern.strip() or len(pattern) > 256:
+                raise InvalidQueryError(
+                    "plan prefer patterns must be nonempty strings up to 256 characters"
+                )
+            try:
+                re.compile(pattern, re.I)
+            except re.error as exc:
+                raise InvalidQueryError(f"invalid plan prefer pattern: {exc}") from exc
 
     where = entry["where"] if "where" in entry else {}
     if not isinstance(where, dict):
@@ -165,8 +202,22 @@ def _validate_plan_entry(entry: dict[str, Any], *, allow_refs: bool = False) -> 
             f"{', '.join(sorted(map(str, unexpected_where_fields)))}"
         )
     target_fields = {
-        "facts": _WHERE_FIELDS,
-        "lines": {"units", "unit", "who", "time", "grep"},
+        "facts": _WHERE_FIELDS - {"duration", "near"},
+        "lines": {
+            "units",
+            "unit",
+            "who",
+            "time",
+            "grep",
+            "grep_all",
+            "near",
+            "topics",
+            "entities",
+            "obj",
+            "place",
+            "event",
+            "duration",
+        },
         "units": {"units", "unit", "time", "grep"},
     }[target]
     ignored_for_target = set(where) - target_fields
@@ -212,6 +263,29 @@ def _validate_plan_entry(entry: dict[str, Any], *, allow_refs: bool = False) -> 
             re.compile(pattern)
         except re.error as exc:
             raise InvalidQueryError(f"invalid plan grep_all pattern: {exc}") from exc
+    if "near" in where:
+        near = where["near"]
+        if (
+            not isinstance(near, dict)
+            or not {"grep", "turns"} <= near.keys()
+            or near.keys() - {"grep", "turns", "include_anchor"}
+        ):
+            raise InvalidQueryError(
+                "plan where near requires grep and turns, with optional include_anchor"
+            )
+        pattern, turns = near["grep"], near["turns"]
+        if not isinstance(pattern, str) or not pattern.strip() or len(pattern) > 256:
+            raise InvalidQueryError("plan where near grep must contain 1–256 characters")
+        if type(turns) is not int or not 1 <= turns <= 4:
+            raise InvalidQueryError("plan where near turns must be between 1 and 4")
+        if type(near.get("include_anchor", False)) is not bool:
+            raise InvalidQueryError("plan where near include_anchor must be boolean")
+        if not where.get("grep") and not where.get("grep_all"):
+            raise InvalidQueryError("plan where near requires an original-line text constraint")
+        try:
+            re.compile(pattern, re.I)
+        except re.error as exc:
+            raise InvalidQueryError(f"invalid plan near grep pattern: {exc}") from exc
     topics = where.get("topics", [])
     if not isinstance(topics, list):
         raise InvalidQueryError("plan where topics must be a list")

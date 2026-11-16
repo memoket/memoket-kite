@@ -79,6 +79,7 @@ class MemoryScene {
     this.camera = { yaw: -.20, pitch: .48, zoom: 1, x: 0, y: 0 };
     this.palette = {
       topic: { top: '#8ce0c7', front: '#3e9485', side: '#276a63', glow: '#8bf0d6' },
+      project: { top: '#edbb72', front: '#a7753c', side: '#795228', glow: '#ffca84' },
       query: { top: '#e4a6e9', front: '#965caa', side: '#6d457e', glow: '#f6c1fa' },
       subquestion: { top: '#e4a6e9', front: '#965caa', side: '#6d457e', glow: '#f6c1fa' },
       memory: { top: '#f7c389', front: '#bc7750', side: '#85513e', glow: '#ffd5a8' },
@@ -189,7 +190,7 @@ class MemoryScene {
       const tag = this.tags.get(node.id) || document.createElement('button');
       tag.className = 'graph-label';
       tag.type = 'button';
-      tag.dataset.kind = node.kind;
+      tag.dataset.kind = node.isProject ? 'project' : node.kind;
       tag.title = node.label;
       tag.textContent = node.label;
       if (node.change) tag.dataset.change = node.change;
@@ -379,7 +380,7 @@ class MemoryScene {
 
   block(node, at) {
     const [x, y, z] = at;
-    const { top, front, side, glow } = this.palette[node.kind];
+    const { top, front, side, glow } = this.palette[node.isProject ? 'project' : node.kind];
     const chosen = node === this.selected;
     const dimensions = {
       topic: [.34, .25, .18], memory: [.34, .23, .115], facet: [.31, .22, .19], line: [.20, .16, .08],

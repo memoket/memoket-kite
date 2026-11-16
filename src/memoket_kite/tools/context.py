@@ -11,6 +11,8 @@ from dataclasses import dataclass, replace
 from itertools import combinations, islice, zip_longest
 from math import log
 
+from memoket_kite.core.vocab import norm_code
+
 from .contracts import (
     DATE,
     ID,
@@ -408,6 +410,28 @@ _ENGLISH_FUNCTION_WORDS = frozenset(
     "it its of on or that the their them these they this those to was were what when where which "
     "who why will with would you your".split()
 )
+_RETRIEVAL_FILLERS = _ENGLISH_FUNCTION_WORDS | frozenset(
+    "about also discussed discussion discuss describe summarize summary tell say said think thought "
+    "project meeting meetings group explain include make according based using implement update "
+    "updated keep preserve retain use reflect distinguish set record apply".split()
+)
+_TASK_SENTENCE_SEPARATOR = re.compile(r"[.!?;](?=\s|$)|\n")
+_TASK_CLAUSE_SEPARATOR = re.compile(r"\band\b", re.I)
+_ANNOTATION_FILTER = {
+    **object_schema(
+        {},
+        {
+            "topics": array(TEXT, 1, 12),
+            "entities": array(TEXT, 1, 12),
+            "facets": array(
+                object_schema({"axis": {"enum": [*SPAN_FACET_AXES, "duration"]}, "value": TEXT}),
+                1,
+                12,
+            ),
+        },
+    ),
+    "minProperties": 1,
+}
 _CONTEXT_SCHEMA = object_schema(
     {"terms": array({**TEXT, "maxLength": 128}, 1, 12)},
     {
@@ -421,6 +445,7 @@ _CONTEXT_SCHEMA = object_schema(
         "explain": {"type": "boolean"},
         "at_version": {"type": "integer", "minimum": 0, "maximum": 2**63 - 1},
         "known_at": {"type": "string", "format": "date-time"},
+        "annotations": _ANNOTATION_FILTER,
     },
 )
 CONTEXT_REQUEST = {
@@ -438,6 +463,7 @@ CONTEXT_REQUEST = {
             "neighbors": {"type": "integer", "minimum": 0, "maximum": 5},
             "compact": {"type": "boolean"},
             "after": ID,
+            "requirements": array({**TEXT, "maxLength": 128}, 2, 4),
         },
     ),
     "oneOf": [{"required": ["question"]}, {"required": ["terms"]}],
@@ -487,6 +513,7 @@ CONTEXT_PLAN = object_schema(
         },
         "recorded_value": object_schema({"subject": TEXT, "measure": TEXT}),
         "opening_scope": object_schema({"subject": TEXT}),
+        "keyword_groups": array(array(TEXT, 1, 12), 1, 4),
         "named_duration": object_schema(
             {
                 "subjects": array(object_schema({"name": TEXT}, {"description": TEXT}), 2, 4),
@@ -751,6 +778,18 @@ def _question_scope(request: dict) -> tuple[dict, str]:
 
 def _context_scope(request: dict) -> tuple[dict, str | None, str | None]:
     validate(CONTEXT_REQUEST, request, "context request")
+    if "requirements" in request and (
+        "question" not in request
+        or any(
+            key in request
+            for key in ("compare_with", "from_version", "at_version", "known_at", "annotations")
+        )
+        or any(request.get(key) for key in ("matching_lines", "all_terms", "latest"))
+    ):
+        raise ToolError(
+            "invalid_input",
+            "requirements need a current single question without other search modes",
+        )
     if request.get("all_terms"):
         _validate_all_terms(request)
     if _comparison_dates(request) and "compare_with" not in request:
@@ -762,6 +801,8 @@ def _context_scope(request: dict) -> tuple[dict, str | None, str | None]:
             raise ToolError("invalid_input", "compact context requires a question")
         return request, None, None
     request, search = _question_scope(request)
+    if "requirements" in request and ("at_version" in request or "known_at" in request):
+        raise ToolError("invalid_input", "requirements need a current single question")
     compare = request.get("compare_with")
     from_version = request.get("from_version")
     if compare is None and from_version is None:
@@ -784,6 +825,27 @@ def _validate_all_terms(plan):
 
 def _compile_questions(workspace, indexes, request, search, compare_search):
     index, comparison = indexes
+    if "requirements" in request:
+        groups = [
+            [phrase] for requirement in request["requirements"] if (phrase := _tokens(requirement))
+        ]
+        if len({group[0] for group in groups}) != len(request["requirements"]):
+            raise ToolError("invalid_input", "requirements need distinct indexable phrases")
+        return {
+            "request": request,
+            "terms": [group[0] for group in groups],
+            "memory_version": workspace.version(),
+            "keyword_groups": groups,
+        }
+    if request.get("annotations"):
+        if index.history or compare_search is not None:
+            raise ToolError("invalid_input", "annotation filters require a current single search")
+        terms = (
+            request["terms"]
+            if search is None
+            else _compile_terms(index.db, index.filters, search)[0]
+        )
+        return {"request": request, "terms": terms, "memory_version": workspace.version()}
     implementation = None
     output_search = None
     output_targets = []
@@ -889,7 +951,63 @@ def _compile_questions(workspace, indexes, request, search, compare_search):
             result["comparison_word_forms"] = forms
         if phases := _compiled_change_phases(request, compare_search):
             result["comparison_change_phases"] = phases
+    elif (
+        search
+        and request.get("compact")
+        and not (
+            index.history
+            or request.get("matching_lines")
+            or request.get("latest")
+            or request.get("after")
+            or _quoted_phrases(search)
+            or any(
+                field in result
+                for field in (
+                    "subquestions",
+                    "output_targets",
+                    "implementation_search",
+                    "change_phases",
+                    "current_plan_subject",
+                    "priority_scope",
+                    "route_scope",
+                    "linked_detail",
+                    "recorded_value",
+                    "named_duration",
+                    "opening_scope",
+                )
+            )
+        )
+    ):
+        if groups := _keyword_groups(search):
+            result["keyword_groups"] = groups
     return result
+
+
+def _keyword_groups(question):
+    if any(letter.isalpha() and not letter.isascii() for letter in question):
+        return []
+
+    def keywords(text):
+        return [
+            word
+            for word in dict.fromkeys(_tokens(text).split())
+            if len(word) > 1 and word not in _RETRIEVAL_FILLERS
+        ][:12]
+
+    whole = keywords(question)
+    if len(whole) < 3:
+        return []
+    if _TASK_SUBJECT_START.match(question):
+        sentences = _TASK_SENTENCE_SEPARATOR.split(question, maxsplit=1)
+        for sentence in reversed(sentences):
+            clauses = [
+                words
+                for part in _TASK_CLAUSE_SEPARATOR.split(sentence)
+                if len(words := keywords(part)) >= 2
+            ]
+            if 2 <= len(clauses) <= 4:
+                return clauses
+    return [whole]
 
 
 def _compile_output_targets(workspace, index, question):
@@ -1479,9 +1597,9 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
             ),
             focus=question is not None,
             _index=search_index,
-            _question=compiled.get(
-                "implementation_search", compiled.get("output_search", question)
-            ),
+            _question=None
+            if "requirements" in request
+            else compiled.get("implementation_search", compiled.get("output_search", question)),
             implementation_task="implementation_search" in compiled,
             current_plan_subject=compiled.get("current_plan_subject"),
             keep_recorded_schedule=compiled.get("keep_recorded_schedule", False),
@@ -1504,6 +1622,8 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
             recorded_value=compiled.get("recorded_value"),
             named_duration=compiled.get("named_duration"),
             opening_scope=compiled.get("opening_scope"),
+            keyword_groups=compiled.get("keyword_groups", ()),
+            explicit_requirements="requirements" in request,
             previous_evidence=previous_evidence,
             skipped=skipped,
         )
@@ -1527,6 +1647,8 @@ def _search_questions(workspace, compiled: dict, indexes) -> dict:
                 result["compilation"]["named_duration"] = compiled["named_duration"]
             if "opening_scope" in compiled:
                 result["compilation"]["opening_scope"] = compiled["opening_scope"]
+            if groups := result.pop("keyword_groups", None):
+                result["compilation"]["keyword_groups"] = groups
             if "current_plan_subject" in compiled:
                 result["compilation"]["current_plan_subject"] = compiled["current_plan_subject"]
             if forms:
@@ -1857,6 +1979,95 @@ def _search_scope(plan: dict) -> tuple[str, list]:
     return " AND ".join(filters), args
 
 
+def _annotation_candidates(workspace, plan):
+    """Match typed constraints on one cited annotation, then rank its original words."""
+    filters = plan["annotations"]
+    index = workspace.index()
+    vocab = index.vocab
+    topics = {vocab.resolve_topic(value) for value in filters.get("topics", ())}
+    entities = {vocab.resolve_entity(value) for value in filters.get("entities", ())}
+    if None in topics or None in entities:
+        return []
+    facets = [(row["axis"], row["value"]) for row in filters.get("facets", ())]
+    phrases = tuple(
+        dict.fromkeys(f" {phrase} " for term in plan["terms"] if (phrase := _tokens(term)))
+    )
+    rows = []
+    topic_lineage = {}
+
+    def lineage(code):
+        if code not in topic_lineage:
+            seen = set()
+            pending = [code]
+            while pending:
+                topic = pending.pop()
+                if topic and topic not in seen:
+                    seen.add(topic)
+                    pending.extend(vocab.topics[topic].parents)
+            topic_lineage[code] = seen
+        return topic_lineage[code]
+
+    for record in index.revisions.values():
+        conversation = record["conversation"]
+        day = source_day(conversation) or ""
+        if not record["active"] or any(
+            plan[field] != conversation[field]
+            for field in ("source", "conversation_id")
+            if field in plan
+        ):
+            continue
+        if not plan.get("start_date", "") <= day <= plan.get("end_date", "9999-12-31"):
+            continue
+        if not day and ("start_date" in plan or "end_date" in plan):
+            continue
+        segments = conversation["segments"]
+        offsets = {row["segment_id"]: i for i, row in enumerate(segments)}
+        for span in record.get("index_spans", ()):
+            if topics and not topics <= set().union(
+                *(lineage(vocab.resolve_topic(topic)) for topic in span["topics"])
+            ):
+                continue
+            if entities and not entities <= {
+                vocab.resolve_entity(entity) for entity in span["entities"]
+            }:
+                continue
+            values = span.get("facets", {})
+            if any(
+                value.strip().upper() != values.get(axis)
+                if axis == "duration"
+                else norm_code(value) not in values.get(axis, ())
+                for axis, value in facets
+            ):
+                continue
+            positions = sorted(offsets[sid] for sid in span["segment_ids"])
+            originals = {pos: f" {_tokens(segments[pos]['text'])} " for pos in positions}
+            matches = {
+                pos: {term for term in phrases if term in text} for pos, text in originals.items()
+            }
+            if plan.get("all_terms"):
+                hits = [pos for pos, terms in matches.items() if len(terms) == len(phrases)]
+            else:
+                hits = [pos for pos, terms in matches.items() if terms]
+            if not hits:
+                continue
+            order = sorted(hits, key=lambda pos: (-len(matches[pos]), pos))
+            if not (plan.get("matching_lines") or plan.get("all_terms")):
+                order.extend(pos for pos in positions if not matches[pos])
+            rows.append(
+                {
+                    "checksum": record["checksum"],
+                    "start": positions[0],
+                    "stop": positions[-1] + 1,
+                    "day": day,
+                    "direct_positions": order,
+                    "selection": {"reason": "annotation_filter", "term": " · ".join(plan["terms"])},
+                    "coverage": len(set().union(*(matches[pos] for pos in hits))),
+                }
+            )
+    rows.sort(key=lambda row: (-row["coverage"], row["checksum"], row["start"]))
+    return sorted(rows, key=lambda row: row["day"], reverse=True) if plan.get("latest") else rows
+
+
 def _coherent_order(matches: list[list], preferred_sources: set[str] | None = None) -> list:
     # Accumulate a term's best rank once per conversation. This rewards several
     # clues pointing to the same meeting without boosting long meetings for length.
@@ -2007,6 +2218,42 @@ def _candidates(
     return (
         sorted(results, key=lambda row: row["day"], reverse=True) if plan.get("latest") else results
     )
+
+
+def _keyword_candidates(db, filters, groups):
+    where, args = _search_scope(filters)
+    streams = []
+    for group_id, words in enumerate(groups):
+        expression = "text : (" + " OR ".join(f'"{_tokens(word)}"' for word in words) + ")"
+        rows = db.execute(
+            f"SELECT checksum, start, stop, day, bm25(context_spans) AS rank "
+            f"FROM context_spans WHERE {where} ORDER BY rank, checksum, start LIMIT 64",
+            (expression, *args),
+        ).fetchall()
+        strengths = defaultdict(float)
+        counts = defaultdict(int)
+        for row in rows:
+            source = row["checksum"]
+            counts[source] += 1
+            if counts[source] <= 3:
+                strengths[source] -= row["rank"] / counts[source]
+        streams.append(
+            [
+                {**dict(row), "keywords": words, "keyword_group": group_id}
+                for row in sorted(
+                    rows, key=lambda row: row["rank"] - 0.35 * strengths[row["checksum"]]
+                )
+            ]
+        )
+    unique = {}
+    for group in zip_longest(*streams):
+        for row in group:
+            if row is not None:
+                key = (row["checksum"], row["start"])
+                if len(groups) > 1:
+                    key = (*key, row["keyword_group"])
+                unique.setdefault(key, row)
+    return list(unique.values())
 
 
 def _positions(
@@ -3621,6 +3868,7 @@ def _pack(
     trim_neighbors: bool = False,
     previous_evidence: set[tuple[str, str]] | None = None,
     skipped: set[tuple[str, str]] | None = None,
+    keyword_group_count: int = 0,
 ):
     compact_sources = compact_sources or {}
     compact_copies = compact_copies or {}
@@ -3670,6 +3918,8 @@ def _pack(
     shared_groups = set()
     packed = []
     remaining = []
+    packed_windows = {}
+    keyword_bytes = defaultdict(int)
     size = omitted = 0
     anchored = tuple(f" {anchor} " for anchor in anchors)
     repeated = repeated or {}
@@ -3696,9 +3946,14 @@ def _pack(
         return chosen, duplicate_lines
 
     for index, row in enumerate(rows):
-        if len(packed) == limit:
-            break
         checksum = row["checksum"]
+        window_key = (checksum, row["start"], row["stop"])
+        shared_window = packed_windows.get(window_key) if keyword_group_count else None
+        if len(packed) == limit and shared_window is None:
+            if keyword_group_count:
+                continue
+            break
+        requirement = row.get("keyword_group") if keyword_group_count else None
         if historical_records is None and checksum not in records:
             records[checksum] = workspace.record(checksum)
         record = records.get(checksum)
@@ -3729,6 +3984,21 @@ def _pack(
         )
         if isinstance(row, dict) and "direct_positions" in row:
             positions, followup = row["direct_positions"], None
+        keywords = ()
+        if keyword_group_count and (
+            words := tuple(f" {_tokens(term)} " for term in row.get("keywords", ()))
+        ):
+            scores = {
+                pos: sum(word in text for word in words)
+                for pos in positions
+                if start <= pos < stop
+                for text in [f" {_tokens(segments[pos]['text'])} "]
+            }
+            keywords = sorted(
+                (pos for pos in scores if scores[pos]),
+                key=lambda pos: (-scores[pos], pos),
+            )
+            positions = [*keywords, *(pos for pos in positions if pos not in keywords)]
         already_delivered = False
         if previous_evidence:
             # A revised segment can reuse its ID. Exclude only the exact revision.
@@ -3744,8 +4014,22 @@ def _pack(
             positions = novel
         first_positions = positions
         if prioritize_first_lines:
-            first = next((pos for pos in positions if start <= pos < stop), None)
+            candidates = positions
+            if requirement is not None:
+                allowance = min(
+                    max_bytes - size, max_bytes // keyword_group_count - keyword_bytes[requirement]
+                )
+                quoted = seen[group_by_checksum.get(checksum, checksum)]
+                candidates = (
+                    pos
+                    for pos in positions
+                    if pos in keywords
+                    and pos not in quoted
+                    and len(segments[pos]["text"].encode("utf-8")) <= allowance
+                )
+            first = next((pos for pos in candidates if start <= pos < stop), None)
             first_positions = () if first is None else (first,)
+        previous_size = size
         chosen, duplicates = take(checksum, segments, first_positions)
         if index < len(traced):
             over_budget = omitted - previously_omitted
@@ -3764,9 +4048,16 @@ def _pack(
             if duplicates:
                 traced[index]["duplicate_lines"] = duplicates
         if chosen:
-            packed.append((index, record, chosen, followup))
-            if prioritize_first_lines:
-                remaining.append((index, checksum, segments, positions, chosen))
+            if requirement is not None:
+                keyword_bytes[requirement] += size - previous_size
+            if shared_window is None:
+                packed.append((index, record, chosen, followup))
+                if keyword_group_count:
+                    packed_windows[window_key] = chosen
+                if prioritize_first_lines:
+                    remaining.append((index, checksum, segments, positions, chosen))
+            else:
+                shared_window.extend(chosen)
     for index, checksum, segments, positions, chosen in remaining:
         previously_omitted = omitted
         extra, duplicates = take(checksum, segments, positions)
@@ -4151,6 +4442,8 @@ def _context_evidence(
     recorded_value=None,
     named_duration=None,
     opening_scope=None,
+    keyword_groups=(),
+    explicit_requirements=False,
     previous_evidence=None,
     skipped=None,
 ):
@@ -4169,6 +4462,10 @@ def _context_evidence(
         else ()
     )
     trace = {} if plan.get("explain") else None
+    if "annotations" in plan:
+        return _filtered_evidence(
+            workspace, plan, limit, max_bytes, trace, previous_evidence, skipped
+        )
     with nullcontext(_index) if _index is not None else _search_index(workspace, plan) as index:
         compact, compact_copies = (
             _compact_sources(workspace, index, plan, _question, max_bytes // 2)
@@ -4176,6 +4473,10 @@ def _context_evidence(
             else ({}, {})
         )
         preferred = set(compact)
+        if keyword_groups and len(keyword_groups) > 1:
+            # Whole-recording promotion can consume every slot before the
+            # independent requirements are considered.
+            compact, compact_copies, preferred = {}, {}, set()
         anchors = ()
         if _question and not (plan.get("latest") or matching_lines):
             quoted_sources = _quoted_sources(index, _question, plan["terms"], limit)
@@ -4187,14 +4488,24 @@ def _context_evidence(
             if not preferred:
                 anchors = tuple(_tokens(form["indexed_term"]) for form in word_forms)
         term_candidates = {} if matching_lines else None
-        candidates = _candidates(
-            index.db,
-            {**index.filters, "terms": plan["terms"]},
-            limit,
-            focus=focus,
-            preferred_sources=preferred,
-            anchors=anchors,
-            term_candidates=term_candidates,
+        keyword_rows = (
+            _keyword_candidates(index.db, index.filters, keyword_groups)
+            if keyword_groups and not (preferred or matching_lines)
+            else []
+        )
+        candidates = (
+            keyword_rows
+            if explicit_requirements
+            else keyword_rows
+            or _candidates(
+                index.db,
+                {**index.filters, "terms": plan["terms"]},
+                limit,
+                focus=focus,
+                preferred_sources=preferred,
+                anchors=anchors,
+                term_candidates=term_candidates,
+            )
         )
         repeated = {}
         if (
@@ -4435,20 +4746,24 @@ def _context_evidence(
         if (
             trim_neighbors
             and limit >= 4
-            and not (subquestions or output_targets or followup or priority_rows or path)
+            and not (
+                subquestions or output_targets or followup or priority_rows or path or keyword_rows
+            )
             and not reserved_clauses
             and previous_evidence is None
         ):
             candidates = _reserve_corroborated_original(
                 workspace, candidates, plan["terms"], max_bytes, neighbors
             )
+        reserve_keyword_lines = len(keyword_groups) > 1 and bool(keyword_rows) and not path
+        first_lines = first_lines or reserve_keyword_lines
         spans, size, omitted, trimmed_lines = _pack(
             workspace,
             candidates,
             limit,
             max_bytes,
             neighbors,
-            phrases,
+            () if keyword_rows else phrases,
             anchors=anchors,
             matching_lines=matching_lines,
             all_terms=all_terms,
@@ -4462,6 +4777,7 @@ def _context_evidence(
             trim_neighbors=bool(trim_neighbors),
             previous_evidence=previous_evidence,
             skipped=skipped,
+            keyword_group_count=len(keyword_groups) if reserve_keyword_lines else 0,
         )
         if trace is not None:
             _trace_sources(workspace, trace)
@@ -4486,9 +4802,28 @@ def _context_evidence(
                     version_quote = candidate_id
                 else:
                     phase_evidence.append({**row["selection"], "source_line_id": candidate_id})
+    requirement_coverage = []
+    if len(keyword_groups) > 1 and (explicit_requirements or keyword_rows or not candidates):
+        lines = [
+            (line["source_line_id"], f" {_tokens(line['text'])} ")
+            for span in spans
+            for line in span["evidence"]
+        ]
+        for group in keyword_groups:
+            terms = tuple(f" {_tokens(term)} " for term in group)
+            requirement_coverage.append(
+                {
+                    "terms": group,
+                    "source_line_ids": [
+                        sid for sid, text in lines if any(term in text for term in terms)
+                    ],
+                }
+            )
     return {
         "memory_version": workspace.version(),
         "plan": plan,
+        **({"keyword_groups": keyword_groups} if keyword_rows else {}),
+        **({"requirement_coverage": requirement_coverage} if requirement_coverage else {}),
         "spans": spans,
         "quote_bytes": size,
         "quote_budget_bytes": max_bytes,
@@ -4509,6 +4844,38 @@ def _context_evidence(
         **({"anchor_sources": len(preferred)} if preferred else {}),
         **({"compact_sources": min(len(compact), len(spans))} if compact else {}),
         **({"history": index.history} if index.history is not None else {}),
+    }
+
+
+def _filtered_evidence(workspace, plan, limit, max_bytes, trace, previous_evidence, skipped):
+    if "at_version" in plan or "known_at" in plan:
+        raise ToolError("invalid_input", "annotation filters require a current search")
+    _search_scope(plan)
+    candidates = _annotation_candidates(workspace, plan)
+    spans, size, omitted, _ = _pack(
+        workspace,
+        candidates,
+        limit,
+        max_bytes,
+        0,
+        (),
+        trace=trace,
+        previous_evidence=previous_evidence,
+        skipped=skipped,
+    )
+    if trace is not None:
+        _trace_sources(workspace, trace)
+    return {
+        "memory_version": workspace.version(),
+        "plan": plan,
+        "spans": spans,
+        "quote_bytes": size,
+        "quote_budget_bytes": max_bytes,
+        "lines_over_budget": omitted,
+        "candidate_spans": len(candidates),
+        "candidate_sources": len({row["checksum"] for row in candidates}),
+        "span_limit": limit,
+        **({"packing_trace": trace} if trace is not None else {}),
     }
 
 
@@ -4539,6 +4906,33 @@ def render_context(pack: dict) -> str:
             for source in span.get("same_text_sources", ()):
                 namespaces[source["conversation_id"]].add(source["source"])
     lines = []
+    if scope := pack.get("scope", {}).get("project_alias_scope"):
+        if scope["status"] == "resolved":
+            lines.append("Project matched by recorded alias: " + " ".join(scope["project"].split()))
+        else:
+            projects = sorted({name for match in scope["matches"] for name in match["projects"]})
+            names = ", ".join(" ".join(project.split()) for project in projects[:6])
+            rest = f" and {len(projects) - 6} more" if len(projects) > 6 else ""
+            lines.append(
+                f"Project aliases match multiple projects ({names}{rest}). Scope stayed open."
+            )
+    for group in pack.get("requirement_coverage", ()):
+        if not group["source_line_ids"]:
+            lines.append("Evidence missing for: " + " / ".join(group["terms"]))
+    for branch in pack.get("branch_coverage", ()):
+        if branch["quoted_lines"]:
+            continue
+        name = f"Stage {branch['stage']}" if "stage" in branch else f"Query {branch['query'] + 1}"
+        if branch.get("skipped"):
+            lines.append(f"{name} could not bind to its preceding stage.")
+        elif count := branch["matched_lines"]:
+            lines.append(
+                f"{name} matched {count} original {'turn' if count == 1 else 'turns'} without a quote."
+            )
+        else:
+            lines.append(f"{name} matched no original turns.")
+    if lines and any(part["spans"] for part in parts):
+        lines.append("")
     version_comparison = pack.get("version_comparison")
 
     def add_history(history):
@@ -4577,6 +4971,8 @@ def render_context(pack: dict) -> str:
                     if started[:10] != day:
                         lines.append(f"Date: {day} UTC")
                     lines.append(f"Recording started at: {started}")
+                elif pack.get("show_recording_dates") and span.get("source_date"):
+                    lines.append(f"Recording date: {span['source_date']}")
                 elif span["source_date"]:
                     lines.append(f"Date: {span['source_date']}")
                 if history or span.get("source_revision_active") is False:

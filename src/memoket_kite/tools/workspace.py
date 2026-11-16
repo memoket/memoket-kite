@@ -884,6 +884,16 @@ class Workspace:
             for row in rows
         ]
 
+    def visible_revision_checksums(self, version: int) -> set[str]:
+        return {
+            row["checksum"]
+            for row in self.db.execute(
+                "SELECT checksum FROM revision_visibility WHERE opened_version<=? "
+                "AND (closed_version IS NULL OR closed_version>?)",
+                (version, version),
+            )
+        }
+
     def require_source_allowed(self, source, conversation_id, reference) -> None:
         if not isinstance(source, str):
             return

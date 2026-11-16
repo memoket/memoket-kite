@@ -107,6 +107,8 @@ class Store:
         self.obj_of: dict[str, set] = {}  # entity code -> its class words
         self.by_unit: dict[str, set] = {}
         self.lines_by_unit: dict[str, list] = {}
+        self.line_annotation_sources: list[tuple[str, ...]] = []
+        self.line_annotation_postings: dict[tuple[str, str], set[int]] = {}
         # A Unit id identifies the whole serialized session, not merely its
         # header.  Keep the parsed children so loading the same shard twice is
         # idempotent while a different shard cannot silently append records to
@@ -358,6 +360,14 @@ class Store:
             self.lines_by_unit.setdefault(uid, []).append(line.id)
             self._index_text(line.text, key=("L", line.id))
 
+    def add_line_annotation(self, lines: tuple[str, ...], labels: dict[str, tuple[str, ...]]):
+        """Index one annotation over its cited lines, keeping its labels together."""
+        position = len(self.line_annotation_sources)
+        self.line_annotation_sources.append(lines)
+        for axis, values in labels.items():
+            for value in values:
+                self.line_annotation_postings.setdefault((axis, value), set()).add(position)
+
     def add_fact(self, f: FactRecord) -> bool:
         """Index a Fact, treating exact shard duplicates as an idempotent no-op."""
         existing = self.facts.get(f.id)
@@ -443,6 +453,9 @@ class Where:
     grep_all: tuple = ()  # every pattern must match
     entity_kind: str = ""  # require an entity of this type
     conf_min: str = "low"
+    duration: tuple = ()  # ISO duration labels on source annotations
+    near: tuple = ()  # (pattern, radius) over original turns in the same recording
+    near_include_anchor: bool = False
 
 
 @dataclass
@@ -450,6 +463,8 @@ class SubQuery:
     select: str = "facts"  # facts | lines | units
     where: Where = field(default_factory=Where)
     pipe: tuple = ()  # (("sort","t",desc), ("head",n), ("count",))
+    prefer: tuple = ()  # Optional regex ranking signals for matching lines.
+    prefer_labels: dict = field(default_factory=dict)
 
 
 def parse_plan(obj: dict, vocab: Vocab, speakers: set | None = None) -> list[SubQuery]:
@@ -470,10 +485,14 @@ def parse_plan(obj: dict, vocab: Vocab, speakers: set | None = None) -> list[Sub
             if isinstance(t, str):
                 t = {"code": t, "closure": True}
             code = vocab.resolve_topic(t.get("code", ""))
-            if code:
+            if code or q.get("select") == "lines":
+                code = code or norm_code(t.get("code", ""))
                 topics.append((code, bool(t.get("closure", True))))
         entities = []
         for e in (w.get("entities") or [])[:4]:
+            if q.get("select") == "lines":
+                entities.append(vocab.resolve_entity(e) or norm_code(e))
+                continue
             if str(e).lower() in speakers:
                 who_extra.append(str(e).lower())
                 continue
@@ -491,7 +510,9 @@ def parse_plan(obj: dict, vocab: Vocab, speakers: set | None = None) -> list[Sub
         uv = w.get("units") or w.get("unit") or []
         if isinstance(uv, str):
             uv = [uv]
-        units = tuple(str(u) for u in uv if u)[:8]
+        units = tuple(str(u) for u in uv if u)
+        if q.get("select") != "lines":
+            units = units[:8]
         pipe = []
         for st in (q.get("pipe") or [])[:4]:
             op = st.get("op")
@@ -522,8 +543,29 @@ def parse_plan(obj: dict, vocab: Vocab, speakers: set | None = None) -> list[Sub
                     grep_all=tuple(str(g) for g in (w.get("grep_all") or [])[:3]),
                     entity_kind=str(w.get("entity_kind") or ""),
                     conf_min=w.get("conf_min", "low"),
+                    duration=tuple(value.upper() for value in w.get("duration", ())),
+                    near=(w["near"]["grep"], w["near"]["turns"]) if w.get("near") else (),
+                    near_include_anchor=bool((w.get("near") or {}).get("include_anchor")),
                 ),
                 pipe=tuple(pipe),
+                prefer=tuple(q.get("prefer") or ()),
+                prefer_labels={
+                    axis: tuple(
+                        dict.fromkeys(
+                            (
+                                vocab.resolve_topic(label) or norm_code(label)
+                                if axis == "topics"
+                                else vocab.resolve_entity(label) or norm_code(label)
+                                if axis == "entities"
+                                else label.upper()
+                                if axis == "duration"
+                                else norm_code(label)
+                            )
+                            for label in labels
+                        )
+                    )
+                    for axis, labels in (q.get("prefer_labels") or {}).items()
+                },
             )
         )
     return subs
@@ -535,6 +577,10 @@ def parse_plan(obj: dict, vocab: Vocab, speakers: set | None = None) -> list[Sub
 @dataclass
 class Trace:
     stages: list = field(default_factory=list)
+    matched_line_units: set[str] = field(default_factory=set)
+    nearby_line_matches: dict[str, set[str]] = field(default_factory=dict)
+    line_matches: dict[int, set[str]] = field(default_factory=dict)
+    line_branch_candidates: dict[int, list[str]] = field(default_factory=dict)
 
     def log(self, stage: str, **kw):
         self.stages.append({"stage": stage, **kw})
@@ -556,6 +602,64 @@ def _has_content_constraints(w: Where) -> bool:
             w.entity_kind,
         )
     )
+
+
+def _line_annotation_matches(
+    store: Store, vocab: Vocab, where: Where, trace: Trace, *, query: int, allowed: set | None
+) -> set | None:
+    axes = {
+        "topics": {
+            descendant
+            for topic, closure in where.topics
+            for descendant in (
+                vocab.downset(topic, max_depth=3, max_width=60, include_candidates=True)
+                if closure and topic in vocab.topics
+                else {topic}
+            )
+        },
+        "entities": where.entities,
+        "obj": where.obj,
+        "place": where.place,
+        "event": where.event,
+        "duration": where.duration,
+    }
+    matches = []
+    for axis, values in axes.items():
+        if not values:
+            continue
+        postings = {
+            value: store.line_annotation_postings.get((axis, value), ()) for value in values
+        }
+        if allowed is not None:
+            postings = {
+                value: {
+                    span
+                    for span in candidates
+                    if any(
+                        store.lines[line].unit in allowed
+                        for line in store.line_annotation_sources[span]
+                    )
+                }
+                for value, candidates in postings.items()
+            }
+        spans = set().union(*postings.values())
+        trace.log(
+            "expand",
+            q=query,
+            atom=axis,
+            hits=len(spans),
+            labels=sorted(values),
+            matched_labels=sorted(label for label, postings in postings.items() if postings),
+            target="line_annotations",
+        )
+        matches.append(spans)
+    if not matches:
+        return None
+    return {
+        line_id
+        for span in set.intersection(*matches)
+        for line_id in store.line_annotation_sources[span]
+    }
 
 
 def _time_ok(when: str, lo: str, hi: str) -> bool:
@@ -847,6 +951,8 @@ def execute(
     legal_kinds: set[str] | None = None,
     pack_v2: bool = False,
     coverage: bool = False,
+    allowed_line_units: set[str] | None = None,
+    line_branch_limit: int = 0,
 ) -> tuple[list[dict], Trace]:
     """Run subqueries, pool, rank globally, refine, pack with diversity caps."""
     trace = Trace()
@@ -891,25 +997,115 @@ def execute(
             continue
         if sq.select == "lines":
             w = sq.where
-            if w.units:
+            allowed = set(w.units) if w.units else allowed_line_units
+            if w.units and allowed_line_units is not None:
+                allowed &= allowed_line_units
+            ids = _line_annotation_matches(store, vocab, w, trace, query=qi, allowed=allowed)
+            if allowed is not None:
                 # Bound stages only need lines from their selected sessions.
-                ids = {i for unit in w.units for i in store.lines_by_unit.get(unit, ())}
-            else:
+                if ids is None:
+                    ids = {i for unit in allowed for i in store.lines_by_unit.get(unit, ())}
+                else:
+                    ids = {i for i in ids if store.lines[i].unit in allowed}
+            elif ids is None:
                 ids = set(store.lines)
             if w.who:
                 ids = {i for i in ids if store.lines[i].who in w.who}
             lo, hi = w.time
             if lo or hi:
                 ids = {i for i in ids if _time_ok(store.lines[i].unit_date, lo, hi)}
-            if w.grep:
+            rank_patterns = []
+            for pattern in filter(None, (w.grep, *w.grep_all)):
                 try:
-                    rx = re.compile(w.grep, re.I)
+                    rx = re.compile(pattern, re.I)
                     ids = {i for i in ids if rx.search(store.lines[i].text)}
+                    if allowed_line_units is not None:
+                        rank_patterns.extend(_grep_branches(pattern, rx))
                 except re.error:
                     ids = set()
+            if w.near:
+                pattern, radius = w.near
+                rx = re.compile(pattern, re.I)
+                before = len(ids)
+                matched = set()
+                same_turn = 0
+                for unit in {store.lines[line].unit for line in ids}:
+                    lines = store.lines_by_unit[unit]
+                    for position, line in enumerate(lines):
+                        if line not in ids:
+                            continue
+                        supporting = {
+                            other
+                            for other in lines[max(0, position - radius) : position + radius + 1]
+                            if other != line and rx.search(store.lines[other].text)
+                        }
+                        if supporting:
+                            matched.add(line)
+                            trace.nearby_line_matches.setdefault(line, set()).update(supporting)
+                        if w.near_include_anchor and rx.search(store.lines[line].text):
+                            matched.add(line)
+                            same_turn += 1
+                ids = matched
+                trace.log(
+                    "near",
+                    q=qi,
+                    hits=len(ids),
+                    candidates=before,
+                    turns=radius,
+                    **({"same_turn_hits": same_turn} if w.near_include_anchor else {}),
+                )
             trace.log("lines", q=qi, hits=len(ids))
-            for i in ids:
-                pooled[f"L::{i}"] = max(pooled.get(f"L::{i}", 0), 1.0)
+            if allowed_line_units is not None:
+                trace.line_matches[qi] = ids
+                trace.matched_line_units.update(store.lines[i].unit for i in ids)
+            scores = dict.fromkeys(ids, 1.0)
+            preferences = {re.compile(pattern, re.I) for pattern in sq.prefer}
+            preferred_ids = set()
+            for pattern in sorted(set(rank_patterns) | preferences, key=lambda rx: rx.pattern):
+                hits = {i for i in ids if pattern.search(store.lines[i].text)}
+                preferred = pattern in preferences
+                if preferred:
+                    preferred_ids.update(hits)
+                weight = math.log1p(len(ids) / max(1, len(hits))) * (2 if preferred else 1)
+                for i in hits:
+                    scores[i] += weight
+            if preferences:
+                trace.log("prefer", q=qi, hits=len(preferred_ids))
+            for axis, labels in sorted(sq.prefer_labels.items()):
+                label_lines = {
+                    label: {
+                        line
+                        for span in store.line_annotation_postings.get((axis, label), ())
+                        for line in store.line_annotation_sources[span]
+                        if line in ids
+                    }
+                    for label in labels
+                }
+                supporting_lines = set().union(*label_lines.values())
+                matched = len(supporting_lines)
+                weight = 1 - matched / max(1, len(ids))
+                for line in supporting_lines:
+                    scores[line] += weight
+                trace.log(
+                    "prefer_labels",
+                    q=qi,
+                    atom=axis,
+                    labels=list(labels),
+                    matched_labels=sorted(
+                        label for label, matches in label_lines.items() if matches
+                    ),
+                    hits=matched,
+                    bonus=round(weight, 4) if matched else 0,
+                    target="line_annotations",
+                )
+            if pack_v2 and allowed_line_units is not None and scores:
+                top = sorted(scores, key=lambda i: (-scores[i], i))[: max(2, line_branch_limit)]
+                subquery_top.append([f"L::{i}" for i in top[:2]])
+                if line_branch_limit:
+                    trace.line_branch_candidates[qi] = top[:line_branch_limit]
+            for i, score in scores.items():
+                key = f"L::{i}"
+                pooled[key] = max(pooled.get(key, 0), score)
             continue
 
         # facts with deterministic refine loop
@@ -1099,9 +1295,15 @@ def execute(
         else:
             # Parallel subqueries are complementary by design: reserve each
             # one's best rows before the global pool competes for the rest.
-            for keys in subquery_top:
-                for key in keys:
-                    try_pack(key)
+            if allowed_line_units is not None:
+                for position in range(2):
+                    for keys in subquery_top:
+                        if position < len(keys):
+                            try_pack(keys[position], respect_cap=position > 0)
+            else:
+                for keys in subquery_top:
+                    for key in keys:
+                        try_pack(key)
         for key in order:
             if len(pack) >= budget:
                 break
@@ -1130,7 +1332,8 @@ def execute(
             pack.append(_row(store, typ, ident, pooled[key]))
             if len(pack) >= budget:
                 break
-    pack.sort(key=lambda r: (r.get("date") or "", r.get("id") or ""))
+    if allowed_line_units is None:
+        pack.sort(key=lambda r: (r.get("date") or "", r.get("id") or ""))
     trace.log("pack", n=len(pack), units=len(per_unit), ms=round(1000 * (_time.time() - t0), 1))
     return (aggregates + pack if aggregates else pack), trace
 
@@ -1341,6 +1544,9 @@ def execute_plan(
     legal_kinds: set[str] | None = None,
     pack_v2: bool = False,
     coverage: bool = False,
+    allowed_line_units: set[str] | None = None,
+    *,
+    line_branch_limit: int = 0,
 ) -> tuple[list[dict], Trace]:
     """Entry point for compile output. Two shapes:
     - {"queries": [...]} : parallel subqueries, pooled and ranked in one pass
@@ -1360,11 +1566,14 @@ def execute_plan(
             legal_kinds=legal_kinds,
             pack_v2=pack_v2,
             coverage=coverage,
+            allowed_line_units=allowed_line_units,
+            line_branch_limit=line_branch_limit,
         )
     trace = Trace()
     bindings: dict[str, dict] = {}
     bound_rows: list[dict] = []  # stages that consumed a $ref: the refined output
     free_rows: list[dict] = []  # unbound stages (anchors / wide nets): context
+    line_stages: list[tuple[bool, list[dict]]] = []
     for i, raw in enumerate(stages[:4]):
         if not isinstance(raw, dict):
             continue  # malformed compile output must degrade, not crash
@@ -1386,13 +1595,29 @@ def execute_plan(
             legal_kinds=legal_kinds,
             pack_v2=pack_v2,
             coverage=coverage,
+            allowed_line_units=allowed_line_units,
         )
-        trace.log("stage", name=name, hits=len(rows), bound=uses_ref)
+        binding = _stage_binding(rows)
+        stage_details = {}
+        if allowed_line_units is not None:
+            # A downstream join uses the matched recordings. Quotation
+            # limits only decide what the reader sees.
+            units = binding["units"]
+            units.extend(sorted(st_trace.matched_line_units.difference(units)))
+            stage_details["matched_recordings"] = len(units)
+            if 0 in st_trace.line_matches:
+                trace.line_matches[i] = st_trace.line_matches[0]
+        trace.log("stage", name=name, hits=len(rows), bound=uses_ref, **stage_details)
         trace.stages += [
             {"stage": f"{name}:{s['stage']}", **{k: v for k, v in s.items() if k != "stage"}}
             for s in st_trace.stages
         ]
-        bindings[name] = _stage_binding(rows)
+        for line, support in st_trace.nearby_line_matches.items():
+            trace.nearby_line_matches.setdefault(line, set()).update(support)
+        if allowed_line_units is not None:
+            rows.sort(key=lambda row: (-row.get("score", 0), row.get("id", "")))
+            line_stages.append((uses_ref, rows))
+        bindings[name] = binding
         if uses_ref:
             for r in rows:
                 r["bound"] = True  # anchored result = the plan's intent
@@ -1403,7 +1628,18 @@ def execute_plan(
     # Per-stage headroom (max(budget, 12)) lets a bound stage out-rank the
     # context stages; the caller's budget still bounds what comes back.
     out, seen, kept = [], set(), 0
-    for r in bound_rows + free_rows:
+    ordered = bound_rows + free_rows
+    if line_stages:
+        # Keep evidence establishing the anchor as well as evidence from each
+        # dependent stage. A large dependent result must not hide its premise.
+        lanes = [rows for _, rows in sorted(line_stages, key=lambda stage: not stage[0])]
+        ordered = [
+            rows[position]
+            for position in range(max(map(len, lanes)))
+            for rows in lanes
+            if position < len(rows)
+        ]
+    for r in ordered:
         key = (r.get("type"), r.get("id"))
         if key in seen:
             continue

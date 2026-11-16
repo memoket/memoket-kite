@@ -7,12 +7,15 @@ import re
 from hashlib import sha256
 from pathlib import Path
 
+from memoket_kite.core.vocab import norm_code
+
 from .captions import CAPTION_FORMATS, caption_segments
 from .contracts import (
     HASH,
     TEXT,
     XML_UNSAFE,
     ToolError,
+    array,
     decode_object,
     digest,
     object_schema,
@@ -164,6 +167,7 @@ def file_source(
     pages: list[Path] | None = None,
     recording_metadata: Path | None = None,
     project: str | None = None,
+    project_aliases: list[str] | None = None,
 ) -> dict:
     """Return a minimized source input without opening a memory workspace."""
     file_formats = ("text", *CAPTION_FORMATS)
@@ -233,6 +237,15 @@ def file_source(
     _, conversation = prepare_source(root, {"format": source_format, "payload": payload})
     if project is not None:
         conversation["metadata"]["project"] = project
+    if project_aliases is not None:
+        validate(array({**TEXT, "maxLength": 120}, maximum=32), project_aliases, "project aliases")
+        validate(TEXT, conversation["metadata"].get("project"), "project for aliases")
+        codes = [norm_code(alias) for alias in project_aliases]
+        if any(len(code) < 2 or code.isdecimal() for code in codes):
+            raise ToolError(
+                "invalid_input", "project aliases need at least two nonnumeric name characters"
+            )
+        conversation["metadata"]["project_aliases"] = project_aliases
     source = {"format": "conversation", "payload": conversation}
     if expected_checksum is not None:
         source["expected_checksum"] = expected_checksum

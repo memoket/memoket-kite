@@ -60,3 +60,49 @@ def test_submit_repacks_an_oversized_context_after_escaping(tmp_path):
     assert len(result.encode()) <= adapter["MAX_CONTEXT_BYTES"]
     calls = (tmp_path / "calls").read_text().splitlines()
     assert len(calls) == 2 and calls[1].startswith(calls[0] + " --limit ")
+
+
+def test_explicit_symbolic_submit_calls_the_installed_symbolic_command(tmp_path, monkeypatch):
+    prepare = runpy.run_path(str(ADAPTER))["prepare_context"]
+    launcher = tmp_path / "kite"
+    launcher.write_text(
+        "#!/bin/sh\n"
+        'test "$1:$2:$3:$4" = "symbolic:--question=Rollout?:--model:planner" || exit 1\n'
+        'test "${11}" = "--delivery-bytes" || exit 1\n'
+        "printf '%s\\n' '\"[release#L2] The date is Wednesday.\"'\n"
+    )
+    launcher.chmod(0o700)
+    event = {
+        "hook_event_name": "UserPromptSubmit",
+        "cwd": str(tmp_path),
+        "prompt": "KITE symbolic: Rollout?\nApply it.",
+    }
+    monkeypatch.delenv("KITE_SYMBOLIC_MODEL", raising=False)
+    assert prepare(event, launcher) is None
+    monkeypatch.setenv("KITE_SYMBOLIC_MODEL", "planner")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-provider")
+    result = prepare(event, launcher)
+    assert "symbolic query engine" in result
+    assert json.loads(result.split("\n", 1)[1]) == "[release#L2] The date is Wednesday."
+
+
+def test_saved_symbolic_submit_searches_without_provider_credentials(tmp_path, monkeypatch):
+    prepare = runpy.run_path(str(ADAPTER))["prepare_context"]
+    launcher = tmp_path / "kite"
+    launcher.write_text(
+        "#!/bin/sh\n"
+        'test "$1:$2:$3:$4" = "symbolic:--reuse:release-schedule:--delivery-bytes" || exit 1\n'
+        'test "$#" = 5 || exit 1\n'
+        "printf '%s\\n' '\"Saved plan release-schedule (compiled at v1)\\n[release#L2] Friday.\"'\n"
+        'printf "call\\n" >> calls\n'
+    )
+    launcher.chmod(0o700)
+    monkeypatch.delenv("KITE_SYMBOLIC_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    event = {"hook_event_name": "UserPromptSubmit", "cwd": str(tmp_path)}
+    assert prepare({**event, "prompt": "KITE plan: release-schedule extra"}, launcher) is None
+    result = prepare({**event, "prompt": "KITE plan: release-schedule\nUpdate it."}, launcher)
+    assert "symbolic query engine" in result
+    assert "[release#L2] Friday." in json.loads(result.split("\n", 1)[1])
+    assert len(result.encode()) <= 6000
+    assert (tmp_path / "calls").read_text() == "call\n"

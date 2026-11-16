@@ -60,6 +60,37 @@ workspace locally.
 
 ## Load evidence before Codex starts
 
+For tasks that reference prior conversations, the installed skill can prepare
+KITE's symbolic plan in the current Codex chat and execute it on the local
+workspace. No separate provider API key is needed for this path. Codex sees
+the selected index vocabulary and the evidence returned by KITE.
+When the task gives a subject and search clues, the skill submits the question
+and plan together in one command, against one workspace snapshot. If it needs
+to inspect the scope or vocabulary, `symbolic --prepare QUESTION --brief`
+returns index hints and a snapshot token to submit with the plan. Omit
+`--brief` to inspect the full compiler prompt.
+
+When a workspace contains several projects, set `KITE_SYMBOLIC_PROJECT` in
+the environment that runs KITE, or use `symbolic --project NAME` with the
+project name recorded at import. The selection applies to both preparation and
+retrieval, so subsequent task requests can refer to decisions without repeating
+the project name. Use the same selection when submitting a prepared plan.
+In conversation JSON, import the stable project name in `metadata.project`
+and familiar names in `metadata.project_aliases`. For example, set the alias
+`Prism migration` for `migration-2026`. A question mentioning Prism migration
+can then find original turns across that project's recordings. Alias scope
+appears in the result. If the names match multiple projects, KITE keeps the
+workspace scope open. Explicit project and recording names take precedence.
+When a plan is saved against a uniquely matched alias, reuse keeps the
+resolved project.
+
+```sh
+kite-tool file-source meeting.txt --format text --source-id kickoff --split-lines \
+  --project migration-2026 --project-alias "Prism migration"
+```
+
+Include the returned source in the normal `index-sources` batch.
+
 For a project that already uses KITE, you can configure an optional local
 Codex [UserPromptSubmit hook](https://learn.chatgpt.com/docs/hooks#userpromptsubmit).
 Run a normal KITE command once to install its runtime. Add this to the trusted
@@ -92,6 +123,60 @@ hook retries once with a smaller quote budget. Ordinary prompts, empty
 results, and unavailable runtimes let the chat continue. Use the ordinary
 KITE context command for a follow-up or add `--save` to open the compile
 and search evidence in the graph.
+
+To use KITE's symbolic engine before a task, start the request with
+`KITE symbolic:` and configure `KITE_SYMBOLIC_MODEL` and the model provider
+in the hook's environment. Set the hook timeout to 60 seconds or more.
+Use this mode with a provider authorized to receive the question and
+workspace index vocabulary. For a local run from an existing plan, use
+`kite-tool symbolic --input PLAN.json`.
+
+For recurring work, ask Codex to save its symbolic plan. A plan generated in
+the current chat can be searched and saved without a separate model provider.
+```sh
+kite-tool symbolic --input plan.json --save release-schedule --text
+kite-tool symbolic --reuse release-schedule --text
+```
+
+To compile with a separate provider, start a `symbolic-search` run with a
+stable run ID, advance its `compile` stage, then inspect the evidence from
+`search`.
+```sh
+kite-tool start symbolic-search --run-id release-schedule --input request.json
+kite-tool stage release-schedule compile --allow-provider
+kite-tool stage release-schedule search
+kite-tool symbolic --reuse release-schedule --text
+```
+
+`request.json` contains the workflow request. For example,
+`{"request":{"question":"What was agreed about the release schedule?","model":"gpt-4.1-mini"}}`.
+With the submit hook enabled, use the same run ID on the first line of a
+later Codex task. Put the implementation request on the next line.
+
+```text
+KITE plan: release-schedule
+Update the release checklist to match the current decisions and cite the evidence.
+```
+
+Each invocation runs the saved plan against the current active original turns
+with its saved project and recording window. New or revised recordings in
+scope get evidence space based on the changes since compilation. A fixed end
+date in the saved plan still applies. Reuse requires no model API call or
+provider key. For a changed question, compile a new plan. A permanent workspace
+deletion invalidates previous runs, including saved plans.
+The symbolic hook executes the plan once. If its rendered quotes exceed the
+delivery limit, KITE fits original turns and their references into the
+remaining space, giving direct matches priority over adjacent context.
+The output says when the delivery limit leaves out some quotes.
+The symbolic result reports how many original turns each query or stage
+matched and how many appear in the quote pack. Text output calls out empty
+queries, unresolved stage bindings, and matches that were left out of the
+pack. Use those notices to focus any follow-up on the missing evidence.
+Open a saved symbolic search with `kite-tool view --run release-schedule`.
+The graph shows the original citations and their linked annotations. Its
+replay shows the executed symbolic steps and the indexes those steps matched.
+To watch a staged search while it runs, open `view --follow RUN_ID` after
+starting `symbolic-search` and before advancing its stages.
 
 ## View the memory graph
 
@@ -180,7 +265,10 @@ bundled skill.
 
 Run `python3 tests/packaging/codex_smoke.py` from a checkout to test marketplace
 discovery, installation through Codex's app server, and a transcript import and
-query from the installed copy.
+query from the installed copy. Pass `--marketplace memoket/memoket-kite
+--ref codex/agent-native-memory --sparse .agents/plugins --sparse plugins/kite`
+to test the GitHub directory. Use `--plugin-version` and
+`--context-search-version` to check the installed versions explicitly.
 
 To test a checkout in desktop Codex, build its wheel and assemble a local
 Memoket directory with that wheel bundled inside the plugin.

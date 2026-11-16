@@ -47,11 +47,13 @@ SPAN_FACETS = object_schema(
         "duration": {"anyOf": [TEXT, {"type": "null"}]},
     },
 )
+ENTITY_MENTION = object_schema({"entity": TEXT, "segment_id": TEXT, "text": TEXT})
 INDEX_SPAN = object_schema(
     {"segment_ids": array(TEXT, 1)},
     {
         "topics": array(TEXT),
         "entities": array(TEXT),
+        "entity_mentions": array(ENTITY_MENTION),
         "title": {**TEXT, "maxLength": 100},
         "facets": SPAN_FACETS,
     },
@@ -83,7 +85,8 @@ def event_date_basis(fact: dict) -> str:
 
 def annotate(context, normalized: dict, annotations: dict) -> dict:
     conversation = normalized["conversation"]
-    segment_ids = {segment["segment_id"] for segment in conversation["segments"]}
+    segment_text = {segment["segment_id"]: segment["text"] for segment in conversation["segments"]}
+    segment_ids = segment_text.keys()
     facts = []
     seen = set()
     for fact in annotations["facts"]:
@@ -146,11 +149,48 @@ def annotate(context, normalized: dict, annotations: dict) -> dict:
             normalized_facets["duration"] = duration
         if normalized_facets:
             cleaned["facets"] = normalized_facets
+        if "entity_mentions" in span:
+            _validate_entity_mentions(span, cleaned, segment_text, entities)
         spans.append(cleaned)
     result = {**normalized, "facts": facts, "taxonomy": taxonomy, "entity_aliases": entities}
     if spans:
         result["index_spans"] = spans
     return result
+
+
+def _validate_entity_mentions(span, cleaned, segment_text, aliases):
+    """Check explicit mention provenance. Older annotations can omit it."""
+    spellings = {code: {code} for code in cleaned["entities"]}
+    for alias in aliases:
+        if alias["name"] in spellings:
+            spellings[alias["name"]].update(alias["aliases"])
+    cited = set(cleaned["segment_ids"])
+    supported = set()
+    for mention in span["entity_mentions"]:
+        code = _symbol(mention["entity"])
+        sid, text = mention["segment_id"], mention["text"]
+        pattern = re.escape(text.casefold())
+        # CJK names can appear adjacent to other words without spaces.
+        if text.isascii():
+            pattern = r"(?<!\w)" + pattern + r"(?!\w)"
+        if (
+            sid not in cited
+            or _symbol(text) not in spellings.get(code, ())
+            or not re.search(pattern, segment_text[sid].casefold())
+        ):
+            raise ToolError(
+                "invalid_evidence", "entity mention needs its exact original wording and segment"
+            )
+        supported.add(code)
+    if supported != spellings.keys():
+        raise ToolError("invalid_evidence", "each entity in the span needs a cited mention")
+    cleaned["entity_mentions"] = sorted(
+        (
+            {"entity": _symbol(row["entity"]), "segment_id": row["segment_id"], "text": row["text"]}
+            for row in span["entity_mentions"]
+        ),
+        key=lambda row: (row["entity"], row["segment_id"], row["text"]),
+    )
 
 
 def revision_id(normalized: dict) -> str:
@@ -264,6 +304,29 @@ def _load_index(xml: bytes, facts: dict, segments: dict, revisions: dict) -> Ind
             store.lines[line_id].text != segment["text"] for line_id, segment in segments.items()
         ):
             raise ToolError("integrity_error", "Codebook changed source text")
+        for uid, record in revisions.items():
+            spans = record.get("index_spans", ())
+            if not spans:
+                continue
+            lines = {
+                segment["segment_id"]: f"{uid}L{position}"
+                for position, segment in enumerate(record["conversation"]["segments"], 1)
+            }
+            for span in spans:
+                facets = span.get("facets", {})
+                store.add_line_annotation(
+                    tuple(lines[sid] for sid in span["segment_ids"]),
+                    {
+                        "topics": tuple(vocab.resolve_topic(topic) for topic in span["topics"]),
+                        "entities": tuple(
+                            vocab.resolve_entity(entity) for entity in span["entities"]
+                        ),
+                        "obj": tuple(facets.get("object", ())),
+                        "place": tuple(facets.get("place", ())),
+                        "event": tuple(facets.get("event", ())),
+                        "duration": (facets["duration"],) if facets.get("duration") else (),
+                    },
+                )
         return Index(xml, store, vocab, facts, segments, revisions)
     except (ValueError, ET.ParseError, RecursionError) as exc:
         raise ToolError("integrity_error", "the stored Codebook failed validation") from exc

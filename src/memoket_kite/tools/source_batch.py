@@ -6,7 +6,7 @@ from itertools import zip_longest
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .context import _spans, context_current, context_enabled
+from .context import _index_rows, context_current, context_enabled
 from .contracts import (
     COUNT,
     HASH,
@@ -45,7 +45,8 @@ BATCH_PREVIEW = object_schema(
         "source_lines": COUNT,
         "index_spans": COUNT,
         "dated_sources": COUNT,
-    }
+    },
+    {"topic_spans": COUNT, "entity_spans": COUNT, "facet_spans": COUNT},
 )
 BATCH_RECEIPT = object_schema(
     {
@@ -124,11 +125,19 @@ def _preserve_transcript_revision(
     }
     if repair and "index_spans" in annotations:
         retained = {line["segment_id"] for line in conversation["segments"]}
-        annotations["index_spans"] = [
-            {**span, "segment_ids": ids}
-            for span in annotations["index_spans"]
-            if (ids := [segment for segment in span["segment_ids"] if segment in retained])
-        ]
+        spans = []
+        for span in annotations["index_spans"]:
+            ids = [segment for segment in span["segment_ids"] if segment in retained]
+            if not ids:
+                continue
+            repaired = {**span, "segment_ids": ids}
+            if "entity_mentions" in span:
+                mentions = [row for row in span["entity_mentions"] if row["segment_id"] in retained]
+                repaired.update(
+                    entity_mentions=mentions, entities=sorted({row["entity"] for row in mentions})
+                )
+            spans.append(repaired)
+        annotations["index_spans"] = spans
     source = {
         "format": "conversation",
         "payload": conversation,
@@ -195,11 +204,15 @@ def _selected_batch(context: Context, selection: dict) -> tuple[list[dict], int]
 
 def preview_source_batch(context: Context, selection: dict) -> dict:
     records, repairs = _selected_batch(context, selection)
+    spans = [span for record in records for span in record.get("index_spans", ())]
     return {
         "batch_sha256": digest([records, repairs]),
         "sources_seen": len(records),
         "source_lines": sum(len(row["conversation"]["segments"]) for row in records),
-        "index_spans": sum(len(row.get("index_spans", ())) for row in records),
+        "index_spans": len(spans),
+        "topic_spans": sum(bool(span["topics"]) for span in spans),
+        "entity_spans": sum(bool(span["entities"]) for span in spans),
+        "facet_spans": sum(bool(span.get("facets")) for span in spans),
         "dated_sources": sum(source_day(row["conversation"]) is not None for row in records),
     }
 
@@ -224,17 +237,16 @@ def verify_source_batch(context: Context, receipt: dict) -> dict:
         (record for record in index.revisions.values() if record["active"]),
         key=lambda record: record["checksum"],
     )
-    expected = (
-        (record["checksum"], start, stop)
-        for record in sources
-        for start, stop in _spans(record["conversation"]["segments"])
+    expected = _index_rows(sources, index.vocab)
+    indexed = db.execute(
+        "SELECT text, title, labels, checksum, start, stop, day, source "
+        "FROM context_spans ORDER BY checksum, start"
     )
-    indexed = db.execute("SELECT checksum, start, stop FROM context_spans ORDER BY checksum, start")
     count = 0
     for row, span in zip_longest(indexed, expected):
         if row is None or tuple(row) != span:
             raise ToolError(
-                "integrity_error", "the source index does not cover committed originals"
+                "integrity_error", "the search index does not match committed originals and labels"
             )
         count += 1
     return {
