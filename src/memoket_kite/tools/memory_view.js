@@ -30,6 +30,8 @@
       symbolicSearch: 'Symbolic search', symbolicHit: 'Symbolic match', symbolicChange: 'Date change',
       symbolicFilter: 'Filter', symbolicRanking: 'Ranking', symbolicExecuted: 'Executed plan', symbolicCompiled: 'Compiled plan',
       symbolicRecordings: 'recordings in scope', symbolicDateFrom: 'From', symbolicDateThrough: 'Through',
+      symbolicProjectBound: 'Project matched', symbolicProjectAmbiguous: 'Multiple matching projects',
+      symbolicProjectUnassigned: 'Anchor recordings have no project assignment',
       sourceTextRoute: 'Text in the same recording', textIndexRoute: 'Full-text index',
       findOpeningGuidance: 'Find opening guidance',
       dateIndexRoute: 'Recording dates + date in the transcript', labelIndexRoute: 'Annotation index + full text',
@@ -129,6 +131,8 @@
       symbolicSearch: '符号检索', symbolicHit: '符号命中', symbolicChange: '日期变更',
       symbolicFilter: '筛选', symbolicRanking: '加权', symbolicExecuted: '实际执行计划', symbolicCompiled: '编译计划',
       symbolicRecordings: '份录制参与检索', symbolicDateFrom: '起始日期', symbolicDateThrough: '截止日期',
+      symbolicProjectBound: '命中项目', symbolicProjectAmbiguous: '命中多个项目',
+      symbolicProjectUnassigned: '线索录制缺少项目归属',
       sourceTextRoute: '同一录制的正文', textIndexRoute: '全文索引',
       findOpeningGuidance: '查找开场建议',
       dateIndexRoute: '录制日期索引＋原文日期', labelIndexRoute: '标注索引＋正文',
@@ -1592,6 +1596,14 @@
           const hits = step.hits ?? step.candidates ?? step.n;
           const item = element('li', [prefix, action, axis && t(axis), hits == null ? null : number.format(hits)]
             .filter(value => value != null && value !== '').join(' · '));
+          const project = step.project_binding;
+          if (project?.status === 'resolved') {
+            item.append(element('p', `${step.name} · ${t('symbolicProjectBound')} ${project.project} · ${number.format(project.recordings)} ${t('symbolicRecordings')}`));
+          } else if (project?.status === 'multiple') {
+            item.append(element('p', `${step.name} · ${t('symbolicProjectAmbiguous')} ${project.projects.join(' / ')}`));
+          } else if (project?.unassigned_recordings) {
+            item.append(element('p', `${step.name} · ${t('symbolicProjectUnassigned')}`));
+          }
           for (const label of step.labels || []) {
             const node = (step.matched_labels || []).includes(label) && symbolicIndexNode(step, label);
             item.append(' ', node ? button(label, () => choose(node), 'citation-link') : element('span', label));

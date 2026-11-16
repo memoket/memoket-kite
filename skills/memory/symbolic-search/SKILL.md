@@ -52,3 +52,8 @@ Set `include_anchor` to true if that same cited turn can satisfy both patterns.
 Use `prefer_labels` for optional Topic, Entity and Facet ranking. Its values
 are exact label codes from the compiler vocabulary, grouped by axis. The
 trace reports which candidate lines were supported on each axis.
+To continue across meetings in the project that contains a distinctive clue,
+use `where.units: "$anchor.project_units"` in a later named stage. The anchor
+must match recordings assigned to one project. The trace reports the resolved
+project, competing projects, or missing project assignments. The join respects
+the requested recording date range.

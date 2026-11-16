@@ -1400,12 +1400,12 @@ def _apply_pipe_units(units: list[Unit], pipe, aggregates) -> list[Unit]:
 # ---------------- staged (multi-hop dependency) plans ----------------
 
 
-# Whitelist of substitutable binding fields. `unit`, `units`, and `date` are
+# Whitelist of substitutable binding fields. `unit`, `units`, `project_units`, and `date` are
 # the references a plan may declare; `t` is the event-time spelling of `date`
 # that some plans use. `_stage_binding` also exposes `id` and `n`, which are
 # deliberately absent here so a stage cannot substitute on them; any other
 # `$name.field` falls through `_subst_refs` as a literal string.
-_STAGE_REF = re.compile(r"^\$([^.\s]+)\.(unit|units|date|t)$")
+_STAGE_REF = re.compile(r"^\$([^.\s]+)\.(unit|units|project_units|date|t)$")
 
 
 def _grep_branches(pattern: str, whole) -> list:
@@ -1547,11 +1547,13 @@ def execute_plan(
     allowed_line_units: set[str] | None = None,
     *,
     line_branch_limit: int = 0,
+    line_unit_projects: dict[str, str] | None = None,
 ) -> tuple[list[dict], Trace]:
     """Entry point for compile output. Two shapes:
     - {"queries": [...]} : parallel subqueries, pooled and ranked in one pass
     - {"stages": [{"name": ..., <subquery>}, ...]} : sequential; later stages may
       reference earlier results via "$name.unit" / "$name.units" / "$name.date".
+      "$name.project_units" joins a line anchor to its uniquely matched project.
       Reference resolution is deterministic — the LLM only writes the template.
     """
     stages = plan_obj.get("stages") or []
@@ -1570,6 +1572,16 @@ def execute_plan(
             line_branch_limit=line_branch_limit,
         )
     trace = Trace()
+    project_anchors = {
+        match[1]
+        for stage in stages
+        if isinstance(stage, dict)
+        and isinstance(stage.get("where"), dict)
+        and isinstance(units := stage["where"].get("units"), str)
+        and (match := _STAGE_REF.fullmatch(units))
+        and match[2] == "project_units"
+    }
+    unit_projects = line_unit_projects or {}
     bindings: dict[str, dict] = {}
     bound_rows: list[dict] = []  # stages that consumed a $ref: the refined output
     free_rows: list[dict] = []  # unbound stages (anchors / wide nets): context
@@ -1607,6 +1619,24 @@ def execute_plan(
             stage_details["matched_recordings"] = len(units)
             if 0 in st_trace.line_matches:
                 trace.line_matches[i] = st_trace.line_matches[0]
+            if name in project_anchors:
+                projects = {unit_projects[unit] for unit in units if unit in unit_projects}
+                if len(projects) == 1 and all(unit in unit_projects for unit in units):
+                    project = next(iter(projects))
+                    binding["project_units"] = sorted(
+                        unit for unit in allowed_line_units if unit_projects.get(unit) == project
+                    )
+                    stage_details["project_binding"] = {
+                        "status": "resolved",
+                        "project": project,
+                        "recordings": len(binding["project_units"]),
+                    }
+                else:
+                    stage_details["project_binding"] = {
+                        "status": "multiple" if len(projects) > 1 else "unresolved",
+                        "projects": sorted(projects),
+                        "unassigned_recordings": sum(unit not in unit_projects for unit in units),
+                    }
         trace.log("stage", name=name, hits=len(rows), bound=uses_ref, **stage_details)
         trace.stages += [
             {"stage": f"{name}:{s['stage']}", **{k: v for k, v in s.items() if k != "stage"}}

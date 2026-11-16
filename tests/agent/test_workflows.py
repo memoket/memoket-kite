@@ -7152,6 +7152,71 @@ def test_symbolic_stage_binding_keeps_recordings_beyond_quote_limit(work):
     assert anchor["matched_recordings"] == 14 and anchor["hits"] == 12
 
 
+def test_symbolic_project_binding_resolves_only_a_unique_anchor_project(work):
+    _, call = work
+
+    def meeting(name, text, day, project=None):
+        source = text_input(name, text, date=day)["source"]
+        if project:
+            source["payload"]["metadata"]["project"] = project
+        return {"source": source}
+
+    anchors = [
+        meeting(f"anchor-{i}", "Amber access card.", "2026-02-01", "Ridge") for i in range(13)
+    ]
+    decision = meeting("decision", "Final working window is Tuesday.", "2026-02-04", "Ridge")
+    distractor = meeting("other", "Final working window is Friday.", "2026-02-05", "Bridge")
+    call("index-sources", payload={"sources": [*anchors, decision, distractor]})
+    plan = {
+        "stages": [
+            {"name": "anchor", "select": "lines", "where": {"grep": "amber access card"}},
+            {
+                "name": "decision",
+                "select": "lines",
+                "where": {"units": "$anchor.project_units", "grep": "Final working window"},
+            },
+        ]
+    }
+    question = "For the project that uses the amber access card, apply the final working window."
+    request = {"question": question, "plan": plan}
+
+    def refs(result):
+        return {line["conversation_id"] for span in result["spans"] for line in span["evidence"]}
+
+    result = call("symbolic", "--limit", "2", payload=request)
+    assert "decision" in refs(result) and "other" not in refs(result)
+    assert result["trace"][0]["project_binding"] == {
+        "status": "resolved",
+        "project": "Ridge",
+        "recordings": 14,
+    }
+    limited = call("symbolic", "--end-date", "2026-02-02", payload=request)
+    assert "decision" not in refs(limited)
+    assert limited["trace"][0]["project_binding"]["recordings"] == 13
+
+    saved = call("symbolic", "--save", "window", payload=request)
+    unassigned = meeting("untagged-anchor", "Amber access card.", "2026-02-06")
+    call("index-sources", payload={"sources": [unassigned]})
+    unavailable = call("symbolic", "--reuse", "window")
+    assert unavailable["trace"][0]["project_binding"]["unassigned_recordings"] == 1
+    assert "decision" not in refs(unavailable)
+
+    ambiguous = meeting("bridge-anchor", "Amber access card.", "2026-02-07", "Bridge")
+    call("index-sources", payload={"sources": [ambiguous]})
+    updated = call("symbolic", "--reuse", "window", "--limit", "2")
+    assert updated["reused_plan"]["compiled_at_version"] == saved["memory_version"]
+    assert updated["trace"][0]["matched_recordings"] == 15
+    assert updated["trace"][0]["project_binding"]["projects"] == ["Bridge", "Ridge"]
+    assert updated["branch_coverage"][-1]["skipped"] == "unresolved_ref"
+    assert not {"decision", "other"} & refs(updated)
+    shown = call("symbolic", "--reuse", "window", "--text")
+    assert "matches multiple projects (Bridge, Ridge)" in shown
+
+    malformed = copy.deepcopy(plan)
+    malformed["stages"][1]["where"]["units"] = ["$anchor.project_units", "other"]
+    call("symbolic", payload={**request, "plan": malformed}, error="invalid_plan")
+
+
 def test_symbolic_project_scope_limits_preparation_and_evidence(work, monkeypatch):
     _, call = work
     sources = []

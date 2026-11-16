@@ -27,6 +27,13 @@ also add ranking labels when both the question and a text branch match a
 label in scope. The JSON output includes the executed plan and per-axis
 candidate counts and bonuses. A zero bonus means the axis changed no scores.
 
+In a staged source-line query, `where.units: "$anchor.units"` follows the
+recordings matched by the named anchor. Use `where.units: "$anchor.project_units"`
+to search other recordings of that project. All anchor matches must have the
+same recorded project. The join honors the query's recording scope, including
+its date bounds. If more than one project matches, the trace names the projects
+and the dependent stage waits for a narrower anchor.
+
 For a follow-up after a workspace update, pass the earlier result's
 `memory_version` as `--since-version VERSION`. KITE reserves evidence for
 matching new or corrected sources inside the query scope. A newly imported

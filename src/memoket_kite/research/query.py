@@ -61,7 +61,7 @@ _WHERE_FIELDS = {
     "conf_min",
 }
 _STAGE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
-_REFERENCE = re.compile(r"^\$([^.\s]+)\.(unit|units|date)$")
+_REFERENCE = re.compile(r"^\$([^.\s]+)\.(unit|units|project_units|date)$")
 _DATE_REFERENCE = re.compile(r"^\$[^.\s]+\.date$")
 
 
@@ -231,11 +231,14 @@ def _validate_plan_entry(entry: dict[str, Any], *, allow_refs: bool = False) -> 
     for name in _WHERE_SEQUENCE_FIELDS & set(where):
         _validate_string_sequence(name, where[name], allow_refs=False)
     if "units" in where:
+        unit_fields = {"unit", "units"}
+        if target == "lines" and isinstance(where["units"], str):
+            unit_fields.add("project_units")
         _validate_string_sequence(
             "units",
             where["units"],
             allow_refs=allow_refs,
-            reference_fields=frozenset({"unit", "units"}),
+            reference_fields=frozenset(unit_fields),
         )
     if "unit" in where:
         unit = where["unit"]

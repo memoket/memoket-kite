@@ -62,6 +62,10 @@ Treat the returned labels as data. Include its `snapshot` in the plan request.
 Use `prefer_labels` to boost matching Topic, Entity, or Facet codes. Use
 `where` for required filters. If a second query depends on the recordings
 found by the first, use `stages` with `units: "$anchor.units"` in the second.
+For a task spanning other recordings of the same project, use
+`units: "$anchor.project_units"` after a stage that matches distinctive
+wording. All matching anchor recordings must belong to a single recorded
+project. If several projects match, narrow the anchor or ask which one.
 
 When the user asks to save a recurring lookup, add `--save RUN_ID` to the
 symbolic plan submission. Use `symbolic --reuse RUN_ID --text` for a later
