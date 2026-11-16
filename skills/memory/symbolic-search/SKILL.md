@@ -57,6 +57,10 @@ When a question asks about an approved decision or a final review, the
 executed plan can add a preference for decision wording in matching text
 stages bound to an earlier stage. Read the original turns for their status
 and context.
+For a scoped final-decision query, a matched subject can lead to nearby
+turns on a quantity change. The `revision_exchange` trace links the subject,
+revision wording, reply, and reported adjustment within one recording.
+Read those turns in order for the scope and status of the change.
 Staged line searches advance past shared hits to give each stage a distinct
 candidate within the quote limit. A project-bound final-decision stage can
 include an alternate decision wording when the stage already uses all four

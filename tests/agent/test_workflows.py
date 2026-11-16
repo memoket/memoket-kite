@@ -7462,6 +7462,121 @@ def test_symbolic_prefers_decision_wording_inside_the_original_project_scope(
     assert parallel["plan"] == query
 
 
+@pytest.mark.parametrize(
+    "spoken, question, preference, plain",
+    [
+        (
+            [
+                "Let's discuss the sampler trays.",
+                "Could we switch to just two?",
+                "Yes.",
+                "Which parts of the instructions are affected?",
+                "We already changed it.",
+            ],
+            "What did the final review say about the sampler trays?",
+            "decided|keep",
+            True,
+        ),
+        (
+            [
+                "来看一下采样托盘。",
+                "建议改成两个？",
+                "同意。",
+                "还有哪些说明会受影响？",
+                "已经调整了。",
+            ],
+            "最终怎么确定采样托盘？",
+            "确认|批准",
+            False,
+        ),
+    ],
+)
+def test_symbolic_includes_a_scoped_revision_exchange_as_original_turns(
+    work, spoken, question, preference, plain
+):
+    _, call = work
+    subject = "sampler trays" if plain else "采样托盘"
+    speakers = ("Reviewer", "Lead", "Reviewer", "Lead", "Reviewer")
+
+    def recording(name, project, utterances):
+        return {
+            "source": {
+                "format": "conversation",
+                "payload": {
+                    "source": "text",
+                    "conversation_id": name,
+                    "metadata": {"project": project, "source_reference": name},
+                    "segments": [
+                        {
+                            "segment_id": f"line-{i}",
+                            "text": f"{speaker}: {text}" if plain else text,
+                            **({} if plain else {"speaker_id": speaker}),
+                        }
+                        for i, (speaker, text) in enumerate(zip(speakers, utterances), 1)
+                    ],
+                },
+            }
+        }
+
+    budget = text_input("kickoff", "The kickoff budget is 50.")["source"]
+    budget["payload"]["metadata"]["project"] = "Alder"
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {"source": budget},
+                recording("alder-notes-x7", "Alder", spoken),
+                recording("outside", "Pine", spoken),
+                recording(
+                    "pending",
+                    "Alder",
+                    [*spoken[:4], "We have to change it." if plain else "尚未调整。"],
+                ),
+            ],
+        },
+    )
+    request = {
+        "question": question,
+        "plan": {
+            "queries": [
+                {"select": "lines", "where": {"grep": "kickoff budget"}},
+                {"select": "lines", "where": {"grep": subject}, "prefer": [preference]},
+            ]
+        },
+    }
+    options = ("symbolic", "--project", "Alder", "--limit", "8")
+    result = call(*options, payload=request)
+    related = [
+        line
+        for span in result["spans"]
+        for line in span["evidence"]
+        if line["conversation_id"] == "alder-notes-x7"
+    ]
+    assert [line["segment_id"] for line in related] == ["line-1", "line-2", "line-3", "line-5"]
+    assert [line["role"] for line in related] == ["symbolic_match", *["nearby_match"] * 3]
+    step = next(step for step in result["trace"] if step["stage"] == "revision_exchange")
+    assert step["queries"] == [1]
+    assert step["reported_change_line_id"] == related[-1]["source_line_id"]
+    assert any(span["evidence"][0]["conversation_id"] == "kickoff" for span in result["spans"])
+
+    delivered = json.loads(call(*options, "--delivery-bytes", "1200", payload=request))
+    assert all(f"alder-notes-x7#line-{i}" in delivered for i in (1, 2, 3, 5))
+    tight = json.loads(call(*options, "--delivery-bytes", "256", payload=request))
+    assert all(f"alder-notes-x7#line-{i}" not in tight for i in (1, 2, 3, 5))
+    assert "kickoff#text-1" in tight
+
+    # Two supported exchanges in the same scope require the caller to disambiguate.
+    call(
+        "index-sources",
+        payload={"sources": [recording("second-review", "Alder", spoken)]},
+    )
+    ambiguous = call(*options, payload=request)
+    assert all(step["stage"] != "revision_exchange" for step in ambiguous["trace"])
+    assert all(
+        line["role"] == "symbolic_match" for span in ambiguous["spans"] for line in span["evidence"]
+    )
+
+
 def test_symbolic_project_scope_limits_preparation_and_evidence(work, monkeypatch):
     _, call = work
     sources = []

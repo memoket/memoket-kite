@@ -35,6 +35,7 @@ from .contracts import (
     utc_timestamp,
     validate,
 )
+from .decision_replies import find_revision_exchanges
 from .index import build_index
 from .ingest import RECORDING_CLOCK_FIELDS, source_day
 from .retrieve import _citation
@@ -359,7 +360,7 @@ Question: {question}
         )
 
 
-def _pack_source_lines(index, rows, neighbors, max_bytes, nearby_matches):
+def _pack_source_lines(index, rows, neighbors, max_bytes, nearby_matches, exchange=()):
     """Keep symbolic hits first, then include adjacent original turns as context."""
     selected = {}
     used = 0
@@ -375,6 +376,14 @@ def _pack_source_lines(index, rows, neighbors, max_bytes, nearby_matches):
 
     for row in rows:
         include(row["unit"], row["id"], row.get("role", "symbolic_match"))
+    exchange_bytes = sum(
+        len(index.segments[row["id"]]["text"].encode())
+        for row in exchange
+        if row["id"] not in selected
+    )
+    if used + exchange_bytes <= max_bytes:
+        for row in exchange:
+            include(row["unit"], row["id"], row["role"])
     for line_id, (unit, _) in tuple(selected.items()):
         for supporting in sorted(nearby_matches.get(line_id, ())):
             include(unit, supporting, "nearby_match")
@@ -986,6 +995,38 @@ def _branch_coverage(plan, traces, spans, *, delivery=False):
     return coverage
 
 
+def _revision_exchange(index, compiled, plan, trace, question, limit):
+    queries = plan.get("queries")
+    if (
+        not queries
+        or not compiled["units"]
+        or not question
+        or not _DECISION_QUESTION.search(question)
+        or limit < len(queries) + 4
+    ):
+        return [], None
+    matches = find_revision_exchanges(index.store, queries, trace.line_matches)
+    if len(matches) != 1:
+        return [], None
+    line_ids, branches = next(iter(matches.items()))
+    rows = [
+        {
+            "id": line,
+            "unit": index.store.lines[line].unit,
+            "role": "symbolic_match" if position == 0 else "nearby_match",
+        }
+        for position, line in enumerate(line_ids)
+    ]
+    return rows, {
+        "stage": "revision_exchange",
+        "queries": sorted(branches),
+        "subject_line_id": line_ids[0],
+        "revision_line_id": line_ids[1],
+        "reply_line_id": line_ids[2],
+        "reported_change_line_id": line_ids[3],
+    }
+
+
 def _schedule_follow_up(pack):
     if comparison := pack.get("schedule_comparison"):
         previous = comparison["previous_source_line_id"]
@@ -1261,6 +1302,7 @@ def execute_source_plan(
         selected_branches = trace.selected_line_branches
     reserved = set()
     comparison = None
+    exchange, exchange_step = [], None
     if compare_schedule:
         schedule, prior, schedule_trace = _schedule_change_evidence(
             index, changed, question, rows, branches
@@ -1282,7 +1324,16 @@ def execute_source_plan(
                 ]
             else:
                 schedule_trace.update(reserved=False, withheld="quote_budget")
-    spans, quote_bytes, quote_order = _pack_source_lines(index, rows, neighbors, max_bytes, support)
+    else:
+        exchange, exchange_step = _revision_exchange(index, compiled, plan, trace, question, limit)
+    spans, quote_bytes, quote_order = _pack_source_lines(
+        index, rows, neighbors, max_bytes, support, exchange
+    )
+    if exchange_step:
+        exchange_ids = {row["id"] for row in exchange}
+        if exchange_ids <= set(quote_order):
+            trace_steps.append(exchange_step)
+            reserved = exchange_ids
     changed_checksums = {index.revisions[uid]["checksum"] for uid in changed}
     if changed_recordings is not None:
         cited = {line["revision_checksum"] for span in spans for line in span["evidence"]}

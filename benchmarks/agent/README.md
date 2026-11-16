@@ -261,6 +261,15 @@ from task time, and reports the bytes a user would enter when typing the
 selector manually. The command writes its full results and exits nonzero
 when a required symbolic delivery cannot be verified.
 
+Before comparing task quality, record the accepted behavior and original
+citations for every case. Score both arms against the same checks, including
+whether Codex ran the repository's own tests. Report first-pass and final
+acceptance with the number of cases. Identical task prompts measure execution
+with a fixed amount of user input. Count any extra evaluator prompts
+separately from actual user messages. For claims about automatic compilation,
+capture the compiler request, response, runtime and token usage from the same
+run. A comparison using saved plans measures execution after compilation.
+
 For a revision experiment with successive turns, use `codex_trial` with
 `persist_session=True` and a temporary Codex home. Save the returned
 `session_id`, apply the source change to both arms, and pass that ID as

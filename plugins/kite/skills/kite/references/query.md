@@ -51,6 +51,9 @@ Overlapping stages advance past lines already included by another stage.
 For a final-decision stage with four preferences, the trace can show an
 `alternate_wording_line` selected from the same matching set. Read that
 line and surrounding turns for the decision's status.
+For a scoped final-decision lookup, KITE can preserve a nearby quantity
+revision exchange when the later turns omit the subject. The `revision_exchange`
+trace identifies the original words, reply, and reported change in order.
 Set `KITE_SYMBOLIC_GUIDE=1` in the Codex submit hook's environment to include
 a stage guide when it fits alongside the original turns. The guide lists
 which stage selected each referenced turn and shows lookup cues. Run
