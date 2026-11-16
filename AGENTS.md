@@ -67,4 +67,9 @@ history, decisions, commitments, and other conversation evidence.
 - For user-handoff comparisons, record which sources each arm can already
   access. Count scripted responses to actual assistant questions separately
   from evaluator feedback. Include a same-source control for claims about
-  the retrieval engine.
+  the retrieval engine. Use the `verified_symbolic` summary for comparisons
+  of matched trials with original symbolic citations actually delivered to
+  Codex. Keep all attempts in the overall summary and disclose how many
+  matched groups had no verified citations. For historical results, correct
+  earlier symbolic claims at the original report and wherever the numbers
+  are quoted.

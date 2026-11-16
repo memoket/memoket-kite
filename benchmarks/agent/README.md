@@ -354,6 +354,16 @@ Keep all attempts in completion counts and disclose turns with unavailable
 token usage. An observed symbolic receipt covers only the citations in that
 tool's actual result.
 
+The `summary` includes every completed trial record, including attempts with
+zero verified deliveries. Use it for the overall configured workspace MCP
+comparison. The `verified_symbolic` summary selects complete groups with an
+observed original citation from the KITE symbolic engine. It reports counts
+of complete groups missing that evidence and groups still missing an arm.
+Publish both denominators. The verified subset is conditional on actual
+delivery and can exclude harder tasks. Use the `files` arm for same-source
+comparisons, and disclose when the tested entry is workspace MCP rather than
+the installed desktop plugin.
+
 ## Evaluate original conversation context
 
 The source-context benchmark uses a local directory of UTF-8 TXT transcripts.

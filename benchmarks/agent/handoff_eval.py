@@ -92,7 +92,7 @@ def _observed_receipts(path, turn, bundle):
     """Match the original engine receipt to the MCP result Codex saw."""
     if not path.exists():
         return []
-    outputs = {
+    outputs = Counter(
         content["text"]
         for call in turn.get("mcp_calls", ())
         if call.get("server") == _MCP_SERVER
@@ -102,20 +102,21 @@ def _observed_receipts(path, turn, bundle):
         and call.get("result")
         for content in call["result"]["content"]
         if content["type"] == "text"
-    }
+    )
     results = []
     for line in path.read_text(encoding="utf-8").splitlines():
         observed = json.loads(line)
         receipt, text = observed["receipt"], observed["text"]
         if (
-            text not in outputs
+            not outputs[text]
             or receipt.get("engine") != _ENGINE
             or not receipt.get("compiler")
             or not isinstance(receipt.get("plan"), dict)
             or not receipt.get("trace")
-            or receipt["memory_version"] != bundle["manifest"]["memory_version"]
+            or receipt.get("memory_version") != bundle["manifest"]["memory_version"]
         ):
             continue
+        outputs[text] -= 1
         refs = set()
         for span in receipt["spans"]:
             for original in span["evidence"]:
@@ -295,6 +296,35 @@ def _summary(trials):
     return results
 
 
+def _verified_symbolic_summary(trials):
+    groups = {}
+    for row in trials:
+        group = groups.setdefault((row["case"], row["repetition"]), {})
+        if row["arm"] in group:
+            raise ValueError("duplicate benchmark arm for a case and repetition")
+        group[row["arm"]] = row
+    retained = []
+    incomplete, without_delivery = 0, 0
+    for group in groups.values():
+        if group.keys() != set(_ARMS):
+            incomplete += 1
+            continue
+        if not any(
+            receipt["reference_ids"]
+            for turn in group["kite"]["turns"]
+            for receipt in turn["original_symbolic_results"]
+        ):
+            without_delivery += 1
+            continue
+        retained.extend(group.values())
+    return {
+        "matched_trials": len(retained) // len(_ARMS),
+        "groups_without_verified_citations": without_delivery,
+        "incomplete_groups": incomplete,
+        "arms": _summary(retained),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("cases", type=Path)
@@ -394,6 +424,7 @@ def main():
                 flush=True,
             )
             results["summary"] = _summary(results["trials"])
+            results["verified_symbolic"] = _verified_symbolic_summary(results["trials"])
             pending = args.output / "results.tmp"
             pending.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
             pending.replace(args.output / "results.json")

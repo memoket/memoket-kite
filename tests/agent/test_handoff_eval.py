@@ -35,17 +35,59 @@ def test_receipts_require_a_matching_symbolic_mcp_call_and_compiled_plan(tmp_pat
     assert handoff_eval._observed_receipts(path, {"mcp_calls": [call]}, bundle) == [
         {**delivery, "reference_ids": [reference]}
     ]
+    path.write_text((json.dumps(delivery) + "\n") * 2, encoding="utf-8")
+    assert len(handoff_eval._observed_receipts(path, {"mcp_calls": [call]}, bundle)) == 1
     for other_call in (
         {**call, "server": "other"},
         {**call, "tool": "read_conversation_citations"},
     ):
         assert not handoff_eval._observed_receipts(path, {"mcp_calls": [other_call]}, bundle)
-    for missing in ("compiler", "plan", "trace"):
+    for missing in ("compiler", "plan", "trace", "memory_version"):
         invalid_receipt = dict(delivery["receipt"])
         del invalid_receipt[missing]
         invalid = {**delivery, "receipt": invalid_receipt}
         path.write_text(json.dumps(invalid) + "\n", encoding="utf-8")
         assert not handoff_eval._observed_receipts(path, {"mcp_calls": [call]}, bundle)
+
+
+def test_symbolic_summary_requires_matched_arms_and_citations_delivered():
+    def trial(arm, repetition, receipts=()):
+        return {
+            "arm": arm,
+            "case": "release",
+            "repetition": repetition,
+            "passed": True,
+            "score": {"passed_claims": 1, "total_claims": 1},
+            "first_turn_evidence_fields": int(bool(receipts)),
+            "turns": [
+                {
+                    "original_symbolic_results": receipts,
+                    "prompt": "Apply the release settings.",
+                    "seconds": 1,
+                    "usage": {"input_tokens": 100, "output_tokens": 10},
+                }
+            ],
+        }
+
+    rows = [
+        trial(arm, n, receipts if arm == "kite" else ())
+        for n, receipts in enumerate(
+            ([{"reference_ids": ["release#L2"]}], [], [{"reference_ids": []}])
+        )
+        for arm in ("kite", "files", "external")
+    ]
+    rows.append(trial("kite", 3, [{"reference_ids": ["release#L2"]}]))
+    assert handoff_eval._summary(rows)["kite"]["passed"] == 4
+    verified = handoff_eval._verified_symbolic_summary(rows)
+    assert verified["matched_trials"] == 1
+    assert verified["groups_without_verified_citations"] == 2
+    assert verified["incomplete_groups"] == 1
+    assert handoff_eval._verified_symbolic_summary(rows[3:])["matched_trials"] == 0
+    assert {arm: data["total_tokens"] for arm, data in verified["arms"].items()} == {
+        "kite": 110,
+        "files": 110,
+        "external": 110,
+    }
 
 
 @pytest.mark.parametrize("request_history", [True, False])
