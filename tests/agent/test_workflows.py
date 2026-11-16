@@ -7991,6 +7991,99 @@ def test_symbolic_packs_a_related_dated_revision_from_the_current_snapshot(
     assert all(step["stage"] != "dated_revision" for step in insufficient_bytes["trace"])
 
 
+@pytest.mark.parametrize(
+    ("subject", "question", "brief", "original", "revised", "alternative"),
+    [
+        (
+            "dock inspection",
+            "Implement the original and revised dock inspection schedule.",
+            "The dock inspection app is open.",
+            "The original plan for the dock was an inspection on April 12.",
+            "For the dock, the inspection moved to April 22 after the final review.",
+            "For the dock, the inspection moved to May 6 after another review.",
+        ),
+        (
+            "温室喷淋",
+            "更新温室喷淋的原排期和最近确认的日期。",
+            "温室喷淋模块已经能打开。",
+            "温室分区喷淋原定4月12日。",
+            "温室这次确认喷淋改到4月22日，之后按已批准的计划安排。",
+            "温室重新确认喷淋改到5月6日。",
+        ),
+    ],
+)
+def test_symbolic_probes_related_dates_when_the_original_plan_matches_only_nondated_turns(
+    work, subject, question, brief, original, revised, alternative
+):
+    from memoket_kite.tools import viewer
+
+    directory, call = work
+    revised = (revised + " " + "Read this with the other notes. " * 4).strip()
+    sources = []
+    for name, day, text in (
+        ("brief", "2026-03-03", brief),
+        ("earlier", "2026-03-04", original),
+        ("later", "2026-03-16", revised),
+        ("another-revision", "2026-05-01", alternative),
+    ):
+        source = text_input(name, text, date=day)["source"]
+        source["payload"]["metadata"]["project"] = "Operations"
+        sources.append({"source": source})
+    call("index-sources", payload={"sources": sources})
+    plan = {"queries": [{"select": "lines", "where": {"grep": subject}}]}
+    request = {"question": question, "plan": plan}
+    args = ("symbolic", "--project", "Operations", "--end-date", "2026-04-30", "--limit", "3")
+    plain = call(*args, payload=request)
+    assert {span["evidence"][0]["text"] for span in plain["spans"]} == {brief}
+    request["retry_date_subject"] = True
+    recovered = call(*args, payload=request)
+    assert (
+        recovered["plan"] == plain["plan"]
+        and recovered["branch_coverage"] == plain["branch_coverage"]
+    )
+    probe = next(step for step in recovered["trace"] if step["stage"] == "schedule_pair_probe")
+    assert probe["reserved"] and probe["grounded_candidates"] == 1
+    assert any("near" in q["where"] for q in probe["plan"]["queries"])
+    assert {s["evidence"][0]["text"] for s in recovered["spans"]} == {
+        brief,
+        original,
+        revised,
+    }
+    assert (
+        "pairs earlier wording earlier#text-1 with later date-change wording later#text-1"
+        in call(*args, "--text", payload=request)
+    )
+
+    call(*args, "--save", "date-comparison", payload=request)
+    graph = viewer._snapshot(directory, [], run_id="date-comparison")
+    graph_probe = next(
+        s for s in graph["search_trace"]["symbolic"]["steps"] if s["stage"] == "schedule_pair_probe"
+    )
+    assert graph_probe["reserved"] and graph_probe["plan"] == probe["plan"]
+    assert {quote["conversation_id"] for quote in graph["evidence"].values()} == {
+        "brief",
+        "earlier",
+        "later",
+    }
+
+    narrow = call(*args, "--max-bytes", "128", payload=request)
+    assert {span["evidence"][0]["text"] for span in narrow["spans"]} == {brief}
+    assert all(step["stage"] != "dated_revision" for step in narrow["trace"])
+    assert (
+        next(step for step in narrow["trace"] if step["stage"] == "schedule_pair_probe")["withheld"]
+        == "quote_budget"
+    )
+    mixed = call("symbolic", "--project", "Operations", payload=request)
+    assert all(step["stage"] != "dated_revision" for step in mixed["trace"])
+    assert (
+        next(step for step in mixed["trace"] if step["stage"] == "schedule_pair_probe")["withheld"]
+        == "ambiguous_revision"
+    )
+    bound = {"queries": [{"select": "lines", "where": {"grep": subject, "units": ["brief"]}}]}
+    exact = call(*args, payload={**request, "plan": bound})
+    assert all(step["stage"] != "schedule_pair_probe" for step in exact["trace"])
+
+
 def test_source_date_wording_compiles_to_native_regex_with_the_same_scope(work, monkeypatch):
     directory, call = work
     old = "这次QA对外办理登记，原定10月12日。"

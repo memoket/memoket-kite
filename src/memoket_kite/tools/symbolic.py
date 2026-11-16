@@ -16,10 +16,12 @@ from .context import (
     _ACRONYMS,
     _DATE_DETAIL,
     _DATE_DETAIL_QUESTION,
+    _DATE_QUESTION_FILLERS,
     _DECISION_STATUS,
     _EARLIER_PHASE,
     _HYPOTHETICAL_DATE,
     _LATER_PHASE,
+    _PLAN_QUALIFIER,
     _QUERY_FILLERS,
     _QUOTED_PHRASES,
     _RETRIEVAL_FILLERS,
@@ -84,6 +86,10 @@ _SOURCE_WORDING = {
     "date_wording": _DATE_WORDING,
     "change_wording": {"reported": _REPORTED_CHANGE_WORDING},
 }
+_LITERAL_DATE_SUBJECT = re.compile(
+    r"[a-zA-Z][a-zA-Z0-9-]{2,23}(?: [a-zA-Z]{2,16}){0,3}|[㐀-鿿]{2,10}"
+)
+_DATE_CONTROL_CUE = re.compile(r"生效|切换|\b(?:effective|switch\w*)\b", re.I)
 _REVISION_CLAUSE_BREAK = re.compile(r"[，,。！？!?；;]")
 _NEGATED_DATE_CHANGE = re.compile(
     r"尚未|没有|并未|不能|不会|不(?:再|会|是|用|应|要)?$|"
@@ -1098,23 +1104,26 @@ def _schedule_subject_support(index, rows, candidate, question):
     return None, {}
 
 
-def _can_search_schedule_change(changed, question, plan, limit, recording_dates):
+def _date_companion_scope(plan, recording_dates):
     # Queries with explicit recording, date, speaker or index constraints
     # retain their exact contract, as do dependent stages.
+    return "queries" in plan and all(
+        set(entry["where"]) <= {"grep", "grep_all", "near", "time"}
+        and all(
+            not value or value == (recording_dates or {}).get(key)
+            for key, value in zip(("start_date", "end_date"), entry["where"].get("time", ()))
+        )
+        for entry in plan["queries"]
+    )
+
+
+def _can_search_schedule_change(changed, question, plan, limit, recording_dates):
     return (
         limit >= 2
         and changed
         and question
         and _DATE_DETAIL_QUESTION.search(question)
-        and "queries" in plan
-        and all(
-            set(entry["where"]) <= {"grep", "grep_all", "near", "time"}
-            and all(
-                not value or value == (recording_dates or {}).get(key)
-                for key, value in zip(("start_date", "end_date"), entry["where"].get("time", ()))
-            )
-            for entry in plan["queries"]
-        )
+        and _date_companion_scope(plan, recording_dates)
     )
 
 
@@ -1408,6 +1417,134 @@ def _dated_revision_candidate(index, rows, trace, question, quote_order):
             if displaced is not None:
                 alternative = (candidate, displaced, support)
     return alternative
+
+
+def _comparison_subject_patterns(plan, question):
+    phrases = set()
+    for query in plan["queries"]:
+        where = query["where"]
+        patterns = (
+            where.get("grep", ""),
+            where.get("near", {}).get("grep", ""),
+            *where.get("grep_all", ()),
+        )
+        for pattern in patterns:
+            for phrase in pattern.split("|"):
+                if (
+                    _LITERAL_DATE_SUBJECT.fullmatch(phrase)
+                    and phrase.casefold() in question.casefold()
+                    and not any(
+                        regex.fullmatch(phrase)
+                        for regex in (
+                            _DATE_QUESTION_FILLERS,
+                            _DATE_DETAIL_QUESTION,
+                            _DATE_CONTROL_CUE,
+                            _ORIGINAL_SCHEDULE,
+                            _CURRENT_SCHEDULE,
+                            _QUERY_FILLERS,
+                            _SCHEDULE_CHANGE,
+                        )
+                    )
+                    and phrase.casefold() not in _RETRIEVAL_FILLERS
+                ):
+                    phrases.add(phrase)
+    if not phrases:
+        return None
+    original, revised = set(phrases), set(phrases)
+    for phrase in phrases:
+        original.update(_split_subject_cues(phrase, "calendar", question))
+        revised.update(_split_subject_cues(phrase, "change", question))
+
+    def pattern(values):
+        parts = []
+        for phrase in sorted(values, key=lambda value: (-len(value), value)):
+            escaped = re.escape(phrase)
+            clause = rf"(?a:\b{escaped}\b)" if phrase.isascii() else escaped
+            if len("|".join((*parts, clause))) <= 256:
+                parts.append(clause)
+        return "|".join(parts)
+
+    return pattern(original), pattern(revised)
+
+
+def _probe_schedule_pair(index, units, question, original_plan):
+    """Find a dated comparison as supplemental evidence, without rewriting the submitted plan."""
+    patterns = _comparison_subject_patterns(original_plan, question)
+    if patterns is None:
+        return None, None
+    original, revised = patterns
+    probe = {
+        "queries": [
+            {
+                "select": "lines",
+                "where": {
+                    "grep_all": [_DATE_DETAIL.pattern],
+                    "near": {"grep": original, "turns": 2, "include_anchor": True},
+                },
+                "prefer": [original, _PLAN_QUALIFIER.pattern, _ORIGINAL_SCHEDULE.pattern],
+            },
+            {
+                "select": "lines",
+                "where": {
+                    "grep_all": [_DATE_AFTER_CHANGE.pattern],
+                    "near": {"grep": revised, "turns": 4, "include_anchor": True},
+                },
+            },
+        ]
+    }
+    store = index.store
+    _, trace = execute_plan(
+        store,
+        index.vocab,
+        probe,
+        budget=2,
+        allowed_line_units=units,
+        pack_v2=True,
+        line_branch_limit=_PRIOR_CANDIDATES_PER_BRANCH,
+    )
+    matches = trace.line_matches.get(1, ())
+    step = {
+        "stage": "schedule_pair_probe",
+        "plan": probe,
+        "steps": trace.stages,
+        "candidates": len(matches),
+        "reserved": False,
+    }
+    if len(matches) > _PRIOR_CANDIDATES_PER_BRANCH:
+        step["withheld"] = "candidate_limit"
+        return None, step
+
+    def row(line_id):
+        return {"id": line_id, "unit": store.lines[line_id].unit}
+
+    anchors = [
+        row(line_id)
+        for line_id in trace.line_branch_candidates.get(0, ())
+        if store.lines[line_id].unit_date and not _has_dated_revision(store.lines[line_id].text)
+    ]
+    projects = _unit_projects(index.revisions, units)
+    grounded = []
+    for line_id in sorted(matches):
+        line = store.lines[line_id]
+        if not line.unit_date or not _has_dated_revision(line.text):
+            continue
+        project = projects.get(line.unit)
+        eligible = [
+            anchor
+            for anchor in anchors
+            if store.lines[anchor["id"]].unit_date < line.unit_date
+            and projects.get(anchor["unit"]) == project
+        ]
+        candidate = row(line_id)
+        anchor, support = _schedule_subject_support(index, eligible, candidate, question)
+        if anchor:
+            grounded.append((row(anchor), candidate, support))
+    step["grounded_candidates"] = len(grounded)
+    if len(grounded) != 1:
+        if grounded:
+            step["withheld"] = "ambiguous_revision"
+        return None, step
+    return grounded[0], step
 
 
 def _display_references(pack):
@@ -1943,23 +2080,49 @@ def execute_source_plan(
         and not exchange_step
         and _ORIGINAL_SCHEDULE.search(question)
         and _CURRENT_SCHEDULE.search(question)
-        and (revision := _dated_revision_candidate(index, rows, trace, question, quote_order))
     ):
-        candidate, displaced, grounding = revision
-        revision_rows = [row if row["id"] != displaced else candidate for row in rows]
-        revision_pack = _pack_source_lines(index, revision_rows, neighbors, max_bytes, support)
-        pair = {candidate["id"], grounding["prior_line_id"]}
-        if pair <= set(revision_pack[2]):
-            rows = revision_rows
-            spans, quote_bytes, quote_order = revision_pack
-            reserved = pair
-            trace_steps.append(
-                {
-                    "stage": "dated_revision",
-                    "source_line_id": candidate["id"],
-                    "subject_support": grounding,
-                }
+        probe_step = None
+        linked = None
+        if revision := _dated_revision_candidate(index, rows, trace, question, quote_order):
+            candidate, displaced, grounding = revision
+            revision_rows = [row if row["id"] != displaced else candidate for row in rows]
+            linked = candidate, grounding, revision_rows
+        elif (
+            compiled.get("retry_date_subject")
+            and _date_companion_scope(plan, dates)
+            and not any(
+                _DATE_DETAIL.search(line["text"]) for span in spans for line in span["evidence"]
             )
+        ):
+            probe, probe_step = _probe_schedule_pair(index, active_units, question, plan)
+            if probe_step:
+                trace_steps.append(probe_step)
+            if probe:
+                prior, candidate, grounding = probe
+                ids = {prior["id"], candidate["id"]}
+                revision_rows = [prior, candidate, *(row for row in rows if row["id"] not in ids)][
+                    :limit
+                ]
+                linked = candidate, grounding, revision_rows
+        if linked:
+            candidate, grounding, revision_rows = linked
+            pair = {candidate["id"], grounding["prior_line_id"]}
+            revision_pack = _pack_source_lines(index, revision_rows, neighbors, max_bytes, support)
+            if pair <= set(revision_pack[2]):
+                rows = revision_rows
+                spans, quote_bytes, quote_order = revision_pack
+                reserved = pair
+                trace_steps.append(
+                    {
+                        "stage": "dated_revision",
+                        "source_line_id": candidate["id"],
+                        "subject_support": grounding,
+                    }
+                )
+                if probe_step:
+                    probe_step["reserved"] = True
+            elif probe_step:
+                probe_step["withheld"] = "quote_budget"
     if exchange_step:
         exchange_ids = {row["id"] for row in exchange}
         if exchange_ids <= set(quote_order):

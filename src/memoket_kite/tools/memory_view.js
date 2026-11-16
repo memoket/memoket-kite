@@ -29,6 +29,7 @@
       retrievalPath: 'How this line was found', retrievalReplay: 'Replay search',
       symbolicSearch: 'Symbolic search', symbolicHit: 'Symbolic match', symbolicChange: 'Date change',
       symbolicSubjectRetry: 'Retried date subject', symbolicNearbyHits: 'Supported by nearby turns', symbolicFilter: 'Filter', symbolicRanking: 'Ranking', symbolicExecuted: 'Executed plan', symbolicCompiled: 'Compiled plan',
+      symbolicScheduleProbe: 'Supplemental date comparison', symbolicSchedulePair: 'Linked date citations returned',
       symbolicRecordings: 'recordings in scope', symbolicDateFrom: 'From', symbolicDateThrough: 'Through',
       symbolicProjectBound: 'Project matched', symbolicProjectAmbiguous: 'Multiple matching projects',
       symbolicProjectUnassigned: 'Anchor recordings have no project assignment',
@@ -130,6 +131,7 @@
       retrievalPath: '原文如何命中', retrievalReplay: '重播检索',
       symbolicSearch: '符号检索', symbolicHit: '符号命中', symbolicChange: '日期变更',
       symbolicSubjectRetry: '用邻近主题词重试', symbolicNearbyHits: '由邻近原文支撑', symbolicFilter: '筛选', symbolicRanking: '加权', symbolicExecuted: '实际执行计划', symbolicCompiled: '编译计划',
+      symbolicScheduleProbe: '补查原排期和改期', symbolicSchedulePair: '返回了关联的日期引用',
       symbolicRecordings: '份录制参与检索', symbolicDateFrom: '起始日期', symbolicDateThrough: '截止日期',
       symbolicProjectBound: '命中项目', symbolicProjectAmbiguous: '命中多个项目',
       symbolicProjectUnassigned: '线索录制缺少项目归属',
@@ -1592,7 +1594,8 @@
           const prefix = operation ? name : step.q == null ? '' : String(step.q + 1);
           const action = code === 'expand' ? t('symbolicFilter')
             : code === 'prefer_labels' ? t('symbolicRanking')
-              : code === 'date_subject_retry' ? t('symbolicSubjectRetry') : code;
+              : code === 'date_subject_retry' ? t('symbolicSubjectRetry')
+                : code === 'schedule_pair_probe' ? t('symbolicScheduleProbe') : code;
           const axis = step.atom && ({ topics: 'topic', entities: 'entity', obj: 'object' }[step.atom] || step.atom);
           const hits = step.hits ?? step.candidates ?? step.n;
           const item = element('li', [prefix, action, axis && t(axis), hits == null ? null : number.format(hits)]
@@ -1602,6 +1605,12 @@
               const cue = hint.suggested_where.near.grep;
               item.append(element('p', `${hint.q + 1} · ${cue} · 0 → ${number.format(hint.matches)}`));
             }
+          }
+          if (code === 'schedule_pair_probe') {
+            if (step.reserved) item.append(element('p', t('symbolicSchedulePair')));
+            const details = element('details', undefined, 'search-plan');
+            details.append(element('summary', t('symbolicExecuted')), element('pre', JSON.stringify(step.plan, null, 2)));
+            item.append(details);
           }
           const project = step.project_binding;
           if (project?.status === 'resolved') {

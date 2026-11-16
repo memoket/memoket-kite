@@ -109,6 +109,13 @@ with a related earlier turn. Read both originals before using the dates.
 The `dated_revision` trace links both and records their shared subject.
 Text output identifies the paired citations. If the hook budget cannot fit
 both turns, use the two returned evidence IDs to read the original lines.
+With `retry_date_subject` enabled, an original-and-revised date question whose
+result contains no dates can also run a separate symbolic probe within the
+same recording scope. It checks date and date-change wording around literal
+subject cues shared by the question and plan. The `schedule_pair_probe`
+trace records that plan, the candidates and whether two related turns fit.
+The submitted plan and its match counts remain visible. Review both turns
+for the decision status and check for later changes when the result is unclear.
 Set `KITE_SYMBOLIC_GUIDE=1` in the Codex submit hook's environment to include
 a stage guide when it fits alongside the original turns. The guide lists
 which stage selected each referenced turn and shows lookup cues. Run
