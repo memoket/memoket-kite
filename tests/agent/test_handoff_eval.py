@@ -1,10 +1,41 @@
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
 
 from benchmarks.agent import handoff_eval
+
+
+def test_arm_batches_clean_temporary_sources_before_switching(tmp_path):
+    sources = tmp_path / "files"
+    sources.mkdir()
+
+    def trial(_args, case, arm, repetition):
+        if arm == "files":
+            with (sources / case).open("w", encoding="utf-8") as mount:
+                mount.write("original transcript")
+            (sources / case).unlink()
+        else:
+            assert not list(sources.iterdir())
+        return repetition, arm, case
+
+    args = SimpleNamespace(repeat=2)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        rows = list(
+            handoff_eval._trials_by_arm(pool, trial, args, ("one", "two"), ("files", "kite"))
+        )
+    assert [(repetition, arm) for repetition, arm, _ in rows] == [
+        (1, "files"),
+        (1, "files"),
+        (1, "kite"),
+        (1, "kite"),
+        (2, "kite"),
+        (2, "kite"),
+        (2, "files"),
+        (2, "files"),
+    ]
 
 
 def test_receipts_require_a_matching_symbolic_mcp_call_and_compiled_plan(tmp_path):

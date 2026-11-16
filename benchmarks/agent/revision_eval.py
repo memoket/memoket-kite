@@ -8,7 +8,7 @@ import json
 import shutil
 import sqlite3
 import subprocess
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -24,6 +24,7 @@ from .handoff_eval import (
     _handoff_material,
     _implementation_diff,
     _observed_receipts,
+    _trials_by_arm,
 )
 from .task_eval import _isolated_codex_home, _score, _source_bundle, _verify
 
@@ -302,7 +303,7 @@ def main():
     for case in cases:
         _prepare_case(case, args.cases.resolve().parent)
     results = {
-        "protocol": "same-session-source-revision-v2",
+        "protocol": "same-session-source-revision-v3",
         "case_sha256": hashlib.sha256(raw).hexdigest(),
         "codex": subprocess.check_output([args.codex, "--version"], text=True).strip(),
         "model": args.model,
@@ -324,14 +325,7 @@ def main():
     }
     args.output.mkdir(mode=0o700, parents=True)
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        jobs = [
-            pool.submit(_trial, args, case, arm, repetition)
-            for repetition in range(1, args.repeat + 1)
-            for i, case in enumerate(cases)
-            for arm in (_ARMS if (i + repetition) % 2 else reversed(_ARMS))
-        ]
-        for completed in as_completed(jobs):
-            trial = completed.result()
+        for trial in _trials_by_arm(pool, _trial, args, cases, _ARMS):
             results["trials"].append(trial)
             results["symbolic_verification"] = _symbolic_pairs(results["trials"])
             print(

@@ -69,7 +69,10 @@ history, decisions, commitments, and other conversation evidence.
 - For user-handoff comparisons, record which sources each arm can already
   access. Count scripted responses to actual assistant questions separately
   from evaluator feedback. Disable app connectors across arms and inspect
-  observed calls before attributing differences to access to history. Include
+  observed calls before attributing differences to access to history. Run
+  arms with different file access in separate batches and check for shell
+  reads outside the assigned project. Keep suspected cross-arm exposure in
+  the audit log and rerun affected comparisons in separate batches. Include
   a same-source control for claims about the retrieval engine. Use the
   `verified_symbolic` summary for comparisons
   of matched trials with original symbolic citations actually delivered to

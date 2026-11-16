@@ -339,8 +339,12 @@ uses POSIX pipe observation to retain tool results and incomplete turns.
 The three arms start fresh with identical task text, code and project guidance.
 Trial copies retain the seed files' contents and file modes with fresh
 timestamps for the temporary directory.
+The v3 runner completes all cases for one arm before starting another arm
+within that run. This keeps a file arm's temporary transcript mount out of
+other arms' sessions. Cases can run concurrently inside the same arm. Review
+shell activity for reads outside the assigned task directory.
 The runner disables Codex app connectors for every arm. It records this setting
-under `common_codex_options` in the v2 protocol. The summary also counts
+under `common_codex_options` in the protocol. The summary also counts
 observed `app_connector_calls`. Inspect saved tool calls when evaluating v1
 runs because Codex could still contact app connectors from an isolated home.
 `external` has no mounted meeting archive or KITE. `files` has the original
@@ -387,6 +391,7 @@ of the same initial workspace and verifies the resulting active sources
 against the frozen after state. The runner resumes the original Codex session
 in the same project with the second task. Both phases verify code behavior,
 original citations and tests independently. Scoring never supplies task hints.
+The v3 runner uses the same separate arm batches as the handoff benchmark.
 The log preserves the native MCP outputs, the index commit, both code diffs and
 update time separately from the two Codex turns. Read `symbolic_verification`
 for the number of complete pairs, missing citation deliveries in each phase,

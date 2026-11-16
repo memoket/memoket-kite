@@ -345,6 +345,16 @@ def _verified_symbolic_summary(trials):
     }
 
 
+def _trials_by_arm(pool, trial, args, cases, arms):
+    """Avoid mounting another arm's sources while a trial is running."""
+    for repetition in range(1, args.repeat + 1):
+        start = (repetition - 1) % len(arms)
+        for arm in arms[start:] + arms[:start]:
+            jobs = [pool.submit(trial, args, case, arm, repetition) for case in cases]
+            for job in as_completed(jobs):
+                yield job.result()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("cases", type=Path)
@@ -394,7 +404,7 @@ def main():
             case["workspace"], references, case["bundle"]["manifest"]["memory_version"]
         )
     results = {
-        "protocol": "request-triggered-original-excerpt-v2",
+        "protocol": "request-triggered-original-excerpt-v3",
         "common_codex_options": _CODEX_ISOLATION,
         "case_sha256": hashlib.sha256(raw).hexdigest(),
         "model": args.model,
@@ -427,14 +437,7 @@ def main():
     }
     args.output.mkdir(mode=0o700, parents=True)
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        jobs = []
-        for repetition in range(1, args.repeat + 1):
-            for number, case in enumerate(cases):
-                start = (number + repetition - 1) % len(_ARMS)
-                for arm in _ARMS[start:] + _ARMS[:start]:
-                    jobs.append(pool.submit(_trial, args, case, arm, repetition))
-        for job in as_completed(jobs):
-            trial = job.result()
+        for trial in _trials_by_arm(pool, _trial, args, cases, _ARMS):
             results["trials"].append(trial)
             print(
                 trial["case"],
