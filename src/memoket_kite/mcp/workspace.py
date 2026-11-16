@@ -19,10 +19,36 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
+class _CitationFocus:
+    source_line: str
+    unit: str
+    near: dict
+
+
+@dataclass(frozen=True)
 class _EvidenceReceipt:
     turns: tuple[str, ...] = ()
     leads: tuple[str, ...] = ()
     wording: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    snapshot: tuple[str, int] | None = None
+    focuses: tuple[tuple[str, _CitationFocus], ...] = ()
+
+    def followup_plan(self, snapshot, citation, grep):
+        from memoket_kite.tools.contracts import ToolError
+
+        if self.snapshot != snapshot:
+            raise ToolError("stale_snapshot", "recall again to refresh the citation follow-up")
+        focus = dict(self.focuses).get(citation)
+        if focus is None:
+            raise ToolError("not_found", "use a citation offered for follow-up by this receipt")
+        return {
+            "queries": [
+                {
+                    "select": "lines",
+                    "where": {"units": [focus.unit], "near": focus.near, "grep": grep},
+                }
+            ]
+        }, focus
 
 
 def _render_preparation(prepared: dict) -> str:
@@ -73,7 +99,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         from mcp.server import MCPServer
         from mcp.server.mcpserver.exceptions import ToolError as MCPToolError
         from mcp.types import ToolAnnotations
-        from pydantic import Field
+        from pydantic import BaseModel, ConfigDict, Field
     except ModuleNotFoundError as exc:
         if exc.name != "mcp":
             raise
@@ -84,6 +110,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
     from memoket_kite.tools.retrieve import read_evidence
     from memoket_kite.tools.symbolic import (
         RECEIPT_QUOTE_BYTES,
+        indexed_followup_references,
         indexed_followup_scopes,
         prepare_symbolic_question,
         render_symbolic_context,
@@ -97,11 +124,19 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         list[Annotated[str, Field(min_length=1, max_length=1024)]],
         Field(min_length=1, max_length=8),
     ]
+
+    class CitationFollowUp(BaseModel):
+        model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+        citation: Annotated[str, Field(min_length=1, max_length=1024)]
+        grep: Annotated[
+            str, Field(min_length=1, max_length=500, description="Value or spoken-value regex.")
+        ]
+
     receipts: OrderedDict[str, _EvidenceReceipt] = OrderedDict()
     receipt_lock = Lock()
     reader = WorkspaceReader(workspace_path)
 
-    def attach_receipt(result, *, prior=_EvidenceReceipt(), parent=None):
+    def attach_receipt(result, workspace, *, prior=_EvidenceReceipt(), parent=None):
         spans = result["spans"]
         delivered = [line["source_line_id"] for span in spans for line in span["evidence"]]
         if window := result.get("supplied_evidence"):
@@ -118,6 +153,16 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                 if pair["current_source_line_id"] in current
             )
         if delivered:
+            references = indexed_followup_references(result)
+            scopes = result.get("indexed_followup_scopes", {})
+            snapshot = workspace.snapshot_identity()
+            focuses = dict(prior.focuses) if prior.snapshot == snapshot else {}
+            for line, near in scopes.items():
+                if line in references:
+                    citation = references[line]
+                    context = _CitationFocus(line, workspace.index().store.lines[line].unit, near)
+                    # A new receipt binds the shorthand displayed in the new reply.
+                    focuses[citation] = context
             anchors = {step["name"] for step in result["trace"] if "project_binding" in step}
             leads = list(prior.leads)
             wording = dict(prior.wording)
@@ -137,6 +182,10 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                     turns,
                     lead_ids,
                     tuple((line, wording[line]) for line in lead_ids if line in wording),
+                    snapshot,
+                    tuple(
+                        (ref, focus) for ref, focus in focuses.items() if focus.source_line in turns
+                    )[-8:],
                 )
                 if len(receipts) > 48:
                     receipts.popitem(last=False)
@@ -164,8 +213,8 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             "its status remains unclear, search for that specific gap and pass the latest Evidence "
             "receipt as after_receipt. Previously quoted direct matches can still support the task. "
             "Cite the turn that states the requested decision and its subject. "
-            "For a value follow-up, copy the matching 'Follow-up near' object into where.near "
-            "and use where.grep for the value."
+            "When a reply offers 'Follow-up near' for the subject and you need its date, amount, "
+            "or value in that recording, call with after_receipt and follow_up: {citation, grep}."
         ),
     )
 
@@ -174,7 +223,15 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         structured_output=False,
     )
     def recall_conversation_evidence(
-        question: Annotated[str, Field(min_length=1, max_length=4000)],
+        question: Annotated[str | None, Field(min_length=1, max_length=4000)] = None,
+        follow_up: Annotated[
+            CitationFollowUp | None,
+            Field(
+                description="Find a value near an offered 'Follow-up near' citation in its "
+                "original recording. Use with after_receipt. Omit question, plan and scope. "
+                "Supply {citation: 'recording#segment', grep: 'value or spoken alternative'}."
+            ),
+        ] = None,
         plan: Annotated[
             dict | None,
             Field(
@@ -287,8 +344,9 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         Set plan.retry_index_subject to false to execute the submitted plan alone.
         If the task supplies citations and needs additional evidence, include
         them as known_citations and search for the remaining details in one call.
-        Large packs include an Evidence receipt. To fill a gap, use that receipt
-        as after_receipt with a focused plan. To reread all evidence, omit it.
+        Replies offering a citation follow-up include an Evidence receipt.
+        Search around that cited subject by passing follow_up and after_receipt.
+        For gaps across recordings, use the receipt with a focused plan.
         """
         dates = {
             key: value
@@ -305,7 +363,34 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             with reader.open() as workspace:
                 if workspace_version is not None and workspace_version != workspace.version():
                     raise ToolError("stale_snapshot", "recall again against the current workspace")
-                if plan is None:
+                focus = None
+                if follow_up is not None:
+                    if (
+                        after_receipt is None
+                        or any(
+                            value is not None
+                            for value in (
+                                question,
+                                plan,
+                                project,
+                                anchor_quote,
+                                snapshot,
+                                since_version,
+                                known_citations,
+                            )
+                        )
+                        or dates
+                    ):
+                        raise ToolError(
+                            "invalid_input",
+                            "follow_up needs after_receipt and uses the offered recording scope",
+                        )
+                    request, focus = prior.followup_plan(
+                        workspace.snapshot_identity(), follow_up.citation, follow_up.grep
+                    )
+                elif question is None:
+                    raise ToolError("invalid_input", "recall needs question or follow_up")
+                elif plan is None:
                     if snapshot is not None or known_citations is not None or after_receipt:
                         raise ToolError(
                             "invalid_input", "snapshot, citations and evidence receipts need a plan"
@@ -322,17 +407,20 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                             allow_mentioned_project=True,
                         )
                     )
-                plan = plan.copy()
-                request = {
-                    "question": question,
-                    "retry_date_subject": plan.pop("retry_date_subject", True),
-                    "retry_index_subject": plan.pop("retry_index_subject", known_citations is None),
-                    "plan": plan,
-                }
-                if anchor_quote is not None:
-                    request["anchor_quote"] = anchor_quote
-                if snapshot is not None:
-                    request["snapshot"] = snapshot
+                else:
+                    plan = plan.copy()
+                    request = {
+                        "question": question,
+                        "retry_date_subject": plan.pop("retry_date_subject", True),
+                        "retry_index_subject": plan.pop(
+                            "retry_index_subject", known_citations is None
+                        ),
+                        "plan": plan,
+                    }
+                    if anchor_quote is not None:
+                        request["anchor_quote"] = anchor_quote
+                    if snapshot is not None:
+                        request["snapshot"] = snapshot
                 result = symbolic_context(
                     workspace,
                     plan=request,
@@ -348,6 +436,11 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                     delivered_lead_ids=prior.leads,
                     allow_mentioned_project=True,
                 )
+                if focus is not None:
+                    result["compiler"] = "citation_followup_plan"
+                    result["trace"].insert(
+                        0, {"stage": "citation_followup", "source_line_id": focus.source_line}
+                    )
                 if matches := result.get("previously_delivered_matches"):
                     result["previously_delivered_wording"] = {
                         line: phrases for line, phrases in prior.wording if line in matches
@@ -364,14 +457,15 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                         if exc.code not in {"not_found", "ambiguous_source"}:
                             raise
                         result["supplied_citation_error"] = str(exc)
+                if (
+                    after_receipt is not None
+                    or include_receipt
+                    or result["indexed_followup_scopes"]
+                    or result["quote_bytes"] >= RECEIPT_QUOTE_BYTES
+                ):
+                    attach_receipt(result, workspace, prior=prior, parent=after_receipt)
         except ToolError as exc:
             raise MCPToolError(f"{exc.code}: {exc}") from exc
-        if (
-            after_receipt is not None
-            or include_receipt
-            or result["quote_bytes"] >= RECEIPT_QUOTE_BYTES
-        ):
-            attach_receipt(result, prior=prior, parent=after_receipt)
         return render_symbolic_context(result)
 
     @server.tool(
@@ -452,10 +546,14 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                 result["indexed_followup_scopes"] = indexed_followup_scopes(
                     workspace.index(), result, {}
                 )
+                if (
+                    include_receipt
+                    or result["indexed_followup_scopes"]
+                    or result["quote_bytes"] >= RECEIPT_QUOTE_BYTES
+                ):
+                    attach_receipt(result, workspace)
         except ToolError as exc:
             raise MCPToolError(f"{exc.code}: {exc}") from exc
-        if include_receipt or result["quote_bytes"] >= RECEIPT_QUOTE_BYTES:
-            attach_receipt(result)
         return render_symbolic_context(result)
 
     return server

@@ -2469,12 +2469,11 @@ def render_symbolic_context(
     evidence_guide = (_stage_evidence_guide(pack) or _query_evidence_guide(pack)) if guide else []
     if evidence_guide:
         lines.extend((*evidence_guide, ""))
-    if scopes := pack.get("indexed_followup_scopes"):
-        refs = {**pack.get("previously_delivered_matches", {}), **_display_references(visible)}
-        for line, near in scopes.items():
-            if line in refs:
-                condition = json.dumps(near, ensure_ascii=False, separators=(",", ":"))
-                lines.append(f"Follow-up near for [{refs[line]}] · {condition}")
+    followup_refs = indexed_followup_references(pack, visible=visible)
+    for line, ref in followup_refs.items():
+        near = pack["indexed_followup_scopes"][line]
+        condition = json.dumps(near, ensure_ascii=False, separators=(",", ":"))
+        lines.append(f"Follow-up near for [{ref}] · {condition}")
     if not visible["spans"] and prior_turns:
         lines.append("No new original turns in the selected results.")
     else:
@@ -2484,14 +2483,29 @@ def render_symbolic_context(
     if prior := pack.get("previous_revision_evidence"):
         lines.extend(_render_prior_reused_turns(visible, prior))
     if receipt := pack.get("delivery_receipt"):
-        lines.append(
-            f"Evidence receipt {receipt}. Pass it as after_receipt for a focused follow-up."
+        followup = (
+            "Use after_receipt and follow_up {citation, grep} to search near an offered citation."
+            if followup_refs
+            else "Pass it as after_receipt for a focused follow-up."
         )
+        lines.append(f"Evidence receipt {receipt}. {followup}")
     return "\n".join(lines)
 
 
 def _display_matched_wording(phrases):
     return ", ".join(json.dumps(phrase, ensure_ascii=False) for phrase in phrases)
+
+
+def indexed_followup_references(pack, *, visible=None):
+    scopes = pack.get("indexed_followup_scopes")
+    if not scopes:
+        return {}
+    if visible is None:
+        window = pack.get("supplied_evidence")
+        visible = _with_supplied_citations(pack, window) if window else pack
+    refs = {**pack.get("previously_delivered_matches", {}), **_display_references(visible)}
+    counts = Counter(refs.values())
+    return {line: refs[line] for line in scopes if line in refs and counts[refs[line]] == 1}
 
 
 def indexed_followup_scopes(index, pack, earlier_wording):
@@ -2543,7 +2557,8 @@ def indexed_followup_scopes(index, pack, earlier_wording):
                         if axis == "entities"
                         else label
                     )
-                    if (axis, code) in index.store.line_annotation_postings:
+                    postings = index.store.line_annotation_postings.get((axis, code), ())
+                    if any(ref in index.store.line_annotation_sources[pos] for pos in postings):
                         candidates.setdefault(label, (len(overlap), axis, code))
         if not candidates:
             continue

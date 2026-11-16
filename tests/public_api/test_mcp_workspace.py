@@ -630,13 +630,19 @@ async def test_followup_keeps_a_direct_citation_handle_and_omits_incidental_ones
         ("上线", "上线限额", "上线限额已确定。"),
     ],
 )
-async def test_copying_indexed_followup_scope_filters_the_same_number_in_another_source(
+async def test_citation_followup_filters_unrelated_values_in_the_same_recording(
     tmp_path, capsys, term, label, quote
 ):
     workspace = tmp_path / "workspace"
+    distractions = [
+        "Floor lamp test.",
+        "Tripod adjustments.",
+        "Recheck the scale.",
+        "It weighs 30 grams.",
+    ]
     sources = []
     for name, turns in (
-        ("decision", [quote, "The approved value is 30."]),
+        ("decision", [quote, "The approved value is 30.", *distractions]),
         ("prototype", ["The prototype weighs 30 grams."]),
     ):
         record = {
@@ -669,7 +675,6 @@ async def test_copying_indexed_followup_scope_filters_the_same_number_in_another
             tool,
             {
                 **base,
-                "include_receipt": True,
                 "plan": {"queries": [{"select": "lines", "where": {"grep": term}}]},
             },
         )
@@ -679,7 +684,8 @@ async def test_copying_indexed_followup_scope_filters_the_same_number_in_another
         hint = next(line for line in text.splitlines() if line.startswith("Follow-up near for"))
         near = json.loads(hint.split(" · ", 1)[1])
         assert near == {"obj": [label], "turns": 2, "include_anchor": True}
-        followup = await client.call_tool(
+        assert "follow_up {citation, grep}" in text
+        copied = await client.call_tool(
             tool,
             {
                 **base,
@@ -687,11 +693,33 @@ async def test_copying_indexed_followup_scope_filters_the_same_number_in_another
                 "plan": {"queries": [{"select": "lines", "where": {"grep": "30", "near": near}}]},
             },
         )
-        assert not followup.is_error, followup.content
-        text = followup.content[0].text
-        assert "[decision#line-2] The approved value is 30." in text
-        assert "[decision#line-1]" in text
-        assert "[prototype#line-1]" not in text
+        focus = {"citation": "decision#line-1", "grep": "30"}
+        continued = {"after_receipt": token, "neighbors": 0, "follow_up": focus}
+        followed = await client.call_tool(tool, continued)
+        for response in (copied, followed):
+            assert not response.is_error, response.content
+            text = response.content[0].text
+            assert "[decision#line-2] The approved value is 30." in text
+            assert "[decision#line-1]" in text
+            assert "[prototype#line-1]" not in text
+            assert "weighs 30 grams" not in text
+
+        wrong = await client.call_tool(
+            tool, {**continued, "follow_up": {**focus, "citation": "decision#line-6"}}
+        )
+        assert wrong.is_error and "citation offered for follow-up" in wrong.content[0].text
+        without_receipt = await client.call_tool(tool, {"follow_up": focus})
+        assert without_receipt.is_error and "needs after_receipt" in without_receipt.content[0].text
+
+        # An append changes the snapshot even though the anchors in this recording remain.
+        added = sources[1]["source"]
+        added["payload"]["conversation_id"] = "another"
+        added["payload"]["metadata"]["source_reference"] = "another"
+        path.write_text(json.dumps({"sources": [{"source": added}]}), encoding="utf-8")
+        assert main(["--workspace", str(workspace), "index-sources", "--input", str(path)]) == 0
+        capsys.readouterr()
+        stale = await client.call_tool(tool, continued)
+        assert stale.is_error and "stale_snapshot" in stale.content[0].text
 
 
 async def test_followup_preserves_original_stage_binding_when_head_already_delivered(

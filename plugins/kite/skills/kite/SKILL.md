@@ -127,7 +127,10 @@ If original wording leaves one detail uncertain, name that gap and use the
 smallest follow-up that can resolve it. For known citations, use
 `read_conversation_citations` if it is available, or run
 `evidence 'ID#SEGMENT' --context 2 --text` (repeat `--also 'ID#SEGMENT'` for
-other citations). When you need both those citations and more evidence,
+other citations). When a recall reply offers `Follow-up near` and the missing
+value is in that recording, use `recall_conversation_evidence` with
+`after_receipt` and `follow_up: {citation, grep}`. Use an explicit plan for
+searches spanning recordings. When you need both known citations and more evidence,
 include the references as `known_citations` in `recall_conversation_evidence`
 if that parameter is available. Give the missing details to the plan. To
 check a possible conflicting statement, make a focused

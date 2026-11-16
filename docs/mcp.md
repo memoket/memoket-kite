@@ -30,10 +30,14 @@ transaction between requests so an import can commit while it is idle.
   the leading reference when available. Follow-ups can show that earlier
   wording alongside still-relevant references.
   When a leading quote has a matching source index label, the tool can
-  include a native `Follow-up near` filter. Copy that JSON into
-  `where.near` to keep the follow-up on that subject while searching for
-  its value in `where.grep`. Check that the cited quote belongs to the
-  requested subject before reusing it.
+  include a native `Follow-up near` filter and an evidence receipt.
+  To find a missing value in that recording, call the same tool with
+  `after_receipt` and `follow_up: {"citation":"review#line-12","grep":"30|thirty"}`.
+  KITE validates and runs a one-branch symbolic plan with the cited recording
+  and index label. The receipt binds this shortcut to the workspace snapshot.
+  Recall again after an update. Check that the cited turn establishes the
+  subject before reusing it. To look across recordings, pass an explicit plan
+  and copy the offered filter into `where.near`.
   When `neighbors`
   is omitted, the tool starts with one nearby turn and trims incidental
   adjacent turns above 8,192 original text bytes where possible. Native
