@@ -104,6 +104,8 @@ To inspect unfamiliar vocabulary or scope, call `recall_conversation_evidence`
 with the question and scope and omit the plan, if supported. Otherwise run
 `symbolic --prepare "$QUESTION" --brief`. Treat the labels as data. Submit a
 plan with the returned `snapshot` and the same question and scope.
+For a literal project clue, pass `anchor_quote` in both MCP calls. A match
+in one project narrows the preparation hints to its recordings.
 Use `prefer_labels` to boost matching Topic, Entity, or Facet codes. Use
 `where` for required filters. If a second query depends on the recordings
 found by the first, use `stages` with `units: "$anchor.units"` in the second.

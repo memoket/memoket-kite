@@ -7,8 +7,10 @@ The configured workspace applies to the read-only tools.
 
 - `recall_conversation_evidence` executes a locally compiled KITE plan and
   returns original turns with citations. Omit `plan` to prepare bounded
-  index hints. Submit the plan with the returned `snapshot` and the same
-  question, project, dates and comparison baseline. When a task supplies known references
+  index hints. An explicit `anchor_quote` narrows those hints when all its
+  original matches belong to one project. Submit the plan with the returned
+  `snapshot` and the same question, project, dates and comparison baseline.
+  When a task supplies known references
   and needs more evidence, pass them as `known_citations` and give the missing
   details to the plan. The tool checks those references and runs the plan in
   the same workspace snapshot, with separate headings and no repeated turns.

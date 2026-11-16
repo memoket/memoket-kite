@@ -115,7 +115,8 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         anchor_quote: Annotated[
             str | None,
             Field(
-                description="Verbatim words quoted in the request to identify a project. Omit unit filters."
+                description="Verbatim words that identify a project. Supply with or without a plan. "
+                "A unique match scopes preparation hints to that project. Omit unit filters in the plan."
             ),
         ] = None,
         project: str | None = None,
@@ -173,6 +174,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                             recording_dates=dates,
                             since_version=since_version,
                             brief=True,
+                            anchor_quote=anchor_quote,
                         )
                     )
                 plan = plan.copy()

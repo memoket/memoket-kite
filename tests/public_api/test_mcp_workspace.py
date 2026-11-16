@@ -338,6 +338,13 @@ async def test_workspace_preparation_binds_index_hints_to_the_submitted_plan(tmp
                     "decision", "Heron", "2026-04-07", "Mina agreed we can ship next week.", launch
                 ),
                 note("old", "Falcon", "2026-04-05", "Do not ship the folding hinge design."),
+                note(
+                    "outside",
+                    "Falcon",
+                    "2026-04-06",
+                    "Ravi confirmed the local depot.",
+                    {"topics": ["depot"]},
+                ),
             ]
         },
     )
@@ -350,17 +357,37 @@ async def test_workspace_preparation_binds_index_hints_to_the_submitted_plan(tmp
         prepared = await client.call_tool(tool, args)
         assert not prepared.is_error
         hints = json.loads(prepared.content[0].text)
-        assert hints["kind"] == "symbolic_preparation" and hints["active_recordings"] == 2
+        assert hints["kind"] == "symbolic_preparation" and hints["active_recordings"] == 3
         assert hints["index"] == {
             "quoted_phrases": [
                 {"grep": r"folding\s+hinge", "matching_recordings": 1, "project_recordings": 2}
             ],
-            "topics": ["rollout (1)"],
+            "topics": ["depot (1)", "rollout (1)"],
             "entities": ["mina (1)"],
             "event": ["approval (1)"],
         }
         raw = cli("symbolic", "--prepare", question, "--brief", "--start-date", args["start_date"])
         assert hints["snapshot"] == raw["snapshot"]
+        exact = {
+            **args,
+            "question": "Implement the release agreement.",
+            "anchor_quote": "folding hinge",
+        }
+        scoped = await client.call_tool(tool, exact)
+        assert not scoped.is_error
+        exact_hints = json.loads(scoped.content[0].text)
+        assert exact_hints["index"]["topics"] == ["rollout (1)"]
+        assert exact_hints["index"]["quoted_phrases"][0]["anchor_project"] == "Heron"
+        anchored = await client.call_tool(
+            tool, {**exact, "snapshot": exact_hints["snapshot"], "plan": plan}
+        )
+        assert not anchored.is_error and "[decision#line]" in anchored.content[0].text
+        unscoped = await client.call_tool(
+            tool, {k: v for k, v in exact.items() if k != "start_date"}
+        )
+        assert not unscoped.is_error
+        mixed = json.loads(unscoped.content[0].text)["index"]
+        assert "depot (1)" in mixed["topics"] and "anchor_project" not in mixed["quoted_phrases"][0]
         request = {
             **args,
             "snapshot": hints["snapshot"],

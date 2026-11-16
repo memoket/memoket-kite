@@ -293,16 +293,17 @@ Question: {question}
     def normalize_plan(self, value):
         return _expand_source_wording(value)
 
-    def compile_quote_hints(self, question, vocab, store):
+    def compile_quote_hints(self, question, vocab, store, *, anchor_quote=None):
         """Check literal user quotations in the native source-line engine."""
-        phrases = list(
-            dict.fromkeys(
-                phrase.strip()
-                for match in _QUOTED_PHRASES.finditer(question)
-                for phrase in match.groups()
-                if phrase and 8 <= len(phrase.strip()) <= 128 and any(map(str.isalnum, phrase))
-            )
-        )[:3]
+        phrases = [
+            phrase.strip()
+            for match in _QUOTED_PHRASES.finditer(question)
+            for phrase in match.groups()
+            if phrase and 8 <= len(phrase.strip()) <= 128 and any(map(str.isalnum, phrase))
+        ]
+        if anchor_quote is not None:
+            phrases.insert(0, anchor_quote.strip())
+        phrases = list(dict.fromkeys(phrases))[:3]
         if not phrases:
             return []
         patterns = [_literal_quote_pattern(phrase) for phrase in phrases]
@@ -322,7 +323,10 @@ Question: {question}
             assigned = {projects[unit] for unit in matching if unit in projects}
             binding = {}
             if len(assigned) == 1 and matching <= projects.keys():
-                binding = {"project_recordings": project_counts[next(iter(assigned))]}
+                project = next(iter(assigned))
+                binding["project_recordings"] = project_counts[project]
+                if query == 0 and anchor_quote is not None:
+                    binding["anchor_project"] = project
             hints.append({"grep": pattern, "matching_recordings": len(matching), **binding})
         return hints
 
@@ -649,6 +653,7 @@ def prepare_symbolic_question(
     brief=False,
     since_version=None,
     recording_dates=None,
+    anchor_quote=None,
 ):
     if history_scope and since_version is not None:
         raise ToolError("invalid_input", "choose a historical cutoff or a baseline version")
@@ -666,15 +671,24 @@ def prepare_symbolic_question(
         **({"history": history} if history is not None else {}),
     }
     if brief:
-        topics, entities = profile.compile_label_index(question, index.vocab, index.store)
+        if anchor_quote is not None:
+            validate({**TEXT, "maxLength": 128}, anchor_quote, "symbolic anchor quotation")
+        quote_hints = profile.compile_quote_hints(
+            question, index.vocab, index.store, anchor_quote=anchor_quote
+        )
+        hint_profile = profile
+        if quote_hints and (anchor_project := quote_hints[0].get("anchor_project")):
+            hint_profile = SourceLineProfile(index.revisions, "", anchor_project, dates)
+            hint_profile.active_units.intersection_update(profile.scoped_units)
+        topics, entities = hint_profile.compile_label_index(question, index.vocab, index.store)
         units = sorted(index.store.units.values(), key=lambda u: (u.date, u.t, u.id))
         result["index"] = {
             "topics": topics,
             "entities": entities,
-            "facets": json.loads(profile.compile_facet_index(question, index.store)),
+            "facets": json.loads(hint_profile.compile_facet_index(question, index.store)),
             "recordings": json.loads(profile.compile_unit_index(units)),
         }
-        if quote_hints := profile.compile_quote_hints(question, index.vocab, index.store):
+        if quote_hints:
             result["index"]["quoted_phrases"] = quote_hints
     else:
         result["prompt"] = render_compile_prompt(question, index.vocab, index.store, profile)
