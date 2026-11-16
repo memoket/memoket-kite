@@ -6,7 +6,12 @@ Install KITE with the `agent,mcp` extras to serve a single existing workspace.
 The configured workspace applies to both read-only tools.
 
 - `recall_conversation_evidence` executes a locally compiled KITE plan and
-  returns original turns with citations.
+  returns original turns with citations. When a task supplies known references
+  and needs more evidence, pass them as `known_citations` and give the missing
+  details to the plan. The tool checks those references and runs the plan in
+  the same workspace snapshot, with separate headings and no repeated turns.
+  Project and date filters apply to the search plan. Explicit citations use
+  their own recording and revision identifiers.
 - `read_conversation_citations` accepts one to eight known citations and
   returns the original turns with optional surrounding context. A short
   `recording#segment` citation resolves against the active revision. Use a

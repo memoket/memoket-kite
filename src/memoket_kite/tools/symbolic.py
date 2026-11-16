@@ -25,6 +25,7 @@ from .context import (
     _RETRIEVAL_FILLERS,
     _SCHEDULE_CHANGE,
     _history_snapshot,
+    evidence_spans,
     render_context,
 )
 from .contracts import (
@@ -1412,8 +1413,31 @@ def _query_evidence_guide(pack):
     return ["Ranked matches by query. Read the original turns for decision status.", *lines]
 
 
+def _with_supplied_citations(pack, window):
+    supplied = [{**span} for span in evidence_spans(window)]
+    supplied[0]["heading"] = "Supplied citations and nearby turns"
+    if "windows" not in window:
+        supplied[0]["source_revision_active"] = window["source_revision_active"]
+    seen = {line["source_line_id"] for span in supplied for line in span["evidence"]}
+    matches = []
+    for span in pack["spans"]:
+        evidence = [line for line in span["evidence"] if line["source_line_id"] not in seen]
+        if evidence:
+            matches.append({**span, "evidence": evidence})
+    if matches:
+        matches[0]["heading"] = "Additional symbolic matches"
+    return {**pack, "spans": [*supplied, *matches]}
+
+
 def render_symbolic_context(pack, *, guide=False):
     lines = []
+    visible = pack
+    if window := pack.get("supplied_evidence"):
+        visible = _with_supplied_citations(pack, window)
+        for entry in window.get("unavailable", ()):
+            lines.append(f"Supplied citation {entry['index']}: {entry['message']}")
+    if error := pack.get("supplied_citation_error"):
+        lines.append(f"Supplied citations unavailable: {error}")
     if "history" not in pack:
         lines.append(f"Workspace v{pack['memory_version']}")
     if reused := pack.get("reused_plan"):
@@ -1494,7 +1518,7 @@ def render_symbolic_context(pack, *, guide=False):
         elif binding.get("unassigned_recordings"):
             lines.append(f"Stage {step['name']} matched recordings without a recorded project.")
     if pair := _dated_revision_pair(pack):
-        refs = _display_references(pack)
+        refs = _display_references(visible)
         if all(line_id in refs for line_id in pair):
             earlier, change = (refs[line_id] for line_id in pair)
             lines.append(
@@ -1502,7 +1526,7 @@ def render_symbolic_context(pack, *, guide=False):
                 f"with later date-change wording {change}."
             )
             lines.append("Check the subject and decision status before using other dated turns.")
-    if follow_up := _schedule_follow_up(pack):
+    if follow_up := _schedule_follow_up(visible):
         lines.append(follow_up)
     if omitted := pack.get("delivery_trimmed"):
         noun = "turn" if omitted == 1 else "turns"
@@ -1510,7 +1534,7 @@ def render_symbolic_context(pack, *, guide=False):
     evidence_guide = (_stage_evidence_guide(pack) or _query_evidence_guide(pack)) if guide else []
     if evidence_guide:
         lines.extend((*evidence_guide, ""))
-    lines.append(render_context(pack, compact_spacing=bool(evidence_guide)))
+    lines.append(render_context(visible, compact_spacing=bool(evidence_guide)))
     return "\n".join(lines)
 
 

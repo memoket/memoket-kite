@@ -4960,6 +4960,8 @@ def render_context(pack: dict, *, compact_spacing: bool = False) -> str:
         previous_revision = None
         shown_copy_groups = set()
         for span in part["spans"]:
+            if heading := span.get("heading"):
+                lines.append(heading)
             revision = span["evidence"][0]["revision_checksum"]
             if revision != previous_revision:
                 if local := span.get("local_started_at"):
@@ -5036,22 +5038,28 @@ def render_context(pack: dict, *, compact_spacing: bool = False) -> str:
     return "\n".join(lines).strip()
 
 
-def render_evidence(window: dict) -> str:
-    """Render a single or batched citation lookup in original turn order."""
+def evidence_spans(window: dict) -> list[dict]:
     if "windows" in window:
-        lines = [render_context({"spans": window["windows"]})]
-        lines.extend(
-            f"Citation {entry['index']}: {entry['message']}"
-            for entry in window.get("unavailable", ())
-        )
-        return "\n".join(lines)
-    spans = [
+        return window["windows"]
+    return [
         {
             "source_date": window["source_time"],
             "evidence": [*window["before"], window["evidence"], *window["after"]],
         }
     ]
+
+
+def render_evidence(window: dict) -> str:
+    """Render a single or batched citation lookup in original turn order."""
+    spans = evidence_spans(window)
     text = render_context({"spans": spans})
+    if "windows" in window:
+        return "\n".join(
+            (
+                text,
+                *(f"Citation {e['index']}: {e['message']}" for e in window.get("unavailable", ())),
+            )
+        )
     if not window["source_revision_active"]:
         return f"Historical revision: {window['evidence']['revision_checksum']}\n{text}"
     return text

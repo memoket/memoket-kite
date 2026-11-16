@@ -29,6 +29,11 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
     from memoket_kite.tools.symbolic import render_symbolic_context, symbolic_context
     from memoket_kite.tools.workspace import Workspace
 
+    CitationList = Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=1024)]],
+        Field(min_length=1, max_length=8),
+    ]
+
     server = MCPServer(
         "KITE Conversation Memory",
         instructions=(
@@ -76,6 +81,14 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         limit: Annotated[int, Field(strict=True, ge=1, le=100)] = 6,
         neighbors: Annotated[int, Field(strict=True, ge=0, le=4)] = 1,
         max_bytes: Annotated[int, Field(strict=True, ge=128, le=32768)] = 3600,
+        known_citations: Annotated[
+            CitationList | None,
+            Field(
+                description="Verify supplied recording#segment references or revision-bound IDs "
+                "in this call, and use the plan to search for missing details."
+            ),
+        ] = None,
+        workspace_version: Annotated[int | None, Field(strict=True, ge=0)] = None,
     ) -> str:
         """Find original meeting or conversation quotes for a task using KITE's symbolic search.
 
@@ -83,6 +96,8 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         Submit a plan with the task when its subject is known. Returned quotes
         carry recording dates and citation IDs. Check the actual wording for
         decision status and use the supported evidence in the task.
+        If the task supplies citations and needs additional evidence, include
+        them as known_citations and search for the remaining details in one call.
         """
         plan = plan.copy()
         retry_date_subject = plan.pop("retry_date_subject", True)
@@ -100,6 +115,8 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         }
         try:
             with Workspace.open(workspace_path, read_only=True) as workspace:
+                if workspace_version is not None and workspace_version != workspace.version():
+                    raise ToolError("stale_snapshot", "recall again against the current workspace")
                 result = symbolic_context(
                     workspace,
                     plan=request,
@@ -110,6 +127,15 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                     neighbors=neighbors,
                     max_bytes=max_bytes,
                 )
+                if known_citations is not None:
+                    try:
+                        result["supplied_evidence"] = read_evidence(
+                            workspace, known_citations, radius=2, byte_budget=4096
+                        )
+                    except ToolError as exc:
+                        if exc.code not in {"not_found", "ambiguous_source"}:
+                            raise
+                        result["supplied_citation_error"] = str(exc)
         except ToolError as exc:
             raise MCPToolError(f"{exc.code}: {exc}") from exc
         return render_symbolic_context(result)
@@ -119,10 +145,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         structured_output=False,
     )
     def read_conversation_citations(
-        citations: Annotated[
-            list[Annotated[str, Field(min_length=1, max_length=1024)]],
-            Field(min_length=1, max_length=8),
-        ],
+        citations: CitationList,
         neighbors: Annotated[int, Field(strict=True, ge=0, le=20)] = 2,
         byte_budget: Annotated[int, Field(strict=True, ge=128, le=32768)] = 4096,
         workspace_version: Annotated[int | None, Field(strict=True, ge=0)] = None,

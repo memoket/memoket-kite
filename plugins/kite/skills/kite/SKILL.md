@@ -119,7 +119,10 @@ If original wording leaves one detail uncertain, name that gap and use the
 smallest follow-up that can resolve it. For known citations, use
 `read_conversation_citations` if it is available, or run
 `evidence 'ID#SEGMENT' --context 2 --text` (repeat `--also 'ID#SEGMENT'` for
-other citations). To check a possible conflicting statement, make a focused
+other citations). When you need both those citations and more evidence,
+include the references as `known_citations` in `recall_conversation_evidence`
+if that parameter is available. Give the missing details to the plan. To
+check a possible conflicting statement, make a focused
 symbolic query with the same recording window and the wording that would
 support the conflict. Search original files if an evidence gap remains.
 

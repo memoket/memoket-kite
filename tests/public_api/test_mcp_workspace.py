@@ -75,6 +75,20 @@ async def test_workspace_tool_delivers_cli_evidence_and_reads_the_latest_snapsho
         assert "prior#decision" in first.content[0].text
         assert "other#decision" not in first.content[0].text
         assert "Query 2 matched no original turns." in first.content[0].text
+        combined = await client.call_tool(
+            recall,
+            {
+                **args,
+                "known_citations": ["prior#decision", "other#decision", "other#absent"],
+                "workspace_version": 1,
+            },
+        )
+        assert not combined.is_error
+        text = combined.content[0].text
+        assert "Supplied citation 3:" in text and "Supplied citations and nearby turns" in text
+        assert text.count("[prior#decision]") == 1
+        assert "[other#decision]" in text and "Additional symbolic matches" not in text
+        assert "Query 2 matched no original turns." in text
 
         call(
             "index-sources",
@@ -89,6 +103,16 @@ async def test_workspace_tool_delivers_cli_evidence_and_reads_the_latest_snapsho
         second = await client.call_tool(recall, args)
         assert not second.is_error and second.structured_content is None
         assert "revised#decision" in second.content[0].text
+        stale = await client.call_tool(recall, {**args, "workspace_version": 1})
+        assert stale.is_error and "stale_snapshot:" in stale.content[0].text
+        combined = await client.call_tool(
+            recall, {**args, "known_citations": ["prior#decision"], "workspace_version": 2}
+        )
+        assert not combined.is_error
+        text = combined.content[0].text
+        assert text.count("[prior#decision]") == 1
+        assert "Additional symbolic matches\nRecording date: 2026-09-03" in text
+        assert "[revised#decision]" in text
         assert second.content[0].text.strip() == call(
             "symbolic",
             {"question": args["question"], "plan": plan, "retry_date_subject": True},
@@ -178,6 +202,17 @@ async def test_citations_preserve_revision_and_deduplicate_context(tmp_path, cap
         assert f"Revision: {source['expected_checksum']}" in text
         assert "threshold of five." in text and "threshold of three." in text
         assert "[review#reply]" not in text
+        request = {
+            "question": "What is the shipping threshold?",
+            "plan": {"queries": [{"select": "lines", "where": {"grep": "Use a threshold"}}]},
+            "known_citations": [old_id],
+        }
+        combined = await client.call_tool("recall_conversation_evidence", request)
+        assert not combined.is_error
+        text = combined.content[0].text
+        assert f"Revision: {source['expected_checksum']}" in text
+        assert "[review#decision] Use a threshold of five." in text
+        assert "[review#decision] Use a threshold of three." in text
 
         cli(
             "start",
@@ -191,6 +226,10 @@ async def test_citations_preserve_revision_and_deduplicate_context(tmp_path, cap
         gone = await client.call_tool(tool, {"citations": [old_id, "review#decision"]})
         assert gone.is_error and "not_found:" in gone.content[0].text
         assert "threshold of five." not in gone.content[0].text
+        combined = await client.call_tool("recall_conversation_evidence", request)
+        assert not combined.is_error
+        assert "Supplied citations unavailable:" in combined.content[0].text
+        assert "threshold of five." not in combined.content[0].text
 
 
 async def test_workspace_lookup_does_not_create_a_missing_store(tmp_path):
