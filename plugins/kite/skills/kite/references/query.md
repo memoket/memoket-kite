@@ -14,6 +14,12 @@ When the question supplies the subject and useful search terms, submit
 KITE resolves the scope and executes against one snapshot. The trace reports
 `host_inline_plan`. Inspect the compiler's candidate vocabulary first when
 choosing unfamiliar topic, entity, facet or recording names.
+For a direct or reused search, add `--text --delivery-guide` to see ranked
+references for parallel queries or citations selected by dependent stages.
+The guide uses only citations in the returned pack. The original lines and
+recording dates remain available for verifying the result. The guide identifies
+retrieval matches, which can include proposals as well as decisions.
+
 Use `where.date_wording` with `"calendar"` for a spoken date or `"change"`
 for explicit date-change wording in the same turn. Combine with a subject
 expression or `near` for nearby subject turns. KITE compiles the field to a

@@ -9008,6 +9008,57 @@ def test_symbolic_delivery_guide_keeps_quotes_and_uses_the_selecting_stage(work)
     call("symbolic", "--delivery-guide", payload=request, error="invalid_input")
 
 
+def test_symbolic_text_guide_uses_ranked_original_quotes_from_parallel_queries(work):
+    _, call = work
+    previous = "The freezer threshold was originally five."
+    proposal = "We are thinking about a threshold of two."
+    changed = "We have reduced the freezer threshold to three."
+    rows = {"old-threshold": previous, "proposal": proposal, "changed-threshold": changed}
+    call(
+        "index-sources",
+        payload={
+            "sources": [{"source": text_input(key, value)["source"]} for key, value in rows.items()]
+        },
+    )
+    plan = {
+        "queries": [
+            {
+                "select": "lines",
+                "where": {"grep": "threshold"},
+                "prefer": ["originally"],
+            },
+            {
+                "select": "lines",
+                "where": {"grep": "threshold", "change_wording": "reported"},
+            },
+        ]
+    }
+    plain = call("symbolic", "--text", payload=plan)
+    guided = call("symbolic", "--text", "--delivery-guide", payload=plan)
+    assert "- Query 1 (originally): old-threshold#text-1" in guided
+    assert "- Query 2 (reported change): changed-threshold#text-1" in guided
+    assert {line for line in guided.splitlines() if line.startswith("[")} == {
+        line for line in plain.splitlines() if line.startswith("[")
+    }
+    capped = call("symbolic", "--delivery-bytes", "600", "--delivery-guide", payload=plan).strip()
+    assert len(capped.encode()) <= 600
+    assert json.loads(capped) == guided.strip()
+    call("symbolic", "--save", "quota", payload=plan)
+    reused = call("symbolic", "--reuse", "quota", "--text", "--delivery-guide")
+    assert "Saved plan quota" in reused
+    assert guided.splitlines()[1:] == reused.splitlines()[2:]
+    call(
+        "symbolic",
+        "--text",
+        "--save",
+        "guide",
+        "--delivery-guide",
+        payload=plan,
+        error="invalid_input",
+    )
+    call("symbolic", "--text", "--prepare", "threshold", "--delivery-guide", error="invalid_input")
+
+
 def test_context_uses_index_labels_only_for_their_linked_original_lines(work):
     directory, call = work
     labels = {

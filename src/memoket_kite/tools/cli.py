@@ -332,7 +332,7 @@ def _parser() -> argparse.ArgumentParser:
     symbolic.add_argument(
         "--delivery-guide",
         action="store_true",
-        help="show which stages selected the delivered lines (requires --delivery-bytes)",
+        help="show ranked original quotes by query or stage, with --text or --delivery-bytes",
     )
     query = commands.add_parser("query", help="run a read-only trace without saving a checkpoint")
     query.add_argument("--pipeline", choices=TRACE_PIPELINES, default="topic-tracing")
@@ -1026,8 +1026,14 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
         }
         if args.delivery_receipt and args.delivery_bytes is None:
             raise ToolError("invalid_input", "--delivery-receipt requires --delivery-bytes")
-        if args.delivery_guide and args.delivery_bytes is None:
-            raise ToolError("invalid_input", "--delivery-guide requires --delivery-bytes")
+        if args.delivery_guide:
+            if args.prepare is not None or args.save is not None:
+                raise ToolError("invalid_input", "--delivery-guide requires a direct search")
+            if not args.text and args.delivery_bytes is None:
+                raise ToolError(
+                    "invalid_input", "--delivery-guide requires --text or --delivery-bytes"
+                )
+            options["delivery"] = True
         if args.delivery_bytes is not None:
             if args.save is not None or args.prepare is not None:
                 raise ToolError("invalid_input", "--delivery-bytes requires an executed search")
@@ -1327,7 +1333,7 @@ def main(argv=None) -> int:
             )
         )
     elif args.command == "symbolic" and args.prepare is None and args.text:
-        print(render_symbolic_context(result))
+        print(render_symbolic_context(result, guide=args.delivery_guide))
     elif args.command == "context" and args.text:
         print(render_context(result))
     elif args.command == "source-compare" and args.text:

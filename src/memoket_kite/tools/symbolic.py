@@ -1376,6 +1376,42 @@ def _stage_evidence_guide(pack):
     )
 
 
+def _query_evidence_guide(pack):
+    if not (heads := pack.get("_query_heads")):
+        return []
+    references = _display_references(pack)
+    shown = set()
+    lines = []
+    for number, query in enumerate(pack["plan"]["queries"]):
+        refs = []
+        for hit in heads.get(number, ()):
+            if hit in references:
+                refs.append(references[hit])
+            if len(refs) == 2:
+                break
+        if not refs:
+            continue
+        shown.update(refs)
+        where = query["where"]
+        patterns = where.get("grep_all", ())
+        if _REPORTED_CHANGE_WORDING in patterns:
+            cue = "reported change"
+        elif _DATE_WORDING["change"] in patterns:
+            cue = "date-change wording"
+        elif _DATE_WORDING["calendar"] in patterns:
+            cue = "calendar wording"
+        else:
+            cue = " / ".join(query.get("prefer", ())[:2]) or where.get("grep", "")
+            cue = " ".join(cue.split())
+            if len(cue) > 36:
+                cue = cue[:35] + "…"
+        label = f" ({cue})" if cue else ""
+        lines.append(f"- Query {number + 1}{label}: " + ", ".join(refs))
+    if len(lines) < 2 or len(shown) < 2:
+        return []
+    return ["Ranked matches by query. Read the original turns for decision status.", *lines]
+
+
 def render_symbolic_context(pack, *, guide=False):
     lines = []
     if "history" not in pack:
@@ -1471,10 +1507,10 @@ def render_symbolic_context(pack, *, guide=False):
     if omitted := pack.get("delivery_trimmed"):
         noun = "turn" if omitted == 1 else "turns"
         lines.append(f"Quote delivery omitted {omitted} original {noun} to fit its byte budget.")
-    stage_guide = _stage_evidence_guide(pack) if guide else []
-    if stage_guide:
-        lines.extend((*stage_guide, ""))
-    lines.append(render_context(pack, compact_spacing=bool(stage_guide)))
+    evidence_guide = (_stage_evidence_guide(pack) or _query_evidence_guide(pack)) if guide else []
+    if evidence_guide:
+        lines.extend((*evidence_guide, ""))
+    lines.append(render_context(pack, compact_spacing=bool(evidence_guide)))
     return "\n".join(lines)
 
 
@@ -1611,6 +1647,8 @@ def execute_source_plan(
     source_change = {}
 
     def run(units, lane=None, *, branch_limit=0):
+        if delivery and "queries" in plan:
+            branch_limit = max(branch_limit, 2)
         rows, trace = execute_plan(
             index.store,
             index.vocab,
@@ -1800,6 +1838,7 @@ def execute_source_plan(
             {
                 "_quote_order": quote_order,
                 "_selected_line_branches": selected_branches,
+                "_query_heads": trace.line_branch_candidates if "queries" in plan else {},
                 "_changed_checksums": changed_checksums,
                 "_linked_change": reserved,
             }
