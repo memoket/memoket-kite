@@ -157,6 +157,7 @@ _ALIAS_UNCERTAINTY = re.compile(
 )
 _ALIAS_CLAUSE = re.compile(r"(?<=[.。!！;；])\s*")
 _LARGE_QUOTE_BYTES = 8192
+RECEIPT_QUOTE_BYTES = 3600
 SYMBOLIC_RECORDING_DATES = object_schema({}, {"start_date": DATE, "end_date": DATE})
 
 
@@ -2173,6 +2174,9 @@ def render_symbolic_context(
             f"Follow-up omitted {prior_turns} original "
             f"{'turn' if prior_turns == 1 else 'turns'} already delivered with the receipt."
         )
+        if matches := pack.get("previously_delivered_matches"):
+            references = ", ".join(f"[{ref}]" for ref in matches)
+            lines.append(f"Earlier direct matches still in this search: {references}.")
     if reused := pack.get("reused_plan"):
         lines.append(
             f"Saved plan {reused['run_id']} (compiled at v{reused['compiled_at_version']})"
@@ -2313,7 +2317,9 @@ def render_symbolic_context(
             f"Omitted {omitted} incidental adjacent {'turn' if omitted == 1 else 'turns'}. "
             "Set neighbors explicitly or read a citation to inspect more context."
         )
-    if any(branch.get("lead_source_line_ids") for branch in pack.get("branch_coverage", ())):
+    if pack["quote_bytes"] >= RECEIPT_QUOTE_BYTES and any(
+        branch.get("lead_source_line_ids") for branch in pack.get("branch_coverage", ())
+    ):
         refs = _display_references(visible)
         roots = {step["name"] for step in pack["trace"] if "project_binding" in step}
         branch_refs = []
@@ -2800,7 +2806,7 @@ def execute_source_plan(
             traces,
             spans,
             delivery=delivery,
-            guide_order=quote_order if guide_large else (),
+            guide_order=quote_order if large_reply_guide else (),
         ),
         **({"omitted_adjacent_turns": omitted_neighbors} if omitted_neighbors else {}),
         **({"schedule_comparison": comparison} if comparison is not None else {}),

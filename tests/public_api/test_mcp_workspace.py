@@ -436,6 +436,7 @@ async def test_followup_receipt_omits_seen_turns_and_returns_revised_evidence(tm
         assert f"[review#decision] {quota}" in first
         repeat = await recall(request, after_receipt=first_receipt)
         assert "No new original turns in the selected results." in repeat
+        assert "Earlier direct matches still in this search: [review#decision]." in repeat
         assert "No evidence matched" not in repeat and quota not in repeat
         assert receipt_line.search(repeat)[1] == first_receipt
         independent = await recall(request)
@@ -464,6 +465,7 @@ async def test_followup_receipt_omits_seen_turns_and_returns_revised_evidence(tm
         cli("index-sources", value={"sources": [revised]})
         change = await recall(plan, after_receipt=second_receipt)
         assert "Workspace v2" in change and f"[review#decision] {revised_text}" in change
+        assert "Earlier direct matches still in this search: [session#decision]." in change
         assert quota not in change and window not in change
 
         stale = await client.call_tool(tool, {**request, "after_receipt": "0" * 24})
@@ -490,6 +492,52 @@ async def test_followup_receipt_omits_seen_turns_and_returns_revised_evidence(tm
         )
         saved_bulk = await client.call_tool("reuse_conversation_query", {"run_id": "spotcheck"})
         assert not saved_bulk.is_error and receipt_line.search(saved_bulk.content[0].text)
+
+
+async def test_followup_keeps_a_direct_citation_handle_and_omits_incidental_ones(tmp_path, capsys):
+    workspace = tmp_path / "workspace"
+    source = {
+        "format": "conversation",
+        "payload": {
+            "conversation_id": "design",
+            "source": "test",
+            "metadata": {"source_reference": "design"},
+            "segments": [
+                {"segment_id": "approved", "text": "The rollout limit is 30."},
+                {"segment_id": "discussion", "text": "The prototype weight is 30 grams."},
+                {"segment_id": "fixture", "text": "The fixture weighs 30 grams."},
+            ],
+        },
+    }
+    data = tmp_path / "input.json"
+    data.write_text(json.dumps({"sources": [{"source": source}]}), encoding="utf-8")
+    assert main(["--workspace", str(workspace), "index-sources", "--input", str(data)]) == 0
+    capsys.readouterr()
+
+    def request(pattern, **options):
+        return {
+            "question": "Find the rollout limit.",
+            "plan": {"queries": [{"select": "lines", "where": {"grep": pattern}}]},
+            **options,
+        }
+
+    async with Client(create_workspace_server(workspace), raise_exceptions=False) as client:
+        recall = "recall_conversation_evidence"
+        first = await client.call_tool(recall, request("rollout", include_receipt=True))
+        assert not first.is_error
+        initial = first.content[0].text
+        token = re.search(r"Evidence receipt ([a-f0-9]{24})\.", initial)[1]
+        assert "[design#discussion] The prototype weight" in initial
+        more = await client.call_tool(recall, request("30", after_receipt=token, neighbors=1))
+        assert not more.is_error
+        text = more.content[0].text
+        assert "Earlier direct matches still in this search: [design#approved]." in text
+        assert "[design#fixture] The fixture weighs 30 grams." in text
+        assert "The rollout limit is 30." not in text
+        assert "[design#discussion]" not in text
+        outside = await client.call_tool(recall, request("grams", after_receipt=token, neighbors=1))
+        assert not outside.is_error
+        assert "[design#approved]" not in outside.content[0].text
 
 
 async def test_large_recall_guides_branches_and_trims_only_implicit_context(tmp_path, capsys):

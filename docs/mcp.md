@@ -20,8 +20,9 @@ transaction between requests so an import can commit while it is idle.
   the same workspace snapshot, with separate headings and no repeated turns.
   Project and date filters apply to the search plan. Explicit citations use
   their own recording and revision identifiers.
-  Large results include up to two cited direct matches per query branch so
-  the reader can locate evidence in the original turns. When `neighbors`
+  Results with at least 3,600 original text bytes can include up to two cited
+  direct matches per query branch so the reader can locate evidence in the
+  original turns. When `neighbors`
   is omitted, the tool starts with one nearby turn and trims incidental
   adjacent turns above 8,192 original text bytes where possible. Native
   matches, supporting turns, and complete recording scopes keep their context.
@@ -32,7 +33,10 @@ transaction between requests so an import can commit while it is idle.
   Request one on a smaller result with `include_receipt: true`. To fill a
   specific gap, pass that token as `after_receipt` with a focused plan. The
   tool omits originals already delivered in that receipt chain from the
-  selected result. A revised turn has a new evidence ID, so it can appear
+  selected result. It shows up to four references to earlier lead turns
+  that remain direct matches in the current selected result. Read the cited
+  wording to decide which turn supports each claim. A revised turn has a new
+  evidence ID, so it can appear
   after a workspace update. Use `known_citations` to reread particular
   references, or omit `after_receipt` to replay all matching quotes.
   Receipts retain up to 4,096 recent turns and expire when the local server

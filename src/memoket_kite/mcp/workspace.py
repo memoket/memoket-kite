@@ -3,6 +3,7 @@
 import json
 from collections import OrderedDict
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from itertools import zip_longest
 from pathlib import Path
 from secrets import token_hex
@@ -15,6 +16,12 @@ from .server import _MCP_INSTALL_HINT
 
 if TYPE_CHECKING:
     from mcp.server import MCPServer
+
+
+@dataclass(frozen=True)
+class _EvidenceReceipt:
+    turns: tuple[str, ...] = ()
+    leads: tuple[str, ...] = ()
 
 
 def _render_preparation(prepared: dict) -> str:
@@ -70,6 +77,8 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
     from memoket_kite.tools.contracts import ToolError
     from memoket_kite.tools.retrieve import read_evidence
     from memoket_kite.tools.symbolic import (
+        RECEIPT_QUOTE_BYTES,
+        _display_references,
         prepare_symbolic_question,
         render_symbolic_context,
         reuse_symbolic_context,
@@ -82,11 +91,11 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         list[Annotated[str, Field(min_length=1, max_length=1024)]],
         Field(min_length=1, max_length=8),
     ]
-    receipts: OrderedDict[str, tuple[str, ...]] = OrderedDict()
+    receipts: OrderedDict[str, _EvidenceReceipt] = OrderedDict()
     receipt_lock = Lock()
     reader = WorkspaceReader(workspace_path)
 
-    def attach_receipt(result, *, seen=(), parent=None):
+    def attach_receipt(result, *, prior=_EvidenceReceipt(), parent=None):
         spans = result["spans"]
         delivered = [line["source_line_id"] for span in spans for line in span["evidence"]]
         if window := result.get("supplied_evidence"):
@@ -103,14 +112,52 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                 if pair["current_source_line_id"] in current
             )
         if delivered:
+            anchors = {step["name"] for step in result["trace"] if "project_binding" in step}
+            leads = (
+                line_id
+                for branch in result["branch_coverage"]
+                if branch.get("stage") not in anchors
+                for line_id in branch.get("lead_source_line_ids", ())
+                if line_id in delivered
+            )
             receipt = token_hex(12)
             with receipt_lock:
-                receipts[receipt] = tuple(dict.fromkeys((*seen, *delivered)))[-4096:]
+                turns = tuple(dict.fromkeys((*prior.turns, *delivered)))[-4096:]
+                lead_ids = tuple(dict.fromkeys((*prior.leads, *leads)))[-32:]
+                receipts[receipt] = _EvidenceReceipt(turns, lead_ids)
                 if len(receipts) > 48:
                     receipts.popitem(last=False)
             result["delivery_receipt"] = receipt
         elif parent is not None:
             result["delivery_receipt"] = parent
+
+    def omit_delivered(result, prior):
+        selected = result["spans"]
+        seen = set(prior.turns)
+        direct = {
+            line["source_line_id"]
+            for span in selected
+            for line in span["evidence"]
+            if line["role"] == "symbolic_match" and line["source_line_id"] in seen
+        }
+        if window := result.get("supplied_evidence"):
+            direct.difference_update(
+                line["source_line_id"]
+                for span in evidence_spans(window)
+                for line in span["evidence"]
+            )
+        if lead_matches := direct.intersection(prior.leads):
+            refs = _display_references(result)
+            result["previously_delivered_matches"] = [
+                refs[line_id] for line_id in prior.leads if line_id in lead_matches
+            ][:4]
+        result["spans"] = [
+            span for span in selected if span["evidence"][0]["source_line_id"] not in seen
+        ]
+        result["previously_delivered_turns"] = len(selected) - len(result["spans"])
+        result["quote_bytes"] = sum(
+            len(line["text"].encode()) for span in result["spans"] for line in span["evidence"]
+        )
 
     @asynccontextmanager
     async def lifespan(_server):
@@ -129,8 +176,9 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             "index labels, prepare without a plan first. This server is bound to one configured "
             "KITE workspace. Use the original turns and citation IDs. When the quotes establish "
             "the requested decisions, continue the task using those citations. If a decision or "
-            "its status remains unclear, search for that gap and pass the latest Evidence receipt "
-            "as after_receipt to recall_conversation_evidence."
+            "its status remains unclear, search for that specific gap and pass the latest Evidence "
+            "receipt as after_receipt. Previously quoted direct matches can still support the task. "
+            "Cite the turn that states the requested decision and its subject."
         ),
     )
 
@@ -234,12 +282,12 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             for key, value in (("start_date", start_date), ("end_date", end_date))
             if value is not None
         }
-        seen = ()
+        prior = _EvidenceReceipt()
         try:
             if after_receipt is not None:
                 with receipt_lock:
-                    seen = receipts.get(after_receipt)
-                if seen is None:
+                    prior = receipts.get(after_receipt)
+                if prior is None:
                     raise ToolError("not_found", "evidence receipt expired. Recall without it")
             with reader.open() as workspace:
                 if workspace_version is not None and workspace_version != workspace.version():
@@ -295,17 +343,13 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         except ToolError as exc:
             raise MCPToolError(f"{exc.code}: {exc}") from exc
         if after_receipt is not None:
-            prior = set(seen)
-            selected = result["spans"]
-            result["spans"] = [
-                span for span in selected if span["evidence"][0]["source_line_id"] not in prior
-            ]
-            result["previously_delivered_turns"] = len(selected) - len(result["spans"])
-            result["quote_bytes"] = sum(
-                len(line["text"].encode()) for span in result["spans"] for line in span["evidence"]
-            )
-        if after_receipt is not None or include_receipt or result["quote_bytes"] >= 3600:
-            attach_receipt(result, seen=seen, parent=after_receipt)
+            omit_delivered(result, prior)
+        if (
+            after_receipt is not None
+            or include_receipt
+            or result["quote_bytes"] >= RECEIPT_QUOTE_BYTES
+        ):
+            attach_receipt(result, prior=prior, parent=after_receipt)
         return render_symbolic_context(result)
 
     @server.tool(
@@ -385,7 +429,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                 )
         except ToolError as exc:
             raise MCPToolError(f"{exc.code}: {exc}") from exc
-        if include_receipt or result["quote_bytes"] >= 3600:
+        if include_receipt or result["quote_bytes"] >= RECEIPT_QUOTE_BYTES:
             attach_receipt(result)
         return render_symbolic_context(result)
 
