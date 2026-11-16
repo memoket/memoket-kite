@@ -157,7 +157,6 @@ _ALIAS_UNCERTAINTY = re.compile(
 )
 _ALIAS_CLAUSE = re.compile(r"(?<=[.。!！;；])\s*")
 _LARGE_QUOTE_BYTES = 8192
-RECEIPT_QUOTE_BYTES = 3600
 SYMBOLIC_RECORDING_DATES = object_schema({}, {"start_date": DATE, "end_date": DATE})
 
 
@@ -2312,6 +2311,8 @@ def render_symbolic_context(
         lines.append(
             f"Recording dates: {dates.get('start_date', 'any')} to {dates.get('end_date', 'any')}"
         )
+    if any(step["stage"] == "receipt_recording_scope" for step in pack["trace"]):
+        lines.append("Recording scope carried forward from the evidence receipt.")
     if show_complete_scope:
         if coverage := _complete_scope_message(visible):
             lines.append(coverage)

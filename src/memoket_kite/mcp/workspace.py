@@ -26,12 +26,20 @@ class _CitationFocus:
 
 
 @dataclass(frozen=True)
+class _RecallScope:
+    project: str | None = None
+    anchor_quote: str | None = None
+    dates: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
 class _EvidenceReceipt:
     turns: tuple[str, ...] = ()
     leads: tuple[str, ...] = ()
     wording: tuple[tuple[str, tuple[str, ...]], ...] = ()
     snapshot: tuple[str, int] | None = None
     focuses: tuple[tuple[str, _CitationFocus], ...] = ()
+    scope: _RecallScope = _RecallScope()
 
     def followup_plan(self, snapshot, citation, grep):
         from memoket_kite.tools.contracts import ToolError
@@ -109,7 +117,6 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
     from memoket_kite.tools.contracts import ToolError
     from memoket_kite.tools.retrieve import read_evidence
     from memoket_kite.tools.symbolic import (
-        RECEIPT_QUOTE_BYTES,
         indexed_followup_references,
         indexed_followup_scopes,
         prepare_symbolic_question,
@@ -136,7 +143,9 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
     receipt_lock = Lock()
     reader = WorkspaceReader(workspace_path)
 
-    def attach_receipt(result, workspace, *, prior=_EvidenceReceipt(), parent=None):
+    def attach_receipt(
+        result, workspace, *, prior=_EvidenceReceipt(), parent=None, scope=_RecallScope()
+    ):
         spans = result["spans"]
         delivered = [line["source_line_id"] for span in spans for line in span["evidence"]]
         if window := result.get("supplied_evidence"):
@@ -179,18 +188,19 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                 turns = tuple(dict.fromkeys((*prior.turns, *delivered)))[-4096:]
                 lead_ids = tuple(dict.fromkeys(leads))[-32:]
                 receipts[receipt] = _EvidenceReceipt(
-                    turns,
-                    lead_ids,
-                    tuple((line, wording[line]) for line in lead_ids if line in wording),
-                    snapshot,
-                    tuple(
+                    turns=turns,
+                    leads=lead_ids,
+                    wording=tuple((line, wording[line]) for line in lead_ids if line in wording),
+                    snapshot=snapshot,
+                    focuses=tuple(
                         (ref, focus) for ref, focus in focuses.items() if focus.source_line in turns
                     )[-8:],
+                    scope=scope,
                 )
                 if len(receipts) > 48:
                     receipts.popitem(last=False)
             result["delivery_receipt"] = receipt
-        elif parent is not None:
+        elif parent is not None and scope == prior.scope:
             result["delivery_receipt"] = parent
 
     @asynccontextmanager
@@ -211,7 +221,8 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             "KITE workspace. Use the original turns and citation IDs. When the quotes establish "
             "the requested decisions, continue the task using those citations. If a decision or "
             "its status remains unclear, search for that specific gap and pass the latest Evidence "
-            "receipt as after_receipt. Previously quoted direct matches can still support the task. "
+            "receipt as after_receipt, keeping the original recording scope by default. "
+            "Previously quoted direct matches can still support the task. "
             "Cite the turn that states the requested decision and its subject. "
             "When a reply offers 'Follow-up near' for the subject and you need its date, amount, "
             "or value in that recording, call with after_receipt and follow_up: {citation, grep}."
@@ -322,12 +333,13 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                 pattern=r"^[0-9a-f]{24}$",
                 description="Use the previous Evidence receipt when looking for new details. "
                 "Previously delivered matches do not occupy the direct quote budget. "
+                "For the same scope, omit project, anchor_quote and recording dates. "
                 "A nearby turn can still be quoted to explain a new match.",
             ),
         ] = None,
         include_receipt: Annotated[
             bool,
-            Field(description="Request a follow-up receipt even for a short pack."),
+            Field(description="Accepted for compatibility. Quoted results include a receipt."),
         ] = False,
     ) -> str:
         """Find original meeting or conversation quotes for a task using KITE's symbolic search.
@@ -344,9 +356,10 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         Set plan.retry_index_subject to false to execute the submitted plan alone.
         If the task supplies citations and needs additional evidence, include
         them as known_citations and search for the remaining details in one call.
-        Replies offering a citation follow-up include an Evidence receipt.
+        Replies with quotes include an Evidence receipt.
         Search around that cited subject by passing follow_up and after_receipt.
-        For gaps across recordings, use the receipt with a focused plan.
+        For gaps across recordings, use the receipt with a focused plan. Omit
+        the project or quote anchor and dates to carry their existing scope.
         """
         dates = {
             key: value
@@ -363,7 +376,10 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             with reader.open() as workspace:
                 if workspace_version is not None and workspace_version != workspace.version():
                     raise ToolError("stale_snapshot", "recall again against the current workspace")
+                if prior.snapshot and prior.snapshot[0] != workspace.snapshot_identity()[0]:
+                    raise ToolError("stale_snapshot", "evidence receipt is from another workspace")
                 focus = None
+                inherited = False
                 if follow_up is not None:
                     if (
                         after_receipt is None
@@ -409,6 +425,17 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                     )
                 else:
                     plan = plan.copy()
+                    if (
+                        prior.scope != _RecallScope()
+                        and project is None
+                        and anchor_quote is None
+                        and snapshot is None
+                        and not dates
+                        and not _plan_sets_recordings(plan)
+                    ):
+                        project, anchor_quote = prior.scope.project, prior.scope.anchor_quote
+                        dates = dict(prior.scope.dates)
+                        inherited = True
                     request = {
                         "question": question,
                         "retry_date_subject": plan.pop("retry_date_subject", True),
@@ -441,6 +468,8 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                     result["trace"].insert(
                         0, {"stage": "citation_followup", "source_line_id": focus.source_line}
                     )
+                if inherited:
+                    result["trace"].insert(0, {"stage": "receipt_recording_scope"})
                 if matches := result.get("previously_delivered_matches"):
                     result["previously_delivered_wording"] = {
                         line: phrases for line, phrases in prior.wording if line in matches
@@ -457,13 +486,13 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                         if exc.code not in {"not_found", "ambiguous_source"}:
                             raise
                         result["supplied_citation_error"] = str(exc)
-                if (
-                    after_receipt is not None
-                    or include_receipt
-                    or result["indexed_followup_scopes"]
-                    or result["quote_bytes"] >= RECEIPT_QUOTE_BYTES
-                ):
-                    attach_receipt(result, workspace, prior=prior, parent=after_receipt)
+                selected = result["scope"].get("selected_project") if anchor_quote is None else None
+                scope = _RecallScope(
+                    project or selected, anchor_quote, tuple(sorted(dates.items()))
+                )
+                if focus is not None:
+                    scope = prior.scope
+                attach_receipt(result, workspace, prior=prior, parent=after_receipt, scope=scope)
         except ToolError as exc:
             raise MCPToolError(f"{exc.code}: {exc}") from exc
         return render_symbolic_context(result)
@@ -510,7 +539,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         include_previous: Annotated[bool, Field(strict=True)] = False,
         include_receipt: Annotated[
             bool,
-            Field(description="Request a receipt for a focused follow-up even on a short result."),
+            Field(description="Accepted for compatibility. Quoted results include a receipt."),
         ] = False,
     ) -> str:
         """Run a named saved KITE symbolic query against the current workspace.
@@ -546,14 +575,29 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                 result["indexed_followup_scopes"] = indexed_followup_scopes(
                     workspace.index(), result, {}
                 )
-                if (
-                    include_receipt
-                    or result["indexed_followup_scopes"]
-                    or result["quote_bytes"] >= RECEIPT_QUOTE_BYTES
-                ):
-                    attach_receipt(result, workspace)
+                scope = _RecallScope(
+                    saved.get("selected_project"),
+                    dates=tuple(sorted(result["scope"].get("recording_dates", {}).items())),
+                )
+                attach_receipt(result, workspace, scope=scope)
         except ToolError as exc:
             raise MCPToolError(f"{exc.code}: {exc}") from exc
         return render_symbolic_context(result)
 
     return server
+
+
+def _plan_sets_recordings(plan):
+    if "stages" in plan:
+        return True
+    fields = {"unit", "units"}
+    entries = plan.get("queries")
+    if not isinstance(entries, list):
+        return False
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        where = entry.get("where")
+        if fields & entry.keys() or (isinstance(where, dict) and fields & where.keys()):
+            return True
+    return False

@@ -29,6 +29,9 @@ async def test_workspace_tool_delivers_cli_evidence_and_reads_the_latest_snapsho
     def quotes(text):
         return [line for line in text.splitlines() if line.startswith("[")]
 
+    def evidence_text(result):
+        return result.content[0].text.rsplit("\nEvidence receipt ", 1)[0]
+
     file = tmp_path / "input.json"
 
     def call(command, value, *options):
@@ -142,7 +145,8 @@ async def test_workspace_tool_delivers_cli_evidence_and_reads_the_latest_snapsho
             ]
         }
         normalized = await client.call_tool(recall, {**args, "plan": submitted})
-        assert not normalized.is_error and normalized.content[0].text == second.content[0].text
+        assert not normalized.is_error
+        assert evidence_text(normalized) == evidence_text(second)
         submitted["queries"][1]["where"]["change_wording"] = "reported"
         duplicate = await client.call_tool(recall, {**args, "plan": submitted})
         assert duplicate.is_error and "invalid_plan:" in duplicate.content[0].text
@@ -184,7 +188,7 @@ async def test_workspace_tool_delivers_cli_evidence_and_reads_the_latest_snapsho
         inline = await client.call_tool(
             recall, {**args, "plan": {**plan, "retry_date_subject": True}}
         )
-        assert inline.content == second.content
+        assert evidence_text(inline) == evidence_text(second)
         invalid = await client.call_tool(
             recall, {**args, "start_date": "2026-09-04", "end_date": "2026-09-01"}
         )
@@ -352,7 +356,9 @@ async def test_citations_preserve_revision_and_deduplicate_context(tmp_path, cap
         assert "[review#decision] Use a threshold of three." in text
         assert "Earlier source revisions at workspace v1" in text
         assert f"[{old_id}] Use a threshold of five." in text
-        assert text == cli("symbolic", "--reuse", "review-query", "--include-previous", "--text")
+        assert text.rsplit("\nEvidence receipt ", 1)[0] == cli(
+            "symbolic", "--reuse", "review-query", "--include-previous", "--text"
+        )
         later = await client.call_tool(reuse, {**comparison, "since_version": 2})
         assert not later.is_error and "threshold of five." not in later.content[0].text
 
@@ -519,7 +525,7 @@ async def test_followup_receipt_omits_seen_turns_and_returns_revised_evidence(tm
         assert "No evidence matched" not in repeat and quota not in repeat
         assert receipt_line.search(repeat)[1] == first_receipt
         independent = await recall(request)
-        assert quota in independent and not receipt_line.search(independent)
+        assert quota in independent and receipt_line.search(independent)[1] != first_receipt
 
         plan = {
             "question": "Find the quota and pickup window.",
@@ -1462,6 +1468,34 @@ async def test_workspace_preparation_binds_index_hints_to_the_submitted_plan(tmp
         }
         before = await client.call_tool(tool, request)
         assert not before.is_error and "[decision#line] Mina agreed" in before.content[0].text
+        receipt = re.search(r"Evidence receipt ([a-f0-9]{24})\.", before.content[0].text)[1]
+        follow = {
+            "question": "Find another matching turn.",
+            "after_receipt": receipt,
+            "plan": {"queries": [{"select": "lines", "where": {"grep": "ship|local depot"}}]},
+        }
+        continued = await client.call_tool(tool, follow)
+        assert not continued.is_error
+        assert "Recording dates: 2026-04-06 to any" in continued.content[0].text
+        assert "[decision#line]" in continued.content[0].text
+        assert "[old#line]" not in continued.content[0].text
+        assert "[outside#line]" not in continued.content[0].text
+        assert "Evidence receipt " in continued.content[0].text
+
+        broader = await client.call_tool(tool, {**follow, "project": "Falcon"})
+        assert not broader.is_error and "[old#line]" in broader.content[0].text
+        assert "[outside#line]" in broader.content[0].text
+        direct_plan = {
+            "queries": [{"select": "lines", "where": {"grep": "depot", "unit": "outside"}}]
+        }
+        named = await client.call_tool(tool, {**follow, "plan": direct_plan})
+        assert not named.is_error and "[outside#line]" in named.content[0].text
+        staged = {
+            "stages": [{"name": "detail", "select": "lines", "where": {"grep": "local depot"}}]
+        }
+        external = await client.call_tool(tool, {**follow, "plan": staged})
+        assert not external.is_error and "[outside#line]" in external.content[0].text
+
         wrong_scope = await client.call_tool(tool, {**request, "start_date": "2026-04-05"})
         assert wrong_scope.is_error and "stale_snapshot:" in wrong_scope.content[0].text
         cli(

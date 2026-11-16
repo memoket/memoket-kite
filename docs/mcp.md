@@ -45,9 +45,12 @@ transaction between requests so an import can commit while it is idle.
   For schedule or decision questions, nearby turns with spoken dates,
   effective dates, or approval status also stay in the reply.
   Set `neighbors` explicitly to request a specific original context window.
-  Packs with at least 3,600 original text bytes include an evidence receipt.
-  Request one on a smaller result with `include_receipt: true`. To fill a
-  specific gap, pass that token as `after_receipt` with a focused plan.
+  All packs with original quotes include an evidence receipt. To fill a
+  specific gap, pass the latest token as `after_receipt` with a focused plan.
+  When the next call supplies no project, quote anchor, date bounds, preparation
+  snapshot, staged plan or plan recording filters, it carries over the receipt's project
+  or quote anchor and date bounds. KITE applies that scope to the current
+  workspace. Use explicit scope to change it.
   Previously delivered direct matches leave room for new evidence within
   the same quote limit. The plan still uses all matches to bind its stages.
   A reply can cite an earlier matching turn by reference and quote previous
@@ -93,10 +96,9 @@ transaction between requests so an import can commit while it is idle.
   `include_previous` to compare matched original segment IDs in revised
   recordings with the same segment IDs at the baseline. Earlier turns carry
   exact revision-bound evidence IDs and share the original quote budget.
-  Large results show leading citations by branch and include an evidence
-  receipt. Pass it as `after_receipt` to a focused
+  Results with original quotes include an evidence receipt. Pass it as
+  `after_receipt` to a focused
   `recall_conversation_evidence` call when the saved query leaves a gap.
-  Use `include_receipt: true` to begin the same flow with a short saved result.
 
 ```bash
 kite-mcp --workspace /absolute/path/to/workspace
