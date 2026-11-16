@@ -413,6 +413,7 @@ async def test_followup_receipt_omits_seen_turns_and_returns_revised_evidence(tm
         "question": "Find the quota.",
         "plan": {"queries": [{"where": {"grep": "quota"}, "select": "lines"}]},
     }
+    cli("symbolic", "--save", "quota", value=request)
     run = cli("symbolic", value=request["plan"])
     checksum = run["spans"][0]["evidence"][0]["revision_checksum"]
     receipt_line = re.compile(r"Evidence receipt ([a-f0-9]{24})\.")
@@ -425,7 +426,12 @@ async def test_followup_receipt_omits_seen_turns_and_returns_revised_evidence(tm
             assert not answer.is_error
             return answer.content[0].text
 
-        first = await recall(request, include_receipt=True)
+        saved = await client.call_tool(
+            "reuse_conversation_query", {"run_id": "quota", "include_receipt": True}
+        )
+        assert not saved.is_error
+        first = saved.content[0].text
+        assert "Saved plan quota" in first
         first_receipt = receipt_line.search(first)[1]
         assert f"[review#decision] {quota}" in first
         repeat = await recall(request, after_receipt=first_receipt)
@@ -474,6 +480,16 @@ async def test_followup_receipt_omits_seen_turns_and_returns_revised_evidence(tm
             max_bytes=4800,
         )
         assert "[archive#decision]" in bulk and receipt_line.search(bulk)
+        cli(
+            "symbolic",
+            "--save",
+            "spotcheck",
+            "--max-bytes",
+            "4800",
+            value={"queries": [{"select": "lines", "where": {"grep": "spotcheck"}}]},
+        )
+        saved_bulk = await client.call_tool("reuse_conversation_query", {"run_id": "spotcheck"})
+        assert not saved_bulk.is_error and receipt_line.search(saved_bulk.content[0].text)
 
 
 async def test_large_recall_guides_branches_and_trims_only_implicit_context(tmp_path, capsys):
@@ -513,6 +529,28 @@ async def test_large_recall_guides_branches_and_trims_only_implicit_context(tmp_
         },
         "max_bytes": 18000,
     }
+    payload.write_text(
+        json.dumps({"question": args["question"], "plan": args["plan"]}), encoding="utf-8"
+    )
+    assert (
+        main(
+            [
+                "--workspace",
+                str(workspace),
+                "symbolic",
+                "--input",
+                str(payload),
+                "--save",
+                "both",
+                "--neighbors",
+                "1",
+                "--max-bytes",
+                "18000",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
     async with Client(create_workspace_server(workspace), raise_exceptions=False) as client:
         result = await client.call_tool("recall_conversation_evidence", args)
         assert not result.is_error
@@ -527,9 +565,16 @@ async def test_large_recall_guides_branches_and_trims_only_implicit_context(tmp_
         explicit = await client.call_tool("recall_conversation_evidence", {**args, "neighbors": 1})
         assert not explicit.is_error
         context = explicit.content[0].text
+        saved = await client.call_tool("reuse_conversation_query", {"run_id": "both"})
+        assert not saved.is_error
+        assert "Direct matches by query branch" in saved.content[0].text
+        assert "Evidence receipt " in saved.content[0].text
         assert "incidental adjacent" not in context
         for name in ("shift-log", "allocation-notes"):
             assert all(f"[{name}#{segment}]" in context for segment in ("before", "after"))
+            assert all(
+                f"[{name}#{segment}]" in saved.content[0].text for segment in ("before", "after")
+            )
         assert len(focused.encode()) < len(context.encode())
 
 

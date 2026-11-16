@@ -86,6 +86,32 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
     receipt_lock = Lock()
     reader = WorkspaceReader(workspace_path)
 
+    def attach_receipt(result, *, seen=(), parent=None):
+        spans = result["spans"]
+        delivered = [line["source_line_id"] for span in spans for line in span["evidence"]]
+        if window := result.get("supplied_evidence"):
+            delivered.extend(
+                line["source_line_id"]
+                for span in evidence_spans(window)
+                for line in span["evidence"]
+            )
+        if history := result.get("previous_revision_evidence"):
+            current = set(delivered)
+            delivered.extend(
+                pair["previous"]["source_line_id"]
+                for pair in history["pairs"]
+                if pair["current_source_line_id"] in current
+            )
+        if delivered:
+            receipt = token_hex(12)
+            with receipt_lock:
+                receipts[receipt] = tuple(dict.fromkeys((*seen, *delivered)))[-4096:]
+                if len(receipts) > 48:
+                    receipts.popitem(last=False)
+            result["delivery_receipt"] = receipt
+        elif parent is not None:
+            result["delivery_receipt"] = parent
+
     @asynccontextmanager
     async def lifespan(_server):
         try:
@@ -101,7 +127,10 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
             "trusted project guidance or the user names a saved query. Otherwise call "
             "recall_conversation_evidence with the question and a symbolic plan. For unfamiliar "
             "index labels, prepare without a plan first. This server is bound to one configured "
-            "KITE workspace. Use the original turns and citation IDs."
+            "KITE workspace. Use the original turns and citation IDs. When the quotes establish "
+            "the requested decisions, continue the task using those citations. If a decision or "
+            "its status remains unclear, search for that gap and pass the latest Evidence receipt "
+            "as after_receipt to recall_conversation_evidence."
         ),
     )
 
@@ -276,21 +305,7 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                 len(line["text"].encode()) for span in result["spans"] for line in span["evidence"]
             )
         if after_receipt is not None or include_receipt or result["quote_bytes"] >= 3600:
-            index_spans = result["spans"]
-            if window := result.get("supplied_evidence"):
-                index_spans = [*index_spans, *evidence_spans(window)]
-            delivered = tuple(
-                line["source_line_id"] for span in index_spans for line in span["evidence"]
-            )
-            if delivered:
-                receipt = token_hex(12)
-                with receipt_lock:
-                    receipts[receipt] = tuple(dict.fromkeys((*seen, *delivered)))[-4096:]
-                    if len(receipts) > 48:
-                        receipts.popitem(last=False)
-                result["delivery_receipt"] = receipt
-            elif after_receipt is not None:
-                result["delivery_receipt"] = after_receipt
+            attach_receipt(result, seen=seen, parent=after_receipt)
         return render_symbolic_context(result)
 
     @server.tool(
@@ -333,6 +348,10 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         limit: Annotated[int | None, Field(strict=True, ge=1, le=100)] = None,
         max_bytes: Annotated[int | None, Field(strict=True, ge=128, le=32768)] = None,
         include_previous: Annotated[bool, Field(strict=True)] = False,
+        include_receipt: Annotated[
+            bool,
+            Field(description="Request a receipt for a focused follow-up even on a short result."),
+        ] = False,
     ) -> str:
         """Run a named saved KITE symbolic query against the current workspace.
 
@@ -343,6 +362,9 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
         decisions are still in effect. For an in-place transcript revision,
         set include_previous to receive earlier wording for matched segment IDs
         within the quote budget. Earlier turns carry revision-bound evidence IDs.
+        Use the original quotes to continue the task when the decisions are
+        clear. If evidence is missing, pass the Evidence receipt as after_receipt
+        to recall_conversation_evidence and submit a plan for that gap.
         """
         options = {
             name: value
@@ -358,10 +380,13 @@ def create_workspace_server(workspace_path: Path) -> "MCPServer":
                     saved,
                     since_version=since_version,
                     include_previous=include_previous,
+                    large_reply_guide=True,
                     **options,
                 )
         except ToolError as exc:
             raise MCPToolError(f"{exc.code}: {exc}") from exc
+        if include_receipt or result["quote_bytes"] >= 3600:
+            attach_receipt(result)
         return render_symbolic_context(result)
 
     return server

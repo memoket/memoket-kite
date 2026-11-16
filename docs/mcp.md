@@ -74,6 +74,10 @@ transaction between requests so an import can commit while it is idle.
   `include_previous` to compare matched original segment IDs in revised
   recordings with the same segment IDs at the baseline. Earlier turns carry
   exact revision-bound evidence IDs and share the original quote budget.
+  Large results show leading citations by branch and include an evidence
+  receipt. Pass it as `after_receipt` to a focused
+  `recall_conversation_evidence` call when the saved query leaves a gap.
+  Use `include_receipt: true` to begin the same flow with a short saved result.
 
 ```bash
 kite-mcp --workspace /absolute/path/to/workspace
