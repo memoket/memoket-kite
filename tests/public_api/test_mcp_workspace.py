@@ -23,6 +23,78 @@ def anyio_backend():
     return "asyncio"
 
 
+async def test_dated_match_coverage_reports_native_matches_and_earlier_quotes(tmp_path, capsys):
+    workspace = tmp_path / "memory"
+    path = tmp_path / "sources.json"
+
+    def source(name, day, text, project="Heron"):
+        return {
+            "source": {
+                "format": "conversation",
+                "payload": {
+                    "source": "text",
+                    "conversation_id": name,
+                    "source_date": day,
+                    "metadata": {"source_reference": name, "project": project},
+                    "segments": [{"segment_id": "note", "text": text}],
+                },
+            }
+        }
+
+    def ingest(*sources):
+        path.write_text(json.dumps({"sources": sources}), encoding="utf-8")
+        assert main(["--workspace", str(workspace), "index-sources", "--input", str(path)]) == 0
+        capsys.readouterr()
+
+    ingest(
+        source("anchor", "2026-03-10", "This is the folding hinge project."),
+        source("opening", "2026-03-11", "The original ship date is April 4."),
+        source("update", "2026-03-13", "The ship date was moved to April 7."),
+        source("agenda", "2026-03-14", "The next item is the box design."),
+        source("earlier", "2026-03-01", "The ship date is March 3."),
+        source("unrelated", "2026-03-19", "The ship date is April 10.", "Falcon"),
+    )
+    plan = {
+        "queries": [{"select": "lines", "where": {"grep": "ship date"}, "prefer": ["original"]}]
+    }
+    request = {
+        "question": "Find the ship dates for this project.",
+        "anchor_quote": "folding hinge",
+        "start_date": "2026-03-10",
+        "plan": plan,
+        "limit": 2,
+        "neighbors": 0,
+    }
+    receipt = re.compile(r"Evidence receipt ([a-f0-9]{24})\.")
+    tool = "recall_conversation_evidence"
+    async with Client(create_workspace_server(workspace), raise_exceptions=False) as client:
+        initial = await client.call_tool(tool, request)
+        assert not initial.is_error
+        body = initial.content[0].text
+        assert "Quotes cover 1/2 matching turns across 1/2 recordings" in body
+        assert "Latest matching recording date 2026-03-13 (0/1 quoted)" in body
+        assert "[opening#note]" in body and "[update#note]" not in body
+
+        continuation = {"after_receipt": receipt.search(body)[1], "plan": plan, "neighbors": 0}
+        followup = await client.call_tool(tool, continuation)
+        assert not followup.is_error
+        body = followup.content[0].text
+        assert "Quotes cover 2/2 matching turns across 2/2 recordings. Includes 1 turn" in body
+        assert "Latest matching recording date 2026-03-13 (1/1 quoted)" in body
+        assert "[update#note]" in body and "[opening#note] The original" not in body
+        assert "[earlier#note]" not in body and "[unrelated#note]" not in body
+
+        ingest(source("final", "2026-03-15", "We confirmed the ship date is April 8."))
+        changed = await client.call_tool(
+            tool, {**continuation, "after_receipt": receipt.search(body)[1], "since_version": 1}
+        )
+        assert not changed.is_error
+        body = changed.content[0].text
+        assert "Workspace v2" in body and "Since v1: 1 changed recordings, 1 cited" in body
+        assert "Quotes cover 3/3 matching turns across 3/3 recordings. Includes 2 turns" in body
+        assert "Latest matching recording date 2026-03-15 (1/1 quoted)" in body
+
+
 async def test_workspace_tool_delivers_cli_evidence_and_reads_the_latest_snapshot(tmp_path, capsys):
     workspace = tmp_path / "workspace"
 

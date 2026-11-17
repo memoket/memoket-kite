@@ -1629,6 +1629,54 @@ def _branch_coverage(plan, traces, spans, *, delivery=False, guide_order=(), del
     return coverage
 
 
+def _dated_match_coverage(index, plan, traces, trace_steps, quote_order, delivered):
+    """Report native recording matches separately from the bounded quote pack."""
+    targets = None
+    if "stages" in plan:
+        anchors = {step["name"] for step in trace_steps if "project_binding" in step}
+        targets = {i for i, stage in enumerate(plan["stages"]) if stage.get("name") not in anchors}
+    matches = set().union(
+        *(
+            refs
+            for trace in traces
+            for number, refs in trace.line_matches.items()
+            if targets is None or number in targets
+        )
+    )
+    if not matches:
+        return None
+
+    store = index.store
+    quoted = matches & set(quote_order)
+    earlier = (matches & delivered) - quoted
+    recordings = {store.lines[ref].unit: store.lines[ref].unit_date for ref in matches}
+    if len(recordings) < 2:
+        return None
+    represented = {store.lines[ref].unit for ref in quoted | earlier}
+    latest = max(recordings.values(), default="")
+    return {
+        "matching_turns": len(matches),
+        "quoted_turns": len(quoted),
+        "earlier_quoted_turns": len(earlier),
+        "matching_recordings": len(recordings),
+        "quoted_recordings": len(represented),
+        **(
+            {
+                "latest_recording_date": latest,
+                "latest_recordings": sum(day == latest for day in recordings.values()),
+                "latest_quoted_recordings": sum(recordings[unit] == latest for unit in represented),
+            }
+            if latest
+            else {}
+        ),
+        **(
+            {"undated_recordings": sum(not day for day in recordings.values())}
+            if any(not day for day in recordings.values())
+            else {}
+        ),
+    }
+
+
 def _project_recording_alternatives(index, plan, trace, rows, quoted, shared):
     """Try an original from an unquoted recording in place of a repeated recording."""
     stages = [
@@ -2503,6 +2551,23 @@ def render_symbolic_context(
         lines.append(
             f"Recording dates: {dates.get('start_date', 'any')} to {dates.get('end_date', 'any')}"
         )
+    if coverage := pack.get("dated_match_coverage"):
+        quoted = coverage["quoted_turns"] + coverage["earlier_quoted_turns"]
+        line = (
+            f"Quotes cover {quoted}/{coverage['matching_turns']} matching turns across "
+            f"{coverage['quoted_recordings']}/{coverage['matching_recordings']} recordings."
+        )
+        if earlier := coverage["earlier_quoted_turns"]:
+            noun = "turn" if earlier == 1 else "turns"
+            line += f" Includes {earlier} {noun} from the receipt."
+        if latest := coverage.get("latest_recording_date"):
+            line += (
+                f" Latest matching recording date {latest} "
+                f"({coverage['latest_quoted_recordings']}/{coverage['latest_recordings']} quoted)."
+            )
+        if undated := coverage.get("undated_recordings"):
+            line += f" Undated matching recordings: {undated}."
+        lines.append(line)
     if any(step["stage"] == "receipt_recording_scope" for step in pack["trace"]):
         lines.append("Recording scope carried forward from the evidence receipt.")
     if show_complete_scope:
@@ -3310,6 +3375,11 @@ def execute_source_plan(
             index, plan, coverage, trace_steps, active_units, question
         ):
             trace_steps.append(hint)
+    dated_coverage = (
+        _dated_match_coverage(index, plan, traces, trace_steps, quote_order, delivered_line_ids)
+        if large_reply_guide and not complete_scope and (dates or since_version is not None)
+        else None
+    )
     return {
         "engine": "memoket_kite.core.algebra.execute_plan",
         "compiler": compiled["compiler"],
@@ -3340,6 +3410,7 @@ def execute_source_plan(
         "trace": trace_steps,
         **({"complete_recording_scope": complete_scope} if complete_scope else {}),
         "branch_coverage": coverage,
+        **({"dated_match_coverage": dated_coverage} if dated_coverage else {}),
         **({"omitted_adjacent_turns": omitted_neighbors} if omitted_neighbors else {}),
         **({"schedule_comparison": comparison} if comparison is not None else {}),
         **(

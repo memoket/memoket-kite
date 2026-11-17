@@ -91,6 +91,11 @@ transaction between requests so an import can commit while it is idle.
   A complete recording scope notice means every indexed turn in the selected
   recording scope is present. Read the original wording to establish approval
   or change status.
+  When a date-scoped or version-comparison search matches multiple recordings,
+  the reply can report the number of matched recordings and turns, how many
+  have matching quotes, and the latest matching recording date. The count
+  includes matching turns from the supplied receipt. The date describes the
+  recording. Read the cited dialogue for event dates and decision status.
   For a project-bound implementation question, a branch ranking inclusion
   or exclusion wording can reserve one matching turn that reports what was
   included or left out. The reply names that original citation when it fits
