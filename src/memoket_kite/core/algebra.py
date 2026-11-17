@@ -1787,6 +1787,10 @@ def execute_plan(
             stage_details["matched_recordings"] = len(units)
             if 0 in st_trace.line_matches:
                 trace.line_matches[i] = st_trace.line_matches[0]
+            if line_branch_limit:
+                trace.line_branch_candidates[i] = [
+                    row["id"] for row in rows if row["type"] == "line"
+                ][:line_branch_limit]
             if 0 in st_trace.previously_delivered_heads:
                 trace.previously_delivered_heads[i] = st_trace.previously_delivered_heads[0]
             if name in project_anchors:

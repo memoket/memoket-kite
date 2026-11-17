@@ -1629,6 +1629,58 @@ def _branch_coverage(plan, traces, spans, *, delivery=False, guide_order=(), del
     return coverage
 
 
+def _project_recording_alternatives(index, plan, trace, rows, quoted, shared):
+    """Try an original from an unquoted recording in place of a repeated recording."""
+    stages = [
+        number
+        for number, entry in enumerate(plan.get("stages", ()))
+        if isinstance(units := entry["where"].get("units"), str)
+        and units.endswith(".project_units")
+    ]
+    if len(stages) < 2:
+        return
+    store = index.store
+    represented = {store.lines[ref].unit for ref in quoted}
+    direct_counts = Counter(row["unit"] for row in rows if row["id"] in quoted)
+    reserved = shared | {
+        step["alternate_wording_line"] for step in trace.stages if "alternate_wording_line" in step
+    }
+    positions = {row["id"]: number for number, row in enumerate(rows)}
+    for branch in stages:
+        candidate = next(
+            (
+                ref
+                for ref in trace.line_branch_candidates.get(branch, ())
+                if store.lines[ref].unit not in represented
+            ),
+            None,
+        )
+        if candidate is None:
+            continue
+        picks = [
+            i for i, row in enumerate(rows) if trace.selected_line_branches.get(row["id"]) == branch
+        ]
+        for number in reversed(picks[1:]):
+            row = rows[number]
+            if row["id"] not in quoted or row["id"] in reserved or direct_counts[row["unit"]] < 2:
+                continue
+            ranked = rows.copy()
+            if candidate in positions:
+                ranked[positions[candidate]] = row
+            ranked[number] = {"id": candidate, "unit": store.lines[candidate].unit}
+            yield (
+                ranked,
+                {
+                    "stage": "stage_recording_diversity",
+                    "name": plan["stages"][branch].get("name") or f"s{branch + 1}",
+                    "source_line_id": candidate,
+                    "deprioritized_source_line_id": row["id"],
+                },
+                represented,
+            )
+            break
+
+
 def _empty_project_search_hints(index, plan, coverage, trace, active_units, question):
     """Offer scoped annotation codes after a resolved project search with no hits."""
     resolved = [
@@ -2893,6 +2945,8 @@ def execute_source_plan(
     def run(units, lane=None, *, branch_limit=0):
         if delivery and "queries" in plan:
             branch_limit = max(branch_limit, 2)
+        if large_reply_guide and project_join:
+            branch_limit = max(branch_limit, 12)
         rows, trace = execute_plan(
             index.store,
             index.vocab,
@@ -3023,6 +3077,26 @@ def execute_source_plan(
         )
 
     spans, quote_bytes, quote_order = pack_rows(rows, exchange)
+    if large_reply_guide and project_join and not reserved and not exchange:
+        old_refs = set(quote_order)
+        matches = [refs for refs in trace.line_matches.values() if old_refs & refs]
+        quoting = Counter(ref for refs in matches for ref in refs & old_refs)
+        shared = {ref for ref, count in quoting.items() if count > 1}
+        for alternative, step, originals in _project_recording_alternatives(
+            index, plan, trace, rows, old_refs, shared
+        ):
+            variant = pack_rows(alternative)
+            cited = set(variant[2])
+            if (
+                step["source_line_id"] in cited
+                and shared <= cited
+                and all(cited & refs for refs in matches)
+                and originals <= {index.store.lines[ref].unit for ref in cited}
+            ):
+                rows = alternative
+                spans, quote_bytes, quote_order = variant
+                trace_steps.append(step)
+                break
     if (
         look_for_dates
         and not exchange_step

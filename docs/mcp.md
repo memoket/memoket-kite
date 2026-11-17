@@ -43,6 +43,10 @@ transaction between requests so an import can commit while it is idle.
   The guide shows original wording matched by required text conditions for
   the leading reference when available. Follow-ups can show that earlier
   wording alongside still-relevant references.
+  For multiple branches bound to a project anchor, KITE can reserve a turn
+  from another matching recording within the same quote limits. It keeps the
+  previously covered branches, recordings and turns matched by multiple
+  branches. The trace identifies the turn that received priority.
   When a leading quote has a matching source index label, the tool can
   include a native `Follow-up near` filter and an evidence receipt.
   To find a missing value in that recording, call the same tool with

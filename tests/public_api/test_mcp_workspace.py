@@ -1205,6 +1205,93 @@ async def test_project_bound_implementation_cites_reported_outcome_within_quote_
         assert "Original wording reporting" not in short.content[0].text
 
 
+async def test_project_branches_keep_a_match_from_an_unquoted_recording(tmp_path, capsys):
+    workspace = tmp_path / "workspace"
+    path = tmp_path / "input.json"
+    sources = {
+        "anchor": ["The stencil has an amber yard tag."],
+        "primary": ["Budget primary discussion.", "Budget repeat discussion."],
+        "estimate": ["The budget is twenty.", "The schedule is July."],
+        "deadline": ["The schedule is June."],
+        "other": ["The budget is forty."],
+    }
+    path.write_text(
+        json.dumps(
+            {
+                "sources": [
+                    {
+                        "source": {
+                            "format": "conversation",
+                            "payload": {
+                                "conversation_id": name,
+                                "source": "text",
+                                "metadata": {
+                                    "source_reference": name,
+                                    "project": "Vent" if name == "other" else "Boiler",
+                                },
+                                "segments": [
+                                    {"segment_id": str(i), "text": line}
+                                    for i, line in enumerate(lines, 1)
+                                ],
+                            },
+                        }
+                    }
+                    for name, lines in sources.items()
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert main(["--workspace", str(workspace), "index-sources", "--input", str(path)]) == 0
+    capsys.readouterr()
+    args = {
+        "question": "Find the budget and schedule for the amber yard tag project.",
+        "anchor_quote": "amber yard tag",
+        "limit": 4,
+        "neighbors": 0,
+    }
+    tool = "recall_conversation_evidence"
+    async with Client(create_workspace_server(workspace), raise_exceptions=False) as client:
+
+        def plan(month):
+            return {
+                "queries": [
+                    {"select": "lines", "where": {"grep": "budget"}, "prefer": ["primary|repeat"]},
+                    {"select": "lines", "where": {"grep": f"schedule is {month}"}},
+                ]
+            }
+
+        reply = await client.call_tool(tool, {**args, "plan": plan("June")})
+        assert not reply.is_error
+        text = reply.content[0].text
+        assert set(re.findall(r"^\[([^]]+)\]", text, re.M)) == {
+            "anchor#1",
+            "primary#1",
+            "estimate#1",
+            "deadline#1",
+        }
+        another = await client.call_tool(tool, {**args, "plan": plan("July")})
+        assert not another.is_error
+        assert set(re.findall(r"^\[([^]]+)\]", another.content[0].text, re.M)) == {
+            "anchor#1",
+            "primary#1",
+            "primary#2",
+            "estimate#2",
+        }
+        shared = plan("June")
+        shared["queries"][1].update(
+            {"where": {"grep": "schedule is June|Budget repeat"}, "prefer": ["schedule is June"]}
+        )
+        joint = await client.call_tool(tool, {**args, "plan": shared})
+        assert not joint.is_error
+        assert set(re.findall(r"^\[([^]]+)\]", joint.content[0].text, re.M)) == {
+            "anchor#1",
+            "primary#1",
+            "primary#2",
+            "deadline#1",
+        }
+
+
 async def test_symbolic_recall_cites_a_decision_and_its_nearby_indexed_subject(tmp_path, capsys):
     workspace = tmp_path / "workspace"
     payload = tmp_path / "input.json"
