@@ -1629,7 +1629,9 @@ def _branch_coverage(plan, traces, spans, *, delivery=False, guide_order=(), del
     return coverage
 
 
-def _dated_match_coverage(index, plan, traces, trace_steps, quote_order, delivered):
+def _matching_recording_coverage(
+    index, plan, traces, trace_steps, quote_order, delivered, *, allow_partial
+):
     """Report native recording matches separately from the bounded quote pack."""
     targets = None
     if "stages" in plan:
@@ -1649,6 +1651,8 @@ def _dated_match_coverage(index, plan, traces, trace_steps, quote_order, deliver
     store = index.store
     quoted = matches & set(quote_order)
     earlier = (matches & delivered) - quoted
+    if not allow_partial and len(quoted) + len(earlier) != len(matches):
+        return None
     recordings = {store.lines[ref].unit: store.lines[ref].unit_date for ref in matches}
     if len(recordings) < 2:
         return None
@@ -2269,7 +2273,15 @@ def _display_references(pack):
 
 
 def _complete_recording_scope(
-    index, units, spans, trace, unit_projects, compiled, delivered_line_ids=frozenset()
+    index,
+    units,
+    spans,
+    trace,
+    unit_projects,
+    compiled,
+    delivered_line_ids=frozenset(),
+    *,
+    allow_workspace=False,
 ):
     """Require every indexed turn in scope in this pack or its evidence receipt."""
     project = compiled.get("selected_project")
@@ -2279,7 +2291,8 @@ def _complete_recording_scope(
         if len(projects) == 1:
             project = next(iter(projects))
             units = {unit for unit in units if unit_projects.get(unit) == project}
-    if not units or not (project or compiled["units"]):
+    workspace = allow_workspace and not (project or compiled["units"])
+    if not units or not (project or compiled["units"] or workspace):
         return None
     current = {line["source_line_id"] for span in spans for line in span["evidence"]}
     shown = current | delivered_line_ids
@@ -2296,6 +2309,7 @@ def _complete_recording_scope(
         "revisions": sorted({index.revisions[unit]["checksum"] for unit in units}),
         **({"previously_quoted_turns": earlier} if earlier else {}),
         **({"project": project} if project else {}),
+        **({"workspace": True} if workspace else {}),
     }
 
 
@@ -2314,20 +2328,27 @@ def _complete_scope_message(pack):
     if len(quoted) + earlier != coverage["turns"]:
         return None
     project = coverage.get("project")
-    scope = f" for {' '.join(project.split())}" if project else ""
+    scope = (
+        "Complete indexed workspace"
+        if coverage.get("workspace")
+        else "Complete indexed recording scope"
+    )
+    if project:
+        scope += f" for {' '.join(project.split())}"
     turns = coverage["turns"]
     recordings = coverage["recordings"]
     if earlier:
         return (
-            f"Complete indexed recording scope{scope}: all {turns} original "
+            f"{scope}: all {turns} original "
             f"{'turn' if turns == 1 else 'turns'} from {recordings} "
             f"{'recording' if recordings == 1 else 'recordings'} covered, "
             f"{earlier} already quoted with the receipt."
         )
     return (
-        f"Complete indexed recording scope{scope}: all {turns} original "
+        f"{scope}: all {turns} original "
         f"{'turn' if turns == 1 else 'turns'} from {recordings} "
-        f"{'recording is' if recordings == 1 else 'recordings are'} quoted below."
+        f"{'recording' if recordings == 1 else 'recordings'} "
+        f"{'is' if turns == 1 else 'are'} quoted below."
     )
 
 
@@ -2551,7 +2572,7 @@ def render_symbolic_context(
         lines.append(
             f"Recording dates: {dates.get('start_date', 'any')} to {dates.get('end_date', 'any')}"
         )
-    if coverage := pack.get("dated_match_coverage"):
+    if coverage := (pack.get("dated_match_coverage") or pack.get("complete_match_coverage")):
         quoted = coverage["quoted_turns"] + coverage["earlier_quoted_turns"]
         line = (
             f"Quotes cover {quoted}/{coverage['matching_turns']} matching turns across "
@@ -3331,9 +3352,6 @@ def execute_source_plan(
                     for line in span["evidence"]
                 },
             }
-        complete_scope = _complete_recording_scope(
-            index, active_units, spans, trace_steps, unit_projects, compiled, delivered_line_ids
-        )
         trace_steps.extend(
             _followup_subject_checks(
                 index,
@@ -3344,6 +3362,18 @@ def execute_source_plan(
                 delivered_wording,
                 {step["name"] for step in trace_steps if "project_binding" in step},
             )
+        )
+    unscoped_workspace = large_reply_guide and not dates
+    if delivered_line_ids or (unscoped_workspace and not complete_scope):
+        complete_scope = _complete_recording_scope(
+            index,
+            active_units,
+            spans,
+            trace_steps,
+            unit_projects,
+            compiled,
+            delivered_line_ids,
+            allow_workspace=unscoped_workspace,
         )
     changed_checksums = {index.revisions[uid]["checksum"] for uid in changed}
     if changed_recordings is not None:
@@ -3375,9 +3405,12 @@ def execute_source_plan(
             index, plan, coverage, trace_steps, active_units, question
         ):
             trace_steps.append(hint)
-    dated_coverage = (
-        _dated_match_coverage(index, plan, traces, trace_steps, quote_order, delivered_line_ids)
-        if large_reply_guide and not complete_scope and (dates or since_version is not None)
+    dated = bool(dates) or since_version is not None
+    matching_coverage = (
+        _matching_recording_coverage(
+            index, plan, traces, trace_steps, quote_order, delivered_line_ids, allow_partial=dated
+        )
+        if large_reply_guide and not complete_scope
         else None
     )
     return {
@@ -3410,7 +3443,11 @@ def execute_source_plan(
         "trace": trace_steps,
         **({"complete_recording_scope": complete_scope} if complete_scope else {}),
         "branch_coverage": coverage,
-        **({"dated_match_coverage": dated_coverage} if dated_coverage else {}),
+        **(
+            {("dated_match_coverage" if dated else "complete_match_coverage"): matching_coverage}
+            if matching_coverage
+            else {}
+        ),
         **({"omitted_adjacent_turns": omitted_neighbors} if omitted_neighbors else {}),
         **({"schedule_comparison": comparison} if comparison is not None else {}),
         **(

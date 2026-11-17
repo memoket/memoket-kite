@@ -23,6 +23,68 @@ def anyio_backend():
     return "asyncio"
 
 
+async def test_workspace_coverage_distinguishes_all_turns_from_all_matches(tmp_path, capsys):
+    workspace = tmp_path / "memory"
+    path = tmp_path / "sources.json"
+
+    def source(name, day, *turns):
+        return {
+            "source": {
+                "format": "conversation",
+                "payload": {
+                    "source": "text",
+                    "conversation_id": name,
+                    "source_date": day,
+                    "metadata": {"source_reference": name},
+                    "segments": [
+                        {"segment_id": str(i), "text": turn} for i, turn in enumerate(turns, 1)
+                    ],
+                },
+            }
+        }
+
+    def ingest(*sources):
+        path.write_text(json.dumps({"sources": sources}), encoding="utf-8")
+        assert main(["--workspace", str(workspace), "index-sources", "--input", str(path)]) == 0
+        capsys.readouterr()
+
+    ingest(
+        source("opening", "2026-03-10", "The blue design is approved.", "Next item."),
+        source("followup", "2026-03-11", "The blue design is still approved."),
+    )
+    request = {
+        "question": "Find the blue design discussion.",
+        "plan": {"queries": [{"select": "lines", "where": {"grep": "blue design"}}]},
+    }
+    async with Client(create_workspace_server(workspace), raise_exceptions=False) as client:
+        tool = "recall_conversation_evidence"
+
+        async def recall(**options):
+            reply = await client.call_tool(tool, {**request, **options})
+            assert not reply.is_error
+            return reply.content[0].text
+
+        partial = await recall(limit=1, neighbors=0)
+        assert "Complete indexed workspace" not in partial and "Quotes cover" not in partial
+        all_matches = await recall(neighbors=0)
+        assert "Quotes cover 2/2 matching turns across 2/2 recordings" in all_matches
+        assert "Complete indexed workspace" not in all_matches
+        all_turns = await recall()
+        assert "Complete indexed workspace: all 3 original turns from 2 recordings" in all_turns
+        assert "Quotes cover" not in all_turns
+        assert "Complete indexed workspace" not in await recall(start_date="2026-03-11")
+
+        receipt = re.search(r"Evidence receipt ([a-f0-9]{24})\.", all_turns)[1]
+        again = await recall(after_receipt=receipt)
+        assert (
+            "Complete indexed workspace" in again and "3 already quoted with the receipt" in again
+        )
+        ingest(source("later", "2026-03-12", "We also discussed the travel budget."))
+        changed = await recall(after_receipt=receipt)
+        assert "Workspace v2" in changed and "Complete indexed workspace" not in changed
+        assert "Quotes cover 2/2 matching turns across 2/2 recordings" in changed
+
+
 async def test_dated_match_coverage_reports_native_matches_and_earlier_quotes(tmp_path, capsys):
     workspace = tmp_path / "memory"
     path = tmp_path / "sources.json"

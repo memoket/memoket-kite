@@ -91,6 +91,10 @@ transaction between requests so an import can commit while it is idle.
   A complete recording scope notice means every indexed turn in the selected
   recording scope is present. Read the original wording to establish approval
   or change status.
+  A complete indexed workspace notice means the quotes and any supplied
+  receipt cover every turn in the current workspace. When all matches from
+  multiple recordings are quoted, the reply can report complete coverage of
+  the plan's matches even when the workspace contains other turns.
   When a date-scoped or version-comparison search matches multiple recordings,
   the reply can report the number of matched recordings and turns, how many
   have matching quotes, and the latest matching recording date. The count
