@@ -317,7 +317,7 @@ def main():
     for case in cases:
         _prepare_case(case, args.cases.resolve().parent)
     results = {
-        "protocol": "same-session-source-revision-v6",
+        "protocol": "same-session-source-revision-v7",
         "case_sha256": hashlib.sha256(raw).hexdigest(),
         "codex": subprocess.check_output([args.codex, "--version"], text=True).strip(),
         "model": args.model,

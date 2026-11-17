@@ -108,6 +108,25 @@ def test_task_benchmark_keeps_code_links_out_of_original_citations():
     assert result["claims"]["decision"]["out_of_scope_citations"] == ["py#L1"]
 
 
+def test_task_benchmark_maps_text_file_line_links_to_physical_source_lines():
+    options = {
+        "checks": {"decision": True},
+        "evidence": {"decision": ["review#text-line-3"]},
+        "valid_refs": {"review#text-line-2", "review#text-line-3", "review#text-line-4"},
+        "citation_ranges": True,
+    }
+    supported = "[review#text-line-3](sources/review.txt#L3)"
+    assert task_eval._score(answer=supported, file_citation_aliases={}, **options)["full_pass"]
+    assert not task_eval._score(answer=supported, **options)["full_pass"]
+    assert task_eval._score(
+        answer="review.txt#L2 through review.txt#L4", file_citation_aliases={}, **options
+    )["full_pass"]
+    for bad in ("review#L3", "review.txt#L6", "elsewhere.txt#L3"):
+        assert not task_eval._score(
+            answer=f"{supported} {bad}", file_citation_aliases={}, **options
+        )["full_pass"]
+
+
 def test_submit_benchmark_counts_prefilled_evidence_even_without_a_tool_call():
     trial = {
         "case": "release",

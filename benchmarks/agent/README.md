@@ -350,6 +350,10 @@ original scores and can be re-scored from saved answers.
 The v6 handoff and revision protocols use the same citation parser as the
 v3 execution scorer. It checks the whole recording reference so links such
 as `policy.py#L1` are not counted as citations to a recording named `py`.
+The v7 handoff and revision protocols and the v4 execution scorer also
+resolve a mounted text file's `file.txt#L3` link to its verified physical
+source line `file#text-line-3`. The corresponding line must exist in the
+fixture. Bare reference IDs still use the fixture's own segment IDs.
 The runner disables Codex app connectors for every arm. It records this setting
 under `common_codex_options` in the protocol. The summary also counts
 observed `app_connector_calls`. Inspect saved tool calls when evaluating v1

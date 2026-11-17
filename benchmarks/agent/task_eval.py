@@ -29,7 +29,7 @@ from .context_eval import codex_trial, corpus_hash, read_corpus, summarize_host,
 from .symbolic_submit import hook_options, symbolic_hook, typed_index_activity, verify_delivery
 
 _REFERENCE = re.compile(
-    r"(?<![\w.-])([\w-]+)(?:\.txt|\.md|(?<=RECORDINGS)\.json)?#(L[0-9]+|text-line-[0-9]+)\b"
+    r"(?<![\w.-])([\w-]+)(\.txt|\.md|(?<=RECORDINGS)\.json)?#(L[0-9]+|text-line-[0-9]+)\b"
 )
 _REFERENCE_RANGE = re.compile(rf"{_REFERENCE.pattern}`?\s+(?:through|to)\s+`?{_REFERENCE.pattern}")
 _RECORDING_METADATA_REFS = frozenset({"RECORDINGS#text-line-1", "RECORDINGS#L1"})
@@ -139,18 +139,27 @@ def _score(
 ) -> dict:
     aliases = file_citation_aliases or {}
 
-    def resolve(source, segment):
+    def resolve(source, extension, segment):
         if f"{source}#{segment}" in valid_refs:
-            return source
-        return aliases.get(source, source)
+            return source, segment
+        source = aliases.get(source, source)
+        if file_citation_aliases is not None and extension == ".txt" and segment.startswith("L"):
+            physical_line = f"text-line-{segment[1:]}"
+            if (
+                f"{source}#{segment}" not in valid_refs
+                and f"{source}#{physical_line}" in valid_refs
+            ):
+                segment = physical_line
+        return source, segment
 
     text = answer or ""
-    cited = {
-        f"{resolve(source, segment)}#{segment}" for source, segment in _REFERENCE.findall(text)
-    }
+    cited = {"#".join(resolve(*reference)) for reference in _REFERENCE.findall(text)}
     if citation_ranges:
-        for source, start, end_source, end in _REFERENCE_RANGE.findall(text):
-            source, end_source = resolve(source, start), resolve(end_source, end)
+        for left_name, left_ext, first, right_name, right_ext, last in _REFERENCE_RANGE.findall(
+            text
+        ):
+            source, start = resolve(left_name, left_ext, first)
+            end_source, end = resolve(right_name, right_ext, last)
             if (
                 source != end_source
                 or start.startswith("L") != end.startswith("L")
@@ -684,7 +693,7 @@ def main():
     args.output.mkdir(mode=0o700, parents=True)
     results = {
         "case_sha256": hashlib.sha256(raw).hexdigest(),
-        "citation_scoring": "line-ranges-v3" if args.citation_ranges else "explicit-lines-v3",
+        "citation_scoring": "line-ranges-v4" if args.citation_ranges else "explicit-lines-v4",
         **(
             {
                 "benchmark_sha256": {
