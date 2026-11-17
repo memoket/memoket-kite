@@ -950,7 +950,7 @@ def symbolic_context(
     trim_implicit_neighbors=False,
     delivered_line_ids=frozenset(),
     delivered_lead_ids=(),
-    delivered_subjects=None,
+    delivered_wording=None,
     allow_mentioned_project=False,
 ):
     options = _source_options(limit, neighbors, max_bytes)
@@ -984,7 +984,7 @@ def symbolic_context(
         trim_implicit_neighbors=trim_implicit_neighbors,
         delivered_line_ids=delivered_line_ids,
         delivered_lead_ids=delivered_lead_ids,
-        delivered_subjects=delivered_subjects,
+        delivered_wording=delivered_wording,
         **options,
     )
     if history is not None:
@@ -1716,9 +1716,9 @@ def _empty_project_search_hints(index, plan, coverage, trace, active_units, ques
     return {"stage": "empty_project_search_hints", **binding, "index": hints} if hints else None
 
 
-def _followup_subject_checks(index, plan, traces, spans, prior_matches, subjects, anchors):
+def _followup_subject_checks(index, plan, traces, spans, prior_matches, wording, anchors):
     """Check a prior indexed subject against the current branch's delivered matches."""
-    if not subjects:
+    if not wording or not prior_matches:
         return []
     cited = set(_display_references({"spans": spans}))
     checks = []
@@ -1728,32 +1728,52 @@ def _followup_subject_checks(index, plan, traces, spans, prior_matches, subjects
         if name in anchors or entry["where"].get("near"):
             continue
         matches = set().union(*(trace.line_matches.get(number, ()) for trace in traces))
-        leads = matches & prior_matches.keys() & subjects.keys()
         current = cited & matches
-        if len(leads) != 1 or not current:
+        if not current:
             continue
-        lead = next(iter(leads))
-        near = subjects[lead]
-        comparison = current | {lead}
-        units = {index.store.lines[ref].unit for ref in comparison}
-        probe = {"queries": [{"select": "lines", "where": {"near": near}}]}
-        _, trace = execute_plan(index.store, index.vocab, probe, budget=1, allowed_line_units=units)
-        grounded = comparison & trace.line_matches.get(0, set())
-        if lead not in grounded or comparison == grounded:
-            continue
-        checks.append(
-            {
-                "stage": "followup_subject_check",
-                "branch": name,
-                "earlier_ref": lead,
-                "near": near,
-                "near_hits": sorted(grounded),
-                "other_hits": sorted(current - grounded),
-                "steps": trace.stages,
+        earlier = {ref: wording[ref] for ref in prior_matches if ref in matches and ref in wording}
+        checked = []
+        for lead, near in _indexed_subject_scopes(index, earlier).items():
+            if near in checked:
+                continue
+            checked.append(near)
+            comparison = current | {lead}
+            units = {index.store.lines[ref].unit for ref in comparison}
+            probe = {"queries": [{"select": "lines", "where": {"near": near}}]}
+            _, trace = execute_plan(
+                index.store, index.vocab, probe, budget=1, allowed_line_units=units
+            )
+            grounded = comparison & trace.line_matches.get(0, set())
+            if lead not in grounded:
+                continue
+            label = next(labels[0] for axis, labels in near.items() if axis in _LABEL_AXES)
+            subject_pattern = _project_alias_pattern(label)
+            explicit = {
+                ref
+                for ref in grounded
+                if re.search(subject_pattern, f"_{norm_code(index.segments[ref]['text'])}_")
             }
-        )
-        if len(checks) == 2:
-            break
+            distinguish_wording = explicit if lead in explicit and explicit != grounded else set()
+            if comparison == grounded and not distinguish_wording:
+                continue
+            checks.append(
+                {
+                    "stage": "followup_subject_check",
+                    "branch": name,
+                    "earlier_ref": lead,
+                    "near": near,
+                    "near_hits": sorted(grounded),
+                    "other_hits": sorted(current - grounded),
+                    **(
+                        {"direct_subject_wording": sorted(distinguish_wording)}
+                        if distinguish_wording
+                        else {}
+                    ),
+                    "steps": trace.stages,
+                }
+            )
+            if len(checks) == 2:
+                return checks
     return checks
 
 
@@ -2454,7 +2474,8 @@ def render_symbolic_context(
         refs = {**pack.get("previously_delivered_matches", {}), **_display_references(visible)}
         earlier = refs.get(check["earlier_ref"])
         others = [refs[ref] for ref in check["other_hits"] if ref in refs]
-        if not earlier or not others:
+        direct = [refs[ref] for ref in check.get("direct_subject_wording", ()) if ref in refs]
+        if not earlier or not (others or direct):
             continue
         axis, labels = next(
             (axis, values)
@@ -2462,13 +2483,20 @@ def render_symbolic_context(
             if axis not in {"turns", "include_anchor"}
         )
         label = labels[0].replace("_", " ")
-        grounded = ", ".join(f"[{refs[ref]}]" for ref in check["near_hits"] if ref in refs)
-        examples = ", ".join(f"[{ref}]" for ref in others[:8])
-        lines.append(
-            f"{check['branch']} · Indexed subject {label} ({axis}) · "
-            f"within the subject window: {grounded}. "
-            f"Other wording matches outside that window: {examples}."
-        )
+        within = [refs[ref] for ref in check["near_hits"] if ref in refs]
+        scoped = f"{check['branch']} · Indexed subject {label} ({axis}) · "
+        if direct:
+            scoped += (
+                "Direct subject wording: " + ", ".join(f"[{ref}]" for ref in direct[:4]) + ". "
+            )
+        scoped += "within the subject window: " + ", ".join(f"[{ref}]" for ref in within) + "."
+        if others:
+            scoped += (
+                " Other wording matches outside that window: "
+                + ", ".join(f"[{ref}]" for ref in others[:8])
+                + "."
+            )
+        lines.append(scoped)
     if saved := pack.get("saved_run"):
         lines.append(f"Saved plan {saved}")
     if dates := pack["scope"].get("recording_dates"):
@@ -2691,6 +2719,10 @@ def indexed_followup_scopes(index, pack, earlier_wording):
             continue
         if lead := next(iter(branch.get("lead_matched_wording", {}).items()), None):
             wording.setdefault(*lead)
+    return _indexed_subject_scopes(index, wording, limit=3)
+
+
+def _indexed_subject_scopes(index, wording, *, limit=None):
     scopes = {}
     for ref, phrases in wording.items():
         segment = index.segments.get(ref)
@@ -2741,7 +2773,7 @@ def indexed_followup_scopes(index, pack, earlier_wording):
         if len(best) == 1:
             axis, code = best[0]
             scopes[ref] = {axis: [code], "turns": 2, "include_anchor": True}
-        if len(scopes) == 3:
+        if len(scopes) == limit:
             break
     return scopes
 
@@ -2879,7 +2911,7 @@ def execute_source_plan(
     trim_implicit_neighbors=False,
     delivered_line_ids=frozenset(),
     delivered_lead_ids=(),
-    delivered_subjects=None,
+    delivered_wording=None,
 ):
     active_units = {uid for uid, record in index.revisions.items() if record["active"]}
     if compiled["units"]:
@@ -3244,7 +3276,7 @@ def execute_source_plan(
                 traces,
                 spans,
                 continuation.get("previously_delivered_matches", {}),
-                delivered_subjects,
+                delivered_wording,
                 {step["name"] for step in trace_steps if "project_binding" in step},
             )
         )

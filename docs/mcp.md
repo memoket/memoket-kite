@@ -57,9 +57,11 @@ transaction between requests so an import can commit while it is idle.
   subject before reusing it. To look across recordings, pass an explicit plan
   and copy the offered filter into `where.near`. A follow-up on the same
   snapshot and question can also show which of a branch's quoted matches
-  share one previously indexed subject. The tool checks that subject's native
-  `near` condition and reports other matches outside the window. The original
-  plan and quotes stay available for review.
+  share a previously cited and indexed subject, including another leading
+  citation from the earlier query. The tool reports up to two native `near`
+  checks and identifies original wording that explicitly names each
+  subject. The window describes proximity to the indexed subject. Read the
+  original turns to determine approval or decision status.
   When `neighbors`
   is omitted, the tool starts with one nearby turn and trims incidental
   adjacent turns above 8,192 original text bytes where possible. Native

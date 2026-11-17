@@ -822,6 +822,7 @@ async def test_citation_followup_filters_unrelated_values_in_the_same_recording(
     for name, turns in (
         ("decision", [quote, "The approved value is 30.", *distractions]),
         ("prototype", ["The prototype weighs 30 grams."]),
+        ("discussion", [f"The {term} estimate is preliminary."]),
     ):
         record = {
             "source": {
@@ -874,6 +875,7 @@ async def test_citation_followup_filters_unrelated_values_in_the_same_recording(
         assert not broad.is_error, broad.content
         text = broad.content[0].text
         assert "within the subject window: [decision#line-1], [decision#line-2]." in text
+        assert "Direct subject wording: [decision#line-1]." in text
         assert "outside that window:" in text
         assert "[prototype#line-1] The prototype weighs 30 grams." in text
         copied = await client.call_tool(
@@ -902,6 +904,32 @@ async def test_citation_followup_filters_unrelated_values_in_the_same_recording(
         without_receipt = await client.call_tool(tool, {"follow_up": focus})
         assert without_receipt.is_error and "needs after_receipt" in without_receipt.content[0].text
 
+        ranked = await client.call_tool(
+            tool,
+            {
+                **base,
+                "plan": {
+                    "queries": [
+                        {"select": "lines", "where": {"grep": term}, "prefer": ["preliminary"]},
+                    ]
+                },
+            },
+        )
+        assert not ranked.is_error
+        text = ranked.content[0].text
+        assert "[decision#line-1]" in text and "Follow-up near" not in text
+        second_lead = re.search(r"Evidence receipt ([a-f0-9]{24})\.", text)[1]
+        continued_query = await client.call_tool(
+            tool,
+            {
+                **base,
+                "after_receipt": second_lead,
+                "plan": {"queries": [{"select": "lines", "where": {"grep": f"{term}|30"}}]},
+            },
+        )
+        assert not continued_query.is_error
+        assert "Direct subject wording: [decision#line-1]." in continued_query.content[0].text
+
         # An append changes the snapshot even though the anchors in this recording remain.
         added = sources[1]["source"]
         added["payload"]["conversation_id"] = "another"
@@ -911,6 +939,17 @@ async def test_citation_followup_filters_unrelated_values_in_the_same_recording(
         capsys.readouterr()
         stale = await client.call_tool(tool, continued)
         assert stale.is_error and "stale_snapshot" in stale.content[0].text
+        after_update = await client.call_tool(
+            tool,
+            {
+                **base,
+                "after_receipt": second_lead,
+                "plan": {"queries": [{"select": "lines", "where": {"grep": f"{term}|30"}}]},
+            },
+        )
+        assert not after_update.is_error
+        text = after_update.content[0].text
+        assert "Workspace v2" in text and "Direct subject wording:" not in text
 
 
 async def test_followup_preserves_original_stage_binding_when_head_already_delivered(
