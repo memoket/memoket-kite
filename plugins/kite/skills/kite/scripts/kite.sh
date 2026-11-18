@@ -3,7 +3,7 @@ set -euo pipefail
 umask 077
 
 # Use a fixed runtime so the packaged skill and CLI contracts stay in sync.
-runtime_revision=481fb43bf0234871837ec3a211f848b38a35a4d6
+runtime_revision=24773057a50832e5a8462b5d80af9b1d66ef6ad1
 runtime_extras=agent
 runtime_command=kite-tool
 open_twin=0
