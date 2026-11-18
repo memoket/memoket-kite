@@ -33,6 +33,8 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
 | --- | --- |
 | Import text, a transcript or a Memoket record | `memory-ingestion` |
 | Preview, commit and verify a batch of original sources | `source-indexing` |
+| Index a selected Twin capture and automatically update the profile from cited self evidence | `twin-ingestion` |
+| Index a bounded batch of selected Twin captures against one workspace snapshot | `twin-batch-ingestion` |
 | Compile a task and find original passages | `context-search` |
 | Compile and inspect a KITE symbolic plan, then retrieve original turns | `symbolic-search` |
 | Propose facts with an authorized model endpoint | `memory-provider-ingestion` |
@@ -43,6 +45,7 @@ credentials. See the [copyable CLI walkthrough](examples/agent-workflows/README.
 | Append a source revision or a cited correction | `memory-update` |
 | Compare changed original lines in two versions of a source | `source-revision-review` |
 | Merge two equivalent topic labels | `memory-consolidation` |
+| Rebuild the cited Topic index of selected original recordings | `topic-rebuild` |
 | Change a topic's parents | `topic-reclassification` |
 | Audit the source records and Codebook | `memory-maintenance` |
 | Rebuild a damaged snapshot from committed records | `memory-rebuild` |

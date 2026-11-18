@@ -18,13 +18,13 @@
   const compareDateOverrides = snapshot.search_comparison_recording_overrides || {};
   const sourceScope = snapshot.search_source_scope || {};
   let searchAllSources = false;
-  let explainCandidates = Boolean(snapshot.search_trace?.packing?.length);
+  let explainCandidates = false;
   let searchPlanOpen = false;
   const copy = {
     en: {
       title: 'Memory Graph', searchTitle: 'Search Evidence', topics: 'Topics', terms: 'Search terms', questions: 'Search questions',
-      topic: 'Topic', project: 'Project', projectCount: 'projects', projectTopics: 'Projects and topics',
-      memory: 'Memory', line: 'Quoted line', source: 'Source revision', state: 'State',
+      topic: 'Topic', topicLevels: ['Level 1 topic', 'Level 2 topic', 'Level 3+ topic'], project: 'Project', projectCount: 'projects', projectTopics: 'Projects and topics',
+      memory: 'Memory', line: 'Quoted line', source: 'Source revision', state: 'State', translatedQuote: 'Translation', originalQuote: 'Original quote',
       query: 'Query', subquestion: 'Search subquestion', queryLink: 'Search path',
       retrievalPath: 'How this line was found', retrievalReplay: 'Replay search',
       symbolicSearch: 'Symbolic search', symbolicHit: 'Symbolic match', symbolicChange: 'Date change',
@@ -46,7 +46,9 @@
       noUsedLabels: 'This run records no topic, entity or facet selection for these quotes.',
       candidateLabels: 'Candidate labels',
       searchPlan: 'Search plan and candidates',
-      allMode: 'All topics', topicMode: 'Topic hierarchy', memoryMode: 'Evidence path', overview: 'Back to topics',
+      allMode: 'Topic overview', topicMode: 'Topic hierarchy', memoryMode: 'Evidence path', overview: 'Back to topics',
+      sharedTopics: 'Cross-source topics', topicIndex: 'Topic index labels', showTopicIndex: 'Show all index labels',
+      showSharedTopics: 'Show cross-source topics',
       entity: 'Entity', entities: 'Related entities', entityCatalog: 'Entities', mention: 'Entity link', aliases: 'Aliases',
       facet: 'Facet', facets: 'Facets', facetLink: 'Facet link', annotations: 'Indexed annotations',
       object: 'Objects', place: 'Places', event: 'Events', duration: 'Durations',
@@ -98,7 +100,10 @@
         already_quoted: 'Already quoted', previously_cited: 'Quoted in an earlier search', no_matching_line: 'No matching original line' },
       sourceScope: 'Source scope', allSources: 'Search all sources',
       invalidMatching: 'Enter up to twelve phrases of at most 128 characters.',
-      versionFilter: 'Version', versionFilterLabel: 'Search at a workspace version', history: 'Workspace snapshot',
+      versionFilterLabel: 'Workspace version', history: 'Workspace snapshot',
+      versionHelp: 'Leave blank for current memory. Version 0 is the initial snapshot.',
+      searchOptions: 'Advanced', searchOptionsActive: 'Advanced · active', clearSearchOptions: 'Clear options',
+      localScopeHelp: 'This scope uses local search. Clear the advanced options to compile a question.',
       baselineVersion: 'Earlier workspace version', comparisonQuestionRequired: 'Enter the question to compare.',
       invalidVersionOrder: 'The earlier version must precede the target version.',
       recordingDates: 'Recording dates', recordingFrom: 'From', recordingThrough: 'Through',
@@ -106,13 +111,28 @@
       secondRecordingDates: 'Second question recording dates (blank uses first range)', allRecordingDates: 'All recording dates',
       recordingTimeline: 'Evidence by recording date', invalidDateRange: 'Start date must not follow end date.',
       noDatedResults: 'No matching passages in this recording window.', timezoneUnknown: 'timezone unknown', matchingLines: 'Matching lines',
+      matchingLinesOnly: 'Quote matching lines only (no surrounding turns)',
       compareQuestions: 'Compare', secondQuestion: 'Second question', firstQuestionRequired: 'Enter the first question.',
       savedSearch: 'Saved search', currentWorkspace: 'Current workspace',
       historyDeletes: 'Later deletions affected the evidence available for this snapshot.',
       cooccurrence: 'Same annotated passage', relatedEntities: 'Co-occurring entities', relatedFacets: 'Co-occurring facets',
       sharedPassages: 'shared passages', sharedEvidence: 'Shared quotes with', linkedTopics: 'Topics in these passages',
       annotated: 'Indexed passages with labels', unannotated: 'No entity or facet labels on this source',
-      search: 'Search', placeholder: 'Ask a question or enter comma-separated phrases', invalid: 'Enter a question or up to three phrases of 128 characters each.',
+      search: 'Search', searchMode: 'Search mode', questionMode: 'Question', termsMode: 'Keywords',
+      questionPlaceholder: 'Ask about your memories', termsPlaceholder: 'Enter comma-separated phrases',
+      compileSearch: 'Compile with Codex', compilePending: 'Compiling…', localSearch: 'Search locally',
+      compileError: 'Could not compile this question.', compileAuth: 'Sign in to Codex CLI, then retry.',
+      compileStale: 'The workspace changed during compilation. Submit the question again.',
+      searchWorking: 'Codex is compiling a KITE plan. KITE will search the original recordings after validation.',
+      searchCompleted: 'Compiled and searched · {count} cited lines',
+      searchNoEvidence: 'Compiled and searched · No original lines matched. Check the question or filters.',
+      localSearchCompleted: 'Local search completed · {count} cited lines',
+      searchBlank: 'Enter a question or keywords first.',
+      searchInvalidOption: 'Check the highlighted search option.',
+      compileMissing: 'Codex CLI is unavailable. Install it and sign in, then try again.',
+      compileTimeout: 'Codex CLI timed out during compilation. Try again.',
+      compilePlanError: 'Codex returned an invalid KITE plan. Try rephrasing the question.',
+      invalid: 'Enter up to three phrases of 128 characters each.',
       refresh: 'Refresh', gesture: 'Drag to rotate · Shift + drag to pan', hierarchy: 'Parent → child',
       shared: 'Shared memory', cites: 'Cites', correction: 'Correction', original: 'Original evidence', memories: 'Memories',
       related: 'Related memories', relatedTopics: 'Topics with shared memories', sources: 'Source revisions', parents: 'Parent topics', children: 'Child topics',
@@ -128,8 +148,8 @@
     },
     zh: {
       title: '记忆图谱', searchTitle: '原文检索', topics: '主题', terms: '检索词', questions: '检索问题',
-      topic: '主题', project: '项目', projectCount: '个项目', projectTopics: '项目与主题',
-      memory: '记忆', line: '原文行', source: '来源版本', state: '状态',
+      topic: '主题', topicLevels: ['一级主题', '二级主题', '三级及以下主题'], project: '项目', projectCount: '个项目', projectTopics: '项目与主题',
+      memory: '记忆', line: '原文行', source: '来源版本', state: '状态', translatedQuote: '译文', originalQuote: '原文引用',
       query: '检索请求', subquestion: '检索子问题', queryLink: '检索路径',
       retrievalPath: '原文如何命中', retrievalReplay: '重播检索',
       symbolicSearch: '符号检索', symbolicHit: '符号命中', symbolicChange: '日期变更',
@@ -151,7 +171,9 @@
       noUsedLabels: '本次记录未显示通过主题、实体或 Facet 选中这些引用。',
       candidateLabels: '候选标签',
       searchPlan: '检索计划和候选',
-      allMode: '全部主题', topicMode: '主题层级', memoryMode: '原文路径', overview: '返回主题图谱',
+      allMode: '主题总览', topicMode: '主题层级', memoryMode: '原文路径', overview: '返回主题图谱',
+      sharedTopics: '跨来源主题', topicIndex: '主题索引标签', showTopicIndex: '查看全部索引标签',
+      showSharedTopics: '查看跨来源主题',
       entity: '实体', entities: '相关实体', entityCatalog: '实体', mention: '实体关联', aliases: '别名',
       facet: 'Facet', facets: 'Facets', facetLink: '维度关联', annotations: '已索引标注',
       object: '对象', place: '地点', event: '事件', duration: '时长',
@@ -202,7 +224,10 @@
         already_quoted: '已在前面引用', previously_cited: '已在前序检索中引用', no_matching_line: '原文行无完整命中' },
       sourceScope: '限定来源', allSources: '搜索全部来源',
       invalidMatching: '请输入最多十二个检索词，每个不超过 128 字符。',
-      versionFilter: '版本', versionFilterLabel: '按工作区版本检索', history: '工作区快照',
+      versionFilterLabel: '工作区版本', history: '工作区快照',
+      versionHelp: '留空查当前记忆。0 代表初始快照。',
+      searchOptions: '高级选项', searchOptionsActive: '高级选项 · 已启用', clearSearchOptions: '清除选项',
+      localScopeHelp: '当前范围使用本地检索。清除高级选项后可编译问题。',
       baselineVersion: '对照起始版本', comparisonQuestionRequired: '请输入要对照的问题。',
       invalidVersionOrder: '对照起始版本必须早于目标版本。',
       recordingDates: '录制日期', recordingFrom: '起始日期', recordingThrough: '截止日期',
@@ -210,13 +235,28 @@
       secondRecordingDates: '第二问录制日期（留空沿用第一问）', allRecordingDates: '全部录制日期',
       recordingTimeline: '按录制日期查看原文', invalidDateRange: '起始日期应早于或等于截止日期。',
       noDatedResults: '这个录制日期范围内没有命中的原文片段。', timezoneUnknown: '时区未知', matchingLines: '仅命中行',
+      matchingLinesOnly: '只引用命中行，不带前后对话',
       compareQuestions: '对比', secondQuestion: '第二个问题', firstQuestionRequired: '请输入第一个问题。',
       savedSearch: '已保存的检索', currentWorkspace: '当前工作区',
       historyDeletes: '后来执行的删除可能影响此快照可见的原文。',
       cooccurrence: '同段共现', relatedEntities: '同段出现的实体', relatedFacets: '同段出现的 Facets',
       sharedPassages: '个共同片段', sharedEvidence: '与此节点共现的引用', linkedTopics: '这些片段涉及的主题',
       annotated: '个片段有实体或 Facet 标注', unannotated: '此来源暂无实体或 Facet 标注。',
-      search: '检索', placeholder: '输入问题，或用逗号分隔检索词', invalid: '请输入问题，或最多三个不超过 128 字符的检索词。',
+      search: '检索', searchMode: '检索方式', questionMode: '问题', termsMode: '关键词',
+      questionPlaceholder: '输入要问的问题', termsPlaceholder: '用逗号分隔关键词',
+      compileSearch: '用 Codex 编译', compilePending: '正在编译…', localSearch: '本地检索',
+      compileError: '问题编译失败。', compileAuth: '请登录 Codex CLI 后再试。',
+      compileStale: '编译时工作区有更新，请再提交一次。',
+      searchWorking: 'Codex 正在编译 KITE 计划，校验通过后会搜索原文。',
+      searchCompleted: '编译和搜索完成 · {count} 条原文引用',
+      searchNoEvidence: '编译和搜索完成 · 未命中原文。可以调整问题或筛选条件后重试。',
+      localSearchCompleted: '本地检索完成 · {count} 条原文引用',
+      searchBlank: '请先输入问题或关键词。',
+      searchInvalidOption: '请检查标出的检索选项。',
+      compileMissing: '找不到 Codex CLI，请安装并登录后再试。',
+      compileTimeout: 'Codex CLI 编译超时，请重试。',
+      compilePlanError: 'Codex 返回的 KITE 计划校验未通过，请换个说法再试。',
+      invalid: '请输入最多三个不超过 128 字符的检索词。',
       refresh: '刷新', gesture: '拖动旋转 · Shift + 拖动平移', hierarchy: '父主题 → 子主题',
       shared: '共享记忆', cites: '引用', correction: '更正关系', original: '引用原文', memories: '原文记忆',
       related: '相关记忆', relatedTopics: '共享记忆的主题', sources: '来源版本', parents: '上级主题', children: '下级主题',
@@ -234,6 +274,7 @@
   let language = query.get('lang') === 'en' ? 'en' : query.get('lang') === 'zh' ? 'zh'
     : navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
   const t = key => copy[language][key] || key;
+  const translation = key => language === 'en' ? snapshot.display_languages?.en?.[key] : undefined;
 
   function element(tag, text, className) {
     const node = document.createElement(tag);
@@ -257,10 +298,10 @@
     topics.set(topic.code, {
       id: 'topic:' + topic.code, kind: 'topic', code: topic.code,
       get label() {
-        return topic.project_label?.[language] || topic.project_label?.en || topic.code.replaceAll('_', ' ');
+        return translation(this.id) || topic.project_label?.[language] || topic.project_label?.en || topic.code.replaceAll('_', ' ');
       },
       isProject: Boolean(topic.project_label), parents: topic.parents,
-      aliases: topic.aliases, children: [], memories: [],
+      aliases: topic.aliases, children: [], memories: [], sourceCount: topic.source_count ?? 0,
     });
   }
   const projectCount = [...topics.values()].filter(topic => topic.isProject).length;
@@ -281,7 +322,8 @@
   for (const revision of snapshot.revisions) {
     sources.set(revision.checksum, {
       ...revision, id: 'source:' + revision.checksum, kind: 'source',
-      label: revision.title || revision.reference, memories: [],
+      get label() { return translation(this.id) || revision.title || revision.reference; },
+      memories: [],
     });
   }
   for (const [id, quote] of Object.entries(snapshot.evidence)) {
@@ -291,7 +333,9 @@
     states.set(key, { ...state, id: 'state:' + key, kind: 'state', label: key, memories: [] });
   }
   for (const entity of snapshot.entities || []) {
-    entities.set(entity.code, { ...entity, id: 'entity:' + entity.code, kind: 'entity', memories: [] });
+    entities.set(entity.code, { ...entity, id: 'entity:' + entity.code, kind: 'entity', memories: [],
+      originalLabel: entity.label, get label() { return translation(this.id) || entity.label; },
+    });
   }
   const rows = [
     ...snapshot.facts.map(fact => ({ ...fact, label: fact.content, key: fact.fact_id, active: fact.source_revision_active })),
@@ -309,12 +353,15 @@
       const values = row.facets?.[axis];
       return (Array.isArray(values) ? values : values ? [values] : []).map(value => {
         const id = 'facet:' + axis + ':' + value;
-        if (!facets.has(id)) facets.set(id, { id, kind: 'facet', axis, label: value.replaceAll('_', ' '), memories: [] });
+        if (!facets.has(id)) facets.set(id, { id, kind: 'facet', axis, memories: [],
+          get label() { return translation(this.id) || value.replaceAll('_', ' '); },
+        });
         return facets.get(id);
       });
     });
     const memory = {
       ...row, id: 'memory:' + row.key, kind: 'memory', evidence,
+      get label() { return translation('passage:' + row.evidence[0] + ':' + row.label) || row.label; },
       topics: associations, branches, sources: revisions, sameTextSources: copies,
       entities: linkedEntities, facets: linkedFacets, state: states.get(row.state_key), corrections: [],
     };
@@ -329,6 +376,11 @@
   const annotationNodes = new Map([...topics.values(), ...entities.values(), ...facets.values()]
     .map(node => [node.id, node]));
   const roots = [...topics.values()].filter(topic => !topic.parents.some(parent => topics.has(parent)));
+  const crossSourceTopics = new Set([...topics.values()].filter(topic => topic.sourceCount >= 2));
+  const canScopeTopics = !searching && !progress && !filterTrace
+    && crossSourceTopics.size > 0 && crossSourceTopics.size < topics.size;
+  let showTopicIndex = query.get('topic_scope') === 'index';
+  const scopeToCrossSource = () => canScopeTopics && !showTopicIndex;
   const searchRoots = [...searchBranches.values()].filter(branch => !branch.parents.length);
   const topicTotals = new Map();
 
@@ -350,8 +402,11 @@
     }
     return parents;
   }
+  for (const topic of topics.values()) topic.hierarchyDepth = lineage(topic).length - 1;
 
-  let currentTopic = topics.get(query.get('topic')) || searchRoots[0] || roots[0];
+  let currentTopic = topics.get(query.get('topic')) || searchRoots[0]
+    || (query.get('mode') === 'all' && scopeToCrossSource() && roots.find(topic => crossSourceTopics.has(topic)))
+    || roots[0];
   const requestedNode = query.get('node');
   const linkedNode = searching && requestedNode?.startsWith('line:')
     ? lines.get(requestedNode.slice('line:'.length))
@@ -460,8 +515,9 @@
   }
 
   function allTopicScene() {
+    const present = scopeToCrossSource() ? crossSourceTopics : new Set(topics.values());
     const groups = new Map();
-    for (const topic of topics.values()) {
+    for (const topic of present) {
       const path = lineage(topic);
       const root = path[0];
       if (!groups.has(root)) groups.set(root, new Map());
@@ -488,7 +544,6 @@
         }
       }
     }
-    const present = new Set(topics.values());
     return { layers: [{ kind: 'topic', nodes: [...present] }], coordinates, edges: topicConnections(present, currentTopic, 26) };
   }
 
@@ -657,6 +712,9 @@
     if (isGroup(node)) {
       currentTopic = node;
       browseTopic = node;
+      if (mode === 'all' && scopeToCrossSource() && !crossSourceTopics.has(node)) {
+        mode = 'topic';
+      }
     } else {
       mode = 'memory';
       if (node.kind === 'memory') referenceMemory = node;
@@ -685,6 +743,9 @@
       }
     }
     mode = next;
+    if (mode === 'all' && scopeToCrossSource() && !crossSourceTopics.has(currentTopic)) {
+      currentTopic = roots.find(topic => crossSourceTopics.has(topic));
+    }
     if (mode !== 'memory') {
       selected = currentTopic;
       relatedFrom = undefined;
@@ -719,7 +780,7 @@
     const list = byId('catalog-items');
     list.replaceChildren();
     const term = catalogFilter.value.normalize('NFKC').trim().toLowerCase().replaceAll('_', ' ');
-    const matched = nodes.filter(node => [node.label, node.reference, ...(node.aliases || [])]
+    const matched = nodes.filter(node => [node.label, node.originalLabel, node.reference, ...(node.aliases || [])]
       .some(label => label?.normalize('NFKC').toLowerCase().replaceAll('_', ' ').includes(term)))
       .sort((a, b) => (catalog === 'source' ? compareRecentSources(a, b) : 0)
         || b.memories.length - a.memories.length || a.label.localeCompare(b.label));
@@ -771,9 +832,16 @@
 
   function renderNavigation() {
     const allTopics = mode === 'all' && !searching;
+    const sharedOnly = allTopics && scopeToCrossSource();
     const title = t(searching ? (snapshot.search_question ? 'questions' : 'terms')
       : projectCount ? 'projectTopics' : 'topics');
-    byId('nav-title').textContent = allTopics ? `${title} · ${number.format(topics.size)}` : title;
+    const scopeTitle = t(sharedOnly ? 'sharedTopics' : 'topicIndex');
+    const visibleCount = sharedOnly ? crossSourceTopics.size : topics.size;
+    byId('nav-title').textContent = allTopics ? `${scopeTitle} · ${number.format(visibleCount)}` : title;
+    const scopeButton = byId('topic-scope');
+    scopeButton.hidden = !allTopics || !canScopeTopics;
+    scopeButton.textContent = scopeToCrossSource()
+      ? `${t('showTopicIndex')} (${number.format(topics.size)})` : t('showSharedTopics');
     byId('coverage').textContent = searching || !topics.size
       ? number.format(snapshot.sources) + ' ' + t('workspace')
       : [projectCount ? number.format(projectCount) + ' ' + t('projectCount') : null,
@@ -785,7 +853,7 @@
     function branch(nodes, seen = new Set()) {
       const list = element('ul');
       for (const node of nodes) {
-        if (seen.has(node)) continue;
+        if (seen.has(node) || (sharedOnly && !crossSourceTopics.has(node))) continue;
         const item = element('li');
         const row = button(undefined, () => choose(node), 'tree-row');
         row.dataset.kind = node.isProject ? 'project' : node.kind;
@@ -906,7 +974,9 @@
   }
 
   function renderViewLinks() {
-    renderViewerNavigation(language, 'graph', graphQuery(), snapshot.comparison_available);
+    const params = graphQuery();
+    renderViewerNavigation(language, 'graph', params, snapshot.comparison_available);
+    renderMemoryDisplay(language, 'graph', params);
   }
 
   function citation(line, interactive = false) {
@@ -915,7 +985,17 @@
       formatViewerOffset(line.start_ms)].filter(Boolean);
     const label = metadata.join(' · ');
     const heading = interactive ? button(label, () => choose(line), 'citation-link') : element('p', label);
-    quote.append(heading, element('blockquote', line.text));
+    quote.append(heading);
+    const translated = translation(line.id);
+    if (translated && translated !== line.text) {
+      const display = element('blockquote', translated, 'translated-quote');
+      display.lang = language;
+      const original = element('details', undefined, 'original-quote');
+      original.append(element('summary', t('originalQuote')), element('blockquote', line.text));
+      quote.append(element('small', t('translatedQuote')), display, original);
+    } else {
+      quote.append(element('blockquote', line.text));
+    }
     if (line.matched_terms?.length) {
       quote.append(element('p', `${t('matchedTerms')} · ${line.matched_terms.join(' · ')}`, 'detail-meta'));
     }
@@ -1064,14 +1144,21 @@
   }
 
   function renderLegend() {
-    const kinds = new Set(displayed.layers.flatMap(layer => layer.nodes.map(node => node.isProject ? 'project' : node.kind)));
+    const nodes = displayed.layers.flatMap(layer => layer.nodes);
+    const kinds = new Set(nodes.map(node => node.isProject ? 'project' : node.kind));
     const legend = byId('legend');
     legend.replaceChildren();
     for (const kind of kinds) {
-      const item = element('span');
-      item.dataset.kind = kind;
-      item.append(element('i'), element('span', t(kind)));
-      legend.append(item);
+      const depths = kind === 'topic'
+        ? [...new Set(nodes.filter(node => node.kind === 'topic' && !node.isProject)
+          .map(node => Math.min(2, node.hierarchyDepth ?? 0)))].sort() : [null];
+      for (const depth of depths) {
+        const item = element('span');
+        item.dataset.kind = kind;
+        if (depth !== null) item.dataset.topicDepth = depth;
+        item.append(element('i'), element('span', depth === null ? t(kind) : t('topicLevels')[depth]));
+        legend.append(item);
+      }
     }
     const meanings = [
       ['shared', 'shared', 'dashed'], ['correction', 'correction', 'correction'],
@@ -1345,6 +1432,10 @@
   const retrievalRoutes = [...memories.values()].flatMap(memory => (memory.retrieval || [])
     .map(route => ({ route, memory, line: lines.get(route.line_id) })));
 
+  if (retrievalRoutes.length || filterTrace || workflowKinds[progress?.pipeline] === 'query') {
+    byId('search-replay-dock').append(byId('workflow-activity'));
+  }
+
   function retrievalLabel(route) {
     const { reason, clues, labels } = route;
     if (reason === 'symbolic_match' || reason === 'schedule_change_match') {
@@ -1531,18 +1622,17 @@
     const passageCount = scope.filter(node => !node.fact_id).length;
     const nodeCount = displayed.layers.reduce((count, layer) => count + layer.nodes.length, 0);
     byId('graph-summary').textContent = [
-      number.format(groupedSearch ? snapshot.search_subquestion_branches.length : searching ? searchBranches.size : topics.size)
+      number.format(groupedSearch ? snapshot.search_subquestion_branches.length : searching ? searchBranches.size
+        : mode === 'all' && scopeToCrossSource() ? crossSourceTopics.size : topics.size)
         + ' ' + t(searching ? (snapshot.search_question ? 'questions' : 'terms')
-          : projectCount ? 'projectTopics' : 'topics'),
+          : mode === 'all' && scopeToCrossSource() ? 'sharedTopics' : 'topicIndex'),
       number.format(passageCount) + ' ' + t('record'),
       number.format(nodeCount) + ' ' + t('scope'),
     ].join(' · ');
     byId('empty').textContent = t('empty');
     byId('empty').hidden = nodeCount > 0;
     byId('search').hidden = !snapshot.search_available;
-    byId('search-terms').placeholder = t('placeholder');
-    byId('search-terms').setAttribute('aria-label', t('placeholder'));
-    byId('search-submit').textContent = t('search');
+    renderSearchControls();
     byId('recording-filter-label').textContent = t('recordingDates');
     byId('recording-start-label').textContent = t('recordingFrom');
     byId('recording-end-label').textContent = t('recordingThrough');
@@ -1552,17 +1642,19 @@
     byId('comparison-recording-label').textContent = t('secondRecordingDates');
     byId('compare-recording-start-label').textContent = t('recordingFrom');
     byId('compare-recording-end-label').textContent = t('recordingThrough');
-    byId('matching-lines-label').textContent = t('matchingLines');
+    byId('matching-lines-label').textContent = t('matchingLinesOnly');
     const versionFilter = byId('search-version');
-    versionFilter.hidden = snapshot.history_origin == null;
-    if (!versionFilter.hidden) {
+    const hasVersions = snapshot.history_origin != null;
+    byId('search-version-row').hidden = byId('search-version-help').hidden = !hasVersions;
+    versionFilter.disabled = !hasVersions;
+    byId('search-version-label').textContent = t('versionFilterLabel');
+    byId('search-version-help').textContent = t('versionHelp');
+    if (hasVersions) {
       versionFilter.min = snapshot.history_origin;
       versionFilter.max = snapshot.version;
-      versionFilter.placeholder = t('versionFilter');
-      versionFilter.setAttribute('aria-label', t('versionFilterLabel'));
     }
-    byId('comparison-version-label').hidden = byId('comparison-version').hidden = versionFilter.hidden;
-    if (!versionFilter.hidden) {
+    byId('comparison-version-label').hidden = byId('comparison-version').hidden = !hasVersions;
+    if (hasVersions) {
       byId('comparison-version').min = snapshot.history_origin;
       byId('comparison-version').max = snapshot.version - 1;
     }
@@ -1772,7 +1864,6 @@
         scope.append(' · ', button(t('allSources'), () => {
           searchAllSources = true;
           byId('search').requestSubmit();
-          searchAllSources = false;
         }, 'citation-link'));
         trace.prepend(scope);
       }
@@ -1859,11 +1950,80 @@
   const recordingEnd = byId('recording-end');
   recordingStart.value = recordingBounds.start_date ?? query.get('start_date') ?? '';
   recordingEnd.value = recordingBounds.end_date ?? query.get('end_date') ?? '';
-  const recordingFilter = byId('recording-filter');
-  recordingFilter.toggleAttribute('data-active', Boolean(recordingStart.value || recordingEnd.value));
+  const searchOptions = byId('search-options');
   const secondQuestion = byId('comparison-question');
   const earlierVersion = byId('comparison-version');
   earlierVersion.value = query.get('from') ?? (versionComparison ? comparison[0]?.history.version : '') ?? '';
+  const searchMode = byId('search-mode');
+  searchMode.value = !snapshot.search_question && (snapshot.search_terms || []).length ? 'terms' : 'question';
+  const searchSubmit = byId('search-submit');
+  const searchStatus = byId('search-status');
+  let compilingQuestion = false;
+  let searchFeedback = snapshot.search_trace
+    ? { key: symbolicTrace ? (snapshot.search_trace.quotes ? 'searchCompleted' : 'searchNoEvidence')
+      : 'localSearchCompleted' } : {};
+
+  function localQuestion() {
+    return Boolean(secondQuestion.value.trim() || earlierVersion.value || targetVersion.value || explainCandidates
+      || (!searchAllSources && Object.keys(sourceScope).length));
+  }
+
+  function showSearchFeedback(key, error = false) {
+    searchFeedback = { key, error };
+    renderSearchControls();
+  }
+
+  function renderSearchControls() {
+    searchMode.options[0].text = t('questionMode');
+    searchMode.options[1].text = t('termsMode');
+    searchMode.setAttribute('aria-label', t('searchMode'));
+    if (secondQuestion.value.trim() || earlierVersion.value) searchMode.value = 'question';
+    searchMode.disabled = compilingQuestion || Boolean(secondQuestion.value.trim() || earlierVersion.value);
+    const placeholder = t(searchMode.value === 'question' ? 'questionPlaceholder' : 'termsPlaceholder');
+    const input = byId('search-terms');
+    input.placeholder = placeholder;
+    input.setAttribute('aria-label', placeholder);
+    input.readOnly = compilingQuestion;
+    const local = localQuestion();
+    searchSubmit.disabled = compilingQuestion;
+    searchSubmit.textContent = t(compilingQuestion ? 'compilePending' : searchMode.value === 'terms'
+      ? 'search' : local ? 'localSearch' : 'compileSearch');
+    const active = local || Boolean(recordingStart.value || recordingEnd.value || matchingLines.checked);
+    searchOptions.toggleAttribute('data-active', active);
+    byId('search-options-label').textContent = t(active ? 'searchOptionsActive' : 'searchOptions');
+    byId('search-clear-options').textContent = t('clearSearchOptions');
+    const key = searchFeedback.key || (local && searchMode.value === 'question' ? 'localScopeHelp' : '');
+    searchStatus.textContent = key ? t(key).replace('{count}', number.format(snapshot.search_trace?.quotes ?? 0)) : '';
+    searchStatus.hidden = !key;
+    searchStatus.toggleAttribute('data-error', Boolean(searchFeedback.error));
+    if (compilingQuestion) searchStatus.dataset.state = 'pending';
+    else delete searchStatus.dataset.state;
+  }
+
+  async function compileQuestion(value) {
+    compilingQuestion = true;
+    searchOptions.open = false;
+    showSearchFeedback('searchWorking');
+    const dates = {};
+    if (recordingStart.value) dates.start_date = recordingStart.value;
+    if (recordingEnd.value) dates.end_date = recordingEnd.value;
+    try {
+      const response = await fetch(location.pathname, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: value, matching_lines: matchingLines.checked,
+          ...(Object.keys(dates).length ? { recording_dates: dates } : {}) }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.run) throw new Error(result.error || 'compile_failed');
+      location.search = new URLSearchParams({ view: 'graph', lang: language, run: result.run });
+    } catch (error) {
+      const messages = { host_auth: 'compileAuth', stale_snapshot: 'compileStale', invalid_plan: 'compilePlanError',
+        missing_dependency: 'compileMissing', host_timeout: 'compileTimeout' };
+      compilingQuestion = false;
+      showSearchFeedback(messages[error.message] || 'compileError', true);
+    }
+  }
   const compareStart = byId('compare-recording-start');
   const compareEnd = byId('compare-recording-end');
   compareStart.value = compareDateOverrides.start_date ?? query.get('compare_start_date') ?? '';
@@ -1871,7 +2031,6 @@
   function clearDateErrors() {
     for (const input of [recordingEnd, compareStart, compareEnd]) input.setCustomValidity('');
   }
-  recordingFilter.addEventListener('input', clearDateErrors);
   const matchingLines = byId('matching-lines');
   matchingLines.checked = Boolean(snapshot.search_matching_lines);
   secondQuestion.value = versionComparison ? '' : comparison[1]?.question ?? query.get('q2') ?? '';
@@ -1883,27 +2042,72 @@
   }
   enableComparisonControls();
   byId('comparison-filter').toggleAttribute('data-active', Boolean(secondQuestion.value || earlierVersion.value));
-  if (earlierVersion.value && !snapshot.search_question) byId('comparison-filter').open = true;
-  byId('comparison-filter').addEventListener('input', clearDateErrors);
+  if (earlierVersion.value && !snapshot.search_question) {
+    searchOptions.open = true;
+    byId('comparison-filter').open = true;
+  }
+  searchOptions.addEventListener('input', () => {
+    clearDateErrors();
+    showSearchFeedback();
+  });
+  byId('search-clear-options').addEventListener('click', () => {
+    for (const input of searchOptions.querySelectorAll('input')) {
+      if (input.type === 'checkbox') input.checked = false;
+      else input.value = '';
+      input.setCustomValidity('');
+    }
+    searchAllSources = true;
+    explainCandidates = false;
+    enableComparisonControls();
+    byId('search-terms').setCustomValidity('');
+    searchOptions.open = false;
+    showSearchFeedback();
+    byId('search-terms').focus();
+  });
   earlierVersion.addEventListener('input', () => {
     byId('search-terms').setCustomValidity('');
     enableComparisonControls();
+    renderSearchControls();
   });
-  targetVersion.addEventListener('input', () => earlierVersion.setCustomValidity(''));
+  targetVersion.addEventListener('input', () => {
+    earlierVersion.setCustomValidity('');
+    renderSearchControls();
+  });
   secondQuestion.addEventListener('input', () => {
     byId('search-terms').setCustomValidity('');
     enableComparisonControls();
+    renderSearchControls();
   });
-  byId('search-terms').addEventListener('input', event => event.target.setCustomValidity(''));
+  searchMode.addEventListener('change', () => {
+    byId('search-terms').setCustomValidity('');
+    showSearchFeedback();
+  });
+  byId('search-terms').addEventListener('input', event => {
+    event.target.setCustomValidity('');
+    showSearchFeedback();
+  });
+  byId('search-terms').addEventListener('keydown', event => {
+    if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    if (!event.repeat && !compilingQuestion) byId('search').requestSubmit(searchSubmit);
+  });
+  byId('search').addEventListener('invalid', event => {
+    if (searchOptions.contains(event.target)) {
+      searchOptions.open = true;
+      const option = event.target.closest('#comparison-filter, #recording-filter');
+      if (option) option.open = true;
+      showSearchFeedback('searchInvalidOption', true);
+    }
+  }, true);
   byId('search').addEventListener('submit', event => {
     event.preventDefault();
+    if (compilingQuestion) return;
     const input = byId('search-terms');
     const value = input.value.trim();
     const compareWith = secondQuestion.value.trim();
     const from = earlierVersion.value;
-    if ((compareWith || from) && !value) {
-      input.setCustomValidity(t(from ? 'comparisonQuestionRequired' : 'firstQuestionRequired'));
-      input.reportValidity();
+    if (!value) {
+      showSearchFeedback(compareWith ? 'firstQuestionRequired' : from ? 'comparisonQuestionRequired' : 'searchBlank', true);
       return;
     }
     if (from && Number(from) >= Number(targetVersion.value || snapshot.version)) {
@@ -1924,14 +2128,14 @@
       dateInput.reportValidity();
       return;
     }
-    const previousTerms = snapshot.search_question ? [] : (snapshot.search_terms || []);
-    let terms = [];
-    if (!compareWith && !from && value && value === previousTerms.join('，')) {
-      terms = previousTerms;
-    } else if (!compareWith && !from && value !== snapshot.search_question && /[,，、]/u.test(value) && !/[?？。]/u.test(value)) {
-      terms = [...new Set(value.split(/[,，、]+/u).map(term => term.trim()).filter(Boolean))];
+    if (value && searchMode.value === 'question' && !localQuestion()) {
+      compileQuestion(value);
+      return;
     }
-    if (terms.length > (matchingLines.checked ? 12 : 3) || terms.some(term => term.length > 128)) {
+    const terms = searchMode.value === 'terms' && value
+      ? [...new Set(value.split(/[,，、]+/u).map(term => term.trim()).filter(Boolean))] : [];
+    if ((searchMode.value === 'terms' && value && !terms.length)
+      || terms.length > (matchingLines.checked ? 12 : 3) || terms.some(term => term.length > 128)) {
       input.setCustomValidity(t(matchingLines.checked ? 'invalidMatching' : 'invalid'));
       input.reportValidity();
       return;
@@ -1954,7 +2158,6 @@
     if (value && !searchAllSources) {
       for (const [key, scope] of Object.entries(sourceScope)) params.set(key, scope);
     }
-    if (!value && currentTopic && !searching) params.set('topic', currentTopic.code);
     location.search = params.toString();
   });
   byId('overview').addEventListener('click', () => {
@@ -1963,8 +2166,27 @@
     location.search = params.toString();
   });
   byId('refresh').addEventListener('click', () => { location.search = graphQuery().toString(); });
-  byId('language').addEventListener('click', () => { language = language === 'zh' ? 'en' : 'zh'; render(); });
+  byId('language').addEventListener('click', () => {
+    language = language === 'zh' ? 'en' : 'zh';
+    const url = new URL(location.href);
+    url.searchParams.set('lang', language);
+    history.replaceState(history.state, '', url);
+    render();
+  });
   byId('all-mode').addEventListener('click', () => changeMode('all'));
+  byId('topic-scope').addEventListener('click', () => {
+    showTopicIndex = !showTopicIndex;
+    const url = new URL(location.href);
+    if (showTopicIndex) url.searchParams.set('topic_scope', 'index');
+    else url.searchParams.delete('topic_scope');
+    history.replaceState(history.state, '', url);
+    if (scopeToCrossSource() && !crossSourceTopics.has(currentTopic)) {
+      choose(roots.find(topic => crossSourceTopics.has(topic)));
+    } else {
+      render();
+    }
+    view.reset();
+  });
   byId('topic-mode').addEventListener('click', () => changeMode('topic'));
   byId('memory-mode').addEventListener('click', () => changeMode('memory'));
   for (const kind of Object.keys(catalogs)) {

@@ -32,9 +32,9 @@ dates. Topics, entities, and facets help an agent find the relevant passages.
 A new Codex or Claude Code session can use the same memory to answer questions
 and act on the team's latest confirmed decisions.
 
-### Install KITE in Codex desktop
+### Install Kite by Memoket in Codex desktop
 
-Add the Memoket plugin directory once, then open **Plugins → Memoket → KITE →
+Add the Memoket plugin directory once, then open **Plugins → Memoket → Kite by Memoket →
 Install** in Codex desktop. Start a new chat and ask **“Show me how KITE remembers
 a changed release decision.”**
 
@@ -44,7 +44,8 @@ codex plugin marketplace add memoket/memoket-kite --ref codex/agent-native-memor
 ```
 
 See the [Codex installation guide](docs/codex.md) for first-run setup, import,
-and citation examples. Codex can compile a symbolic query in the current chat,
+and citation examples, or the [bilingual demo guide](docs/codex-bilingual-demo.md)
+for building a Chinese and English graph. Codex can compile a symbolic query in the current chat,
 then save the plan for later tasks. The [optional submit hook](docs/codex.md#load-evidence-before-the-task)
 can run that saved plan against updated original recordings before Codex starts
 the task. The [paired execution benchmark](benchmarks/agent/README.md#compare-an-installed-symbolic-hook-with-raw-files)

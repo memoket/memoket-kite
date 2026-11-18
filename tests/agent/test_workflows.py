@@ -123,6 +123,140 @@ def test_graph_filter_trace_intersects_labels_on_active_passages():
     assert trace["references"] == ["L1"]
 
 
+def test_graph_topic_source_counts_include_children_and_ignore_older_revisions(work):
+    directory, call = work
+
+    def source(identity, body, topics, taxonomy=()):
+        return {
+            "source": text_input(identity, body)["source"],
+            "annotations": {
+                "facts": [],
+                "taxonomy": list(taxonomy),
+                "index_spans": [{"segment_ids": ["text-1"], "topics": topics}],
+            },
+        }
+
+    call("index-sources", payload={"sources": [source("first", "Old wording.", ["retired"])]})
+    (previous,) = viewer._snapshot(directory, [])["revisions"]
+    revised = source(
+        "first",
+        "New rollout wording.",
+        ["rollout"],
+        [{"name": "rollout", "parents": ["release"]}],
+    )
+    revised["source"]["expected_checksum"] = previous["checksum"]
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                revised,
+                source("second", "Release checklist.", ["release"]),
+            ]
+        },
+    )
+    items = viewer._snapshot(directory, [])["topics"]
+    assert {item["code"]: item["source_count"] for item in items} == {
+        "release": 2,
+        "rollout": 1,
+        "retired": 0,
+    }
+
+
+def test_native_topic_rebuild_promotes_and_merges_across_originals(work):
+    directory, call = work
+    cases = [
+        ("local-a", "Local transcription works offline.", "2026-03-01", "local transcription"),
+        (
+            "local-b",
+            "Offline transcription runs on this device.",
+            "2026-03-02",
+            "offline transcription",
+        ),
+        ("local-c", "Local transcription lowers latency.", "2026-03-03", "local transcription"),
+        ("rare", "Investigate one broken cable.", "2026-03-04", "cable issue"),
+        ("copy", "Local transcription works offline!", "2026-03-05", "local transcription"),
+    ]
+    inputs = []
+    for identity, text, day, _ in cases:
+        source = text_input(identity, text, date=day)["source"]
+        inputs.append(
+            {
+                "source": source,
+                "annotations": {
+                    "facts": [],
+                    "index_spans": [
+                        {
+                            "segment_ids": ["text-1"],
+                            "topics": ["scene detail"],
+                            "facets": {"event": ["discussion"]},
+                        }
+                    ],
+                },
+            }
+        )
+    call("index-sources", payload={"sources": inputs})
+    with workspace.Workspace.inspect(directory) as store:
+        before = {row["conversation"]["conversation_id"]: row for row in store.records()}
+        version = store.version()
+    plan = {
+        "version": version,
+        "catalog": [
+            {"name": "recording", "parent": None},
+            {"name": "transcription", "parent": "recording"},
+            {"name": "local transcription", "parent": "transcription"},
+            {"name": "offline transcription", "parent": "transcription"},
+            {"name": "cable issue", "parent": "recording"},
+        ],
+        "recordings": [
+            {
+                "checksum": before[identity]["checksum"],
+                "bindings": [{"topic": topic, "segment_ids": ["text-1"]}],
+            }
+            for identity, _, _, topic in cases
+        ],
+        "equivalences": [
+            {"from_topic": "offline transcription", "to_topic": "local transcription"}
+        ],
+    }
+    call("start", "topic-rebuild", "--run-id", "rebuild-topics", payload={"plan": plan})
+    preview = call("stage", "rebuild-topics", "preview")["value"]["governance"]
+    assert preview["levels"] == {"1": 1, "2": 1, "3": 1}
+    assert preview["aliases_merged"] == 1 and preview["candidates_promoted"] == 2
+    assert preview["duplicate_recordings_collapsed_for_governance"] == 1
+    call("stage", "rebuild-topics", "commit")
+    assert call("stage", "rebuild-topics", "verify")["value"]["source_lines"] == 5
+    with workspace.Workspace.inspect(directory) as store:
+        index = store.index(verify=True)
+        assert set(index.vocab.topics) == {"recording", "transcription", "local_transcription"}
+        assert index.vocab.resolve_topic("offline transcription") == "local_transcription"
+        for row in store.records():
+            old = before[row["conversation"]["conversation_id"]]
+            assert row["conversation"] == old["conversation"]
+            assert row["checksum"] == old["checksum"]
+            assert row["index_spans"][0]["facets"] == old["index_spans"][0]["facets"]
+            assert row["facts"] == []
+
+
+def test_empty_generated_lexical_plan_can_retry_quoted_cues_in_its_recording(work):
+    _, call = work
+    first = text_input("selected", "接口已经确认可以使用。")["source"]
+    other = text_input("unselected", "接口已上线到另一个环境。")["source"]
+    call("index-sources", payload={"sources": [{"source": first}, {"source": other}]})
+    question = "找一下关于「版本解析」和「接口」的讨论。"
+    snapshot = call("symbolic", "--prepare", question, "--brief")["snapshot"]
+    where = {"units": ["selected"], "grep": "版本解析"}
+    plan = {"queries": [{"select": "lines", "where": where}]}
+    search = {"question": question, "snapshot": snapshot, "plan": plan}
+    result = call("symbolic", payload=search)
+    assert result["engine"] == "memoket_kite.core.algebra.execute_plan"
+    assert {row["conversation_id"] for span in result["spans"] for row in span["evidence"]} == {
+        "selected"
+    }
+    assert any(step["stage"] == "quoted_subject_retry" for step in result["trace"])
+    where["topics"] = ["required exact topic"]
+    assert not call("symbolic", payload=search)["spans"]
+
+
 def test_start_opens_workflow_graph_only_when_requested(work, monkeypatch):
     directory, call = work
     opened = []
@@ -142,6 +276,143 @@ def test_start_opens_workflow_graph_only_when_requested(work, monkeypatch):
     watched = call("start", "context-search", "--run-id", "watched", "--visualize", payload=request)
     assert opened == ["watched"] and watched["viewer"]["opened"]
     assert call("stage", "watched", "compile")["value"]["request"]["explain"] is True
+
+
+def test_graph_question_saves_native_plan_and_respects_recording_dates(work, monkeypatch):
+    from memoket_kite.tools import twin_ingestion
+
+    directory, call = work
+    question = "查发布规划，应用商店安排"
+    records = [
+        text_input("earlier", "App Store review had not started.", date="2026-09-01")["source"],
+        text_input("selected", "App Store review starts Friday.", date="2026-09-02")["source"],
+    ]
+    call("index-sources", payload={"sources": [{"source": row} for row in records]})
+
+    prompts = []
+
+    def request(host, prompt, shape):
+        assert host == "codex" and question in prompt
+        assert "Return only a KITE plan" in prompt
+        prompts.append(prompt)
+        plan = {"queries": [{"select": "lines", "where": {"grep": "App Store"}}]}
+        if len(prompts) == 1:
+            plan["queries"][0]["prefer_labels"] = {"topics": []}
+        return {"plan_json": json.dumps(plan)}
+
+    monkeypatch.setattr(twin_ingestion, "_request_json", request)
+    run_id = viewer._compile_graph_question(
+        directory,
+        {
+            "question": question,
+            "matching_lines": True,
+            "recording_dates": {"start_date": "2026-09-02"},
+        },
+    )
+    assert len(prompts) == 2 and "failed native validation" in prompts[1]
+    snapshot = viewer._snapshot(directory, [], run_id=run_id)
+    assert snapshot["search_matching_lines"] is True
+    symbolic_trace = snapshot["search_trace"]["symbolic"]
+    assert symbolic_trace["compiler"] == "host_generated_plan"
+    assert symbolic_trace["engine"] == "memoket_kite.core.algebra.execute_plan"
+    assert {line["conversation_id"] for line in snapshot["evidence"].values()} == {"selected"}
+    assert call("status", run_id)["state"] == "completed"
+
+
+def test_graph_translations_keep_reference_and_follow_permanent_deletion(work):
+    directory, call = work
+    original = "周二发布，由 Maya 负责。"
+    source = text_input("release", original)["source"]
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {
+                    "source": source,
+                    "annotations": {
+                        "facts": [],
+                        "index_spans": [
+                            {
+                                "topics": ["发布计划"],
+                                "facets": {"event": ["发布"]},
+                                "segment_ids": ["text-1"],
+                                "title": "最终发布决定",
+                            }
+                        ],
+                    },
+                }
+            ],
+        },
+    )
+    prepared = call("memory-language", "prepare", "en")
+    labels = {
+        "发布计划": "Release plan",
+        "发布": "Release",
+        "最终发布决定": "Final release decision",
+        original: "Maya owns the Tuesday release.",
+    }
+    translations = {key: labels[text] for key, text in prepared["items"].items() if text in labels}
+    assert {key.split(":")[0] for key in translations} == {"topic", "facet", "passage", "line"}
+    payload = {
+        "language": "en",
+        "workspace_id": prepared["workspace_id"],
+        "version": prepared["version"],
+        "translations": translations,
+    }
+    call(
+        "memory-language", "apply", "en", payload={**payload, "version": -1}, error="stale_snapshot"
+    )
+    call(
+        "memory-language",
+        "apply",
+        "en",
+        payload={**payload, "translations": {"topic:unknown": "Unknown"}},
+        error="invalid_input",
+    )
+    call("memory-language", "apply", "en", payload=payload)
+    result = viewer._snapshot(directory, ["发布"])
+    assert result["display_languages"]["en"]["topic:发布计划"] == "Release plan"
+    line_id = next(key for key in translations if key.startswith("line:"))
+    assert result["display_languages"]["en"][line_id] == labels[original]
+    assert result["evidence"][line_id.removeprefix("line:")]["text"] == original
+    call(
+        "start",
+        "memory-deletion",
+        "--run-id",
+        "deleting",
+        payload={"target": {"source": "text", "conversation_id": "release"}},
+    )
+    approval = call("stage", "deleting", "preview")["value"]["approval_token"]
+    call("stage", "deleting", "apply", "--approve", approval)
+    with workspace.Workspace.open(directory, read_only=True) as current:
+        assert current.db.execute("SELECT count(*) FROM display_translations").fetchone()[0] == 0
+
+
+def test_chunk_geometry_counts_original_chunks_and_keeps_search_scope(work):
+    directory, call = work
+    long_text = "甲" * 600 + "乙" * (600 * 25)
+    short_text = "The turnover checklist is approved."
+    call(
+        "index-sources",
+        payload={
+            "sources": [
+                {"source": text_input("long", long_text, date="2026-09-02")["source"]},
+                {"source": text_input("short", short_text, date="2026-09-01")["source"]},
+            ]
+        },
+    )
+    all_sources = viewer._snapshot(directory, [], as_chunks=True)
+    assert (all_sources["source_count"], all_sources["total_chunks"]) == (2, 27)
+    chunks = sorted((source["chunks"] for source in all_sources["sources"]), key=len)
+    assert [len(source) for source in chunks] == [1, 26]
+    assert chunks[1][:2] == [(0, "甲" * 16), (0, "乙" * 16)]
+    assert short_text not in json.dumps(all_sources)
+    scoped = viewer._snapshot(directory, ["turnover checklist"], as_chunks=True)
+    graph = viewer._snapshot(directory, ["turnover checklist"])
+    assert scoped["search_scope"] and scoped["source_count"] == 1
+    assert scoped["sources"] == [
+        {"checksum": graph["revisions"][0]["checksum"], "chunks": [(0, short_text[:16])]}
+    ]
 
 
 def test_memory_viewer_reads_fresh_committed_state(work):
@@ -171,6 +442,16 @@ def test_memory_viewer_reads_fresh_committed_state(work):
 
             assert get("/")[0] == 404
             assert get(url.path, {"Host": "example.test"})[0] == 404
+            with closing(HTTPConnection(url.hostname, url.port, timeout=10)) as client:
+                client.request(
+                    "POST",
+                    url.path,
+                    body="{}",
+                    headers={"Origin": "http://example.test", "Content-Type": "application/json"},
+                )
+                response = client.getresponse()
+                assert response.status == 403
+                response.read()
             assert snapshot()["facts"] == []
             assert not directory.exists()
 
@@ -900,10 +1181,13 @@ def test_cli_help_still_prints_usage(capsys):
 def test_discovery_and_invalid_pipeline(work, tmp_path):
     _, call = work
     pipelines = call("pipelines")["pipelines"]
-    assert len(pipelines) == 16
-    assert {"context-search", "symbolic-search", "source-indexing", "source-revision-review"} <= {
-        entry["id"] for entry in pipelines
-    }
+    assert {
+        "context-search",
+        "symbolic-search",
+        "source-indexing",
+        "source-revision-review",
+        "twin-ingestion",
+    } <= {entry["id"] for entry in pipelines}
     assert call("describe", "delete")["delete"]["effect"] == "delete"
     repo = tmp_path / "definitions"
     for folder in ("schemas", "skills", "pipeline_defs"):

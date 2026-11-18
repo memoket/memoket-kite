@@ -145,6 +145,8 @@ def _segment_page_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
+    from .display_language import KINDS, LANGUAGES
+
     parser = _ArgumentParser(prog="kite-tool", description=__doc__)
     resources = parser.add_mutually_exclusive_group()
     resources.add_argument(
@@ -159,6 +161,25 @@ def _parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("pipelines", help="list validated pipelines")
+    twin = commands.add_parser("twin", help="capture memory or run a task from KITE Twin")
+    twin.add_argument(
+        "action",
+        choices=(
+            "status",
+            "capture",
+            "ingest",
+            "profile-review",
+            "profile-edit",
+            "transcribe",
+            "original",
+            "reminders",
+            "handoff",
+            "run",
+            "teach",
+            "skills",
+        ),
+    )
+    twin.add_argument("--input", default="-", metavar="FILE", help="request JSON or - for stdin")
     catalog = commands.add_parser(
         "resources", help="show paths to agent instructions and workflows"
     )
@@ -184,6 +205,7 @@ def _parser() -> argparse.ArgumentParser:
     topics.add_argument("--limit", type=int, default=50, help="topics per page (1–1000)")
     topics.add_argument("--cursor", help="continue with the previous page's next_cursor")
     viewer = commands.add_parser("view", help="open the workspace memory in a local browser")
+    viewer.add_argument("--lang", choices=LANGUAGES, help="initial viewer display language")
     viewer.add_argument(
         "--no-open", action="store_true", help="print the local URL without opening it"
     )
@@ -194,6 +216,18 @@ def _parser() -> argparse.ArgumentParser:
     view_options.add_argument("--compare", type=Path, help="compare saved graph snapshots")
     view_options.add_argument("--run", help="open the evidence from a saved search")
     view_options.add_argument("--follow", metavar="RUN_ID", help="follow an import or search run")
+    display_language = commands.add_parser(
+        "memory-language", help="prepare or import translations for memory graph labels and quotes"
+    )
+    display_commands = display_language.add_subparsers(dest="language_action", required=True)
+    prepare_language = display_commands.add_parser("prepare")
+    prepare_language.add_argument("language", choices=LANGUAGES)
+    prepare_language.add_argument("--kind", choices=KINDS)
+    prepare_language.add_argument("--offset", type=int, default=0)
+    prepare_language.add_argument("--limit", type=int, default=50)
+    apply_language = display_commands.add_parser("apply")
+    apply_language.add_argument("language", choices=LANGUAGES)
+    apply_language.add_argument("--input", required=True, metavar="FILE")
     source_index = commands.add_parser("index-sources", help="index original sources without facts")
     index_input = source_index.add_mutually_exclusive_group()
     index_input.add_argument("--input", metavar="FILE", help="source batch JSON or - for stdin")
@@ -797,6 +831,14 @@ def _check_source(args: argparse.Namespace, root: Path) -> dict:
 
 
 def _dispatch(args) -> tuple[dict, ToolError | None]:
+    if args.command == "memory-language":
+        from .display_language import apply, prepare
+
+        if args.language_action == "apply":
+            return apply(args.workspace, args.language, _object(args.input)), None
+        return prepare(
+            args.workspace, args.language, kind=args.kind, offset=args.offset, limit=args.limit
+        ), None
     if args.command == "view":
         return view_memory(
             args.workspace,
@@ -805,10 +847,26 @@ def _dispatch(args) -> tuple[dict, ToolError | None]:
             comparison=args.compare,
             run_id=args.run,
             follow=args.follow,
+            language=args.lang,
         ), None
     if args.command == "describe":
         return _describe(args.tool), None
     root = resource_root(args.repo)
+    if args.command == "twin":
+        from .twin import capture_twin, run_twin, transcribe_twin, twin
+
+        value = {} if args.action == "status" else _object(args.input)
+        if args.action == "run":
+            return run_twin(args.workspace, value), None
+        if args.action in {"capture", "ingest"}:
+            return capture_twin(root, args.workspace, value, indexed=args.action == "ingest"), None
+        if args.action == "transcribe":
+            return transcribe_twin(root, value), None
+        if args.action in {"profile-review", "profile-edit"}:
+            with Workspace.open(args.workspace) as workspace:
+                return twin(Context(root, workspace, ""), args.action, value), None
+        with Workspace.inspect(args.workspace, initialize=True) as workspace:
+            return twin(Context(root, workspace, ""), args.action, value), None
     extension_root = None
     if args.extensions is not None:
         extension_root = args.extensions.expanduser().resolve()

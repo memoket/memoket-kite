@@ -1,6 +1,6 @@
 {
   "name": "kite",
-  "version": "0.1.111",
+  "version": "0.1.112",
   "description": "Remember what your team decided, who owns it now, and why it changed.",
   "author": { "name": "Memoket Inc.", "url": "https://github.com/memoket" },
   "homepage": "https://github.com/memoket/memoket-kite",
@@ -10,7 +10,7 @@
   "skills": "./skills/",
   "onboardingSkill": "./skills/kite/SKILL.md",
   "interface": {
-    "displayName": "KITE",
+    "displayName": "Kite by Memoket",
     "shortDescription": "Recall the latest decision, its owner, and the original evidence.",
     "longDescription": "Turn meetings into memory for future chats. Explore topics, entities, and original quotes in the memory graph, and trace changing decisions and assignments.",
     "developerName": "Memoket",

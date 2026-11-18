@@ -266,11 +266,20 @@ listed labels, use prefer_labels to boost original lines supported by the index 
 untagged lines. Its axes are topics, entities, obj, place, event, duration. Use one to four
 exact codes per axis. Use where labels
 for required index filters. Each label is shown with its distinct recording count in scope.
+For a natural-language question, keep the source wording in grep or grep_all and use relevant
+Topic, Entity and Facet codes as ranking preferences when they are cues rather than required
+filters. Topic names can change when a workspace reorganizes its vocabulary. Avoid making a
+guessed category, a generic event such as "discussion", or multiple paraphrases of one cue
+mandatory in a conjunction. Keep the requested source and time constraints.
 Use listed recording names in units only
 when the question or recording metadata establishes that scope. Never assume dates or order
 from an opaque recording ID.
 grep and grep_all are case-insensitive regexes on verbatim lines. Include the literal subject
-wording from the question or index along with likely spoken alternatives. Use separate alternatives
+wording from the question or index along with likely spoken alternatives. Use the source language
+for required grep, grep_all and near.grep expressions. The question, display language or a
+translated label may be in another language. Use the original vocabulary as a language cue.
+If only a verified subject label is known, bind by that label and rank likely source wording
+in prefer rather than excluding all turns with an unverified translation. Use separate alternatives
 when related words change stem or suffix. For a compound subject spoken as separate words, use
 grep_all with an expression for each independently meaningful cue. When a
 decision and its subject may be in separate turns, use grep to match the requested value
@@ -2982,6 +2991,40 @@ def fit_symbolic_delivery(pack, max_bytes, *, include_receipt=False, guide=False
     return output(delivered)
 
 
+def _quoted_subject_retry(plan, question, active_units):
+    """Recover literal cues from an empty, single-recording lexical plan."""
+    entries = plan.get("queries", ())
+    if not entries or not question or _DATE_DETAIL_QUESTION.search(question):
+        return None
+    if any(set(item["where"]) - {"units", "grep", "grep_all"} for item in entries):
+        return None
+    scoped = {tuple(item["where"].get("units") or ()) for item in entries}
+    if len(scoped) != 1:
+        return None
+    (units,) = scoped
+    if units:
+        if len(units) != 1:
+            return None
+    elif len(active_units) != 1:
+        return None
+    phrases = list(
+        dict.fromkeys(
+            phrase
+            for match in _QUOTED_PHRASES.finditer(question)
+            if 2 <= len(phrase := next(group for group in match.groups() if group).strip()) <= 48
+        )
+    )[:4]
+    if len(phrases) < 2:
+        return None
+    pattern = "|".join(f"(?:{_literal_quote_pattern(phrase)})" for phrase in phrases)
+    if len(pattern) > 256 or any(not any(map(str.isalnum, phrase)) for phrase in phrases):
+        return None
+    where = {"grep": pattern}
+    if units:
+        where["units"] = list(units)
+    return _validate_source_plan({"queries": [{"select": "lines", "where": where}]})
+
+
 def execute_source_plan(
     index,
     compiled,
@@ -3120,6 +3163,20 @@ def execute_source_plan(
             trace_steps.extend([detail, *trace.stages])
         else:
             rows, trace = run(active_units, branch_limit=branch_limit)
+        if (
+            not rows
+            and changed_recordings is None
+            and compiled["compiler"]
+            in {"host_generated_plan", "memoket_kite.pipeline.compile_plan"}
+            and (alternative := _quoted_subject_retry(plan, question, active_units))
+        ):
+            original_plan, original_trace = plan, trace
+            plan = alternative
+            rows, trace = run(active_units, "quoted_subject_retry", branch_limit=branch_limit)
+            if rows:
+                trace_steps.append({"stage": "quoted_subject_retry", "original_hits": 0})
+            else:
+                plan, trace = original_plan, original_trace
         hints = (
             list(
                 _date_subject_hints(

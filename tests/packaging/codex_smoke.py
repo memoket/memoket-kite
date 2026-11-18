@@ -11,7 +11,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 
-def install_plugin(codex: str, marketplace: dict, project: Path, env: dict) -> Path:
+def install_plugin(
+    codex: str, marketplace: dict, project: Path, env: dict, display_name: str
+) -> Path:
     with subprocess.Popen(
         [codex, "app-server"],
         cwd=project,
@@ -51,7 +53,7 @@ def install_plugin(codex: str, marketplace: dict, project: Path, env: dict) -> P
             entry = find_marketplace()
             plugin = next(item for item in entry["plugins"] if item["name"] == "kite")
             assert entry["interface"]["displayName"] == "Memoket", entry
-            assert plugin["interface"]["displayName"] == "KITE", plugin
+            assert plugin["interface"]["displayName"] == display_name, plugin
             assert not plugin["installed"] and plugin["installPolicy"] == "AVAILABLE", plugin
             installed = request("plugin/install", marketplacePath=entry["path"], pluginName="kite")
             assert installed["appsNeedingAuth"] == [], installed
@@ -479,6 +481,7 @@ def main() -> None:
     parser.add_argument("--ref", help="Git branch for a remote marketplace")
     parser.add_argument("--sparse", action="append", help="Sparse Git marketplace path, repeatable")
     parser.add_argument("--plugin-version", help="expected installed KITE plugin version")
+    parser.add_argument("--plugin-display-name", default="Kite by Memoket")
     parser.add_argument(
         "--context-search-version", type=int, help="expected installed pipeline version"
     )
@@ -504,6 +507,7 @@ def main() -> None:
             {"source": source, "refName": args.ref, "sparsePaths": args.sparse},
             project,
             env,
+            args.plugin_display_name,
         )
         if args.plugin_version is not None:
             manifest = launcher.parents[3] / ".codex-plugin" / "plugin.json"

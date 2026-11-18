@@ -861,10 +861,15 @@ def _artifact(workspace, checkpoint: dict, stage_id: str, *, check_snapshot=True
     return {"manifest": manifest, "value": value}
 
 
-def _verified_artifact_value(row, manifest: dict) -> dict:
+def _verified_artifact_value(row, manifest: dict) -> dict | list:
     try:
-        value = decode_object(row["value"])
-    except ToolError as exc:
+        if SCHEMAS[row["kind"]].get("type") == "array":
+            value = json.loads(row["value"])
+            if not isinstance(value, list):
+                raise ValueError("array artifact has another JSON type")
+        else:
+            value = decode_object(row["value"])
+    except (ToolError, KeyError, ValueError) as exc:
         raise ToolError("integrity_error", "artifact contains invalid JSON") from exc
     if row["kind"] != manifest["kind"] or not row["digest"] == manifest["digest"] == digest(value):
         raise ToolError("integrity_error", "artifact differs from the checkpoint manifest")

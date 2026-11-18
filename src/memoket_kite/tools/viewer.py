@@ -1,4 +1,4 @@
-"""Serve a read-only memory graph on an ephemeral loopback address."""
+"""Serve the interactive memory graph on an ephemeral loopback address."""
 
 from __future__ import annotations
 
@@ -18,8 +18,10 @@ from memoket_kite.core.vocab import norm_code
 
 from .activity import memory_activity, symbolic_index_steps, workflow_progress
 from .change_graph import change_comparison
+from .chunk_view import chunk_geometry
 from .context import _tokens, context_enabled, context_pack, question_pack
-from .contracts import ToolError
+from .contracts import TEXT, ToolError, decode_object, object_schema, validate
+from .display_language import graph_translations
 from .index import SPAN_FACET_AXES, revision_id
 from .ingest import RECORDING_CLOCK_FIELDS
 from .retrieve import compare_revisions, memory_snapshot
@@ -537,6 +539,7 @@ def _snapshot(
     explain: bool = False,
     run_id: str | None = None,
     filter_trace: tuple[str, str, str] | None = None,
+    as_chunks: bool = False,
 ) -> dict:
     try:
         with Workspace.open(directory, read_only=True) as workspace:
@@ -553,13 +556,29 @@ def _snapshot(
                 saved = saved_search(workspace, run_id)
                 pack = saved["value"]
                 first = pack["parts"][0] if "parts" in pack else pack
-                question = (
-                    saved_symbolic_plan(workspace, run_id).get("question")
+                symbolic_plan = (
+                    saved_symbolic_plan(workspace, run_id)
                     if saved["manifest"]["kind"] == "symbolic_evidence"
+                    else None
+                )
+                question = (
+                    symbolic_plan.get("question")
+                    if symbolic_plan is not None
                     else first.get("compilation", {}).get("question")
                 )
+                search = _search_snapshot(workspace, [], question, {}, saved=saved)
+                if as_chunks:
+                    return chunk_geometry(
+                        workspace,
+                        {source["checksum"] for source in search["revisions"]},
+                    )
+                if symbolic_plan is not None:
+                    search["search_matching_lines"] = (
+                        symbolic_plan.get("options", {}).get("neighbors") == 0
+                    )
                 return {
-                    **_search_snapshot(workspace, [], question, {}, saved=saved),
+                    **search,
+                    "display_languages": graph_translations(workspace, search),
                     "history_origin": origin,
                     "saved_search": {
                         "version": saved["manifest"]["memory_version"],
@@ -583,15 +602,25 @@ def _snapshot(
                     scope["matching_lines"] = True
                 if explain:
                     scope["explain"] = True
+                search = _search_snapshot(workspace, terms, question, scope)
+                if as_chunks:
+                    return chunk_geometry(
+                        workspace,
+                        {source["checksum"] for source in search["revisions"]},
+                    )
                 return {
-                    **_search_snapshot(workspace, terms, question, scope),
+                    **search,
+                    "display_languages": graph_translations(workspace, search),
                     "history_origin": origin,
                 }
+            if as_chunks:
+                return chunk_geometry(workspace)
             snapshot = memory_snapshot(workspace)
             if filter_trace is not None:
                 snapshot["filter_trace"] = _filter_trace(snapshot, *filter_trace)
             return {
                 **snapshot,
+                "display_languages": graph_translations(workspace, snapshot),
                 "search_available": searchable or historical_search,
                 "history_origin": origin,
             }
@@ -602,6 +631,8 @@ def _snapshot(
             or (directory / "kite.sqlite3").exists()
         ):
             raise
+        if as_chunks:
+            return chunk_geometry(None)
         return {
             "version": 0,
             "sources": 0,
@@ -667,6 +698,65 @@ def _workflow_snapshot(directory: Path, run_id: str) -> dict:
         return workflow_progress(workspace, run_id)
 
 
+def _compile_graph_question(directory: Path, request: dict) -> str:
+    from .operations import Context
+    from .resources import resource_root
+    from .symbolic import (
+        SYMBOLIC_RECORDING_DATES,
+        compile_submitted_source_plan,
+        prepare_symbolic_question,
+    )
+    from .twin_ingestion import _request_json
+    from .workflow import save_symbolic_search
+
+    validate(
+        object_schema(
+            {"question": {**TEXT, "maxLength": 512}, "matching_lines": {"type": "boolean"}},
+            {"recording_dates": SYMBOLIC_RECORDING_DATES},
+        ),
+        request,
+        "graph question",
+    )
+    question = request["question"].strip()
+    if not question:
+        raise ToolError("invalid_input", "Enter a nonempty question")
+    dates = request.get("recording_dates")
+    with Workspace.open(directory, read_only=True) as workspace:
+        prepared = prepare_symbolic_question(workspace, question, recording_dates=dates)
+    prompt = prepared["prompt"] + (
+        "\nPut the complete KITE plan as a JSON string in the plan_json field. "
+        "Omit unused keys and empty label arrays. Place near inside where. "
+        "Use one to four labels on each populated prefer_labels axis."
+    )
+    submitted = {"question": question, "snapshot": prepared["snapshot"]}
+    for attempt in range(2):
+        response = _request_json("codex", prompt, object_schema({"plan_json": TEXT}))
+        try:
+            submitted["plan"] = decode_object(response["plan_json"])
+            with Workspace.open(directory, read_only=True) as workspace:
+                compile_submitted_source_plan(
+                    workspace, workspace.index(), submitted, None, None, None, dates
+                )
+            break
+        except ToolError as exc:
+            if attempt or exc.code not in {"invalid_input", "invalid_plan"}:
+                raise
+            prompt += (
+                f"\nThe previous plan failed native validation: {exc}. Return a corrected plan."
+            )
+    inputs = {
+        "submitted_plan": submitted,
+        "neighbors": 0 if request["matching_lines"] else 1,
+        **({"recording_dates": dates} if dates else {}),
+    }
+    with Workspace.open(directory) as workspace:
+        context = Context(resource_root(None), workspace, "symbolic-search")
+        result, error = save_symbolic_search(context, inputs, None)
+    if error is not None:
+        raise error
+    return result["saved_run"]
+
+
 def _serve(directory: Path, comparison: Path | None = None) -> None:
     assets = Path(__file__).parent
     comparison_data = _read_comparison(comparison) if comparison is not None else None
@@ -684,6 +774,7 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
             ("changes", "memory_compare.js"),
             ("revision", "memory_revision.js"),
             ("source", "memory_source.js"),
+            ("chunks", "memory_chunks.js"),
         )
     }
     route = f"/{token_urlsafe(24)}/"
@@ -697,10 +788,10 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
         def log_message(self, format, *args) -> None:
             pass
 
-        def send_progress(self, progress: dict) -> None:
-            body = json.dumps(progress, ensure_ascii=False).encode("utf-8")
+        def send_json(self, value: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
+            body = json.dumps(value, ensure_ascii=False).encode("utf-8")
             try:
-                self.send_response(HTTPStatus.OK)
+                self.send_response(status)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-store")
@@ -709,6 +800,42 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                 self.wfile.write(body)
             except (BrokenPipeError, ConnectionResetError):
                 pass
+
+        def do_POST(self) -> None:
+            nonlocal last_access
+            if self.path != route or self.headers.get("Host") != host:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            if (
+                self.headers.get("Origin") != f"http://{host}"
+                or self.headers.get_content_type() != "application/json"
+            ):
+                self.send_error(HTTPStatus.FORBIDDEN)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 4096:
+                    raise ValueError("Invalid request size")
+                value = decode_object(self.rfile.read(length).decode("utf-8"))
+                last_access = monotonic()
+                run_id = _compile_graph_question(directory, value)
+            except ValueError:
+                self.send_json({"error": "invalid_input"}, HTTPStatus.BAD_REQUEST)
+                return
+            except ToolError as exc:
+                status = (
+                    HTTPStatus.BAD_REQUEST
+                    if exc.code == "invalid_input"
+                    else HTTPStatus.CONFLICT
+                    if exc.code == "stale_snapshot"
+                    else HTTPStatus.SERVICE_UNAVAILABLE
+                )
+                self.send_json({"error": exc.code}, status)
+                return
+            except (OSError, sqlite3.Error):
+                self.send_json({"error": "viewer_unavailable"}, HTTPStatus.SERVICE_UNAVAILABLE)
+                return
+            self.send_json({"run": run_id})
 
         def do_GET(self) -> None:
             nonlocal last_access
@@ -721,7 +848,7 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                 if "progress" in params:
                     if set(params) != {"progress"} or len(params["progress"]) != 1:
                         raise ValueError("invalid workflow progress request")
-                    self.send_progress(_workflow_snapshot(directory, params["progress"][0]))
+                    self.send_json(_workflow_snapshot(directory, params["progress"][0]))
                     return
                 last_access = monotonic()
                 terms = list(dict.fromkeys(params.get("term", ())))
@@ -850,8 +977,9 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                         for key in ("source", "conversation_id")
                         if key in params
                     }
+                    show_chunks = params.get("display", [None]) == ["chunks"]
                     view, snapshot = (
-                        "graph",
+                        "chunks" if show_chunks else "graph",
                         _snapshot(
                             directory,
                             terms,
@@ -865,6 +993,7 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                             explain=explain == ["1"],
                             run_id=run_id,
                             filter_trace=trace,
+                            as_chunks=show_chunks,
                         ),
                     )
                 if comparison_data is not None:
@@ -919,7 +1048,7 @@ def _serve(directory: Path, comparison: Path | None = None) -> None:
                     "Content-Security-Policy",
                     f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; "
                     "base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
-                    + ("; connect-src 'self'" if progress is not None else ""),
+                    + ("; connect-src 'self'" if view == "graph" or progress is not None else ""),
                 )
                 self.end_headers()
                 self.wfile.write(body)
@@ -942,6 +1071,7 @@ def view_memory(
     comparison: Path | None = None,
     run_id: str | None = None,
     follow: str | None = None,
+    language: str | None = None,
 ) -> dict:
     if terms and (len(terms) > 3 or any(not term.strip() or len(term) > 128 for term in terms)):
         raise ToolError("invalid_input", "use up to three nonempty search phrases")
@@ -977,6 +1107,8 @@ def view_memory(
         url += "?" + urlencode({"view": "graph", "run": run_id})
     if follow is not None:
         url += "?" + urlencode({"view": "graph", "follow": follow})
+    if language is not None:
+        url += ("&" if "?" in url else "?") + urlencode({"lang": language})
 
     opened = False
     if open_browser:

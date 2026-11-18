@@ -1,4 +1,4 @@
-# KITE for Codex desktop
+# Kite by Memoket for Codex desktop
 
 Recall what your team decided, who owns it now, and why the plan changed.
 KITE gives Codex the original evidence when it uses past decisions in a new chat.
@@ -16,7 +16,7 @@ codex plugin marketplace add memoket/memoket-kite --ref codex/agent-native-memor
 
 If you already opened the KITE checkout as a Codex project, its local Memoket
 directory is also available from that project. In Codex desktop, open
-**Plugins**, select **Memoket**, open **KITE**, and click **Install**. If the
+**Plugins**, select **Memoket**, open **Kite by Memoket**, and click **Install**. If the
 directory is missing after adding it, restart the desktop app and reopen
 **Plugins**. Start a new chat in the project whose meeting memory you want to
 use.
@@ -357,8 +357,11 @@ python3 scripts/build_codex_marketplace.py ./artifacts/codex-marketplace \
 codex plugin marketplace add "$PWD/artifacts/codex-marketplace"
 ```
 
-Install KITE from this directory in **Plugins**. The launcher installs the
+Install **Kite by Memoket** from this directory in **Plugins**. The launcher installs the
 bundled wheel into a runtime cache identified by its checksum. A first setup
 can still need uv, Python 3.12, and package dependencies. For an isolated
 installation check, pass `--marketplace ./artifacts/codex-marketplace` to the
 smoke test and set `--context-search-version` to the version in the checkout.
+
+The [bilingual demo guide](codex-bilingual-demo.md) includes the Codex
+prompts for Chinese originals, English display, and side-by-side retrieval.

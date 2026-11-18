@@ -48,6 +48,13 @@ CREATE TABLE IF NOT EXISTS topic_hierarchy (
     topic TEXT PRIMARY KEY,
     parents TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS display_translations (
+    language TEXT NOT NULL CHECK (language IN ('en', 'zh')),
+    graph_key TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    text TEXT NOT NULL,
+    PRIMARY KEY (language, graph_key)
+);
 CREATE TABLE IF NOT EXISTS index_seal (
     singleton INTEGER PRIMARY KEY CHECK (singleton=1),
     version INTEGER NOT NULL,
@@ -168,6 +175,12 @@ def _input_sources(raw: str) -> Iterator[tuple]:
         for value in supplied.values():
             if isinstance(value, dict) and {"format", "payload"} <= value.keys():
                 yield source_identity(value)
+        batch = supplied.get("batch")
+        if isinstance(batch, list):
+            for item in batch:
+                source = item.get("source") if isinstance(item, dict) else None
+                if isinstance(source, dict) and {"format", "payload"} <= source.keys():
+                    yield source_identity(source)
 
 
 def _workspace_path(directory: Path, *, read_only: bool) -> tuple[Path, Path, os.stat_result]:
@@ -1075,6 +1088,79 @@ class Workspace:
             "sources_seen": len(receipts),
         }
 
+    def rebuild_topic_postings(self, records: list[dict]) -> dict:
+        """Replace one selection's topic annotations and reseal the native index."""
+        self._require_current_index()
+        current = self.records()
+        active = {row["checksum"]: row for row in current if row["active"]}
+        updated = {}
+        previous = {}
+        for revision in records:
+            checksum = revision["checksum"]
+            old = active.get(checksum)
+            if (
+                old is None
+                or checksum in updated
+                or revision["conversation"] != old["conversation"]
+                or revision["facts"] != old["facts"]
+                or revision["entity_aliases"] != old["entity_aliases"]
+            ):
+                raise ToolError("stale_source", "topic reindex changed a protected source field")
+            kept = [
+                {name: value for name, value in span.items() if name != "topics"}
+                for span in old.get("index_spans", ())
+            ]
+            proposed = revision.get("index_spans", ())
+            if (
+                len(proposed) < len(kept)
+                or any(
+                    {name: value for name, value in span.items() if name != "topics"} != original
+                    for span, original in zip(proposed, kept, strict=False)
+                )
+                or any(
+                    not set(span) <= {"segment_ids", "topics", "entities"} or span.get("entities")
+                    for span in proposed[len(kept) :]
+                )
+            ):
+                raise ToolError(
+                    "integrity_error", "rebuilding topics changed an entity or facet span"
+                )
+            updated[checksum] = revision
+            previous[source_key(old["conversation"])] = old
+        changed = [
+            checksum
+            for checksum, revision in updated.items()
+            if {**revision, "active": True} != active[checksum]
+        ]
+        if not changed:
+            return {
+                "changed": False,
+                "memory_version": self.version(),
+                "sources_changed": 0,
+                "sources_seen": len(records),
+            }
+        proposed_records = [updated.get(row["checksum"], row) for row in current]
+        merges, hierarchy = self._supported_taxonomy(proposed_records)
+        self.db.executemany(
+            "UPDATE revisions SET payload=? WHERE checksum=?",
+            ((encode(updated[checksum]), checksum) for checksum in changed),
+        )
+        enable_context(self.db)
+        result = self.replace_index(
+            merges,
+            hierarchy=hierarchy,
+            force=True,
+            refresh_context=True,
+            activity=GraphActivity(
+                "update",
+                len(changed),
+                len(records),
+                [(checksum, None) for checksum in changed],
+                previous,
+            ),
+        )
+        return {**result, "sources_changed": len(changed), "sources_seen": len(records)}
+
     def _write_revision(
         self, record: dict, *, append_annotations: bool = False, previous: dict
     ) -> dict:
@@ -1332,6 +1418,7 @@ class Workspace:
         # named in its request. Invalidate all prior artifacts conservatively.
         self.db.execute("DELETE FROM artifacts")
         self.db.execute("DELETE FROM memory_activity_graphs")
+        self.db.execute("DELETE FROM display_translations")
         for row in self.db.execute("SELECT id, checkpoint FROM runs").fetchall():
             self._redact_run(row)
         merges, hierarchy = self._supported_taxonomy(retained)

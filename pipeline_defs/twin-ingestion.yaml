@@ -1,0 +1,43 @@
+id: twin-ingestion
+version: 1
+description: Build the native KITE source index and Twin profile from a selected capture.
+inputs:
+  source: source
+  options: twin_ingestion_options
+stages:
+  - id: normalize
+    skill: skills/ingestion/source-normalization/SKILL.md
+    tool: normalize
+    needs: []
+    inputs:
+      source: input.source
+    output: conversation
+    acceptance: The source has stable segment IDs and a checksum.
+  - id: annotate
+    skill: skills/memory/twin-ingestion/SKILL.md
+    tool: propose_twin_index
+    needs: [normalize]
+    inputs:
+      normalized: stage.normalize
+      options: input.options
+    output: twin_ingestion_candidate
+    acceptance: The host returns only source index spans and cited self evidence.
+  - id: commit
+    skill: skills/memory/twin-ingestion/SKILL.md
+    tool: commit_twin_index
+    needs: [normalize, annotate]
+    inputs:
+      source: input.source
+      normalized: stage.normalize
+      candidate: stage.annotate
+      options: input.options
+    output: batch_receipt
+    acceptance: Original attachment, native indexes and self evidence commit together.
+  - id: verify
+    skill: skills/memory/source-indexing/SKILL.md
+    tool: verify_source_batch
+    needs: [commit]
+    inputs:
+      receipt: stage.commit
+    output: batch_verified
+    acceptance: The Codebook and original text index match the committed source.

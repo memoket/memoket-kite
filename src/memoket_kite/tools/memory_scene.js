@@ -26,7 +26,7 @@ function renderViewerNavigation(language, activeView, parameters, comparisonAvai
     link.hidden = view === 'changes' && !comparisonAvailable;
     const query = new URLSearchParams(parameters);
     if (view !== 'graph') {
-      for (const key of ['follow', 'trace_topic', 'trace_entity', 'trace_facet']) query.delete(key);
+      for (const key of ['follow', 'trace_topic', 'trace_entity', 'trace_facet', 'display']) query.delete(key);
     }
     if (activeView === 'revision') {
       query.delete('before');
@@ -55,10 +55,29 @@ function renderViewerNavigation(language, activeView, parameters, comparisonAvai
   }
 }
 
+function renderMemoryDisplay(language, activeDisplay, parameters) {
+  const zh = language === 'zh';
+  const nav = document.getElementById('memory-display');
+  nav.hidden = false;
+  nav.setAttribute('aria-label', zh ? '记忆呈现方式' : 'Memory display');
+  for (const display of ['graph', 'chunks']) {
+    const link = document.getElementById('memory-display-' + display);
+    const query = new URLSearchParams(parameters);
+    query.set('view', 'graph');
+    query.set('lang', language);
+    if (display === 'chunks') query.set('display', 'chunks');
+    else query.delete('display');
+    link.href = '?' + query;
+    link.textContent = display === 'graph' ? 'Kite by Memoket' : zh ? '其他玩家' : 'Other Players';
+    if (display === activeDisplay) link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
+  }
+}
+
 class MemoryScene {
   static entityQuotes(entity, evidence) {
     const normalize = text => text.toLowerCase().replaceAll('_', ' ');
-    const names = [entity.label, ...(entity.aliases || [])].map(normalize);
+    const names = [entity.originalLabel || entity.label, ...(entity.aliases || [])].map(normalize);
     return [...new Set(evidence)].filter(quote => {
       const text = normalize(quote.text);
       return names.some(name => text.includes(name));
@@ -78,18 +97,23 @@ class MemoryScene {
     this.mode = 'topic';
     this.camera = { yaw: -.20, pitch: .48, zoom: 1, x: 0, y: 0 };
     this.palette = {
-      topic: { top: '#8ce0c7', front: '#3e9485', side: '#276a63', glow: '#8bf0d6' },
-      project: { top: '#edbb72', front: '#a7753c', side: '#795228', glow: '#ffca84' },
-      query: { top: '#e4a6e9', front: '#965caa', side: '#6d457e', glow: '#f6c1fa' },
-      subquestion: { top: '#e4a6e9', front: '#965caa', side: '#6d457e', glow: '#f6c1fa' },
-      memory: { top: '#f7c389', front: '#bc7750', side: '#85513e', glow: '#ffd5a8' },
-      facet: { top: '#84c9ef', front: '#4d8eb4', side: '#315a79', glow: '#ade0fc' },
-      line: { top: '#d3c0f4', front: '#9378be', side: '#6e58a1', glow: '#e3d0ff' },
-      source: { top: '#abd9ff', front: '#547fac', side: '#3b608a', glow: '#bddfff' },
-      state: { top: '#ebb6d1', front: '#aa6d90', side: '#815375', glow: '#ffc7e1' },
-      entity: { top: '#f4da8a', front: '#a07e3d', side: '#705926', glow: '#ffe5a6' },
+      topic: { top: '#f0ddff', front: '#b492e9', side: '#8561bf', glow: '#f6eaff' },
+      project: { top: '#e4ccff', front: '#a27bd5', side: '#7045a9', glow: '#f3deff' },
+      query: { top: '#e6a3ff', front: '#a75ccd', side: '#733f99', glow: '#f7d6ff' },
+      subquestion: { top: '#d58bf4', front: '#9250b0', side: '#693880', glow: '#eec1ff' },
+      memory: { top: '#d6a2ee', front: '#a36ac5', side: '#70438e', glow: '#f1d0ff' },
+      facet: { top: '#a793ed', front: '#765eb9', side: '#514285', glow: '#dcd0ff' },
+      line: { top: '#e7d2ff', front: '#ab8cce', side: '#77599b', glow: '#f2e6ff' },
+      source: { top: '#aaa4ed', front: '#7d73bd', side: '#4c428b', glow: '#d5ceff' },
+      state: { top: '#bf83dc', front: '#8c54aa', side: '#663b83', glow: '#e4b5ff' },
+      entity: { top: '#d3b9ef', front: '#a08abe', side: '#725f96', glow: '#f0e0ff' },
+      chunk: { top: '#80d9a5', front: '#48a578', side: '#2d7453', glow: '#c5ffdb' },
     };
-    this.changeColors = { added: '#63edb3', removed: '#ff9ca1', historical: '#f5c578', changed: '#a9c8ff' };
+    this.topicLevels = [this.palette.topic,
+      { top: '#cba7ff', front: '#9460e7', side: '#6b3cbc', glow: '#e1c5ff' },
+      { top: '#9f72ef', front: '#7243c6', side: '#502896', glow: '#c6a4ff' },
+    ];
+    this.changeColors = { added: '#c3a0ff', removed: '#ff9ca1', historical: '#f5c578', changed: '#a9c8ff' };
     this.bind();
     new ResizeObserver(() => this.resize()).observe(canvas);
   }
@@ -191,6 +215,7 @@ class MemoryScene {
       tag.className = 'graph-label';
       tag.type = 'button';
       tag.dataset.kind = node.isProject ? 'project' : node.kind;
+      if (node.hierarchyDepth !== undefined) tag.dataset.topicDepth = Math.min(2, node.hierarchyDepth);
       tag.title = node.label;
       tag.textContent = node.label;
       if (node.change) tag.dataset.change = node.change;
@@ -211,8 +236,12 @@ class MemoryScene {
     this.surfaces = [];
     if (this.scene.coordinates) {
       this.positions = new Map(this.scene.coordinates);
-      const extent = Math.max(1.2, ...[...this.positions.values()].map(([x, , z]) => Math.hypot(x, z)));
-      const floor = Math.min(-2.35, ...[...this.positions.values()].map(([, y]) => y - .15));
+      let extent = 1.2;
+      let floor = this.mode === 'chunks' ? 0 : -2.35;
+      for (const [node, [x, y, z]] of this.positions) {
+        extent = Math.max(extent, Math.hypot(x, z));
+        floor = Math.min(floor, y - (node.size ?? .15));
+      }
       this.bounds = { x: extent, y: Math.max(3.1, extent * .58, -floor) };
       this.surfaces = [{ x: extent, y: floor, z: extent, kind: 'topic' }];
       return;
@@ -243,7 +272,8 @@ class MemoryScene {
       }
       const extent = Math.max(1.2, columns * spacing / 2 + .36);
       bound = Math.max(bound, extent);
-      this.surfaces.push({ y: y - .13, x: extent, z: depth + .69, kind: layer.kind });
+      this.surfaces.push({ y: y - .13, x: extent, z: depth + .69, kind: layer.kind,
+        color: layer.kind === 'topic' && ordered.length ? this.nodeColors(ordered[0]).top : undefined });
     });
     this.bounds = { x: bound, y: Math.max(2.3, (count - 1) * height / 2 + .65) };
   }
@@ -268,7 +298,7 @@ class MemoryScene {
     const depth = inward * cosPitch + y * sinPitch;
     const scale = 17 / Math.max(6, 17 - depth);
     const unit = Math.min((this.width - 28) / (this.bounds.x * 2 + 2.55),
-      (this.height - 112) / (this.bounds.y * 2 + 1.55)) * zoom;
+      (this.height - 112) / (this.bounds.y * 2 + 1.55)) * zoom * (this.mode === 'chunks' ? .84 : 1);
     return {
       x: this.width / 2 + across * unit * scale + panX,
       y: this.height / 2 - up * unit * scale + panY,
@@ -308,7 +338,7 @@ class MemoryScene {
 
   deck(surface) {
     const { x, y, z, kind } = surface;
-    const color = this.palette[kind].top;
+    const color = surface.color || this.palette[this.mode === 'chunks' ? 'chunk' : kind].top;
     const inset = .45;
     const perimeter = [
       [-x + inset, y, -z], [x - inset, y, -z], [x, y, -z + inset], [x, y, z - inset],
@@ -341,8 +371,8 @@ class MemoryScene {
     const left = this.project([a[0], middle, a[2]]);
     const right = this.project([b[0], middle, b[2]]);
     const curve = shared || cooccurrence || Math.abs(a[1] - b[1]) < .1;
-    const color = this.changeColors[edge.change] || (shared ? '#c2d3ec' : correction ? '#efafd2' : cooccurrence ? '#f5cb83' : kind === 'query' ? this.palette.query.top
-      : kind === 'mention' || kind === 'facet' ? this.palette[from.kind].top : this.palette[to.kind].top);
+    const color = this.changeColors[edge.change] || (shared ? '#d6c5f1' : correction ? '#efafd2' : cooccurrence ? '#bc9fea' : kind === 'query' ? this.palette.query.top
+      : kind === 'mention' || kind === 'facet' ? this.nodeColors(from).top : this.nodeColors(to).top);
     context.beginPath();
     context.moveTo(start.x, start.y);
     context.bezierCurveTo(
@@ -378,9 +408,60 @@ class MemoryScene {
     }
   }
 
+  nodeColors(node) {
+    if (node.kind === 'topic' && !node.isProject) return this.topicLevels[Math.min(2, node.hierarchyDepth ?? 0)];
+    return this.palette[node.isProject ? 'project' : node.kind];
+  }
+
+  cube(node, [x, y, z]) {
+    const { size } = node;
+    const { top, front, side, glow } = this.palette.chunk;
+    const low = y - size, high = y + size;
+    const lx = x - size, hx = x + size, lz = z - size, hz = z + size;
+    const nearX = Math.sin(this.camera.yaw) <= 0 ? hx : lx;
+    const nearZ = Math.cos(this.camera.yaw) >= 0 ? hz : lz;
+    const visibleY = this.camera.pitch >= 0 ? high : low;
+    const xFace = [[nearX, low, lz], [nearX, low, hz], [nearX, high, hz], [nearX, high, lz]];
+    const zFace = [[lx, low, nearZ], [hx, low, nearZ], [hx, high, nearZ], [lx, high, nearZ]];
+    this.polygon(xFace, side);
+    this.polygon(zFace, front);
+    this.polygon([[lx, visibleY, lz], [hx, visibleY, lz], [hx, visibleY, hz], [lx, visibleY, hz]],
+      node === this.selected ? glow : top);
+    if (this.camera.zoom >= 1.35 && node.preview.length) {
+      const wideFace = Math.abs(Math.sin(this.camera.yaw)) > Math.abs(Math.cos(this.camera.yaw)) ? xFace : zFace;
+      this.drawChunkPreview(node.preview, wideFace);
+    }
+  }
+
+  drawChunkPreview(preview, face) {
+    const points = face.map(point => this.project(point));
+    const width = Math.min(Math.abs(points[1].x - points[0].x), Math.abs(points[2].x - points[3].x)) - 4;
+    const height = Math.min(Math.abs(points[0].y - points[3].y), Math.abs(points[1].y - points[2].y));
+    if (width < 17 || height < 12) return;
+    const context = this.context;
+    context.font = '600 10px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif';
+    let chars = Math.min(preview.length, Math.max(1, Math.floor(width / 5)));
+    let label = preview.slice(0, chars).join('') + '…';
+    let textWidth = context.measureText(label).width;
+    while (textWidth > width && chars > 1) {
+      chars -= 1;
+      label = preview.slice(0, chars).join('') + '…';
+      textWidth = context.measureText(label).width;
+    }
+    if (textWidth > width) return;
+    const x = points.reduce((sum, point) => sum + point.x, 0) / 4;
+    const y = points.reduce((sum, point) => sum + point.y, 0) / 4;
+    context.fillStyle = '#103c2aee';
+    context.fillRect(x - textWidth / 2 - 2, y - 6, textWidth + 4, 12);
+    context.fillStyle = '#ebfff2';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText(label, x, y);
+  }
+
   block(node, at) {
     const [x, y, z] = at;
-    const { top, front, side, glow } = this.palette[node.isProject ? 'project' : node.kind];
+    const { top, front, side, glow } = this.nodeColors(node);
     const chosen = node === this.selected;
     const dimensions = {
       topic: [.34, .25, .18], memory: [.34, .23, .115], facet: [.31, .22, .19], line: [.20, .16, .08],
@@ -526,7 +607,7 @@ class MemoryScene {
       const pulse = (1 - Math.cos(age * 2 * Math.PI / 900)) / 2;
       const strength = animating ? (importing ? .12 + .88 * pulse : .55 + .45 * pulse) : .46;
       const mark = {
-        color: importing ? '#88f5b8' : effect.kind === 'merge' ? '#f8d492' : '#89d8ff',
+        color: importing ? '#e4ceff' : effect.kind === 'merge' ? '#f8d492' : '#89d8ff',
         strength, age, flow: !importing && animating,
       };
       for (const node of active) nodes.set(node, mark);
@@ -545,11 +626,12 @@ class MemoryScene {
     this.workflowMarks = this.workflowHighlights();
     const floor = this.surfaces.at(-1).y - .57;
     const extent = Math.ceil(this.bounds.x + 1.1);
+    const gridColor = this.mode === 'chunks' ? '#75c4973c' : '#a7c8d320';
     for (let i = -extent; i <= extent; i++) {
-      this.segment([i, floor, -3.4], [i, floor, 3.4], '#a7c8d320');
+      this.segment([i, floor, -3.4], [i, floor, 3.4], gridColor);
     }
     for (let i = -3; i <= 3; i++) {
-      this.segment([-extent, floor, i], [extent, floor, i], '#a7c8d320');
+      this.segment([-extent, floor, i], [extent, floor, i], gridColor);
     }
     for (const surface of [...this.surfaces].reverse()) this.deck(surface);
     for (const edge of this.scene.edges) {
@@ -560,8 +642,15 @@ class MemoryScene {
     }
     this.projected = [...this.positions].map(([node, at]) => ({ node, at, screen: this.project(at) }))
       .sort((a, b) => a.screen.depth - b.screen.depth);
-    for (const { node, at } of this.projected) this.block(node, at);
-    this.positionLabels();
+    if (this.mode === 'chunks') {
+      for (const { node, at, screen } of this.projected) {
+        if (screen.x < -64 || screen.x > this.width + 64 || screen.y < -64 || screen.y > this.height + 64) continue;
+        this.cube(node, at);
+      }
+    } else {
+      for (const { node, at } of this.projected) this.block(node, at);
+      this.positionLabels();
+    }
     if (this.workflowMarks?.moving && !document.hidden) this.requestDraw();
   }
 }

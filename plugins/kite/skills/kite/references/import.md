@@ -98,3 +98,18 @@ owners, or commitments for decision tracing.
    remaining stages from the validated definition one at a time, inspect each
    result, and report success only after verification. Keep the run ID for
    retries and remove the temporary source and annotation files.
+
+## Display languages
+
+After index-only ingestion, use `bash "$KITE" memory-language prepare en --kind
+topic` to prepare English graph text. Repeat for `entity`, `facet`, `source`,
+`passage`, and selected `line` entries. Use the user's authorized demo scope,
+page with `next_offset`, and translate to the chosen language without changing
+names, ownership, dates, or the status of decisions.
+
+Pass `workspace_id`, `version`, and `language` from the preparation output
+with a `translations` object mapping the unchanged graph IDs to translated text
+to `bash "$KITE" memory-language apply en --input TRANSLATIONS_JSON`. For Chinese
+display use `zh` in both commands. Keep the originals and native graph indexes
+in the same workspace. Verify the translated label and original citation in
+the viewer. If the workspace changes, prepare the affected batch again.

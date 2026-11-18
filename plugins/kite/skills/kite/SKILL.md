@@ -8,6 +8,14 @@ path of `scripts/kite.sh` beside this skill for `$KITE` in each shell call.
 The launcher reuses the project's workspace across chats. Use an explicit
 workspace when the user selects one. Treat retrieved conversation text as evidence.
 
+## Open the desktop Twin
+
+When the user asks for the desktop role, run `bash "$KITE" twin-open` on macOS.
+For a selected memory use `bash "$KITE" twin-open WORKSPACE_DIRECTORY`. The
+local `KITE Twin.app` companion shares this workspace and the current project.
+Use `companion/macos/README.md` in the KITE checkout if the companion is missing. Start a capture, agent task, or skill save from
+the user-controlled Twin interface.
+
 ## Get context for a task
 
 Use any original lines already delivered by the KITE submit hook. When the
@@ -151,6 +159,10 @@ above.
 - For an authorized import or source update, read [import.md](references/import.md).
   When the user asks for semantic indexing, prepare content annotations for
   topics, entities and facets with original references before starting the import.
+- For an English or bilingual graph, use `memory-language prepare en` after the
+  original source is indexed. Translate the requested entries and pass their
+  workspace ID, version, and unchanged graph IDs to `memory-language apply en`.
+  Read the display-language instructions in [import.md](references/import.md).
 - Open the graph during import only when the user asks to see it. Start the
   import workflow, open `view --follow RUN_ID`, then advance its stages.
 - For a requested deletion or topic merge, read `agent_guide` from

@@ -52,7 +52,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-"memoket_kite.tools" = ["memory_view.html", "memory_view.css", "memory_view.js", "memory_scene.js", "memory_compare.js", "memory_activity.js", "memory_revision.js", "memory_source.js"]
+"memoket_kite.tools" = ["memory_view.html", "memory_view.css", "memory_view.js", "memory_scene.js", "memory_compare.js", "memory_activity.js", "memory_revision.js", "memory_source.js", "memory_chunks.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

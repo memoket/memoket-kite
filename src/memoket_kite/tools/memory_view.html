@@ -4,14 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>KITE · Memory Graph</title>
+  <title>Kite by Memoket</title>
   <style nonce="__KITE_NONCE__">__KITE_STYLE__</style>
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true"></span>
-      <strong>KITE</strong>
+      <strong>Kite by Memoket</strong>
       <h1 id="title">Memory Graph</h1>
     </div>
     <nav id="workspace-views" class="workspace-views" aria-label="Workspace views" hidden>
@@ -22,36 +22,55 @@
     <div class="top-actions">
       <form id="search" role="search" hidden>
         <span class="search-icon" aria-hidden="true"></span>
+        <select id="search-mode" aria-label="Search mode">
+          <option value="question">Question</option>
+          <option value="terms">Keywords</option>
+        </select>
         <input id="search-terms" type="search" aria-label="Search original evidence" maxlength="512">
-        <input id="search-version" type="number" aria-label="Workspace version" step="1" hidden>
-        <details id="recording-filter" class="search-option">
-          <summary id="recording-filter-label">Recording dates</summary>
-          <div class="search-option-fields recording-filter-fields">
-            <label><span id="recording-start-label">From</span><input id="recording-start" type="date" aria-labelledby="recording-start-label"></label>
-            <label><span id="recording-end-label">Through</span><input id="recording-end" type="date" aria-labelledby="recording-end-label"></label>
-          </div>
-        </details>
-        <details id="comparison-filter" class="search-option">
-          <summary id="comparison-filter-label">Compare</summary>
-          <div class="search-option-fields">
-            <label id="comparison-question-label" for="comparison-question">Second question</label>
-            <input id="comparison-question" type="search" maxlength="512">
-            <label id="comparison-version-label" for="comparison-version">Earlier workspace version</label>
-            <input id="comparison-version" type="number" step="1">
-            <span id="comparison-recording-label">Second question recording dates</span>
-            <div class="recording-filter-fields" role="group" aria-labelledby="comparison-recording-label">
-              <label><span id="compare-recording-start-label">From</span><input id="compare-recording-start" type="date" disabled></label>
-              <label><span id="compare-recording-end-label">Through</span><input id="compare-recording-end" type="date" disabled></label>
-            </div>
-          </div>
-        </details>
-        <label class="matching-lines-control"><input id="matching-lines" type="checkbox"><span id="matching-lines-label">Matching lines</span></label>
         <button id="search-submit" type="submit">Search</button>
+        <details id="search-options" class="search-option">
+          <summary id="search-options-label">Advanced</summary>
+          <div class="search-option-fields">
+            <label id="search-version-row"><span id="search-version-label">Workspace version</span>
+              <input id="search-version" type="number" step="1" aria-describedby="search-version-help" disabled>
+            </label>
+            <p id="search-version-help" class="search-option-help">Leave blank to search current memory. Version 0 is the initial snapshot.</p>
+            <details id="recording-filter" class="search-option">
+              <summary id="recording-filter-label">Recording dates</summary>
+              <div class="search-option-fields recording-filter-fields">
+                <label><span id="recording-start-label">From</span><input id="recording-start" type="date" aria-labelledby="recording-start-label"></label>
+                <label><span id="recording-end-label">Through</span><input id="recording-end" type="date" aria-labelledby="recording-end-label"></label>
+              </div>
+            </details>
+            <details id="comparison-filter" class="search-option">
+              <summary id="comparison-filter-label">Compare</summary>
+              <div class="search-option-fields">
+                <label id="comparison-question-label" for="comparison-question">Second question</label>
+                <input id="comparison-question" type="search" maxlength="512">
+                <label id="comparison-version-label" for="comparison-version">Earlier workspace version</label>
+                <input id="comparison-version" type="number" step="1">
+                <span id="comparison-recording-label">Second question recording dates</span>
+                <div class="recording-filter-fields" role="group" aria-labelledby="comparison-recording-label">
+                  <label><span id="compare-recording-start-label">From</span><input id="compare-recording-start" type="date" aria-labelledby="compare-recording-start-label" disabled></label>
+                  <label><span id="compare-recording-end-label">Through</span><input id="compare-recording-end" type="date" aria-labelledby="compare-recording-end-label" disabled></label>
+                </div>
+              </div>
+            </details>
+            <label class="matching-lines-control"><input id="matching-lines" type="checkbox"><span id="matching-lines-label">Matching lines</span></label>
+            <button id="search-clear-options" type="button" class="quiet">Clear options</button>
+          </div>
+        </details>
+        <p id="search-status" role="status" hidden></p>
       </form>
       <button id="language" type="button" class="quiet">中文</button>
       <button id="refresh" type="button" class="quiet">Refresh</button>
     </div>
   </header>
+
+  <nav id="memory-display" class="memory-display" aria-label="Memory display" hidden>
+    <a id="memory-display-graph">Kite by Memoket</a>
+    <a id="memory-display-chunks">Other Players</a>
+  </nav>
 
   <main class="layout">
     <div class="sidebar" id="sidebar">
@@ -60,6 +79,7 @@
           <h2 id="nav-title">Topics</h2>
           <p id="coverage"></p>
         </div>
+        <button id="topic-scope" class="overview" type="button" hidden></button>
         <nav id="categories" aria-labelledby="nav-title"></nav>
         <button id="overview" class="overview" type="button" hidden>Back to topics</button>
       </aside>
@@ -94,6 +114,7 @@
         </div>
         <section id="search-trace" class="search-trace" hidden></section>
       </header>
+      <div id="search-replay-dock"></div>
       <div class="viewport">
         <canvas id="graph" tabindex="0" aria-describedby="gesture" aria-label="Three-dimensional memory graph"></canvas>
         <div id="graph-labels" class="graph-labels"></div>
@@ -119,6 +140,27 @@
     </section>
 
     <aside class="detail" id="detail" aria-live="polite"></aside>
+  </main>
+
+  <main id="chunk-view" class="comparison chunk-view" hidden>
+    <header class="compare-header">
+      <h2 id="chunks-title"></h2>
+      <p id="chunks-summary"></p>
+    </header>
+    <div class="viewport chunk-viewport">
+      <canvas id="chunk-graph" tabindex="0" aria-describedby="chunk-gesture"></canvas>
+      <div id="chunk-labels" hidden></div>
+      <p id="chunk-empty" class="empty" hidden></p>
+      <div class="viewport-controls">
+        <span id="chunk-gesture"></span>
+        <a id="chunk-source" hidden></a>
+        <div id="chunk-zoom" class="zoom-controls" role="group" aria-label="Zoom">
+          <button id="chunk-zoom-out" type="button" aria-label="Zoom out">−</button>
+          <button id="chunk-zoom-reset" type="button" aria-label="Reset view">100%</button>
+          <button id="chunk-zoom-in" type="button" aria-label="Zoom in">+</button>
+        </div>
+      </div>
+    </div>
   </main>
 
   <main id="activity" class="comparison" hidden>

@@ -863,11 +863,26 @@ def memory_snapshot(workspace) -> dict:
         row["evidence"] = [line["source_line_id"] for line in row["evidence"]]
     passages = _indexed_passages(index, evidence)
     project_labels = {}
+    topic_source_counts = defaultdict(int)
     for record in index.revisions.values():
+        if not record["active"]:
+            continue
+        pending = {
+            index.vocab.resolve_topic(name)
+            for entry in (*record["facts"], *record.get("index_spans", ()))
+            for name in entry["topics"]
+        } - {None}
+        counted = set()
+        while pending:
+            name = pending.pop()
+            counted.add(name)
+            pending.update(index.vocab.topics[name].parents - counted)
+        for name in counted:
+            topic_source_counts[name] += 1
         metadata = record["conversation"]["metadata"]
         project = metadata.get("project")
         labels = metadata.get("project_topic_label")
-        if not record["active"] or not isinstance(project, str) or not isinstance(labels, dict):
+        if not isinstance(project, str) or not isinstance(labels, dict):
             continue
         localized = {
             language: label.strip()
@@ -890,6 +905,7 @@ def memory_snapshot(workspace) -> dict:
                 "code": topic.code,
                 "aliases": sorted(topic.aliases),
                 "parents": sorted(topic.parents),
+                "source_count": topic_source_counts[topic.code],
                 **(
                     {"project_label": project_labels[topic.code]}
                     if topic.code in project_labels

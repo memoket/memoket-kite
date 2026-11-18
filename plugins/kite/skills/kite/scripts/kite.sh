@@ -6,6 +6,23 @@ umask 077
 runtime_revision=481fb43bf0234871837ec3a211f848b38a35a4d6
 runtime_extras=agent
 runtime_command=kite-tool
+open_twin=0
+if [[ "${1:-}" == twin-open ]]; then
+    shift
+    if [[ $# -gt 1 || "$(uname -s)" != Darwin ]]; then
+        printf '%s\n' 'Usage on macOS: kite.sh twin-open [WORKSPACE_DIRECTORY]' >&2
+        exit 2
+    fi
+    twin_app="${KITE_TWIN_APP:-$HOME/Applications/KITE Twin.app}"
+    if [[ ! -d "$twin_app" && -z "${KITE_TWIN_APP:-}" ]]; then
+        twin_app='/Applications/KITE Twin.app'
+    fi
+    if [[ ! -d "$twin_app" ]]; then
+        printf '%s\n' 'Install or build KITE Twin.app first. See companion/macos/README.md.' >&2
+        exit 2
+    fi
+    open_twin=1
+fi
 if [[ "${1:-}" == workspace-mcp ]]; then
     shift
     if [[ "$#" != 1 || -z "${1:-}" ]]; then
@@ -103,5 +120,11 @@ fi
 export PYTHONDONTWRITEBYTECODE=1
 if [[ "$runtime_command" == kite-mcp ]]; then
     exec "$runtime_bin" --workspace "$1"
+fi
+if [[ "$open_twin" == 1 ]]; then
+    workspace="${1:-$KITE_DATA_DIR}"
+    if [[ "$workspace" != /* ]]; then workspace="$(pwd -P)/$workspace"; fi
+    exec /usr/bin/open -n -a "$twin_app" --args --kite-tool "$runtime_bin" \
+        --workspace "$workspace" --project "$(pwd -P)"
 fi
 exec "$runtime_bin" "$@"

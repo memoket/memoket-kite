@@ -1,0 +1,41 @@
+id: twin-batch-ingestion
+version: 1
+description: Index a group of selected Twin captures against one workspace snapshot.
+inputs:
+  batch: twin_batch
+stages:
+  - id: normalize
+    skill: skills/ingestion/source-normalization/SKILL.md
+    tool: normalize_twin_batch
+    needs: []
+    inputs:
+      batch: input.batch
+    output: twin_normalized_batch
+    acceptance: Each selected source has original turns, an identity and a checksum.
+  - id: annotate
+    skill: skills/memory/twin-ingestion/SKILL.md
+    tool: annotate_twin_batch
+    needs: [normalize]
+    inputs:
+      batch: input.batch
+      normalized: stage.normalize
+    output: twin_annotated_batch
+    acceptance: Each source has cited indexes and self evidence or a per-source error.
+  - id: commit
+    skill: skills/memory/twin-ingestion/SKILL.md
+    tool: commit_twin_batch
+    needs: [normalize, annotate]
+    inputs:
+      batch: input.batch
+      normalized: stage.normalize
+      annotated: stage.annotate
+    output: batch_receipt
+    acceptance: Valid source indexes, original attachments and profile evidence commit atomically.
+  - id: verify
+    skill: skills/memory/source-indexing/SKILL.md
+    tool: verify_source_batch
+    needs: [commit]
+    inputs:
+      receipt: stage.commit
+    output: batch_verified
+    acceptance: The current Codebook and original-text index agree with the committed sources.

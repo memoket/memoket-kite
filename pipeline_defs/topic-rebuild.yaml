@@ -1,0 +1,31 @@
+id: topic-rebuild
+version: 1
+description: Govern and replace the cited topic postings of selected index-only sources.
+inputs:
+  plan: topic_rebuild_plan
+stages:
+  - id: preview
+    skill: skills/memory/topic-classification/SKILL.md
+    tool: preview_topic_rebuild
+    needs: []
+    inputs:
+      plan: input.plan
+    output: topic_rebuild_preview
+    acceptance: Every posted topic has cited originals and passed native vocabulary governance.
+  - id: commit
+    skill: skills/memory/index-building/SKILL.md
+    tool: commit_topic_rebuild
+    needs: [preview]
+    inputs:
+      plan: input.plan
+      preview: stage.preview
+    output: topic_rebuild_receipt
+    acceptance: Topic postings commit atomically against the previewed workspace version.
+  - id: verify
+    skill: skills/memory/source-indexing/SKILL.md
+    tool: verify_topic_rebuild
+    needs: [commit]
+    inputs:
+      receipt: stage.commit
+    output: topic_rebuild_verified
+    acceptance: Native Codebook and searchable source spans match the committed records.

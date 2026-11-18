@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "KITE Twin Replies",
+  "version": "0.1.0",
+  "minimum_chrome_version": "106",
+  "description": "Start a KITE draft from selected text and fill its original reply editor.",
+  "permissions": ["nativeMessaging"],
+  "background": {"service_worker": "worker.js"},
+  "action": {"default_title": "Use the selected message with KITE Twin"},
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {"default": "Alt+Shift+R", "mac": "MacCtrl+Shift+R"},
+      "description": "Draft a reply to the selected message in KITE"
+    }
+  },
+  "content_scripts": [{
+    "matches": [
+      "https://mail.google.com/*",
+      "https://app.slack.com/*",
+      "https://*.feishu.cn/*",
+      "https://*.larksuite.com/*"
+    ],
+    "js": ["binding.js", "content.js"],
+    "run_at": "document_idle"
+  }]
+}

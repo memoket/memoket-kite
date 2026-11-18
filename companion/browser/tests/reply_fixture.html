@@ -1,0 +1,84 @@
+<!doctype html><meta charset="utf-8"><title>KITE synthetic reply fixture</title>
+<main></main><output id="status"></output>
+<script src="../extension/binding.js"></script>
+<script>
+ const checks = [];
+ function check(name, input) {
+   if (!input) throw new Error(name);
+   checks.push(name);
+ }
+ let listener;
+ window.chrome = {runtime:{id:'fixture',onMessage:{addListener(fn){listener=fn;}}}};
+ function dispatch(request) {
+   let reply;
+   listener(request, {id:'fixture'}, value => {reply = value;});
+   return reply;
+ }
+</script>
+<script src="../extension/content.js"></script>
+<script>
+ // The shared DOM adapter uses an explicit origin and account. Synthetic
+ // clients exercise identity, selectors and browser editing, not production layouts.
+ const clients = [
+   ['Gmail','https://mail.google.com/mail/u/0/#inbox/thread','data-message-id','a3s','data-reply-to-message-id'],
+   ['Slack','https://app.slack.com/client/TBOARD/CWORK?thread_ts=123.456','data-item-key','p-rich_text_section','data-thread-ts'],
+   ['飞书','https://team.feishu.cn/messenger','data-msg-id','test','data-reply-to'],
+ ];
+ const fixture = document.querySelector('main');
+ const matches = window.KiteReplyBinding;
+ const editor = '<div contenteditable="true" role="textbox" style="min-height:20px"></div>';
+ let syntheticURL;
+ const message = 'Synthetic message from the packaging review.';
+ // Adapt only the local location input for the content adapter.
+ const capture = matches.capture;
+ const resolve = matches.resolve;
+ Object.defineProperty(window, 'KiteReplyBinding', {value: {
+   ...matches,
+   capture: (doc, _, selection) => capture(doc, syntheticURL, selection),
+   resolve: (doc, _, target) => resolve(doc, syntheticURL, target),
+ }});
+ // Reload the same content adapter with the test origin shim.
+ const script = document.createElement('script');
+ script.src='../extension/content.js';
+ script.onload=()=> {
+   try {
+     for (const [name,url,key,body,target] of clients) {
+       syntheticURL = new URL(url);
+       fixture.innerHTML = '<section '+key+'="123.456"><div class="'+body+'" data-message-content>'+message+
+         '</div></section><div '+target+'="123.456">'+editor+'</div>';
+       const selection = getSelection();
+       const range = new Range();
+       range.selectNodeContents(fixture.querySelector('.'+body));
+       selection.removeAllRanges();
+       selection.addRange(range);
+       const id = crypto.randomUUID();
+       const preview = dispatch({type:'capture',id});
+       check(name + ' selected body', preview.ok && preview.channel === name && preview.text === message);
+       const targetEditor = fixture.querySelector('[role="textbox"]');
+       const authentic = syntheticURL;
+       syntheticURL = new URL(url.replace('123.456','987.654') + (name==='Slack'?'':'#other'));
+       check(name + ' refuses changed conversation', !dispatch({type:'fill',id,draft:'Differently.'}).ok);
+       syntheticURL = authentic;
+       const parent = targetEditor.parentElement;
+       parent.setAttribute(target,'999');
+       check(name + ' refuses unrelated reply', !dispatch({type:'fill',id,draft:'Wrong page.'}).ok);
+       parent.setAttribute(target,'123.456');
+       parent.insertAdjacentHTML('beforeend',editor);
+       check(name + ' refuses two candidate editors', !dispatch({type:'fill',id,draft:'Unclear.'}).ok);
+       parent.lastElementChild.remove();
+       targetEditor.textContent='Existing reply';
+       check(name + ' keeps prior draft', !dispatch({type:'fill',id,draft:'Replacement.'}).ok &&
+         targetEditor.textContent==='Existing reply');
+       targetEditor.replaceChildren();
+       const outgoing = 'A concise draft.\nSecond line.';
+       check(name + ' inserts editable draft', dispatch({type:'fill',id,draft:outgoing}).ok &&
+         matches.plain(targetEditor.innerText)===matches.plain(outgoing));
+       check(name + ' refuses replay', !dispatch({type:'fill',id,draft:'Duplicate.'}).ok);
+     }
+     document.querySelector('output').textContent = 'PASSED '+checks.length;
+   } catch(error) {
+     document.querySelector('output').textContent = 'FAILED '+error.toString();
+   }
+ };
+ document.head.appendChild(script);
+</script>
